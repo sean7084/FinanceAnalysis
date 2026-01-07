@@ -32,5 +32,36 @@ services:
     image: redis:7-alpine
     container_name: finance_analysis_redis
 
+  celery_worker:
+    build:
+      context: .
+      dockerfile: ./compose/local/django/Dockerfile
+    image: finance_analysis_django
+    container_name: finance_analysis_celery_worker
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - .:/app
+    env_file:
+      - ./.envs/.local
+    command: /start-celeryworker
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: ./compose/local/django/Dockerfile
+    image: finance_analysis_django
+    container_name: finance_analysis_celery_beat
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - .:/app
+    env_file:
+      - ./.envs/.local
+    command: /start-celerybeat
+
+
 volumes:
   postgres_data:
