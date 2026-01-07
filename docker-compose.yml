@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ./compose/local/django
+      dockerfile: Dockerfile
+    image: finance_analysis_web
+    command: /start
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.envs/.local
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=finance_analysis
+      - POSTGRES_USER=finance_analysis
+      - POSTGRES_PASSWORD=finance_analysis
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  postgres_data:
