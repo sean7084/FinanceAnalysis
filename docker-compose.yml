@@ -1,33 +1,36 @@
-version: '3.8'
-
 services:
-  web:
+  django:
     build:
-      context: ./compose/local/django
-      dockerfile: Dockerfile
-    image: finance_analysis_web
-    command: /start
+      context: .
+      dockerfile: ./compose/local/django/Dockerfile
+    image: finance_analysis_django
+    container_name: finance_analysis_django
+    depends_on:
+      - postgres
+      - redis
     volumes:
       - .:/app
-    ports:
-      - "8000:8000"
     env_file:
       - ./.envs/.local
-    depends_on:
-      - db
-      - redis
+    ports:
+      - "8000:8000"
+    command: /start
 
-  db:
+  postgres:
     image: postgres:15-alpine
+    container_name: finance_analysis_postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data/
     environment:
       - POSTGRES_DB=finance_analysis
       - POSTGRES_USER=finance_analysis
       - POSTGRES_PASSWORD=finance_analysis
+    ports:
+      - "5432:5432"
 
   redis:
     image: redis:7-alpine
+    container_name: finance_analysis_redis
 
 volumes:
   postgres_data:
