@@ -8,3 +8,5 @@ django-modeltranslation==0.18.12
 akshare
 pandas==2.2.2
 django-celery-beat
+numpy
+TA-Lib
