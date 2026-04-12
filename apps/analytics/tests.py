@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -8,8 +9,8 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.markets.models import Market, Asset, OHLCV
-from .models import AlertRule, AlertEvent
-from .tasks import check_alert_rules
+from .models import AlertRule, AlertEvent, TechnicalIndicator
+from .tasks import check_alert_rules, calculate_fibonacci_retracement_for_asset
 
 
 class Phase9AlertTaskTests(TestCase):
@@ -166,3 +167,56 @@ class Phase9ApiTests(TestCase):
         response = self.client.get('/api/v1/screeners/prebuilt/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('screeners', response.data)
+
+
+class Phase8IndicatorTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='phase8_user',
+            email='phase8@example.com',
+            password='Passw0rd!123',
+        )
+        self.market = Market.objects.create(code='BSE', name='Beijing Stock Exchange')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='830001',
+            ts_code='830001.BJ',
+            name='Phase8 Asset',
+        )
+        today = timezone.now().date()
+        for i, close in enumerate([10.0, 10.8, 11.2, 10.6, 11.5, 11.0], start=1):
+            day = today - timedelta(days=i)
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=day,
+                open=Decimal(str(close - 0.2)),
+                high=Decimal(str(close + 0.4)),
+                low=Decimal(str(close - 0.5)),
+                close=Decimal(str(close)),
+                adj_close=Decimal(str(close)),
+                volume=900000 + i * 1000,
+                amount=Decimal(str((900000 + i * 1000) * close)),
+            )
+
+    def test_calculate_fibonacci_retracement_creates_indicator(self):
+        calculate_fibonacci_retracement_for_asset(self.asset.id, lookback_days=5)
+
+        fib = TechnicalIndicator.objects.filter(asset=self.asset, indicator_type='FIB_RET').first()
+        self.assertIsNotNone(fib)
+        self.assertIn('levels', fib.parameters)
+        self.assertIn('0.618', fib.parameters['levels'])
+
+    @patch('apps.analytics.views.calculate_fibonacci_retracement_for_asset.delay')
+    def test_recalculate_endpoint_queues_with_custom_params(self, mock_delay):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            'asset_id': self.asset.id,
+            'indicator_type': 'FIB_RET',
+            'params': {'lookback_days': 30},
+        }
+
+        response = self.client.post('/api/v1/indicators/recalculate/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        mock_delay.assert_called_once_with(asset_id=self.asset.id, lookback_days=30)

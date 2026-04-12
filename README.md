@@ -208,6 +208,30 @@ Market (3 exchanges)
 
 ---
 
+### Phase 8: Advanced Technical Indicators ✓
+**Objective**: Expand analytical capabilities
+
+**Implemented Indicators**:
+- **Bollinger Bands** (`BBANDS`) with upper/middle/lower levels
+- **Moving Averages**: `SMA` and `EMA` (multi-period)
+- **Stochastic Oscillator** (`STOCH`)
+- **ADX** (trend strength with `plus_di` / `minus_di`)
+- **OBV** (On-Balance Volume)
+- **Fibonacci Retracement** (`FIB_RET`) levels
+
+**Features**:
+- Configurable indicator parameters via `/api/v1/indicators/recalculate/`
+- Historical indicator values query support via date filters
+- Indicator comparison API: `/api/v1/indicators/compare/`
+- Specialized indicator endpoints for trend/overbought/oversold and Fibonacci levels
+
+**Key Files**:
+- `apps/analytics/tasks.py` - Indicator calculation tasks (including Fibonacci)
+- `apps/analytics/views.py` - Indicator compare/recalculate/Fibonacci endpoints
+- `apps/analytics/models.py` - Unified `TechnicalIndicator` storage model
+
+---
+
 ### Phase 9: Stock Screeners & Alerts ✓
 **Objective**: Automated screening and notification system
 
@@ -252,13 +276,13 @@ Market (3 exchanges)
 - **Markets**: 3 (SSE, SZSE, BSE)
 - **Assets**: 334 CSI 300 stocks
 - **OHLCV Records**: ~100,000+ daily price points
-- **Technical Indicators**: 668 (334 RSI + 334 MACD)
+- **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
 - **Assets API**: 2 endpoints + search/filter
 - **OHLCV API**: 2 endpoints + date range filtering
-- **Indicators API**: 4 endpoints (list, detail, top_rsi, bottom_rsi)
+- **Indicators API**: list/detail + compare/recalculate/fibonacci + ranking endpoints
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
 ### Performance
@@ -290,22 +314,8 @@ Market (3 exchanges)
 
 ---
 
-### Phase 8: Advanced Technical Indicators
-**Objective**: Expand analytical capabilities
-
-**Planned Indicators**:
-- **Bollinger Bands**: Volatility indicator
-- **Moving Averages**: SMA, EMA (multiple periods)
-- **Stochastic Oscillator**: Momentum indicator
-- **ADX (Average Directional Index)**: Trend strength
-- **OBV (On-Balance Volume)**: Volume-price indicator
-- **Fibonacci Retracement**: Support/resistance levels
-
-**Features**:
-- Configurable indicator parameters
-- Historical indicator values (time series)
-- Indicator comparison charts
-- Custom indicator combinations
+### Phase 8: Advanced Technical Indicators (Completed)
+Implemented and moved to the completed phases section.
 
 ---
 

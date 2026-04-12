@@ -416,6 +416,71 @@ def calculate_obv_for_asset(asset_id):
 
 
 @shared_task
+def calculate_fibonacci_retracement_for_asset(asset_id, lookback_days=60):
+    """
+    Calculates Fibonacci retracement levels using the recent high/low range.
+    """
+    if lookback_days <= 1:
+        print(f"Invalid lookback_days={lookback_days} for Fibonacci calculation.")
+        return
+
+    candles = list(
+        OHLCV.objects.filter(asset_id=asset_id).order_by('-date')[:lookback_days]
+    )
+    if len(candles) < 2:
+        print(f"Not enough data for Fibonacci calculation for asset {asset_id}.")
+        return
+
+    asset = Asset.objects.get(id=asset_id)
+    period_high = max(float(c.high) for c in candles)
+    period_low = min(float(c.low) for c in candles)
+    price_range = period_high - period_low
+    if price_range <= 0:
+        print(f"Invalid price range for Fibonacci calculation for asset {asset_id}.")
+        return
+
+    latest = candles[0]
+    latest_date = latest.date
+    from django.utils import timezone as tz
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+
+    levels = {
+        '0.236': period_high - price_range * 0.236,
+        '0.382': period_high - price_range * 0.382,
+        '0.500': period_high - price_range * 0.500,
+        '0.618': period_high - price_range * 0.618,
+        '0.786': period_high - price_range * 0.786,
+    }
+
+    params = {
+        'lookback_days': lookback_days,
+        'high': period_high,
+        'low': period_low,
+        'range': price_range,
+        'levels': levels,
+        'close': float(latest.close),
+    }
+
+    obj, created = TechnicalIndicator.objects.get_or_create(
+        asset=asset,
+        timestamp=latest_timestamp,
+        indicator_type='FIB_RET',
+        parameters={'lookback_days': lookback_days},
+        defaults={
+            'value': levels['0.500'],
+            'parameters': params,
+        }
+    )
+    if not created:
+        obj.value = levels['0.500']
+        obj.parameters = params
+        obj.save()
+
+    action = "Created" if created else "Updated"
+    print(f"{action} Fibonacci retracement for {asset.symbol} on {latest_date}")
+
+
+@shared_task
 def calculate_indicators_for_all_assets():
     """
     Triggers all indicator calculations for all assets.
@@ -435,6 +500,7 @@ def calculate_indicators_for_all_assets():
         calculate_stochastic_for_asset.delay(asset_id=asset_id)
         calculate_adx_for_asset.delay(asset_id=asset_id)
         calculate_obv_for_asset.delay(asset_id=asset_id)
+        calculate_fibonacci_retracement_for_asset.delay(asset_id=asset_id)
     
     return f"Successfully queued calculations for {len(asset_ids)} assets."
 

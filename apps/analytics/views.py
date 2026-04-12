@@ -15,6 +15,17 @@ from .serializers import (
     AlertEventSerializer,
 )
 from apps.markets.models import Asset, OHLCV
+from .tasks import (
+    calculate_rsi_for_asset,
+    calculate_macd_for_asset,
+    calculate_bollinger_bands_for_asset,
+    calculate_sma_for_asset,
+    calculate_ema_for_asset,
+    calculate_stochastic_for_asset,
+    calculate_adx_for_asset,
+    calculate_obv_for_asset,
+    calculate_fibonacci_retracement_for_asset,
+)
 
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
@@ -261,6 +272,73 @@ class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
         cache.set(cache_key, serializer.data, 60 * 5)
         
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def fibonacci_levels(self, request):
+        """
+        Get latest Fibonacci retracement levels for an asset.
+        Query params: asset_id (required)
+        """
+        asset_id = request.query_params.get('asset_id')
+        if not asset_id:
+            return Response({'error': 'asset_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        indicator = TechnicalIndicator.objects.filter(
+            asset_id=asset_id,
+            indicator_type='FIB_RET',
+        ).order_by('-timestamp').first()
+
+        if not indicator:
+            return Response({'error': 'No Fibonacci levels found for this asset'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(TechnicalIndicatorSerializer(indicator).data)
+
+    @action(detail=False, methods=['post'])
+    def recalculate(self, request):
+        """
+        Queue indicator calculation for a specific asset with custom parameters.
+        Body: {"asset_id": 1, "indicator_type": "RSI", "params": {...}}
+        """
+        asset_id = request.data.get('asset_id')
+        indicator_type = str(request.data.get('indicator_type', '')).upper()
+        params = request.data.get('params', {}) or {}
+
+        if not asset_id:
+            return Response({'error': 'asset_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not indicator_type:
+            return Response({'error': 'indicator_type is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        task_map = {
+            'RSI': calculate_rsi_for_asset,
+            'MACD': calculate_macd_for_asset,
+            'BBANDS': calculate_bollinger_bands_for_asset,
+            'SMA': calculate_sma_for_asset,
+            'EMA': calculate_ema_for_asset,
+            'STOCH': calculate_stochastic_for_asset,
+            'ADX': calculate_adx_for_asset,
+            'OBV': calculate_obv_for_asset,
+            'FIB_RET': calculate_fibonacci_retracement_for_asset,
+        }
+
+        task = task_map.get(indicator_type)
+        if not task:
+            return Response({'error': f'Unsupported indicator_type: {indicator_type}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            asset_id_int = int(asset_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'asset_id must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+
+        task.delay(asset_id=asset_id_int, **params)
+        return Response(
+            {
+                'message': 'Indicator calculation queued',
+                'asset_id': asset_id_int,
+                'indicator_type': indicator_type,
+                'params': params,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class ScreenerTemplateViewSet(viewsets.ModelViewSet):
