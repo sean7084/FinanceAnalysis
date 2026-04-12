@@ -36,6 +36,11 @@ from apps.factors.views import (
     CapitalFlowSnapshotViewSet,
     BottomCandidateViewSet,
 )
+from apps.macro.views import (
+    MacroSnapshotViewSet,
+    MarketContextViewSet,
+    EventImpactStatViewSet,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -54,6 +59,9 @@ router.register(r'users/usage', APIUsageViewSet, basename='apiusage')
 router.register(r'factors/fundamentals', FundamentalFactorSnapshotViewSet, basename='fundamental-factor')
 router.register(r'factors/capital-flows', CapitalFlowSnapshotViewSet, basename='capital-flow-factor')
 router.register(r'screener/bottom-candidates', BottomCandidateViewSet, basename='bottom-candidates')
+router.register(r'macro/snapshots', MacroSnapshotViewSet, basename='macro-snapshot')
+router.register(r'macro/contexts', MarketContextViewSet, basename='macro-context')
+router.register(r'macro/event-impacts', EventImpactStatViewSet, basename='event-impact')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     'apps.markets',
     'apps.analytics',
     'apps.factors',
+    'apps.macro',
 ]
 
 MIDDLEWARE = [
@@ -179,6 +180,10 @@ CELERY_BEAT_SCHEDULE = {
     'calculate-signals-daily': {
         'task': 'apps.analytics.tasks.calculate_signals_for_all_assets',
         'schedule': crontab(hour='16', minute='0'),  # Daily at 16:00 UTC (after A-share close at 15:00 CST)
+    },
+    'sync-macro-data-monthly': {
+        'task': 'apps.macro.tasks.sync_macro_data_monthly',
+        'schedule': crontab(day_of_month='1', hour='2', minute='0'),
     },
 }
 

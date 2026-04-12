@@ -399,6 +399,41 @@ Market (3 exchanges)
 
 ---
 
+### Phase 12: Macro & Event-Driven Context Engine ✓
+**Objective**: Introduce macro context and event-driven overlays as a global adjustment layer for model scoring
+
+**Implemented Features**:
+- New `macro` app with three core models:
+  - `MacroSnapshot` for macro time-series snapshots
+  - `MarketContext` for active environment labels
+  - `EventImpactStat` for historical tagged-event return statistics
+- Macro API endpoints:
+  - `GET/POST /api/v1/macro/snapshots/`
+  - `POST /api/v1/macro/snapshots/sync/`
+  - `GET/POST /api/v1/macro/contexts/`
+  - `GET /api/v1/macro/contexts/current/`
+  - `POST /api/v1/macro/contexts/refresh/`
+  - `GET/POST /api/v1/macro/event-impacts/`
+- Macro phase inference task using PMI + yield-curve logic:
+  - `RECOVERY`, `OVERHEAT`, `STAGFLATION`, `RECESSION`
+- Context-aware weight service for downstream ranking models
+- Phase 11 integration:
+  - Bottom-candidates endpoint now accepts `macro_context` and `event_tag`
+  - Recalculate endpoint applies context-adjusted weights before queuing scoring
+  - List endpoint returns `adjusted_bottom_probability_score` and `context_applied`
+- Monthly macro sync scheduled via Celery Beat
+
+**Key Files**:
+- `apps/macro/models.py` — MacroSnapshot, MarketContext, EventImpactStat
+- `apps/macro/services.py` — macro/event weight adjustment logic
+- `apps/macro/tasks.py` — monthly sync and context refresh tasks
+- `apps/macro/views.py` — macro APIs and custom actions
+- `apps/macro/serializers.py` — macro serializers
+- `apps/macro/tests.py` — Phase 12 test coverage
+- `apps/macro/migrations/0001_initial.py` — initial migration
+
+---
+
 ## 📊 Current System Status
 
 ### Data Metrics
@@ -417,6 +452,7 @@ Market (3 exchanges)
 - **Alerts API**: alert rules + alert events
 - **Signals API**: list/filter/recent/recalculate signal events
 - **Factors API**: fundamentals, capital-flows, and bottom-candidates screener
+- **Macro API**: snapshots, current context, event-impact statistics
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
@@ -442,39 +478,8 @@ Implemented and moved to the completed phases section.
 
 ---
 
-### Phase 12: Macro & Event-Driven Context Engine
-**Objective**: 引入宏观背景变量和事件驱动分析，作为所有模型的全局调节层
-
-**宏观因子数据接入**:
-- 美元指数（DXY）
-- 人民币兑美元汇率（CNY/USD）
-- 中国10年期国债收益率
-- PMI（制造业 / 非制造业）
-- CPI / PPI 月度数据
-- 数据来源：AkShare 宏观经济接口
-
-**经济周期识别**:
-- 基于 PMI + 国债收益率斜率构建简化版「美林时钟」
-- 输出当前周期阶段：复苏 / 过热 / 滞胀 / 衰退
-- 各周期下不同板块的历史超额收益统计
-
-**事件驱动分析**:
-- 事件库：记录重大历史事件（战争、贸易摩擦、重大政策出台）
-- 事件影响统计：事件发生后 N 日各板块的平均涨跌幅
-- 当前环境标签系统（支持手动打标）：如「中美贸易摩擦期」、「降息周期」
-- 环境标签动态调整选股模型的因子权重
-
-**全局背景变量注入**:
-- 所有预测模型可接收「背景上下文」参数
-- 背景变量影响因子权重（例：衰退周期时防御性因子权重上升）
-- API 支持传入环境参数：`?macro_context=recession&event_tag=trade_war`
-
-**技术实现**:
-- 新增 `apps/macro/` 应用
-- `MacroSnapshot` 模型记录每日宏观指标快照
-- `MarketContext` 模型管理当前环境标签
-- `EventImpactStat` 模型存储事件历史影响统计
-- Celery Beat 每月同步宏观数据
+### Phase 12: Macro & Event-Driven Context Engine (Completed)
+Implemented and moved to the completed phases section.
 
 ---
 
