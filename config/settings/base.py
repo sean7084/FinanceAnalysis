@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import environ
 from pathlib import Path
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -65,10 +66,12 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'channels',
     'rest_framework_simplejwt.token_blacklist',
     'django_filters',
     'django_celery_beat',
     'apps.core',
+    'apps.users',
     'apps.markets',
     'apps.analytics',
 ]
@@ -81,6 +84,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'apps.users.middleware.APIUsageMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -101,6 +105,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
 
 
 # Database
@@ -165,6 +170,12 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_TASK_SOFT_TIME_LIMIT = 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_BEAT_SCHEDULE = {
+    'check-alert-rules-every-5-min': {
+        'task': 'apps.analytics.tasks.check_alert_rules',
+        'schedule': crontab(minute='*/5'),
+    },
+}
 
 
 # Default primary key field type
@@ -196,12 +207,16 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+        'apps.core.throttling.FreeUserRateThrottle',
+        'apps.core.throttling.ProUserRateThrottle',
+        'apps.core.throttling.PremiumUserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/day',      # Free/anonymous users
-        'user': '1000/day',     # Authenticated users (basic tier)
-        'premium': '10000/day', # Premium users
+        'anon': '100/day',      # Anonymous users
+        'free': '100/day',      # Free tier users
+        'pro': '1000/day',      # Pro tier users
+        'premium': '10000/day', # Premium tier users
+        'user': '1000/day',     # Legacy rate for backward compatibility
     },
 }
 
@@ -233,4 +248,35 @@ CACHES = {
         "LOCATION": env("REDIS_URL", default="redis://redis:6379/1"),
     }
 }
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [env('REDIS_URL', default='redis://redis:6379/1')],
+        },
+    },
+}
+
+# EMAIL
+# ------------------------------------------------------------------------------
+EMAIL_BACKEND = env(
+    'EMAIL_BACKEND',
+    default='django.core.mail.backends.console.EmailBackend'
+)
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@financeanalysis.com')
+EMAIL_HOST = env('EMAIL_HOST', default='localhost')
+EMAIL_PORT = env('EMAIL_PORT', default=587)
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+
+# FRONTEND
+# ------------------------------------------------------------------------------
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+
+# ALERTING
+# ------------------------------------------------------------------------------
+ALERTS_ENABLE_SMS = env.bool('ALERTS_ENABLE_SMS', default=False)
+SMS_WEBHOOK_URL = env('SMS_WEBHOOK_URL', default='')
 

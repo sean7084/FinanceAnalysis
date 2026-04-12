@@ -208,6 +208,44 @@ Market (3 exchanges)
 
 ---
 
+### Phase 9: Stock Screeners & Alerts ✓
+**Objective**: Automated screening and notification system
+
+**Implemented Features**:
+- Pre-built screener endpoints:
+  - Overbought/Oversold stocks
+  - Breakout candidates
+  - High volume stocks
+  - Trend reversal signals
+- Saved screener templates API
+- Alert rule management API (price + indicator conditions)
+- Alert event history API
+- Multi-channel notifications:
+  - Email
+  - SMS via webhook provider integration hook
+  - WebSocket push notifications
+- Celery periodic alert checks with configurable cooldown
+
+**Technical Implementation**:
+- `AlertRule`, `AlertEvent`, `ScreenerTemplate` models
+- Celery tasks: `check_alert_rules`, `send_alert_notifications`
+- WebSocket endpoint: `/ws/alerts/` (Channels + Redis channel layer)
+- Router endpoints:
+  - `/api/v1/screeners/`
+  - `/api/v1/screener-templates/`
+  - `/api/v1/alerts/`
+  - `/api/v1/alert-events/`
+
+**Key Files**:
+- `apps/analytics/models.py` - Phase 9 data models
+- `apps/analytics/tasks.py` - Alert evaluation and dispatch tasks
+- `apps/analytics/views.py` - Screener and alert APIs
+- `apps/analytics/consumers.py` - WebSocket alert consumer
+- `config/asgi.py` - ASGI protocol routing for HTTP + WebSocket
+- `config/settings/base.py` - Channels and periodic schedule config
+
+---
+
 ## 📊 Current System Status
 
 ### Data Metrics
@@ -238,8 +276,8 @@ Market (3 exchanges)
 
 **Planned Features**:
 - User registration and profile management
-- Subscription tier model (Free, Pro, Premium)
-- Payment integration (Stripe/Alipay)
+- Subscription tier model (Pro, Premium)
+- Payment integration (Stripe)
 - User dashboard with usage analytics
 - Admin panel for user management
 - Email verification and password reset
@@ -271,7 +309,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 9: Stock Screeners & Alerts
+### Phase 9: Stock Screeners & Alerts (Implemented)
 **Objective**: Automated screening and notification system
 
 **Screener Features**:
@@ -299,115 +337,289 @@ Market (3 exchanges)
 
 ---
 
-### Phase 10: Advanced Analytics & Backtesting
-**Objective**: Strategy development and testing framework
+### Phase 10: Advanced Technical Indicators Expansion
+**Objective**: 扩展技术指标体系，覆盖趋势、动量、波动率和量价信号
 
-**Features**:
-- **Backtesting Engine**:
-  - Custom strategy builder
-  - Historical performance simulation
-  - Risk metrics (Sharpe ratio, max drawdown)
-  - Portfolio optimization
-- **Pattern Recognition**:
-  - Candlestick patterns
-  - Chart patterns (head & shoulders, triangles)
-  - Support/resistance detection
-- **Correlation Analysis**:
-  - Stock correlation matrix
-  - Sector analysis
-  - Market sentiment indicators
+**均线系统**:
+- MA5 / MA10 / MA20 / MA60 四周期均线
+- 金叉 / 死叉信号自动检测与记录
+- 均线多头排列 / 空头排列判断
 
----
+**布林带 (Bollinger Bands)**:
+- 波动率收缩（Squeeze）/ 扩张判断
+- 价格突破上下轨信号
+- 结合 RSI 的综合超买超卖判断
 
-### Phase 11: Frontend Dashboard (React/Vue)
-**Objective**: Modern web interface for data visualization
+**量价关系模型**:
+- OBV（On-Balance Volume）计算
+- 成交量异动检测（相对 N 日均量的倍数阈值）
+- 量价背离信号
 
-**Planned Features**:
-- Interactive stock charts (TradingView-style)
-- Real-time price updates (WebSocket)
-- Technical indicator overlays
-- Screener results visualization
-- User portfolio tracking
-- Alert management interface
-- Subscription and billing pages
+**动量因子**:
+- 过去 5 / 10 / 20 日涨幅动量
+- 相对强弱（RS Score）排名
+- 动量衰减检测
 
-**Technology Stack**:
-- **React** or **Vue 3** - Frontend framework
-- **Chart.js** or **D3.js** - Data visualization
-- **WebSocket** - Real-time updates
-- **Tailwind CSS** - UI styling
-- **Vite** - Build tool
+**反转因子**:
+- 过度超跌检测（RSI 低位 + 布林带下轨 + 成交量萎缩组合）
+- 底部反弹概率统计（基于历史相似形态）
 
----
+**技术实现**:
+- 扩展 `apps/analytics/tasks.py` 中的指标计算任务
+- 新增 `SignalEvent` 模型记录信号触发时间和类型
+- API 增加 `/api/v1/signals/` 端点
+- Celery Beat 每日收盘后批量计算全部指标
 
-### Phase 12: Mobile Application
-**Objective**: iOS and Android mobile apps
-
-**Features**:
-- Stock search and favorites
-- Real-time price tracking
-- Push notifications for alerts
-- Mobile-optimized charts
-- Offline data caching
-
-**Technology Options**:
-- **React Native** - Cross-platform development
-- **Flutter** - High-performance native apps
-- **Native iOS/Android** - Maximum performance
+**Key Files**:
+- `apps/analytics/models.py` - 新增 SignalEvent 模型
+- `apps/analytics/tasks.py` - 扩展指标计算
+- `apps/analytics/indicators/` - 各指标独立模块
 
 ---
 
-### Phase 13: Production Deployment
-**Objective**: Cloud deployment with CI/CD
+### Phase 11: Multi-Factor Alpha Model
+**Objective**: 构建多因子选股模型，从沪深300中筛选底部个股候选
 
-**Infrastructure**:
-- **Cloud Provider**: AWS, Azure, or GCP
-- **Services**:
-  - Container orchestration (Kubernetes/ECS)
-  - Managed PostgreSQL (RDS/Cloud SQL)
-  - Managed Redis (ElastiCache/MemoryStore)
-  - CDN for static assets (CloudFront/CloudFlare)
-  - Load balancing
-  - Auto-scaling groups
+**财务因子**:
+- PE 分位数（当前 PE 在历史 N 年中的百分位）
+- PB 分位数
+- ROE 趋势（近 4 季度 ROE 变化方向）
+- 数据来源：AkShare 财务报表接口
+
+**资金流向因子**:
+- 北向资金（沪深港通）净流入/流出（近 5/10/20 日）
+- 主力资金净流入（大单买入 - 大单卖出）
+- A 股融资余额变化（融资买入额趋势）
+- 数据来源：AkShare 资金流向接口
+
+**综合评分模型**:
+- 各因子标准化（Z-Score 归一化）
+- 可配置权重的加权综合得分
+- 输出：沪深300中综合得分排名前 N 的个股列表
+- 支持按因子类别单独筛选（纯技术 / 纯基本面 / 综合）
+
+**底部候选筛选逻辑**:
+- 技术面：RSI < 35 + 布林带下轨附近 + 反转因子触发
+- 基本面：PE/PB 历史低分位 + ROE 未恶化
+- 资金面：北向或主力近期有净流入迹象
+- 三类条件权重可调，输出每只股票的底部概率得分
+
+**技术实现**:
+- 新增 `apps/factors/` 应用
+- `FactorScore` 模型记录每日因子得分快照
+- API 增加 `/api/v1/screener/bottom-candidates/` 端点
+- 支持参数化查询（权重、阈值、输出数量）
+
+---
+
+### Phase 12: Macro & Event-Driven Context Engine
+**Objective**: 引入宏观背景变量和事件驱动分析，作为所有模型的全局调节层
+
+**宏观因子数据接入**:
+- 美元指数（DXY）
+- 人民币兑美元汇率（CNY/USD）
+- 中国10年期国债收益率
+- PMI（制造业 / 非制造业）
+- CPI / PPI 月度数据
+- 数据来源：AkShare 宏观经济接口
+
+**经济周期识别**:
+- 基于 PMI + 国债收益率斜率构建简化版「美林时钟」
+- 输出当前周期阶段：复苏 / 过热 / 滞胀 / 衰退
+- 各周期下不同板块的历史超额收益统计
+
+**事件驱动分析**:
+- 事件库：记录重大历史事件（战争、贸易摩擦、重大政策出台）
+- 事件影响统计：事件发生后 N 日各板块的平均涨跌幅
+- 当前环境标签系统（支持手动打标）：如「中美贸易摩擦期」、「降息周期」
+- 环境标签动态调整选股模型的因子权重
+
+**全局背景变量注入**:
+- 所有预测模型可接收「背景上下文」参数
+- 背景变量影响因子权重（例：衰退周期时防御性因子权重上升）
+- API 支持传入环境参数：`?macro_context=recession&event_tag=trade_war`
+
+**技术实现**:
+- 新增 `apps/macro/` 应用
+- `MacroSnapshot` 模型记录每日宏观指标快照
+- `MarketContext` 模型管理当前环境标签
+- `EventImpactStat` 模型存储事件历史影响统计
+- Celery Beat 每月同步宏观数据
+
+---
+
+### Phase 13: NLP Sentiment & News Intelligence
+**Objective**: 中文财经新闻情绪分析，捕捉市场情绪信号
+
+**数据来源**:
+- 财经媒体：东方财富、同花顺、新浪财经（AkShare 新闻接口）
+- 上市公司公告（交易所公告接口）
+- 财报文本（季报/年报摘要）
+
+**NLP 情绪分析**:
+- 中文分词：jieba
+- 预训练模型：FinBERT-Chinese 或 ERNIE-Finance（金融领域微调版）
+- 输出：正面 / 中性 / 负面 情绪得分（0-1 区间）
+- 个股新闻情绪聚合：近7日情绪均值 + 趋势方向
+
+**概念板块热度**:
+- 龙虎榜数据接入（AkShare）
+- 涨停板统计：连板天数、涨停原因分类
+- 板块热度评分：近 N 日涨停数量 + 资金净流入
+- 热门概念自动标签（如「AI算力」、「新能源」）
+
+**情绪信号整合**:
+- 情绪得分作为因子加入多因子模型（Phase 11）
+- 极端负面情绪 + 超跌 = 潜在反转信号
+- 情绪骤变预警（单日情绪得分变化超过设定阈值）
+
+**技术实现**:
+- 新增 `apps/sentiment/` 应用
+- `NewsArticle` + `SentimentScore` 模型
+- Celery Beat 每日抓取最新新闻并计算情绪
+- API 增加 `/api/v1/sentiment/` 端点
+
+---
+
+### Phase 14: ML Prediction Engine
+**Objective**: 核心预测引擎——给出个股未来走势的方向概率
+
+**预测目标**:
+- 方向分类：3日 / 7日 / 30日后 涨 / 跌 / 横盘（三分类）
+- 输出格式：`{"up": 0.45, "flat": 0.30, "down": 0.25, "confidence": 0.72}`
+
+**模型一：XGBoost / LightGBM 分类模型**:
+- 特征：技术指标（Phase 10）+ 多因子得分（Phase 11）+ 宏观因子（Phase 12）+ 情绪分（Phase 13）
+- 标签：未来 N 日收益率分三档
+- 优点：可解释性强，训练快，支持特征重要性可视化
+- 用于：日常快速推断，特征选择验证
+
+**模型二：LSTM 时序预测模型**:
+- 输入：过去60日的 OHLCV + 技术指标序列
+- 架构：双层 LSTM + Dropout + Softmax 输出
+- 框架：PyTorch
+- 用于：捕捉价格序列中的时序依赖模式
+
+**模型集成**:
+- XGBoost + LSTM 加权集成（Ensemble）
+- 集成权重基于滚动历史预测准确率动态调整
+- 最终输出：集成概率 + 置信度区间
+
+**模型训练与更新**:
+- 训练数据：沪深300历史数据（5年+）
+- 滚动窗口训练：每月用最新数据重新训练
+- 模型版本管理：MLflow 或文件版本控制
+- Celery 任务：每周末自动触发模型更新
+
+**API 输出**:
+- `/api/v1/prediction/{stock_code}/` — 单股预测
+- `/api/v1/prediction/batch/` — 批量预测（支持全沪深300）
+- 支持传入宏观背景参数（对接 Phase 12 环境标签）
+
+**技术实现**:
+- 新增 `apps/prediction/` 应用
+- `PredictionResult` 模型存储每日预测快照
+- `ModelVersion` 模型管理训练版本
+- 依赖：`lightgbm`, `torch`, `scikit-learn`, `mlflow`
+
+---
+
+### Phase 15: Backtesting & Strategy Validation
+**Objective**: 验证预测模型的实际有效性，量化策略回测
+
+**回测引擎**:
+- 基于历史数据模拟策略执行
+- 支持：单股回测 / 投资组合回测
+- 手续费、滑点、涨跌停约束模拟（A股特有）
+- 风险指标：年化收益、最大回撤、Sharpe 比率、胜率
+
+**策略模板**:
+- 底部候选买入策略（对接 Phase 11 筛选器）
+- 预测概率阈值策略（对接 Phase 14 预测引擎）
+- 宏观周期轮动策略（对接 Phase 12 周期判断）
+
+**可视化报告**:
+- 回测净值曲线
+- 持仓明细与买卖点标注
+- 因子暴露分析
+
+**技术实现**:
+- 新增 `apps/backtest/` 应用
+- `BacktestRun` + `BacktestTrade` 模型
+- API 增加 `/api/v1/backtest/` 端点（异步任务触发）
+- 报告导出：JSON / CSV / PDF
+
+---
+
+### Phase 16: Frontend Dashboard
+**Objective**: 面向用户的可视化操作界面
+
+**核心页面**:
+- **首页仪表盘**：当前宏观环境标签、板块热度、今日预测信号汇总
+- **个股详情页**：K线图 + 技术指标 + 预测概率 + 情绪趋势
+- **底部候选筛选器**：可配置权重的多因子筛选结果列表
+- **宏观背景设置**：手动打标当前环境（周期、事件标签）
+- **回测工作台**：策略参数配置 + 回测结果展示
+- **告警中心**：价格/信号告警管理（对接 Phase 9）
+
+**技术栈**:
+- **React 18** + TypeScript
+- **TradingView Lightweight Charts** — K线图
+- **Recharts / ECharts** — 因子得分、概率可视化
+- **WebSocket** — 实时价格更新
+- **Tailwind CSS** + shadcn/ui
+- **Vite** — 构建工具
+
+---
+
+### Phase 17: Mobile Application
+**Objective**: iOS / Android 移动端应用
+
+**核心功能**:
+- 个股搜索与收藏
+- 实时价格跟踪 + 预测概率查看
+- 底部候选推送通知
+- 移动端优化图表
+- 离线数据缓存
+
+**技术选型**:
+- **React Native** — 跨平台首选（复用前端逻辑）
+- 或 **Flutter** — 更高性能需求时备选
+
+---
+
+### Phase 18: Production Deployment
+**Objective**: 云端部署 + CI/CD 全自动化
+
+**基础设施**:
+- 云服务商：AWS / 阿里云（国内用户推荐阿里云）
+- 容器编排：Kubernetes (EKS/ACK) 或 Docker Compose（小规模）
+- 托管数据库：RDS PostgreSQL
+- 托管缓存：ElastiCache / Redis 企业版
+- CDN：CloudFront / 阿里云 CDN
+- 对象存储：S3 / OSS（模型文件、报告导出）
 
 **DevOps**:
-- CI/CD pipeline (GitHub Actions/GitLab CI)
-- Automated testing (unit, integration, E2E)
-- Blue-green deployment
-- Database migration automation
-- Monitoring and logging (Prometheus, Grafana, Sentry)
-- SSL certificates and domain management
+- CI/CD：GitHub Actions
+- 蓝绿部署 / 滚动更新
+- 监控：Prometheus + Grafana
+- 错误追踪：Sentry
+- 日志：ELK Stack 或阿里云日志服务
+- SSL 证书自动续签
 
 ---
 
-### Phase 14: API Documentation & Developer Portal
-**Objective**: Comprehensive API documentation for third-party developers
+### Phase 19: API Documentation & Developer Portal
+**Objective**: 完整的 API 文档和开发者生态
 
-**Features**:
-- OpenAPI/Swagger documentation
-- Interactive API explorer
-- Code examples (Python, JavaScript, cURL)
-- API key management
-- Rate limit monitoring
-- Developer sandbox environment
-- API changelog and versioning
-
----
-
-### Phase 15: Internationalization Expansion
-**Objective**: Support additional languages and markets
-
-**Languages**:
-- Simplified Chinese (completed)
-- Traditional Chinese
-- Japanese
-- Korean
-- English (completed)
-
-**Markets**:
-- Hong Kong Stock Exchange (HKEX)
-- Taiwan Stock Exchange (TWSE)
-- Global indices (S&P 500, NASDAQ)
+**功能**:
+- OpenAPI / Swagger 自动生成文档
+- 交互式 API 测试界面
+- 代码示例（Python / JavaScript / cURL）
+- API Key 管理
+- 请求量统计与限流监控
+- 开发者沙箱环境
+- API 变更日志与版本管理
 
 ---
 

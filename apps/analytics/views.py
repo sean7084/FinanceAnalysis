@@ -1,14 +1,20 @@
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django.core.cache import cache
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q
 
-from .models import TechnicalIndicator
-from .serializers import TechnicalIndicatorSerializer, TechnicalIndicatorListSerializer
+from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent
+from .serializers import (
+    TechnicalIndicatorSerializer,
+    TechnicalIndicatorListSerializer,
+    ScreenerTemplateSerializer,
+    AlertRuleSerializer,
+    AlertEventSerializer,
+)
+from apps.markets.models import Asset, OHLCV
 
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
@@ -108,3 +114,308 @@ class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
         cache.set(cache_key, serializer.data, 60 * 5)  # 5 minutes
         
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    @method_decorator(cache_page(60 * 5))
+    def indicator_types(self, request):
+        """
+        Get list of all available indicator types with counts.
+        """
+        from django.db.models import Count
+        
+        indicator_summary = TechnicalIndicator.objects.values(
+            'indicator_type'
+        ).annotate(
+            count=Count('id')
+        ).order_by('indicator_type')
+        
+        return Response(indicator_summary)
+    
+    @action(detail=False, methods=['get'])
+    def compare(self, request):
+        """
+        Compare multiple indicators for a specific asset over time.
+        Query params: asset_id (required), indicator_types (comma-separated), date_from, date_to
+        Example: /api/v1/indicators/compare/?asset_id=1&indicator_types=RSI,MACD&date_from=2026-01-01
+        """
+        asset_id = request.query_params.get('asset_id')
+        indicator_types = request.query_params.get('indicator_types', '')
+        
+        if not asset_id:
+            return Response(
+                {'error': 'asset_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not indicator_types:
+            return Response(
+                {'error': 'indicator_types is required (comma-separated list)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            asset = Asset.objects.get(id=asset_id)
+        except Asset.DoesNotExist:
+            return Response(
+                {'error': 'Asset not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        indicator_list = [t.strip().upper() for t in indicator_types.split(',')]
+        
+        queryset = TechnicalIndicator.objects.filter(
+            asset_id=asset_id,
+            indicator_type__in=indicator_list
+        )
+        
+        # Apply date filters
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        
+        if date_from:
+            queryset = queryset.filter(timestamp__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(timestamp__lte=date_to)
+        
+        queryset = queryset.order_by('timestamp')
+        
+        # Group by indicator type
+        result = {
+            'asset': {
+                'id': asset.id,
+                'symbol': asset.symbol,
+                'name': asset.name
+            },
+            'indicators': {}
+        }
+        
+        for indicator_type in indicator_list:
+            indicators = queryset.filter(indicator_type=indicator_type)
+            serializer = TechnicalIndicatorSerializer(indicators, many=True)
+            result['indicators'][indicator_type] = serializer.data
+        
+        return Response(result)
+    
+    @action(detail=False, methods=['get'])
+    @method_decorator(cache_page(60 * 5))
+    def trending_strong(self, request):
+        """
+        Get assets with high ADX (strong trend) - ADX > 25 indicates strong trend.
+        """
+        cache_key = 'trending_strong_stocks'
+        cached_data = cache.get(cache_key)
+        
+        if cached_data:
+            return Response(cached_data)
+        
+        strong_trends = self.queryset.filter(
+            indicator_type='ADX',
+            value__gte=25
+        ).order_by('-value')[:20]
+        
+        serializer = self.get_serializer(strong_trends, many=True)
+        cache.set(cache_key, serializer.data, 60 * 5)
+        
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    @method_decorator(cache_page(60 * 5))
+    def overbought_stoch(self, request):
+        """
+        Get assets with Stochastic > 80 (overbought).
+        """
+        cache_key = 'overbought_stoch_stocks'
+        cached_data = cache.get(cache_key)
+        
+        if cached_data:
+            return Response(cached_data)
+        
+        overbought = self.queryset.filter(
+            indicator_type='STOCH',
+            value__gte=80
+        ).order_by('-value')[:20]
+        
+        serializer = self.get_serializer(overbought, many=True)
+        cache.set(cache_key, serializer.data, 60 * 5)
+        
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    @method_decorator(cache_page(60 * 5))
+    def oversold_stoch(self, request):
+        """
+        Get assets with Stochastic < 20 (oversold).
+        """
+        cache_key = 'oversold_stoch_stocks'
+        cached_data = cache.get(cache_key)
+        
+        if cached_data:
+            return Response(cached_data)
+        
+        oversold = self.queryset.filter(
+            indicator_type='STOCH',
+            value__lte=20
+        ).order_by('value')[:20]
+        
+        serializer = self.get_serializer(oversold, many=True)
+        cache.set(cache_key, serializer.data, 60 * 5)
+        
+        return Response(serializer.data)
+
+
+class ScreenerTemplateViewSet(viewsets.ModelViewSet):
+    """
+    Saved screener templates for users.
+    """
+    serializer_class = ScreenerTemplateSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    def get_queryset(self):
+        if self.request.user.is_authenticated:
+            if self.action in ['list', 'retrieve']:
+                return (ScreenerTemplate.objects.filter(owner=self.request.user) | ScreenerTemplate.objects.filter(is_public=True)).distinct()
+            return ScreenerTemplate.objects.filter(owner=self.request.user)
+        return ScreenerTemplate.objects.filter(is_public=True)
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+
+
+class ScreenerViewSet(viewsets.ViewSet):
+    """
+    Real-time stock screener endpoints.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    PREBUILT_SCREENERS = {
+        'overbought_oversold',
+        'breakout_candidates',
+        'high_volume',
+        'trend_reversal',
+    }
+
+    @action(detail=False, methods=['get'])
+    def prebuilt(self, request):
+        return Response({'screeners': sorted(self.PREBUILT_SCREENERS)})
+
+    @action(detail=False, methods=['get'])
+    def run(self, request):
+        screener_type = request.query_params.get('type', '').strip()
+        limit = int(request.query_params.get('limit', 20))
+
+        if screener_type not in self.PREBUILT_SCREENERS:
+            return Response(
+                {'error': 'Unsupported screener type.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if screener_type == 'overbought_oversold':
+            high = request.query_params.get('high', 70)
+            low = request.query_params.get('low', 30)
+            high_qs = TechnicalIndicator.objects.filter(indicator_type='RSI', value__gte=high).order_by('-value')[:limit]
+            low_qs = TechnicalIndicator.objects.filter(indicator_type='RSI', value__lte=low).order_by('value')[:limit]
+            return Response(
+                {
+                    'type': screener_type,
+                    'high_threshold': high,
+                    'low_threshold': low,
+                    'overbought': TechnicalIndicatorSerializer(high_qs, many=True).data,
+                    'oversold': TechnicalIndicatorSerializer(low_qs, many=True).data,
+                }
+            )
+
+        if screener_type == 'high_volume':
+            lookback_days = int(request.query_params.get('lookback_days', 20))
+            volume_ratio = float(request.query_params.get('volume_ratio', 1.5))
+            assets = Asset.objects.all()[:500]
+            matches = []
+            for asset in assets:
+                latest = OHLCV.objects.filter(asset=asset).order_by('-date').first()
+                avg_vol = OHLCV.objects.filter(asset=asset).order_by('-date').values_list('volume', flat=True)[:lookback_days]
+                avg_vol_value = sum(avg_vol) / len(avg_vol) if avg_vol else 0
+                if latest and avg_vol_value and latest.volume >= avg_vol_value * volume_ratio:
+                    matches.append(
+                        {
+                            'asset_id': asset.id,
+                            'symbol': asset.symbol,
+                            'name': asset.name,
+                            'latest_volume': latest.volume,
+                            'avg_volume': round(avg_vol_value, 2),
+                        }
+                    )
+            matches.sort(key=lambda x: x['latest_volume'], reverse=True)
+            return Response({'type': screener_type, 'results': matches[:limit]})
+
+        if screener_type == 'breakout_candidates':
+            lookback_days = int(request.query_params.get('lookback_days', 20))
+            assets = Asset.objects.all()[:500]
+            matches = []
+            for asset in assets:
+                candles = list(OHLCV.objects.filter(asset=asset).order_by('-date')[:lookback_days])
+                if len(candles) < lookback_days:
+                    continue
+                latest = candles[0]
+                period_high = max(float(c.high) for c in candles)
+                if float(latest.close) >= period_high * 0.98:
+                    matches.append(
+                        {
+                            'asset_id': asset.id,
+                            'symbol': asset.symbol,
+                            'name': asset.name,
+                            'close': float(latest.close),
+                            'period_high': period_high,
+                        }
+                    )
+            matches.sort(key=lambda x: x['close'], reverse=True)
+            return Response({'type': screener_type, 'results': matches[:limit]})
+
+        # trend_reversal
+        rsi_threshold = request.query_params.get('rsi_threshold', 35)
+        rsi_qs = TechnicalIndicator.objects.filter(indicator_type='RSI', value__lte=rsi_threshold).select_related('asset')
+        symbols = {r.asset.symbol for r in rsi_qs}
+        macd_qs = TechnicalIndicator.objects.filter(indicator_type='MACD', asset__symbol__in=symbols, value__gt=0).select_related('asset')
+        results = [
+            {
+                'asset_id': item.asset.id,
+                'symbol': item.asset.symbol,
+                'name': item.asset.name,
+                'macd': float(item.value),
+            }
+            for item in macd_qs[:limit]
+        ]
+        return Response({'type': screener_type, 'results': results})
+
+
+class AlertRuleViewSet(viewsets.ModelViewSet):
+    """
+    CRUD API for alert rules.
+    """
+    serializer_class = AlertRuleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AlertRule.objects.filter(owner=self.request.user).select_related('asset', 'owner')
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        queryset = self.get_queryset().filter(is_active=True)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+class AlertEventViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Alert history endpoint.
+    """
+    serializer_class = AlertEventSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['status', 'asset', 'alert_rule']
+    ordering_fields = ['created_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        return AlertEvent.objects.filter(alert_rule__owner=self.request.user).select_related('alert_rule', 'asset')
