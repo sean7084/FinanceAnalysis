@@ -434,6 +434,45 @@ Market (3 exchanges)
 
 ---
 
+### Phase 13: NLP Sentiment & News Intelligence ✓
+**Objective**: Add sentiment intelligence from news and concept heat signals, and feed sentiment into multi-factor ranking
+
+**Implemented Features**:
+- New `sentiment` app with core models:
+  - `NewsArticle` for finance news ingestion
+  - `SentimentScore` for article-level and aggregated sentiment
+  - `ConceptHeat` for concept/theme popularity tracking
+- Sentiment API endpoints:
+  - `GET /api/v1/sentiment/`
+  - `GET /api/v1/sentiment/latest/`
+  - `POST /api/v1/sentiment/recalculate/`
+  - `GET /api/v1/sentiment/news/`
+  - `POST /api/v1/sentiment/news/ingest/`
+  - `GET /api/v1/sentiment/concepts/`
+  - `GET /api/v1/sentiment/concepts/top/`
+- Daily sentiment pipeline tasks:
+  - News ingest task (`ingest_latest_news`)
+  - Daily article/asset/market sentiment scoring (`calculate_daily_sentiment`)
+  - Concept heat computation (`calculate_concept_heat`)
+  - Unified daily dispatcher (`run_daily_sentiment_pipeline`)
+- Sentiment factor integration into Phase 11:
+  - `FactorScore` now stores `sentiment_score` and `sentiment_weight`
+  - Factor scoring task supports `sentiment_weight`
+  - Asset 7-day sentiment aggregate participates in composite score
+- Daily Celery Beat schedule for sentiment pipeline
+
+**Key Files**:
+- `apps/sentiment/models.py` — NewsArticle, SentimentScore, ConceptHeat
+- `apps/sentiment/tasks.py` — sentiment scoring and concept heat tasks
+- `apps/sentiment/views.py` — sentiment/news/concept API viewsets
+- `apps/sentiment/serializers.py` — sentiment serializers
+- `apps/sentiment/tests.py` — Phase 13 test coverage
+- `apps/sentiment/migrations/0001_initial.py` — initial migration
+- `apps/factors/tasks.py` — sentiment factor integration in composite scoring
+- `apps/factors/models.py` — sentiment fields on FactorScore
+
+---
+
 ## 📊 Current System Status
 
 ### Data Metrics
@@ -442,6 +481,7 @@ Market (3 exchanges)
 - **OHLCV Records**: ~100,000+ daily price points
 - **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
 - **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
+- **Sentiment Analytics**: article-level and 7-day aggregated sentiment + concept heat
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
@@ -453,6 +493,7 @@ Market (3 exchanges)
 - **Signals API**: list/filter/recent/recalculate signal events
 - **Factors API**: fundamentals, capital-flows, and bottom-candidates screener
 - **Macro API**: snapshots, current context, event-impact statistics
+- **Sentiment API**: news ingestion, sentiment scores, latest sentiment, concept heat ranking
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
@@ -483,36 +524,8 @@ Implemented and moved to the completed phases section.
 
 ---
 
-### Phase 13: NLP Sentiment & News Intelligence
-**Objective**: 中文财经新闻情绪分析，捕捉市场情绪信号
-
-**数据来源**:
-- 财经媒体：东方财富、同花顺、新浪财经（AkShare 新闻接口）
-- 上市公司公告（交易所公告接口）
-- 财报文本（季报/年报摘要）
-
-**NLP 情绪分析**:
-- 中文分词：jieba
-- 预训练模型：FinBERT-Chinese 或 ERNIE-Finance（金融领域微调版）
-- 输出：正面 / 中性 / 负面 情绪得分（0-1 区间）
-- 个股新闻情绪聚合：近7日情绪均值 + 趋势方向
-
-**概念板块热度**:
-- 龙虎榜数据接入（AkShare）
-- 涨停板统计：连板天数、涨停原因分类
-- 板块热度评分：近 N 日涨停数量 + 资金净流入
-- 热门概念自动标签（如「AI算力」、「新能源」）
-
-**情绪信号整合**:
-- 情绪得分作为因子加入多因子模型（Phase 11）
-- 极端负面情绪 + 超跌 = 潜在反转信号
-- 情绪骤变预警（单日情绪得分变化超过设定阈值）
-
-**技术实现**:
-- 新增 `apps/sentiment/` 应用
-- `NewsArticle` + `SentimentScore` 模型
-- Celery Beat 每日抓取最新新闻并计算情绪
-- API 增加 `/api/v1/sentiment/` 端点
+### Phase 13: NLP Sentiment & News Intelligence (Completed)
+Implemented and moved to the completed phases section.
 
 ---
 

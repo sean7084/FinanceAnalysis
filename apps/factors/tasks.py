@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.markets.models import Asset, OHLCV
+from apps.sentiment.models import SentimentScore
 from .models import FundamentalFactorSnapshot, CapitalFlowSnapshot, FactorScore
 
 
@@ -51,12 +52,28 @@ def _technical_reversal_score(asset_id):
     return min(score, Decimal('1'))
 
 
+def _sentiment_factor_score(asset_id, as_of):
+    latest = SentimentScore.objects.filter(
+        asset_id=asset_id,
+        date__lte=as_of,
+        score_type=SentimentScore.ScoreType.ASSET_7D,
+    ).order_by('-date').first()
+    if latest is None:
+        return Decimal('0.5')
+
+    raw = Decimal(str(latest.sentiment_score))
+    # Map [-1, 1] -> [0, 1]
+    mapped = (raw + Decimal('1')) / Decimal('2')
+    return max(Decimal('0'), min(Decimal('1'), mapped))
+
+
 @shared_task
 def calculate_factor_scores_for_date(
     target_date=None,
     financial_weight=0.4,
     flow_weight=0.3,
     technical_weight=0.3,
+    sentiment_weight=0.0,
 ):
     """
     Calculate daily multi-factor scores and bottom candidate probabilities.
@@ -73,13 +90,15 @@ def calculate_factor_scores_for_date(
     fw = Decimal(str(financial_weight))
     cw = Decimal(str(flow_weight))
     tw = Decimal(str(technical_weight))
-    total = fw + cw + tw
+    sw = Decimal(str(sentiment_weight))
+    total = fw + cw + tw + sw
     if total <= 0:
-        fw, cw, tw = Decimal('0.4'), Decimal('0.3'), Decimal('0.3')
-        total = fw + cw + tw
+        fw, cw, tw, sw = Decimal('0.4'), Decimal('0.3'), Decimal('0.3'), Decimal('0.0')
+        total = fw + cw + tw + sw
     fw /= total
     cw /= total
     tw /= total
+    sw /= total
 
     assets = list(Asset.objects.all())
 
@@ -138,13 +157,15 @@ def calculate_factor_scores_for_date(
         )
 
         technical_score = _technical_reversal_score(asset.id)
+        sentiment_score = _sentiment_factor_score(asset.id, as_of)
         fundamental_score = _avg_decimal([pe_score, pb_score, roe_trend])
         capital_flow_score = _avg_decimal([nb_score, mf_score, mb_score])
 
         composite = (
             fundamental_score * fw +
             capital_flow_score * cw +
-            technical_score * tw
+            technical_score * tw +
+            sentiment_score * sw
         )
         bottom_probability = max(Decimal('0'), min(Decimal('1'), composite))
 
@@ -160,17 +181,19 @@ def calculate_factor_scores_for_date(
                 'main_force_flow_score': mf_score,
                 'margin_flow_score': mb_score,
                 'technical_reversal_score': technical_score,
+                'sentiment_score': sentiment_score,
                 'fundamental_score': fundamental_score,
                 'capital_flow_score': capital_flow_score,
                 'technical_score': technical_score,
                 'financial_weight': fw,
                 'flow_weight': cw,
                 'technical_weight': tw,
+                'sentiment_weight': sw,
                 'composite_score': composite,
                 'bottom_probability_score': bottom_probability,
                 'metadata': {
                     'target_date': str(as_of),
-                    'source': 'phase11_scoring',
+                    'source': 'phase11_scoring_with_sentiment',
                 },
             },
         )

@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'apps.analytics',
     'apps.factors',
     'apps.macro',
+    'apps.sentiment',
 ]
 
 MIDDLEWARE = [
@@ -184,6 +185,10 @@ CELERY_BEAT_SCHEDULE = {
     'sync-macro-data-monthly': {
         'task': 'apps.macro.tasks.sync_macro_data_monthly',
         'schedule': crontab(day_of_month='1', hour='2', minute='0'),
+    },
+    'run-daily-sentiment-pipeline': {
+        'task': 'apps.sentiment.tasks.run_daily_sentiment_pipeline',
+        'schedule': crontab(hour='17', minute='0'),
     },
 }
 

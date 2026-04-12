@@ -41,6 +41,11 @@ from apps.macro.views import (
     MarketContextViewSet,
     EventImpactStatViewSet,
 )
+from apps.sentiment.views import (
+    NewsArticleViewSet,
+    SentimentScoreViewSet,
+    ConceptHeatViewSet,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -62,6 +67,9 @@ router.register(r'screener/bottom-candidates', BottomCandidateViewSet, basename=
 router.register(r'macro/snapshots', MacroSnapshotViewSet, basename='macro-snapshot')
 router.register(r'macro/contexts', MarketContextViewSet, basename='macro-context')
 router.register(r'macro/event-impacts', EventImpactStatViewSet, basename='event-impact')
+router.register(r'sentiment/news', NewsArticleViewSet, basename='sentiment-news')
+router.register(r'sentiment', SentimentScoreViewSet, basename='sentiment-score')
+router.register(r'sentiment/concepts', ConceptHeatViewSet, basename='sentiment-concept')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

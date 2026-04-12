@@ -80,6 +80,7 @@ class FactorScore(models.Model):
     main_force_flow_score = models.DecimalField(_('Main Force Flow Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     margin_flow_score = models.DecimalField(_('Margin Flow Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     technical_reversal_score = models.DecimalField(_('Technical Reversal Score'), max_digits=7, decimal_places=6, null=True, blank=True)
+    sentiment_score = models.DecimalField(_('Sentiment Score'), max_digits=7, decimal_places=6, null=True, blank=True)
 
     # Aggregates
     fundamental_score = models.DecimalField(_('Fundamental Score'), max_digits=7, decimal_places=6, default=0)
@@ -89,6 +90,7 @@ class FactorScore(models.Model):
     financial_weight = models.DecimalField(_('Financial Weight'), max_digits=6, decimal_places=4, default=0.4)
     flow_weight = models.DecimalField(_('Flow Weight'), max_digits=6, decimal_places=4, default=0.3)
     technical_weight = models.DecimalField(_('Technical Weight'), max_digits=6, decimal_places=4, default=0.3)
+    sentiment_weight = models.DecimalField(_('Sentiment Weight'), max_digits=6, decimal_places=4, default=0.0)
 
     composite_score = models.DecimalField(_('Composite Score'), max_digits=7, decimal_places=6, default=0)
     bottom_probability_score = models.DecimalField(_('Bottom Probability Score'), max_digits=7, decimal_places=6, default=0)
