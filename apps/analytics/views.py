@@ -6,13 +6,16 @@ from django.views.decorators.cache import cache_page
 from django.core.cache import cache
 from django_filters.rest_framework import DjangoFilterBackend
 
-from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent
+from django.utils import timezone
+from datetime import timedelta
+from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent, SignalEvent
 from .serializers import (
     TechnicalIndicatorSerializer,
     TechnicalIndicatorListSerializer,
     ScreenerTemplateSerializer,
     AlertRuleSerializer,
     AlertEventSerializer,
+    SignalEventSerializer,
 )
 from apps.markets.models import Asset, OHLCV
 from .tasks import (
@@ -25,6 +28,7 @@ from .tasks import (
     calculate_adx_for_asset,
     calculate_obv_for_asset,
     calculate_fibonacci_retracement_for_asset,
+    calculate_signals_for_all_assets,
 )
 
 
@@ -497,3 +501,43 @@ class AlertEventViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return AlertEvent.objects.filter(alert_rule__owner=self.request.user).select_related('alert_rule', 'asset')
+
+
+class SignalEventViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only endpoint for Phase 10 technical signal events.
+    GET /api/v1/signals/                    – paginated list (filter by asset, signal_type)
+    GET /api/v1/signals/recent/?days=7      – signals from the last N days
+    POST /api/v1/signals/recalculate/       – queue signal recalculation for all assets
+    """
+    serializer_class = SignalEventSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['asset', 'signal_type']
+    search_fields = ['description', 'asset__symbol', 'asset__name']
+    ordering_fields = ['timestamp', 'signal_type']
+    ordering = ['-timestamp']
+
+    def get_queryset(self):
+        return SignalEvent.objects.select_related('asset').all()
+
+    @action(detail=False, methods=['get'])
+    def recent(self, request):
+        """Return signals from the last N days (default 7)."""
+        try:
+            days = max(1, int(request.query_params.get('days', 7)))
+        except (TypeError, ValueError):
+            days = 7
+        since = timezone.now() - timedelta(days=days)
+        qs = self.get_queryset().filter(timestamp__gte=since)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = SignalEventSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        return Response(SignalEventSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['post'])
+    def recalculate(self, request):
+        """Queue full signal recalculation for all assets."""
+        calculate_signals_for_all_assets.delay()
+        return Response({'message': 'Signal recalculation queued.'}, status=status.HTTP_202_ACCEPTED)

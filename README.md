@@ -307,13 +307,62 @@ Market (3 exchanges)
 
 ---
 
+### Phase 10: Advanced Technical Indicators Expansion ✓
+**Objective**: Extend the analytics engine with signal detection across moving averages, Bollinger Bands, volume-price relationships, and momentum factors
+
+**Implemented Signals** (`SignalEvent` model):
+
+| Category | Signal Type | Trigger Condition |
+|---|---|---|
+| Moving Averages | `GOLDEN_CROSS` | MA5 crosses above MA20 |
+| Moving Averages | `DEATH_CROSS` | MA5 crosses below MA20 |
+| Moving Averages | `MA_BULL_ALIGN` | MA5 > MA10 > MA20 > MA60 |
+| Moving Averages | `MA_BEAR_ALIGN` | MA5 < MA10 < MA20 < MA60 |
+| Bollinger Bands | `BB_SQUEEZE` | Bandwidth < 5% (volatility compression) |
+| Bollinger Bands | `BB_BREAKOUT_UP` | Close above upper band |
+| Bollinger Bands | `BB_BREAKOUT_DOWN` | Close below lower band |
+| Bollinger Bands | `BB_RSI_OVERBOUGHT` | Close ≥ upper band×0.98 AND RSI > 70 |
+| Bollinger Bands | `BB_RSI_OVERSOLD` | Close ≤ lower band×1.02 AND RSI < 30 |
+| Volume | `VOLUME_SPIKE` | Volume > 2× 20-day average |
+| Volume | `VOLUME_PRICE_DIVERGENCE` | ≥3% price move with opposing OBV trend |
+| Momentum | `MOMENTUM_UP_5D` | 5-day return > +5% |
+| Momentum | `MOMENTUM_DOWN_5D` | 5-day return < -5% |
+| Momentum | `HIGH_RS_SCORE` | Top 20% by 20-day return (cross-asset) |
+| Reversal | `OVERSOLD_COMBINATION` | RSI < 30 + near lower BB + volume contraction |
+
+**New Indicator Values** (stored as `TechnicalIndicator`):
+- `MOM_5D`, `MOM_10D`, `MOM_20D` — period return as a decimal fraction
+- `RS_SCORE` — normalized relative strength rank (0–1) vs. all assets
+
+**API Endpoints**:
+- `GET /api/v1/signals/` — paginated list, filterable by `asset` and `signal_type`
+- `GET /api/v1/signals/recent/?days=7` — signals from the last N days
+- `POST /api/v1/signals/recalculate/` — queue full signal recalculation (HTTP 202)
+
+**Technical Implementation**:
+- `SignalEvent` model with 15 `SignalType` choices, `unique_together` on `(asset, timestamp, signal_type)`
+- 6 new Celery tasks: `calculate_ma_signals_for_asset`, `calculate_bollinger_signals_for_asset`, `calculate_volume_signals_for_asset`, `calculate_momentum_signals_for_asset`, `calculate_reversal_signals_for_asset`, `calculate_rs_scores_for_all_assets`
+- Batch dispatcher: `calculate_signals_for_all_assets`
+- Celery Beat: daily at 16:00 UTC (after A-share market close at 15:00 CST)
+
+**Key Files**:
+- `apps/analytics/models.py` — `SignalEvent` model
+- `apps/analytics/tasks.py` — all Phase 10 signal tasks
+- `apps/analytics/views.py` — `SignalEventViewSet` with `recent` and `recalculate` actions
+- `apps/analytics/serializers.py` — `SignalEventSerializer`
+- `apps/analytics/migrations/0004_phase10_signal_events.py` — migration
+- `config/settings/base.py` — `calculate-signals-daily` Celery Beat schedule
+
+---
+
 ## 📊 Current System Status
 
 ### Data Metrics
 - **Markets**: 3 (SSE, SZSE, BSE)
 - **Assets**: 334 CSI 300 stocks
 - **OHLCV Records**: ~100,000+ daily price points
-- **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET
+- **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
+- **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
@@ -322,6 +371,7 @@ Market (3 exchanges)
 - **Indicators API**: list/detail + compare/recalculate/fibonacci + ranking endpoints
 - **Screeners API**: 4 pre-built screeners + screener templates
 - **Alerts API**: alert rules + alert events
+- **Signals API**: list/filter/recent/recalculate signal events
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
@@ -337,43 +387,8 @@ Market (3 exchanges)
 
 
 
-### Phase 10: Advanced Technical Indicators Expansion
-**Objective**: 扩展技术指标体系，覆盖趋势、动量、波动率和量价信号
-
-**均线系统**:
-- MA5 / MA10 / MA20 / MA60 四周期均线
-- 金叉 / 死叉信号自动检测与记录
-- 均线多头排列 / 空头排列判断
-
-**布林带 (Bollinger Bands)**:
-- 波动率收缩（Squeeze）/ 扩张判断
-- 价格突破上下轨信号
-- 结合 RSI 的综合超买超卖判断
-
-**量价关系模型**:
-- OBV（On-Balance Volume）计算
-- 成交量异动检测（相对 N 日均量的倍数阈值）
-- 量价背离信号
-
-**动量因子**:
-- 过去 5 / 10 / 20 日涨幅动量
-- 相对强弱（RS Score）排名
-- 动量衰减检测
-
-**反转因子**:
-- 过度超跌检测（RSI 低位 + 布林带下轨 + 成交量萎缩组合）
-- 底部反弹概率统计（基于历史相似形态）
-
-**技术实现**:
-- 扩展 `apps/analytics/tasks.py` 中的指标计算任务
-- 新增 `SignalEvent` 模型记录信号触发时间和类型
-- API 增加 `/api/v1/signals/` 端点
-- Celery Beat 每日收盘后批量计算全部指标
-
-**Key Files**:
-- `apps/analytics/models.py` - 新增 SignalEvent 模型
-- `apps/analytics/tasks.py` - 扩展指标计算
-- `apps/analytics/indicators/` - 各指标独立模块
+### Phase 10: Advanced Technical Indicators Expansion (Completed)
+Implemented and moved to the completed phases section.
 
 ---
 

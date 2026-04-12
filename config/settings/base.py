@@ -175,6 +175,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.analytics.tasks.check_alert_rules',
         'schedule': crontab(minute='*/5'),
     },
+    'calculate-signals-daily': {
+        'task': 'apps.analytics.tasks.calculate_signals_for_all_assets',
+        'schedule': crontab(hour='16', minute='0'),  # Daily at 16:00 UTC (after A-share close at 15:00 CST)
+    },
 }
 
 

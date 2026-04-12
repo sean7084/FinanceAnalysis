@@ -20,6 +20,7 @@ from apps.analytics.views import (
     ScreenerViewSet,
     AlertRuleViewSet,
     AlertEventViewSet,
+    SignalEventViewSet,
 )
 from apps.users.views import (
     UserRegistrationView,
@@ -41,6 +42,7 @@ router.register(r'screener-templates', ScreenerTemplateViewSet, basename='screen
 router.register(r'screeners', ScreenerViewSet, basename='screener')
 router.register(r'alerts', AlertRuleViewSet, basename='alert-rule')
 router.register(r'alert-events', AlertEventViewSet, basename='alert-event')
+router.register(r'signals', SignalEventViewSet, basename='signal-event')
 router.register(r'users/profile', UserProfileViewSet, basename='userprofile')
 router.register(r'users/subscriptions', SubscriptionViewSet, basename='subscription')
 router.register(r'users/usage', APIUsageViewSet, basename='apiusage')

@@ -8,9 +8,17 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+import datetime
 from apps.markets.models import Market, Asset, OHLCV
-from .models import AlertRule, AlertEvent, TechnicalIndicator
-from .tasks import check_alert_rules, calculate_fibonacci_retracement_for_asset
+from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
+from .tasks import (
+    check_alert_rules,
+    calculate_fibonacci_retracement_for_asset,
+    calculate_ma_signals_for_asset,
+    calculate_bollinger_signals_for_asset,
+    calculate_volume_signals_for_asset,
+    calculate_momentum_signals_for_asset,
+)
 
 
 class Phase9AlertTaskTests(TestCase):
@@ -220,3 +228,186 @@ class Phase8IndicatorTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_delay.assert_called_once_with(asset_id=self.asset.id, lookback_days=30)
+
+
+def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
+    """Helper: create OHLCV rows from a list of (close) prices, most-recent last."""
+    if base_date is None:
+        base_date = timezone.now().date()
+    n = len(prices)
+    for i, close in enumerate(prices):
+        day = base_date - datetime.timedelta(days=(n - 1 - i))
+        OHLCV.objects.get_or_create(
+            asset=asset,
+            date=day,
+            defaults=dict(
+                open=Decimal(str(close)),
+                high=Decimal(str(close * 1.01)),
+                low=Decimal(str(close * 0.99)),
+                close=Decimal(str(close)),
+                adj_close=Decimal(str(close)),
+                volume=volume,
+                amount=Decimal(str(close * volume)),
+            ),
+        )
+
+
+class Phase10SignalTests(TestCase):
+    """Tests for Phase 10 technical signal detection tasks and the signals API."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='p10_user', email='p10@example.com', password='Passw0rd!123',
+        )
+        self.market = Market.objects.create(code='P10MKT', name='Phase10 Market')
+        self.asset = Asset.objects.create(
+            market=self.market, symbol='P10001', ts_code='P10001.SH', name='Phase10 Asset',
+        )
+
+    def _auth(self):
+        self.client.force_authenticate(user=self.user)
+
+    # ------------------------------------------------------------------
+    # MA signals
+    # ------------------------------------------------------------------
+    def test_golden_cross_creates_signal(self):
+        """65 days of flat price then a spike on the last day triggers a golden cross."""
+        prices = [10.0] * 64 + [15.0]
+        _make_ohlcv_sequence(self.asset, prices)
+        calculate_ma_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='GOLDEN_CROSS').exists()
+        )
+
+    def test_death_cross_creates_signal(self):
+        """65 days of high price then a sharp drop on the last day triggers a death cross."""
+        prices = [15.0] * 64 + [10.0]
+        _make_ohlcv_sequence(self.asset, prices)
+        calculate_ma_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='DEATH_CROSS').exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Bollinger Band signals
+    # ------------------------------------------------------------------
+    def test_bb_squeeze_creates_signal(self):
+        """Very narrow price range → bandwidth < 5% → BB_SQUEEZE."""
+        # 40 days of price ≈ 10.0 with tiny variation (std dev ≈ 0)
+        prices = [10.0 + (i % 2) * 0.001 for i in range(40)]
+        _make_ohlcv_sequence(self.asset, prices)
+        calculate_bollinger_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='BB_SQUEEZE').exists()
+        )
+
+    def test_bb_breakout_up_creates_signal(self):
+        """Close above upper Bollinger Band → BB_BREAKOUT_UP."""
+        # 35 days near 10, then a spike to 20 (far above upper band)
+        prices = [10.0] * 34 + [20.0]
+        _make_ohlcv_sequence(self.asset, prices)
+        calculate_bollinger_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='BB_BREAKOUT_UP').exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Volume signals
+    # ------------------------------------------------------------------
+    def test_volume_spike_creates_signal(self):
+        """Last-day volume 3x the 20-day average → VOLUME_SPIKE."""
+        prices = [10.0] * 25
+        _make_ohlcv_sequence(self.asset, prices, volume=1000)
+        # Override the last row's volume to create a spike
+        latest = OHLCV.objects.filter(asset=self.asset).order_by('-date').first()
+        latest.volume = 3000
+        latest.save()
+        calculate_volume_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='VOLUME_SPIKE').exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Momentum signals
+    # ------------------------------------------------------------------
+    def test_momentum_up_5d_creates_signal(self):
+        """Price rises > 5% in 5 days → MOMENTUM_UP_5D."""
+        # 21 days at 10, then 5 days at 11 (10% rise)
+        prices = [10.0] * 21 + [11.0] * 5
+        _make_ohlcv_sequence(self.asset, prices)
+        calculate_momentum_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='MOMENTUM_UP_5D').exists()
+        )
+        # MOM_5D TechnicalIndicator should also be stored
+        self.assertTrue(
+            TechnicalIndicator.objects.filter(asset=self.asset, indicator_type='MOM_5D').exists()
+        )
+
+    def test_momentum_down_5d_creates_signal(self):
+        """Price falls > 5% in 5 days → MOMENTUM_DOWN_5D."""
+        prices = [11.0] * 21 + [10.0] * 5
+        _make_ohlcv_sequence(self.asset, prices)
+        calculate_momentum_signals_for_asset(self.asset.id)
+        self.assertTrue(
+            SignalEvent.objects.filter(asset=self.asset, signal_type='MOMENTUM_DOWN_5D').exists()
+        )
+
+    # ------------------------------------------------------------------
+    # API endpoint tests
+    # ------------------------------------------------------------------
+    def test_signals_list_requires_authentication(self):
+        response = self.client.get('/api/v1/signals/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_signals_list_returns_results(self):
+        self._auth()
+        ts = timezone.now()
+        SignalEvent.objects.create(
+            asset=self.asset,
+            signal_type='GOLDEN_CROSS',
+            timestamp=ts,
+            description='Test signal',
+        )
+        response = self.client.get('/api/v1/signals/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(response.data['count'], 1)
+
+    def test_signals_recent_endpoint(self):
+        self._auth()
+        ts = timezone.now() - timedelta(days=2)
+        old_ts = timezone.now() - timedelta(days=30)
+        SignalEvent.objects.create(
+            asset=self.asset, signal_type='GOLDEN_CROSS', timestamp=ts, description='Recent',
+        )
+        SignalEvent.objects.create(
+            asset=self.asset, signal_type='DEATH_CROSS', timestamp=old_ts, description='Old',
+        )
+        response = self.client.get('/api/v1/signals/recent/?days=7')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        symbols = [r['signal_type'] for r in response.data['results']]
+        self.assertIn('GOLDEN_CROSS', symbols)
+        self.assertNotIn('DEATH_CROSS', symbols)
+
+    def test_signals_filter_by_signal_type(self):
+        self._auth()
+        ts = timezone.now()
+        SignalEvent.objects.create(
+            asset=self.asset, signal_type='GOLDEN_CROSS', timestamp=ts,
+        )
+        SignalEvent.objects.create(
+            asset=self.asset, signal_type='BB_SQUEEZE',
+            timestamp=ts - timedelta(minutes=1),
+        )
+        response = self.client.get('/api/v1/signals/?signal_type=GOLDEN_CROSS')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for item in response.data['results']:
+            self.assertEqual(item['signal_type'], 'GOLDEN_CROSS')
+
+    @patch('apps.analytics.views.calculate_signals_for_all_assets.delay')
+    def test_signals_recalculate_endpoint(self, mock_delay):
+        self._auth()
+        response = self.client.post('/api/v1/signals/recalculate/')
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        mock_delay.assert_called_once()

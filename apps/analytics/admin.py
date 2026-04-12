@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent
+from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent, SignalEvent
 
 @admin.register(TechnicalIndicator)
 class TechnicalIndicatorAdmin(admin.ModelAdmin):
@@ -29,3 +29,12 @@ class AlertEventAdmin(admin.ModelAdmin):
     list_filter = ('status',)
     search_fields = ('alert_rule__name', 'asset__symbol')
     date_hierarchy = 'created_at'
+
+
+@admin.register(SignalEvent)
+class SignalEventAdmin(admin.ModelAdmin):
+    list_display = ('asset', 'signal_type', 'timestamp', 'created_at')
+    list_filter = ('signal_type',)
+    search_fields = ('asset__symbol', 'description')
+    date_hierarchy = 'timestamp'
+    readonly_fields = ('created_at',)

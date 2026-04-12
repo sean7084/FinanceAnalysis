@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent
+from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent, SignalEvent
 
 
 class TechnicalIndicatorSerializer(serializers.ModelSerializer):
@@ -79,4 +79,18 @@ class AlertEventSerializer(serializers.ModelSerializer):
             'id', 'alert_rule', 'alert_name', 'asset', 'asset_symbol', 'status',
             'trigger_value', 'message', 'metadata', 'dispatched_channels', 'notified_at',
             'created_at',
+        ]
+
+
+class SignalEventSerializer(serializers.ModelSerializer):
+    asset_symbol = serializers.CharField(source='asset.symbol', read_only=True)
+    asset_name = serializers.CharField(source='asset.name', read_only=True)
+    signal_type_display = serializers.CharField(source='get_signal_type_display', read_only=True)
+
+    class Meta:
+        model = SignalEvent
+        fields = [
+            'id', 'asset', 'asset_symbol', 'asset_name',
+            'signal_type', 'signal_type_display',
+            'timestamp', 'description', 'metadata', 'created_at',
         ]

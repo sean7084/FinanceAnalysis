@@ -15,7 +15,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from apps.markets.models import Asset, OHLCV
-from .models import TechnicalIndicator, AlertRule, AlertEvent
+from .models import TechnicalIndicator, AlertRule, AlertEvent, SignalEvent
 
 def get_ohlcv_df(asset_id, days_history=200):
     """
@@ -503,6 +503,381 @@ def calculate_indicators_for_all_assets():
         calculate_fibonacci_retracement_for_asset.delay(asset_id=asset_id)
     
     return f"Successfully queued calculations for {len(asset_ids)} assets."
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: Signal Event helpers and tasks
+# ---------------------------------------------------------------------------
+
+def _save_signal_event(asset, signal_type, timestamp, description, metadata):
+    """Create or update a SignalEvent record (idempotent on unique_together)."""
+    obj, created = SignalEvent.objects.get_or_create(
+        asset=asset,
+        timestamp=timestamp,
+        signal_type=signal_type,
+        defaults={'description': description, 'metadata': metadata},
+    )
+    return obj, created
+
+
+@shared_task
+def calculate_ma_signals_for_asset(asset_id):
+    """
+    Computes MA5/10/20/60 and detects golden cross, death cross, and alignment signals.
+    """
+    df = get_ohlcv_df(asset_id, days_history=200)
+    if df.empty or len(df) < 62:
+        return
+
+    asset = Asset.objects.get(id=asset_id)
+    from django.utils import timezone as tz
+
+    ma5 = talib.SMA(df['close'], timeperiod=5)
+    ma10 = talib.SMA(df['close'], timeperiod=10)
+    ma20 = talib.SMA(df['close'], timeperiod=20)
+    ma60 = talib.SMA(df['close'], timeperiod=60)
+
+    if pd.isna(ma5.iloc[-1]) or pd.isna(ma20.iloc[-1]):
+        return
+    if pd.isna(ma5.iloc[-2]) or pd.isna(ma20.iloc[-2]):
+        return
+
+    today_ma5 = float(ma5.iloc[-1])
+    today_ma20 = float(ma20.iloc[-1])
+    prev_ma5 = float(ma5.iloc[-2])
+    prev_ma20 = float(ma20.iloc[-2])
+    today_ma10 = float(ma10.iloc[-1]) if not pd.isna(ma10.iloc[-1]) else None
+    today_ma60 = float(ma60.iloc[-1]) if not pd.isna(ma60.iloc[-1]) else None
+
+    latest_date = df.index[-1]
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    close_today = float(df['close'].iloc[-1])
+
+    # Golden cross: MA5 crosses above MA20
+    if prev_ma5 <= prev_ma20 and today_ma5 > today_ma20:
+        _save_signal_event(
+            asset, 'GOLDEN_CROSS', latest_timestamp,
+            f'Golden Cross: MA5={today_ma5:.2f} crossed above MA20={today_ma20:.2f}',
+            {'ma5': today_ma5, 'ma20': today_ma20, 'close': close_today},
+        )
+
+    # Death cross: MA5 crosses below MA20
+    if prev_ma5 >= prev_ma20 and today_ma5 < today_ma20:
+        _save_signal_event(
+            asset, 'DEATH_CROSS', latest_timestamp,
+            f'Death Cross: MA5={today_ma5:.2f} crossed below MA20={today_ma20:.2f}',
+            {'ma5': today_ma5, 'ma20': today_ma20, 'close': close_today},
+        )
+
+    # Bull / bear MA alignment
+    if today_ma10 and today_ma60:
+        if today_ma5 > today_ma10 > today_ma20 > today_ma60:
+            _save_signal_event(
+                asset, 'MA_BULL_ALIGN', latest_timestamp,
+                (f'Bull MA Alignment: MA5={today_ma5:.2f} > MA10={today_ma10:.2f} '
+                 f'> MA20={today_ma20:.2f} > MA60={today_ma60:.2f}'),
+                {'ma5': today_ma5, 'ma10': today_ma10, 'ma20': today_ma20, 'ma60': today_ma60},
+            )
+        elif today_ma5 < today_ma10 < today_ma20 < today_ma60:
+            _save_signal_event(
+                asset, 'MA_BEAR_ALIGN', latest_timestamp,
+                (f'Bear MA Alignment: MA5={today_ma5:.2f} < MA10={today_ma10:.2f} '
+                 f'< MA20={today_ma20:.2f} < MA60={today_ma60:.2f}'),
+                {'ma5': today_ma5, 'ma10': today_ma10, 'ma20': today_ma20, 'ma60': today_ma60},
+            )
+
+    print(f"MA signals calculated for {asset.symbol}")
+
+
+@shared_task
+def calculate_bollinger_signals_for_asset(asset_id, timeperiod=20, nbdevup=2, nbdevdn=2):
+    """
+    Detects Bollinger Band squeeze, price breakouts, and combined RSI+BB overbought/oversold.
+    """
+    df = get_ohlcv_df(asset_id, days_history=100)
+    if df.empty or len(df) < timeperiod + 14:
+        return
+
+    asset = Asset.objects.get(id=asset_id)
+    from django.utils import timezone as tz
+
+    upper, middle, lower = talib.BBANDS(
+        df['close'], timeperiod=timeperiod, nbdevup=nbdevup, nbdevdn=nbdevdn
+    )
+    rsi = talib.RSI(df['close'], timeperiod=14)
+
+    latest_date = df.index[-1]
+    if pd.isna(upper[latest_date]) or pd.isna(lower[latest_date]):
+        return
+
+    close = float(df['close'][latest_date])
+    u = float(upper[latest_date])
+    m = float(middle[latest_date])
+    l = float(lower[latest_date])
+    bandwidth = (u - l) / m if m > 0 else 0
+    rsi_val = float(rsi[latest_date]) if not pd.isna(rsi[latest_date]) else None
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+
+    if bandwidth < 0.05:
+        _save_signal_event(
+            asset, 'BB_SQUEEZE', latest_timestamp,
+            f'Bollinger Band Squeeze: bandwidth={bandwidth:.4f} (< 5%)',
+            {'upper': u, 'middle': m, 'lower': l, 'bandwidth': bandwidth, 'close': close},
+        )
+
+    if close > u:
+        _save_signal_event(
+            asset, 'BB_BREAKOUT_UP', latest_timestamp,
+            f'Price breakout above upper band: close={close:.2f} > upper={u:.2f}',
+            {'upper': u, 'middle': m, 'lower': l, 'close': close},
+        )
+
+    if close < l:
+        _save_signal_event(
+            asset, 'BB_BREAKOUT_DOWN', latest_timestamp,
+            f'Price breakout below lower band: close={close:.2f} < lower={l:.2f}',
+            {'upper': u, 'middle': m, 'lower': l, 'close': close},
+        )
+
+    if rsi_val is not None and close >= u * 0.98 and rsi_val > 70:
+        _save_signal_event(
+            asset, 'BB_RSI_OVERBOUGHT', latest_timestamp,
+            f'Overbought: close={close:.2f} near upper={u:.2f}, RSI={rsi_val:.1f}',
+            {'upper': u, 'lower': l, 'close': close, 'rsi': rsi_val},
+        )
+
+    if rsi_val is not None and close <= l * 1.02 and rsi_val < 30:
+        _save_signal_event(
+            asset, 'BB_RSI_OVERSOLD', latest_timestamp,
+            f'Oversold: close={close:.2f} near lower={l:.2f}, RSI={rsi_val:.1f}',
+            {'upper': u, 'lower': l, 'close': close, 'rsi': rsi_val},
+        )
+
+    print(f"Bollinger Band signals calculated for {asset.symbol}")
+
+
+@shared_task
+def calculate_volume_signals_for_asset(asset_id, avg_period=20, spike_multiplier=2.0):
+    """
+    Detects volume spikes and volume-price divergence signals using OBV.
+    """
+    df = get_ohlcv_df(asset_id, days_history=60)
+    if df.empty or len(df) < avg_period + 2:
+        return
+
+    asset = Asset.objects.get(id=asset_id)
+    from django.utils import timezone as tz
+
+    avg_volume = df['volume'].iloc[-(avg_period + 1):-1].mean()
+    latest_volume = float(df['volume'].iloc[-1])
+    latest_close = float(df['close'].iloc[-1])
+    latest_date = df.index[-1]
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+
+    if avg_volume > 0:
+        volume_ratio = latest_volume / avg_volume
+        if volume_ratio >= spike_multiplier:
+            _save_signal_event(
+                asset, 'VOLUME_SPIKE', latest_timestamp,
+                f'Volume spike: {volume_ratio:.1f}x average ({latest_volume:.0f} vs avg {avg_volume:.0f})',
+                {'volume': latest_volume, 'avg_volume': avg_volume, 'ratio': volume_ratio, 'close': latest_close},
+            )
+
+    # Volume-price divergence via 5-day OBV trend vs price trend
+    if len(df) >= 7:
+        obv = talib.OBV(df['close'], df['volume'])
+        obv_5d_ago = float(obv.iloc[-6])
+        obv_now = float(obv.iloc[-1])
+        close_5d_ago = float(df['close'].iloc[-6])
+        price_5d_return = (latest_close - close_5d_ago) / close_5d_ago if close_5d_ago > 0 else 0
+        obv_change = obv_now - obv_5d_ago
+
+        if price_5d_return >= 0.03 and obv_change < 0:
+            _save_signal_event(
+                asset, 'VOLUME_PRICE_DIVERGENCE', latest_timestamp,
+                f'Bearish divergence: price +{price_5d_return:.1%} over 5d but OBV declining',
+                {'price_5d_return': price_5d_return, 'obv_change': obv_change, 'type': 'bearish'},
+            )
+        elif price_5d_return <= -0.03 and obv_change > 0:
+            _save_signal_event(
+                asset, 'VOLUME_PRICE_DIVERGENCE', latest_timestamp,
+                f'Bullish divergence: price {price_5d_return:.1%} over 5d but OBV rising',
+                {'price_5d_return': price_5d_return, 'obv_change': obv_change, 'type': 'bullish'},
+            )
+
+    print(f"Volume signals calculated for {asset.symbol}")
+
+
+@shared_task
+def calculate_momentum_signals_for_asset(asset_id):
+    """
+    Calculates 5/10/20-day momentum as TechnicalIndicator values.
+    Flags MOMENTUM_UP_5D / MOMENTUM_DOWN_5D when 5-day move exceeds ±5%.
+    """
+    df = get_ohlcv_df(asset_id, days_history=60)
+    if df.empty or len(df) < 22:
+        return
+
+    asset = Asset.objects.get(id=asset_id)
+    from django.utils import timezone as tz
+
+    latest_close = float(df['close'].iloc[-1])
+    latest_date = df.index[-1]
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+
+    for n_days in [5, 10, 20]:
+        if len(df) <= n_days:
+            continue
+        past_close = float(df['close'].iloc[-(n_days + 1)])
+        if past_close <= 0:
+            continue
+        momentum = (latest_close - past_close) / past_close
+
+        obj, created = TechnicalIndicator.objects.get_or_create(
+            asset=asset,
+            timestamp=latest_timestamp,
+            indicator_type=f'MOM_{n_days}D',
+            parameters={'n_days': n_days},
+            defaults={'value': momentum},
+        )
+        if not created:
+            obj.value = momentum
+            obj.save()
+
+    # Signal flags for 5-day momentum
+    past_close_5d = float(df['close'].iloc[-6])
+    if past_close_5d > 0:
+        momentum_5d = (latest_close - past_close_5d) / past_close_5d
+        if momentum_5d >= 0.05:
+            _save_signal_event(
+                asset, 'MOMENTUM_UP_5D', latest_timestamp,
+                f'Strong upward 5-day momentum: +{momentum_5d:.1%}',
+                {'momentum': momentum_5d, 'close': latest_close, 'close_5d_ago': past_close_5d},
+            )
+        elif momentum_5d <= -0.05:
+            _save_signal_event(
+                asset, 'MOMENTUM_DOWN_5D', latest_timestamp,
+                f'Strong downward 5-day momentum: {momentum_5d:.1%}',
+                {'momentum': momentum_5d, 'close': latest_close, 'close_5d_ago': past_close_5d},
+            )
+
+    print(f"Momentum signals calculated for {asset.symbol}")
+
+
+@shared_task
+def calculate_reversal_signals_for_asset(asset_id, timeperiod_bb=20, timeperiod_rsi=14):
+    """
+    Detects oversold reversal combinations: RSI < 30 AND price near lower BB AND low volume.
+    """
+    df = get_ohlcv_df(asset_id, days_history=100)
+    if df.empty or len(df) < max(timeperiod_bb, timeperiod_rsi) + 5:
+        return
+
+    asset = Asset.objects.get(id=asset_id)
+    from django.utils import timezone as tz
+
+    upper, middle, lower = talib.BBANDS(df['close'], timeperiod=timeperiod_bb)
+    rsi = talib.RSI(df['close'], timeperiod=timeperiod_rsi)
+
+    latest_date = df.index[-1]
+    if pd.isna(lower[latest_date]) or pd.isna(rsi[latest_date]):
+        return
+
+    close = float(df['close'][latest_date])
+    l = float(lower[latest_date])
+    rsi_val = float(rsi[latest_date])
+    avg_volume = df['volume'].iloc[-21:-1].mean()
+    latest_volume = float(df['volume'].iloc[-1])
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+
+    near_lower = close <= l * 1.02
+    volume_contraction = avg_volume > 0 and (latest_volume < avg_volume * 0.8)
+
+    if rsi_val < 30 and near_lower and volume_contraction:
+        _save_signal_event(
+            asset, 'OVERSOLD_COMBINATION', latest_timestamp,
+            (f'Oversold combination: RSI={rsi_val:.1f} < 30, '
+             f'close={close:.2f} near lower BB={l:.2f}, '
+             f'volume={latest_volume:.0f} < 80% avg={avg_volume:.0f}'),
+            {'rsi': rsi_val, 'close': close, 'lower_bb': l,
+             'volume': latest_volume, 'avg_volume': avg_volume},
+        )
+
+    print(f"Reversal signals calculated for {asset.symbol}")
+
+
+@shared_task
+def calculate_rs_scores_for_all_assets():
+    """
+    Cross-asset task: ranks all assets by 20-day return and assigns RS_SCORE.
+    Top 20% also receive a HIGH_RS_SCORE SignalEvent.
+    """
+    from django.utils import timezone as tz
+
+    asset_ids = list(Asset.objects.values_list('id', flat=True))
+    if not asset_ids:
+        return
+
+    scores = []
+    today = timezone.now().date()
+
+    for asset_id in asset_ids:
+        candles = list(OHLCV.objects.filter(asset_id=asset_id).order_by('-date')[:21])
+        if len(candles) < 21:
+            continue
+        close_today = float(candles[0].close)
+        close_20d = float(candles[20].close)
+        if close_20d <= 0:
+            continue
+        momentum_20d = (close_today - close_20d) / close_20d
+        scores.append((asset_id, momentum_20d, close_today))
+
+    if not scores:
+        return
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    top_cutoff = max(1, int(len(scores) * 0.2))
+    latest_timestamp = tz.make_aware(pd.Timestamp.combine(today, pd.Timestamp.min.time()))
+
+    for rank, (asset_id, mom, close) in enumerate(scores, start=1):
+        asset = Asset.objects.get(id=asset_id)
+        rs_score = 1.0 - (rank - 1) / len(scores)
+
+        obj, created = TechnicalIndicator.objects.get_or_create(
+            asset=asset,
+            timestamp=latest_timestamp,
+            indicator_type='RS_SCORE',
+            parameters={},
+            defaults={'value': rs_score},
+        )
+        if not created:
+            obj.value = rs_score
+            obj.save()
+
+        if rank <= top_cutoff:
+            _save_signal_event(
+                asset, 'HIGH_RS_SCORE', latest_timestamp,
+                f'Top 20% RS: rank #{rank}/{len(scores)}, 20d return={mom:.1%}, score={rs_score:.3f}',
+                {'rank': rank, 'total': len(scores), 'momentum_20d': mom, 'rs_score': rs_score},
+            )
+
+    print(f"RS Scores: {top_cutoff} top assets flagged out of {len(scores)}")
+
+
+@shared_task
+def calculate_signals_for_all_assets():
+    """
+    Phase 10 dispatcher: queues all signal calculation tasks for every asset.
+    """
+    asset_ids = list(Asset.objects.values_list('id', flat=True))
+    for asset_id in asset_ids:
+        calculate_ma_signals_for_asset.delay(asset_id)
+        calculate_bollinger_signals_for_asset.delay(asset_id)
+        calculate_volume_signals_for_asset.delay(asset_id)
+        calculate_momentum_signals_for_asset.delay(asset_id)
+        calculate_reversal_signals_for_asset.delay(asset_id)
+    calculate_rs_scores_for_all_assets.delay()
+    return f"Queued signal calculations for {len(asset_ids)} assets"
 
 
 def _latest_price(asset_id):
