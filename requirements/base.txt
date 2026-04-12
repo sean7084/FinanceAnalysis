@@ -14,3 +14,7 @@ pandas==2.2.2
 django-celery-beat
 numpy
 TA-Lib
+lightgbm
+torch
+scikit-learn
+mlflow

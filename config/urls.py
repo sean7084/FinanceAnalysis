@@ -46,6 +46,15 @@ from apps.sentiment.views import (
     SentimentScoreViewSet,
     ConceptHeatViewSet,
 )
+from apps.prediction.views import (
+    PredictionViewSet,
+    ModelVersionViewSet,
+)
+from apps.prediction.views_lightgbm import (
+    LightGBMPredictionViewSet,
+    LightGBMModelArtifactViewSet,
+    EnsembleWeightSnapshotViewSet,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -70,6 +79,11 @@ router.register(r'macro/event-impacts', EventImpactStatViewSet, basename='event-
 router.register(r'sentiment/news', NewsArticleViewSet, basename='sentiment-news')
 router.register(r'sentiment', SentimentScoreViewSet, basename='sentiment-score')
 router.register(r'sentiment/concepts', ConceptHeatViewSet, basename='sentiment-concept')
+router.register(r'prediction', PredictionViewSet, basename='prediction')
+router.register(r'prediction-model-versions', ModelVersionViewSet, basename='prediction-model-version')
+router.register(r'lightgbm-predictions', LightGBMPredictionViewSet, basename='lightgbm-prediction')
+router.register(r'lightgbm-models', LightGBMModelArtifactViewSet, basename='lightgbm-model')
+router.register(r'ensemble-weights', EnsembleWeightSnapshotViewSet, basename='ensemble-weight')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
