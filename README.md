@@ -206,6 +206,44 @@ Market (3 exchanges)
 - `apps/core/throttling.py` - Custom throttle classes
 - `config/urls.py` - Authentication endpoints
 
+
+---
+
+### Phase 7: User Management & Subscriptions ✓
+**Objective**: Multi-tenant user system with subscription tiers
+
+**Implemented Features**:
+- User registration with email verification flow
+- Password reset via token-based email link
+- User profile management (`phone_number`, `company`, subscription info)
+- Subscription tier model: `FREE`, `PRO`, `PREMIUM` with Stripe-ready fields (`stripe_subscription_id`, `stripe_customer_id`)
+- Subscription lifecycle: `is_active`, `start_date`, `end_date`, `auto_renew`, `cancel()` method
+- API usage tracking via `APIUsageMiddleware` — records endpoint, method, status, IP for every `/api/v1/` call
+- Usage stats dashboard — daily/monthly counts, top endpoints, tier-based daily limit
+- Admin panel with `UserAdmin` inlines, `SubscriptionAdmin` with activate/deactivate bulk actions
+
+**Technical Implementation**:
+- `UserProfile` (OneToOne), `Subscription` (FK), `APIUsage` (FK, nullable for anonymous) models
+- `UserProfile` auto-created on user save via Django signal
+- `subscription_tier`, `is_pro`, `is_premium` computed properties on `UserProfile`
+- Tier-aware daily limits (`FREE: 100`, `PRO: 1000`, `PREMIUM: 10000`)
+- Router endpoints:
+  - `POST /api/v1/users/register/`
+  - `POST /api/v1/users/verify-email/`
+  - `POST /api/v1/users/password-reset/`
+  - `POST /api/v1/users/password-reset-confirm/`
+  - `GET/PATCH /api/v1/users/profile/me/`
+  - `GET /api/v1/users/subscriptions/current/`
+  - `GET /api/v1/users/usage/stats/`
+
+**Key Files**:
+- `apps/users/models.py` — UserProfile, Subscription, APIUsage, SubscriptionTier
+- `apps/users/views.py` — Registration, email/password, profile, subscription, usage viewsets
+- `apps/users/serializers.py` — All serializers with validation
+- `apps/users/middleware.py` — APIUsageMiddleware
+- `apps/users/signals.py` — Auto-create UserProfile
+- `apps/users/admin.py` — UserAdmin with inlines, SubscriptionAdmin with bulk actions
+
 ---
 
 ### Phase 8: Advanced Technical Indicators ✓
@@ -229,7 +267,6 @@ Market (3 exchanges)
 - `apps/analytics/tasks.py` - Indicator calculation tasks (including Fibonacci)
 - `apps/analytics/views.py` - Indicator compare/recalculate/Fibonacci endpoints
 - `apps/analytics/models.py` - Unified `TechnicalIndicator` storage model
-
 ---
 
 ### Phase 9: Stock Screeners & Alerts ✓
@@ -283,6 +320,9 @@ Market (3 exchanges)
 - **Assets API**: 2 endpoints + search/filter
 - **OHLCV API**: 2 endpoints + date range filtering
 - **Indicators API**: list/detail + compare/recalculate/fibonacci + ranking endpoints
+- **Screeners API**: 4 pre-built screeners + screener templates
+- **Alerts API**: alert rules + alert events
+- **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
 ### Performance
@@ -295,57 +335,7 @@ Market (3 exchanges)
 
 ## 🔮 Future Phases & Roadmap
 
-### Phase 7: User Management & Subscriptions
-**Objective**: Multi-tenant user system with subscription tiers
 
-**Planned Features**:
-- User registration and profile management
-- Subscription tier model (Pro, Premium)
-- Payment integration (Stripe)
-- User dashboard with usage analytics
-- Admin panel for user management
-- Email verification and password reset
-
-**Technical Implementation**:
-- Extend Django User model with subscription fields
-- Create `Subscription` and `UserProfile` models
-- Implement middleware for tier enforcement
-- Add webhook handlers for payment processing
-
----
-
-### Phase 8: Advanced Technical Indicators (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 9: Stock Screeners & Alerts (Implemented)
-**Objective**: Automated screening and notification system
-
-**Screener Features**:
-- Pre-built screeners:
-  - Overbought/Oversold stocks
-  - Breakout candidates
-  - High volume stocks
-  - Trend reversal signals
-- Custom screener builder
-- Saved screener templates
-- Real-time screening results
-
-**Alert System**:
-- Price alerts (above/below threshold)
-- Indicator alerts (RSI > 70, MACD crossover)
-- Custom condition alerts
-- Multi-channel notifications (Email, SMS, WebSocket)
-- Alert history and management
-
-**Technical Implementation**:
-- WebSocket integration for real-time updates
-- Celery periodic tasks for alert checking
-- Email/SMS provider integration
-- Alert state management in Redis
-
----
 
 ### Phase 10: Advanced Technical Indicators Expansion
 **Objective**: 扩展技术指标体系，覆盖趋势、动量、波动率和量价信号
