@@ -355,6 +355,50 @@ Market (3 exchanges)
 
 ---
 
+### Phase 11: Multi-Factor Alpha Model ✓
+**Objective**: Build a configurable multi-factor stock ranking engine for bottom-candidate screening
+
+**Implemented Features**:
+- New `factors` app with dedicated data models for factor ingestion and scoring
+- Fundamental snapshot model (`PE`, `PB`, `ROE`, `ROE QoQ`)
+- Capital flow snapshot model (northbound net flow, main-force net flow, margin-balance change)
+- Composite `FactorScore` model storing normalized component scores and bottom-probability output
+- Bottom-candidate screener endpoint:
+  - `GET /api/v1/screener/bottom-candidates/`
+  - `POST /api/v1/screener/bottom-candidates/recalculate/`
+- Parameterized weighted scoring (`financial_weight`, `flow_weight`, `technical_weight`)
+- Admin support for all Phase 11 models
+
+**Scoring Engine**:
+- Financial factors:
+  - PE percentile score (lower PE -> higher score)
+  - PB percentile score (lower PB -> higher score)
+  - ROE trend score from `roe_qoq`
+- Capital-flow factors:
+  - northbound net flow rank
+  - main-force net flow rank
+  - margin-balance change rank
+- Technical factors:
+  - RSI oversold signal
+  - close near Bollinger lower band
+  - Phase 10 oversold signal (`OVERSOLD_COMBINATION`)
+- Weighted aggregation into `composite_score` and `bottom_probability_score`
+
+**Data / API Models**:
+- `FundamentalFactorSnapshot`
+- `CapitalFlowSnapshot`
+- `FactorScore`
+
+**Key Files**:
+- `apps/factors/models.py` — factor data and scoring models
+- `apps/factors/tasks.py` — daily factor scoring task
+- `apps/factors/views.py` — factor ingestion and bottom-candidate APIs
+- `apps/factors/serializers.py` — factor serializers
+- `apps/factors/tests.py` — Phase 11 test coverage
+- `apps/factors/migrations/0001_initial.py` — initial migration
+
+---
+
 ## 📊 Current System Status
 
 ### Data Metrics
@@ -372,6 +416,7 @@ Market (3 exchanges)
 - **Screeners API**: 4 pre-built screeners + screener templates
 - **Alerts API**: alert rules + alert events
 - **Signals API**: list/filter/recent/recalculate signal events
+- **Factors API**: fundamentals, capital-flows, and bottom-candidates screener
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
@@ -392,38 +437,8 @@ Implemented and moved to the completed phases section.
 
 ---
 
-### Phase 11: Multi-Factor Alpha Model
-**Objective**: 构建多因子选股模型，从沪深300中筛选底部个股候选
-
-**财务因子**:
-- PE 分位数（当前 PE 在历史 N 年中的百分位）
-- PB 分位数
-- ROE 趋势（近 4 季度 ROE 变化方向）
-- 数据来源：AkShare 财务报表接口
-
-**资金流向因子**:
-- 北向资金（沪深港通）净流入/流出（近 5/10/20 日）
-- 主力资金净流入（大单买入 - 大单卖出）
-- A 股融资余额变化（融资买入额趋势）
-- 数据来源：AkShare 资金流向接口
-
-**综合评分模型**:
-- 各因子标准化（Z-Score 归一化）
-- 可配置权重的加权综合得分
-- 输出：沪深300中综合得分排名前 N 的个股列表
-- 支持按因子类别单独筛选（纯技术 / 纯基本面 / 综合）
-
-**底部候选筛选逻辑**:
-- 技术面：RSI < 35 + 布林带下轨附近 + 反转因子触发
-- 基本面：PE/PB 历史低分位 + ROE 未恶化
-- 资金面：北向或主力近期有净流入迹象
-- 三类条件权重可调，输出每只股票的底部概率得分
-
-**技术实现**:
-- 新增 `apps/factors/` 应用
-- `FactorScore` 模型记录每日因子得分快照
-- API 增加 `/api/v1/screener/bottom-candidates/` 端点
-- 支持参数化查询（权重、阈值、输出数量）
+### Phase 11: Multi-Factor Alpha Model (Completed)
+Implemented and moved to the completed phases section.
 
 ---
 

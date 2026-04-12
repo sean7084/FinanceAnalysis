@@ -31,6 +31,11 @@ from apps.users.views import (
     SubscriptionViewSet,
     APIUsageViewSet,
 )
+from apps.factors.views import (
+    FundamentalFactorSnapshotViewSet,
+    CapitalFlowSnapshotViewSet,
+    BottomCandidateViewSet,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -46,6 +51,9 @@ router.register(r'signals', SignalEventViewSet, basename='signal-event')
 router.register(r'users/profile', UserProfileViewSet, basename='userprofile')
 router.register(r'users/subscriptions', SubscriptionViewSet, basename='subscription')
 router.register(r'users/usage', APIUsageViewSet, basename='apiusage')
+router.register(r'factors/fundamentals', FundamentalFactorSnapshotViewSet, basename='fundamental-factor')
+router.register(r'factors/capital-flows', CapitalFlowSnapshotViewSet, basename='capital-flow-factor')
+router.register(r'screener/bottom-candidates', BottomCandidateViewSet, basename='bottom-candidates')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
