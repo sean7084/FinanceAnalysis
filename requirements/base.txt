@@ -18,3 +18,4 @@ lightgbm
 torch
 scikit-learn
 mlflow
+drf-spectacular==0.27.2

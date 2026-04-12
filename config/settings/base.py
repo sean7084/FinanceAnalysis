@@ -79,6 +79,8 @@ INSTALLED_APPS = [
     'apps.sentiment',
     'apps.prediction',
     'apps.backtest',
+    'apps.developer',
+    'drf_spectacular',
 ]
 
 MIDDLEWARE = [
@@ -236,8 +238,10 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.developer.authentication.APIKeyAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'apps.core.throttling.FreeUserRateThrottle',
@@ -298,6 +302,47 @@ EMAIL_BACKEND = env(
     default='django.core.mail.backends.console.EmailBackend'
 )
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@financeanalysis.com')
+
+
+# DRF SPECTACULAR (OpenAPI 3.0)
+# ------------------------------------------------------------------------------
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'FinanceAnalysis API',
+    'DESCRIPTION': (
+        'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 300).\n\n'
+        '## Authentication\n\n'
+        'Requests may be authenticated using either:\n'
+        '- **JWT Bearer token**: `Authorization: Bearer <token>`  '
+        '(obtained from `POST /api/v1/auth/token/`)\n'
+        '- **API Key**: `X-API-Key: <key>`  '
+        '(issued via `POST /api/v1/developer/keys/`)\n\n'
+        '## Rate Limits\n\n'
+        '| Tier | Daily Limit |\n'
+        '|------|-------------|\n'
+        '| Anonymous | 100 requests |\n'
+        '| Free | 100 requests |\n'
+        '| Pro | 1 000 requests |\n'
+        '| Premium | 10 000 requests |\n'
+    ),
+    'VERSION': '1.2.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SWAGGER_UI_SETTINGS': {
+        'deepLinking': True,
+        'persistAuthorization': True,
+        'displayOperationId': False,
+        'defaultModelsExpandDepth': 1,
+        'defaultModelExpandDepth': 2,
+    },
+    'AUTHENTICATION_WHITELIST': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.developer.authentication.APIKeyAuthentication',
+    ],
+    'SECURITY': [
+        {'jwtAuth': []},
+        {'apiKeyAuth': []},
+    ],
+}
 EMAIL_HOST = env('EMAIL_HOST', default='localhost')
 EMAIL_PORT = env('EMAIL_PORT', default=587)
 EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)

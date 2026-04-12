@@ -9,7 +9,8 @@
 		"python-envs.defaultPackageManager": "ms-python.python:pip",
 		"chat.tools.terminal.autoApprove": {
 			"docker-compose": true,
-			"sg": true
+			"sg": true,
+			"docker exec": true
 		}
 	}
 }

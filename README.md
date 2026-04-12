@@ -602,8 +602,10 @@ Market (3 exchanges)
 - **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry
 - **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking
 - **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
+- **Developer Portal API**: API key management, sandbox keys, key rotation, changelog
+- **Schema / Docs API**: OpenAPI 3.0 schema, Swagger UI, ReDoc
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
-- **Authentication**: 3 endpoints (token, refresh, verify)
+- **Authentication**: 3 endpoints (token, refresh, verify) + `X-API-Key` header
 
 ### Performance
 - Redis caching enabled (2-hour cache for static data)
@@ -613,41 +615,49 @@ Market (3 exchanges)
 
 ---
 
+### Phase 16: API Documentation & Developer Portal ✓
+**Objective**: Complete API documentation ecosystem and developer portal
+
+**Implemented Features**:
+- **OpenAPI 3.0 schema auto-generation** via `drf-spectacular`:
+  - Machine-readable schema: `GET /api/v1/schema/`
+  - Interactive Swagger UI: `GET /api/v1/schema/swagger-ui/`
+  - ReDoc interface: `GET /api/v1/schema/redoc/`
+- **API Key management** — new `developer` app:
+  - `DeveloperAPIKey` model with SHA-256-hashed keys (plain text never stored)
+  - Key format: `fa-<40 hex chars>` with `key_prefix` stored for display
+  - Sandbox mode flag for read-only / synthetic-data workflows
+  - Configurable expiry (`expires_at`)
+  - `POST /api/v1/developer/keys/` — mint new key (raw key returned once)
+  - `GET /api/v1/developer/keys/` — list own keys
+  - `DELETE /api/v1/developer/keys/{id}/` — soft-revoke (sets `is_active=False`)
+  - `POST /api/v1/developer/keys/{id}/rotate/` — revoke + mint replacement
+- **`X-API-Key` authentication** — `APIKeyAuthentication` class added to `DEFAULT_AUTHENTICATION_CLASSES`; works alongside JWT
+- **API Changelog** — `ChangelogEntry` model:
+  - `GET /api/v1/developer/changelog/` — public endpoint, no auth required
+  - Filterable by `?version=`, `?change_type=`, `?is_breaking=true`
+  - Change types: ADDED / CHANGED / DEPRECATED / REMOVED / FIXED / SECURITY
+- **`SPECTACULAR_SETTINGS`** configured with title, description, version, Swagger UI persistence, and rate-limit documentation table
+
+**Key Files**:
+- `apps/developer/models.py` — `DeveloperAPIKey`, `ChangelogEntry`
+- `apps/developer/authentication.py` — `APIKeyAuthentication`
+- `apps/developer/views.py` — `DeveloperAPIKeyViewSet`, `ChangelogEntryViewSet`
+- `apps/developer/serializers.py` — key create/read serializers
+- `apps/developer/admin.py` — admin registrations
+- `apps/developer/tests.py` — Phase 16 test coverage
+- `apps/developer/migrations/0001_initial.py` — initial migration
+- `config/settings/base.py` — `SPECTACULAR_SETTINGS`, `APIKeyAuthentication` in auth classes
+- `config/urls.py` — schema + developer portal routes
+- `requirements/base.txt` — `drf-spectacular==0.27.2`
+
+**Test Coverage**: 16/16 tests passing (100%)
+
+---
+
 ## 🔮 Future Phases & Roadmap
 
-
-
-### Phase 10: Advanced Technical Indicators Expansion (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 11: Multi-Factor Alpha Model (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 12: Macro & Event-Driven Context Engine (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 13: NLP Sentiment & News Intelligence (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 14: ML Prediction Engine (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 15: Backtesting & Strategy Validation (Completed)
-Implemented and moved to the completed phases section.
-
----
-
-### Phase 16: Frontend Dashboard
+### Phase 17: Frontend Dashboard
 **Objective**: 面向用户的可视化操作界面
 
 **核心页面**:
@@ -668,7 +678,7 @@ Implemented and moved to the completed phases section.
 
 ---
 
-### Phase 17: Mobile Application
+### Phase 18: Mobile Application
 **Objective**: iOS / Android 移动端应用
 
 **核心功能**:
@@ -684,7 +694,7 @@ Implemented and moved to the completed phases section.
 
 ---
 
-### Phase 18: Production Deployment
+### Phase 19: Production Deployment
 **Objective**: 云端部署 + CI/CD 全自动化
 
 **基础设施**:
@@ -702,20 +712,6 @@ Implemented and moved to the completed phases section.
 - 错误追踪：Sentry
 - 日志：ELK Stack 或阿里云日志服务
 - SSL 证书自动续签
-
----
-
-### Phase 19: API Documentation & Developer Portal
-**Objective**: 完整的 API 文档和开发者生态
-
-**功能**:
-- OpenAPI / Swagger 自动生成文档
-- 交互式 API 测试界面
-- 代码示例（Python / JavaScript / cURL）
-- API Key 管理
-- 请求量统计与限流监控
-- 开发者沙箱环境
-- API 变更日志与版本管理
 
 ---
 
@@ -808,44 +804,6 @@ curl "http://localhost:8000/api/v1/assets/?search=平安" \
 
 ---
 
-## 📁 Project Structure
-
-```
-FinanceAnalysis/
-├── apps/
-│   ├── analytics/          # Technical indicators
-│   │   ├── models.py       # TechnicalIndicator model
-│   │   ├── tasks.py        # Indicator calculations
-│   │   ├── views.py        # Analytics API
-│   │   └── serializers.py  # Indicator serializers
-│   ├── core/               # Shared utilities
-│   │   └── throttling.py   # Custom rate limiting
-│   └── markets/            # Market data
-│       ├── models.py       # Market, Asset, OHLCV models
-│       ├── tasks.py        # Data ingestion
-│       ├── views.py        # Market API
-│       └── serializers.py  # Market serializers
-├── compose/
-│   └── local/
-│       ├── django/         # Django Docker config
-│       └── nginx/          # Nginx config (production)
-├── config/
-│   ├── settings/
-│   │   ├── base.py        # Core settings
-│   │   ├── local.py       # Development settings
-│   │   └── production.py  # Production settings
-│   ├── celery.py          # Celery configuration
-│   └── urls.py            # URL routing
-├── requirements/
-│   ├── base.txt           # Core dependencies
-│   ├── local.txt          # Development dependencies
-│   └── production.txt     # Production dependencies
-├── docker-compose.yml      # Service orchestration
-└── manage.py              # Django management script
-```
-
----
-
 ## 🤝 Contributing
 
 This is a personal project, but contributions are welcome! Please:
@@ -881,4 +839,4 @@ This project is private and proprietary.
 
 
 **Last Updated**: April 12, 2026  
-**Version**: 1.1.0 (Phases 1-15 Complete)
+**Version**: 1.2.0 (Phases 1-16 Complete)

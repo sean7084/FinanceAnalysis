@@ -12,6 +12,11 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
     TokenVerifyView,
 )
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularSwaggerView,
+    SpectacularRedocView,
+)
 
 from apps.markets.views import MarketViewSet, AssetViewSet, OHLCVViewSet
 from apps.analytics.views import (
@@ -59,6 +64,10 @@ from apps.backtest.views import (
     BacktestRunViewSet,
     BacktestTradeViewSet,
 )
+from apps.developer.views import (
+    DeveloperAPIKeyViewSet,
+    ChangelogEntryViewSet,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -90,6 +99,8 @@ router.register(r'lightgbm-models', LightGBMModelArtifactViewSet, basename='ligh
 router.register(r'ensemble-weights', EnsembleWeightSnapshotViewSet, basename='ensemble-weight')
 router.register(r'backtest', BacktestRunViewSet, basename='backtest')
 router.register(r'backtest-trades', BacktestTradeViewSet, basename='backtest-trade')
+router.register(r'developer/keys', DeveloperAPIKeyViewSet, basename='developer-key')
+router.register(r'developer/changelog', ChangelogEntryViewSet, basename='developer-changelog')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -106,4 +117,8 @@ urlpatterns = [
     path('api/v1/auth/token/verify/', TokenVerifyView.as_view(), name='token_verify'),
     # Browsable API authentication
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
+    # OpenAPI schema endpoints (drf-spectacular)
+    path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/v1/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    path('api/v1/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
 ]
