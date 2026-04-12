@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     'apps.macro',
     'apps.sentiment',
     'apps.prediction',
+    'apps.backtest',
 ]
 
 MIDDLEWARE = [

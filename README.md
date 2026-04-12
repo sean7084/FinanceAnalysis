@@ -543,6 +543,37 @@ Market (3 exchanges)
 **Test Coverage**: 12/12 tests passing (100%)
   - Heuristic: 5/5 tests ✓
   - LightGBM: 7/7 tests ✓ (including routing fix for train endpoint)
+
+### Phase 15: Backtesting & Strategy Validation ✓
+**Objective**: Validate strategy effectiveness and prediction quality with historical simulation
+
+**Implemented Features**:
+- New `backtest` app with execution and trade log models:
+  - `BacktestRun` for strategy configuration, async lifecycle, and performance metrics
+  - `BacktestTrade` for per-trade records (BUY/SELL, fee, slippage, realized PnL)
+- Async backtest engine task:
+  - `run_backtest(backtest_run_id)` processes historical OHLCV data by date range
+  - Supports strategy modes: `PREDICTION_THRESHOLD`, `BOTTOM_CANDIDATE`, `MACRO_ROTATION`
+  - Simulates fee/slippage and computes `total_return`, `annualized_return`, `max_drawdown`, `sharpe_ratio`, `win_rate`
+- Backtest API endpoints:
+  - `GET /api/v1/backtest/`
+  - `POST /api/v1/backtest/` (create run and queue async execution)
+  - `GET /api/v1/backtest/{id}/`
+  - `POST /api/v1/backtest/{id}/rerun/`
+  - `GET /api/v1/backtest/{id}/trades/`
+  - `GET /api/v1/backtest-trades/?backtest_run={id}`
+- Admin support for run monitoring and trade inspection
+
+**Key Files**:
+- `apps/backtest/models.py` — `BacktestRun`, `BacktestTrade`
+- `apps/backtest/tasks.py` — async simulation and performance calculation pipeline
+- `apps/backtest/views.py` — backtest run/trade APIs with rerun and trade-list actions
+- `apps/backtest/serializers.py` — run/trade serializers and validations
+- `apps/backtest/admin.py` — admin registrations
+- `apps/backtest/tests.py` — Phase 15 test coverage
+- `apps/backtest/migrations/0001_initial.py` — initial migration
+
+**Test Coverage**: 4/4 tests passing (100%)
 ---
 
 ## 📊 Current System Status
@@ -555,6 +586,7 @@ Market (3 exchanges)
 - **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
 - **Sentiment Analytics**: article-level and 7-day aggregated sentiment + concept heat
 - **Prediction Snapshots**: 3/7/30-day directional probabilities with confidence and model versioning
+- **Backtest Engine**: async strategy simulation with trade logs and performance metrics
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
@@ -569,6 +601,7 @@ Market (3 exchanges)
 - **Sentiment API**: news ingestion, sentiment scores, latest sentiment, concept heat ranking
 - **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry
 - **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking
+- **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
 - **Authentication**: 3 endpoints (token, refresh, verify)
 
@@ -609,30 +642,8 @@ Implemented and moved to the completed phases section.
 
 ---
 
-### Phase 15: Backtesting & Strategy Validation
-**Objective**: 验证预测模型的实际有效性，量化策略回测
-
-**回测引擎**:
-- 基于历史数据模拟策略执行
-- 支持：单股回测 / 投资组合回测
-- 手续费、滑点、涨跌停约束模拟（A股特有）
-- 风险指标：年化收益、最大回撤、Sharpe 比率、胜率
-
-**策略模板**:
-- 底部候选买入策略（对接 Phase 11 筛选器）
-- 预测概率阈值策略（对接 Phase 14 预测引擎）
-- 宏观周期轮动策略（对接 Phase 12 周期判断）
-
-**可视化报告**:
-- 回测净值曲线
-- 持仓明细与买卖点标注
-- 因子暴露分析
-
-**技术实现**:
-- 新增 `apps/backtest/` 应用
-- `BacktestRun` + `BacktestTrade` 模型
-- API 增加 `/api/v1/backtest/` 端点（异步任务触发）
-- 报告导出：JSON / CSV / PDF
+### Phase 15: Backtesting & Strategy Validation (Completed)
+Implemented and moved to the completed phases section.
 
 ---
 
@@ -870,4 +881,4 @@ This project is private and proprietary.
 
 
 **Last Updated**: April 12, 2026  
-**Version**: 1.0.0 (Phases 1-14 Complete)
+**Version**: 1.1.0 (Phases 1-15 Complete)

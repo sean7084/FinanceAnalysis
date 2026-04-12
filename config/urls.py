@@ -55,6 +55,10 @@ from apps.prediction.views_lightgbm import (
     LightGBMModelArtifactViewSet,
     EnsembleWeightSnapshotViewSet,
 )
+from apps.backtest.views import (
+    BacktestRunViewSet,
+    BacktestTradeViewSet,
+)
 
 # Create a router and register our viewsets
 router = DefaultRouter()
@@ -84,6 +88,8 @@ router.register(r'prediction-model-versions', ModelVersionViewSet, basename='pre
 router.register(r'lightgbm-predictions', LightGBMPredictionViewSet, basename='lightgbm-prediction')
 router.register(r'lightgbm-models', LightGBMModelArtifactViewSet, basename='lightgbm-model')
 router.register(r'ensemble-weights', EnsembleWeightSnapshotViewSet, basename='ensemble-weight')
+router.register(r'backtest', BacktestRunViewSet, basename='backtest')
+router.register(r'backtest-trades', BacktestTradeViewSet, basename='backtest-trade')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
