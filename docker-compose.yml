@@ -11,6 +11,7 @@ services:
     volumes:
       - .:/app
     env_file:
+      - ./compose/local/django/.env
       - ./.envs/.local
     ports:
       - "8000:8000"
@@ -44,6 +45,7 @@ services:
     volumes:
       - .:/app
     env_file:
+      - ./compose/local/django/.env
       - ./.envs/.local
     command: /start-celeryworker
 
@@ -59,6 +61,7 @@ services:
     volumes:
       - .:/app
     env_file:
+      - ./compose/local/django/.env
       - ./.envs/.local
     command: /start-celerybeat
 

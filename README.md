@@ -38,9 +38,46 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **django-filter 24.2** - Advanced API filtering
 - **djangorestframework-simplejwt 5.3.1** - JWT authentication
 
+## 📊 Current System Status
+
+### Data Metrics
+- **Markets**: 3 (SSE, SZSE, BSE)
+- **Assets**: 334 CSI 300 stocks
+- **OHLCV Records**: ~100,000+ daily price points
+- **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
+- **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
+- **Sentiment Analytics**: article-level and 7-day aggregated sentiment + concept heat
+- **Prediction Snapshots**: 3/7/30-day directional probabilities with confidence and model versioning
+- **Backtest Engine**: async strategy simulation with trade logs and performance metrics
+
+### API Endpoints
+- **Markets API**: 2 endpoints (list, detail)
+- **Assets API**: 2 endpoints + search/filter
+- **OHLCV API**: 2 endpoints + date range filtering
+- **Indicators API**: list/detail + compare/recalculate/fibonacci + ranking endpoints
+- **Screeners API**: 4 pre-built screeners + screener templates
+- **Alerts API**: alert rules + alert events
+- **Signals API**: list/filter/recent/recalculate signal events
+- **Factors API**: fundamentals, capital-flows, and bottom-candidates screener
+- **Macro API**: snapshots, current context, event-impact statistics
+- **Sentiment API**: news ingestion, sentiment scores, latest sentiment, concept heat ranking
+- **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry
+- **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking
+- **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
+- **Developer Portal API**: API key management, sandbox keys, key rotation, changelog
+- **Schema / Docs API**: OpenAPI 3.0 schema, Swagger UI, ReDoc
+- **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
+- **Authentication**: 3 endpoints (token, refresh, verify) + `X-API-Key` header
+
+### Performance
+- Redis caching enabled (2-hour cache for static data)
+- Database query optimization with `select_related()`
+- Celery distributed task processing
+- Docker containerization for scalability
+
 ## ✅ Completed Phases
 
-### Phase 1: Foundation & Docker Setup ✓
+### version 0.0.1: Foundation & Docker Setup ✓
 **Objective**: Production-ready project structure with containerization
 
 **Achievements**:
@@ -62,7 +99,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 
 ---
 
-### Phase 2: Bilingual Data Modeling ✓
+### version 0.0.2: Bilingual Data Modeling ✓
 **Objective**: Create core financial data models with translation support
 
 **Achievements**:
@@ -87,7 +124,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 3: Data Ingestion Engine ✓
+### version 0.0.3: Data Ingestion Engine ✓
 **Objective**: Automated data synchronization with AkShare
 
 **Achievements**:
@@ -113,7 +150,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 4: Financial Analysis & Indicators ✓
+### version 0.0.4: Financial Analysis & Indicators ✓
 **Objective**: Calculate technical indicators using TA-Lib
 
 **Achievements**:
@@ -137,7 +174,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 5: REST API with Caching ✓
+### version 0.0.5: REST API with Caching ✓
 **Objective**: Expose data through secure, performant API
 
 **Achievements**:
@@ -172,7 +209,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 6: Production Readiness & SaaS Features ✓
+### version 0.0.6: Production Readiness & SaaS Features ✓
 **Objective**: Authentication, authorization, and rate limiting
 
 **Achievements**:
@@ -209,7 +246,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 7: User Management & Subscriptions ✓
+### version 0.0.7: User Management & Subscriptions ✓
 **Objective**: Multi-tenant user system with subscription tiers
 
 **Implemented Features**:
@@ -246,7 +283,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 8: Advanced Technical Indicators ✓
+### version 0.0.8: Advanced Technical Indicators ✓
 **Objective**: Expand analytical capabilities
 
 **Implemented Indicators**:
@@ -269,7 +306,7 @@ Market (3 exchanges)
 - `apps/analytics/models.py` - Unified `TechnicalIndicator` storage model
 ---
 
-### Phase 9: Stock Screeners & Alerts ✓
+### version 0.0.9: Stock Screeners & Alerts ✓
 **Objective**: Automated screening and notification system
 
 **Implemented Features**:
@@ -298,7 +335,7 @@ Market (3 exchanges)
   - `/api/v1/alert-events/`
 
 **Key Files**:
-- `apps/analytics/models.py` - Phase 9 data models
+- `apps/analytics/models.py` - version 0.0.9 data models
 - `apps/analytics/tasks.py` - Alert evaluation and dispatch tasks
 - `apps/analytics/views.py` - Screener and alert APIs
 - `apps/analytics/consumers.py` - WebSocket alert consumer
@@ -307,7 +344,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 10: Advanced Technical Indicators Expansion ✓
+### version 0.0.10: Advanced Technical Indicators Expansion ✓
 **Objective**: Extend the analytics engine with signal detection across moving averages, Bollinger Bands, volume-price relationships, and momentum factors
 
 **Implemented Signals** (`SignalEvent` model):
@@ -347,7 +384,7 @@ Market (3 exchanges)
 
 **Key Files**:
 - `apps/analytics/models.py` — `SignalEvent` model
-- `apps/analytics/tasks.py` — all Phase 10 signal tasks
+- `apps/analytics/tasks.py` — all version 0.0.10 signal tasks
 - `apps/analytics/views.py` — `SignalEventViewSet` with `recent` and `recalculate` actions
 - `apps/analytics/serializers.py` — `SignalEventSerializer`
 - `apps/analytics/migrations/0004_phase10_signal_events.py` — migration
@@ -355,7 +392,7 @@ Market (3 exchanges)
 
 ---
 
-### Phase 11: Multi-Factor Alpha Model ✓
+### version 0.0.11: Multi-Factor Alpha Model ✓
 **Objective**: Build a configurable multi-factor stock ranking engine for bottom-candidate screening
 
 **Implemented Features**:
@@ -367,7 +404,7 @@ Market (3 exchanges)
   - `GET /api/v1/screener/bottom-candidates/`
   - `POST /api/v1/screener/bottom-candidates/recalculate/`
 - Parameterized weighted scoring (`financial_weight`, `flow_weight`, `technical_weight`)
-- Admin support for all Phase 11 models
+- Admin support for all version 0.0.11 models
 
 **Scoring Engine**:
 - Financial factors:
@@ -381,7 +418,7 @@ Market (3 exchanges)
 - Technical factors:
   - RSI oversold signal
   - close near Bollinger lower band
-  - Phase 10 oversold signal (`OVERSOLD_COMBINATION`)
+  - version 0.0.10 oversold signal (`OVERSOLD_COMBINATION`)
 - Weighted aggregation into `composite_score` and `bottom_probability_score`
 
 **Data / API Models**:
@@ -394,12 +431,12 @@ Market (3 exchanges)
 - `apps/factors/tasks.py` — daily factor scoring task
 - `apps/factors/views.py` — factor ingestion and bottom-candidate APIs
 - `apps/factors/serializers.py` — factor serializers
-- `apps/factors/tests.py` — Phase 11 test coverage
+- `apps/factors/tests.py` — version 0.0.11 test coverage
 - `apps/factors/migrations/0001_initial.py` — initial migration
 
 ---
 
-### Phase 12: Macro & Event-Driven Context Engine ✓
+### version 0.0.12: Macro & Event-Driven Context Engine ✓
 **Objective**: Introduce macro context and event-driven overlays as a global adjustment layer for model scoring
 
 **Implemented Features**:
@@ -417,7 +454,7 @@ Market (3 exchanges)
 - Macro phase inference task using PMI + yield-curve logic:
   - `RECOVERY`, `OVERHEAT`, `STAGFLATION`, `RECESSION`
 - Context-aware weight service for downstream ranking models
-- Phase 11 integration:
+- version 0.0.11 integration:
   - Bottom-candidates endpoint now accepts `macro_context` and `event_tag`
   - Recalculate endpoint applies context-adjusted weights before queuing scoring
   - List endpoint returns `adjusted_bottom_probability_score` and `context_applied`
@@ -429,12 +466,12 @@ Market (3 exchanges)
 - `apps/macro/tasks.py` — monthly sync and context refresh tasks
 - `apps/macro/views.py` — macro APIs and custom actions
 - `apps/macro/serializers.py` — macro serializers
-- `apps/macro/tests.py` — Phase 12 test coverage
+- `apps/macro/tests.py` — version 0.0.12 test coverage
 - `apps/macro/migrations/0001_initial.py` — initial migration
 
 ---
 
-### Phase 13: NLP Sentiment & News Intelligence ✓
+### version 0.0.13: NLP Sentiment & News Intelligence ✓
 **Objective**: Add sentiment intelligence from news and concept heat signals, and feed sentiment into multi-factor ranking
 
 **Implemented Features**:
@@ -455,7 +492,7 @@ Market (3 exchanges)
   - Daily article/asset/market sentiment scoring (`calculate_daily_sentiment`)
   - Concept heat computation (`calculate_concept_heat`)
   - Unified daily dispatcher (`run_daily_sentiment_pipeline`)
-- Sentiment factor integration into Phase 11:
+- Sentiment factor integration into version 0.0.11:
   - `FactorScore` now stores `sentiment_score` and `sentiment_weight`
   - Factor scoring task supports `sentiment_weight`
   - Asset 7-day sentiment aggregate participates in composite score
@@ -466,21 +503,21 @@ Market (3 exchanges)
 - `apps/sentiment/tasks.py` — sentiment scoring and concept heat tasks
 - `apps/sentiment/views.py` — sentiment/news/concept API viewsets
 - `apps/sentiment/serializers.py` — sentiment serializers
-- `apps/sentiment/tests.py` — Phase 13 test coverage
+- `apps/sentiment/tests.py` — version 0.0.13 test coverage
 - `apps/sentiment/migrations/0001_initial.py` — initial migration
 - `apps/factors/tasks.py` — sentiment factor integration in composite scoring
 - `apps/factors/models.py` — sentiment fields on FactorScore
 
 ---
 
-### Phase 14: ML Prediction Engine ✓
+### version 0.0.14: ML Prediction Engine ✓
 **Objective**: Build the core prediction engine to estimate direction probabilities for each stock
 
 
 
 **Implemented Features**:
 
-**Tier 1: Heuristic Baseline** (original Phase 14):
+**Tier 1: Heuristic Baseline** (original version 0.0.14):
   - New `prediction` app with core models:
     - `ModelVersion` for prediction model registry and version lifecycle
     - `PredictionResult` for daily stock-level probability snapshots by horizon
@@ -501,7 +538,7 @@ Market (3 exchanges)
     - daily prediction generation task (18:00 UTC)
     - macro context/event tag override support
 
-**Tier 2: LightGBM Parallel ML Engine** (Phase 14 Extension):
+**Tier 2: LightGBM Parallel ML Engine** (version 0.0.14 Extension):
   - Production-ready parallel prediction pipeline alongside heuristic baseline
   - Dual-model architecture for side-by-side accuracy comparison and gradual adoption
   - Core Models:
@@ -535,8 +572,8 @@ Market (3 exchanges)
   - `apps/prediction/views_lightgbm.py` — LightGBM prediction endpoints
   - `apps/prediction/serializers.py` — heuristic serializers
   - `apps/prediction/serializers_lightgbm.py` — LightGBM serializers
-  - `apps/prediction/tests.py` — Phase 14 heuristic tests (5 tests, all passing)
-  - `apps/prediction/tests_lightgbm.py` — Phase 14 LightGBM tests (7 tests, all passing)
+  - `apps/prediction/tests.py` — version 0.0.14 heuristic tests (5 tests, all passing)
+  - `apps/prediction/tests_lightgbm.py` — version 0.0.14 LightGBM tests (7 tests, all passing)
   - `apps/prediction/migrations/0001_initial.py` — initial heuristic schema
   - `apps/prediction/migrations/0002_ensembleweightsnapshot_lightgbmmodelartifact_and_more.py` — LightGBM schema (applied)
 
@@ -544,7 +581,7 @@ Market (3 exchanges)
   - Heuristic: 5/5 tests ✓
   - LightGBM: 7/7 tests ✓ (including routing fix for train endpoint)
 
-### Phase 15: Backtesting & Strategy Validation ✓
+### version 0.0.15: Backtesting & Strategy Validation ✓
 **Objective**: Validate strategy effectiveness and prediction quality with historical simulation
 
 **Implemented Features**:
@@ -570,52 +607,14 @@ Market (3 exchanges)
 - `apps/backtest/views.py` — backtest run/trade APIs with rerun and trade-list actions
 - `apps/backtest/serializers.py` — run/trade serializers and validations
 - `apps/backtest/admin.py` — admin registrations
-- `apps/backtest/tests.py` — Phase 15 test coverage
+- `apps/backtest/tests.py` — version 0.0.15 test coverage
 - `apps/backtest/migrations/0001_initial.py` — initial migration
 
 **Test Coverage**: 4/4 tests passing (100%)
----
-
-## 📊 Current System Status
-
-### Data Metrics
-- **Markets**: 3 (SSE, SZSE, BSE)
-- **Assets**: 334 CSI 300 stocks
-- **OHLCV Records**: ~100,000+ daily price points
-- **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
-- **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
-- **Sentiment Analytics**: article-level and 7-day aggregated sentiment + concept heat
-- **Prediction Snapshots**: 3/7/30-day directional probabilities with confidence and model versioning
-- **Backtest Engine**: async strategy simulation with trade logs and performance metrics
-
-### API Endpoints
-- **Markets API**: 2 endpoints (list, detail)
-- **Assets API**: 2 endpoints + search/filter
-- **OHLCV API**: 2 endpoints + date range filtering
-- **Indicators API**: list/detail + compare/recalculate/fibonacci + ranking endpoints
-- **Screeners API**: 4 pre-built screeners + screener templates
-- **Alerts API**: alert rules + alert events
-- **Signals API**: list/filter/recent/recalculate signal events
-- **Factors API**: fundamentals, capital-flows, and bottom-candidates screener
-- **Macro API**: snapshots, current context, event-impact statistics
-- **Sentiment API**: news ingestion, sentiment scores, latest sentiment, concept heat ranking
-- **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry
-- **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking
-- **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
-- **Developer Portal API**: API key management, sandbox keys, key rotation, changelog
-- **Schema / Docs API**: OpenAPI 3.0 schema, Swagger UI, ReDoc
-- **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
-- **Authentication**: 3 endpoints (token, refresh, verify) + `X-API-Key` header
-
-### Performance
-- Redis caching enabled (2-hour cache for static data)
-- Database query optimization with `select_related()`
-- Celery distributed task processing
-- Docker containerization for scalability
 
 ---
 
-### Phase 16: API Documentation & Developer Portal ✓
+### version 0.0.16: API Documentation & Developer Portal ✓
 **Objective**: Complete API documentation ecosystem and developer portal
 
 **Implemented Features**:
@@ -645,7 +644,7 @@ Market (3 exchanges)
 - `apps/developer/views.py` — `DeveloperAPIKeyViewSet`, `ChangelogEntryViewSet`
 - `apps/developer/serializers.py` — key create/read serializers
 - `apps/developer/admin.py` — admin registrations
-- `apps/developer/tests.py` — Phase 16 test coverage
+- `apps/developer/tests.py` — version 0.0.16 test coverage
 - `apps/developer/migrations/0001_initial.py` — initial migration
 - `config/settings/base.py` — `SPECTACULAR_SETTINGS`, `APIKeyAuthentication` in auth classes
 - `config/urls.py` — schema + developer portal routes
@@ -653,48 +652,146 @@ Market (3 exchanges)
 
 **Test Coverage**: 16/16 tests passing (100%)
 
----
 
-## 🔮 Future Phases & Roadmap
-
-### Phase 17: Frontend Dashboard
+### version 0.1.0: Frontend Dashboard ✓
 **Objective**: 面向用户的可视化操作界面
 
-**核心页面**:
-- **首页仪表盘**：当前宏观环境标签、板块热度、今日预测信号汇总
-- **个股详情页**：K线图 + 技术指标 + 预测概率 + 情绪趋势
-- **底部候选筛选器**：可配置权重的多因子筛选结果列表
-- **宏观背景设置**：手动打标当前环境（周期、事件标签）
-- **回测工作台**：策略参数配置 + 回测结果展示
-- **告警中心**：价格/信号告警管理（对接 Phase 9）
+**Implemented Features**:
+- New `frontend/` app bootstrapped with **Vite + React + TypeScript**
+- Dashboard routing and application shell with 6 pages:
+  - Dashboard
+  - Stock Detail
+  - Bottom Screener
+  - Macro Context
+  - Backtest Workbench
+  - Alert Center
+- Charting integration:
+  - **TradingView Lightweight Charts** for candlestick rendering
+  - **Recharts** for multi-horizon probability visualization
+- Real-time alert stream hook using **WebSocket** (`/ws/alerts/` configurable by env)
+- API utility layer with JWT + API Key header support (`Authorization`, `X-API-Key`)
+**Key Files**:
+- `frontend/src/App.tsx` — route definitions and page composition
+- `frontend/src/components/layout/AppShell.tsx` — nav shell
+- `frontend/src/components/charts/CandlestickChart.tsx` — K-line chart
+- `frontend/src/components/charts/ProbabilityChart.tsx` — prediction probability chart
+- `frontend/src/pages/*.tsx` — page implementations
+- `frontend/src/hooks/useAlertsSocket.ts` — real-time alert stream
+- `frontend/src/lib/api.ts` — API client with auth headers
+- `frontend/src/index.css` — responsive dashboard styling
+- `frontend/package.json` — dependencies and HGFS-safe scripts
 
-**技术栈**:
-- **React 18** + TypeScript
-- **TradingView Lightweight Charts** — K线图
-- **Recharts / ECharts** — 因子得分、概率可视化
-- **WebSocket** — 实时价格更新
-- **Tailwind CSS** + shadcn/ui
-- **Vite** — 构建工具
+**Run Frontend**:
+```bash
+cd frontend
+npm install --no-bin-links
+npm run dev
+```
+
+Open: `http://localhost:5173`
+
+### version 0.1.1: Real Backend Data Wiring ✓
+  - Dashboard metrics now fetched from live endpoints (`macro`, `concept heat`, `signals`, `alert-events`)
+  - Stock Detail page now fetches live asset lookup, OHLCV candles, prediction probabilities, and sentiment scores
+  - Bottom Screener now renders live `/screener/bottom-candidates/` results
+  - Macro Context page now renders live `/macro/contexts/` entries
+  - Backtest Workbench now renders live `/backtest/` runs
+  - Alert Center now combines live WebSocket stream + `/alert-events/` API history
+
+### version 0.1.2: Dynamic Series Completion ✓
+  - Dashboard probability chart now uses live prediction series (top screener symbol fallback)
+  - Stock Detail removed static fallback chart/probability data; now displays API-driven series only
+  - Chart components now show explicit empty-state messages when API data is unavailable
+
+### version 0.1.3: UX & Performance Enhancements ✓
+  - Route-level code splitting via lazy-loaded page modules + `Suspense` fallback
+  - Lightweight Auth Settings panel in sidebar:
+    - JWT token input
+    - API key input
+    - Persistence mode selector (`local`, `session`, `none`)
+    - Save/Clear controls wired to storage
+  - Additional live dashboard aggregates:
+    - completed backtest runs count
+    - average bottom-candidate probability from screener endpoint
+- Mobile-responsive layout and custom visual theme
+- HGFS-compatible npm scripts (no `.bin` symlink dependency)
+
+### version 0.1.4 Data Sync & Coverage Recovery ✓
+**Objective**: 恢复核心行情数据覆盖并完成阶段性全链路数据校准
+
+**Implemented Features**:
+- Added and verified TuShare-based incremental/backfill workflow in local Docker runtime
+- Re-synced representative core symbols (e.g. `600519`, `000001`, `300750`) and completed broader constituent recovery runs
+- Introduced throttled batch resume strategy to handle provider rate limits and improve long-run sync stability
+- Re-ran model data dependencies for current date:
+  - technical/signal recalculation
+  - macro snapshot/context refresh
+  - sentiment/concept-heat recalculation
+  - factor score regeneration
+  - prediction result regeneration
+- Performed post-sync consistency checks for OHLCV/assets coverage and key feature tables
+
+**Key Files / Modules**:
+- `apps/markets/tasks.py` — market/asset history synchronization pipeline
+- `apps/analytics/tasks.py` — technical indicator and signal recalculation tasks
+- `apps/macro/tasks.py` — macro snapshot and context refresh tasks
+- `apps/sentiment/tasks.py` — sentiment and concept heat recalculation
+- `apps/factors/tasks.py` — factor score regeneration
+- `apps/prediction/tasks.py` — prediction regeneration
+
+### version 0.1.5 Dashboard, Stock, Macro, Alerts UX Fixes ✓
+**Objective**: 修复前端关键页面的可用性与数据可读性问题
+
+**Implemented Features**:
+- Dashboard UX updates:
+  - moved `Top N Bottom Candidates` table above charts
+  - replaced chart section title with formal title: `Top Candidate Probability Outlook`
+- Stock Detail data fixes:
+  - expanded OHLCV loading from single-page fetch to paginated aggregation for long-history K-line rendering
+  - increased frontend OHLCV request limit for deeper historical chart coverage
+- Macro Context display improvements:
+  - upgraded list layout to table with explicit headers (`Macro Phase`, `Event Tag`, `Status`)
+  - changed ambiguous `N/A` event display to explicit `No event tag configured`
+- Alert Center connection-state UX:
+  - introduced reconnecting state and exponential backoff reconnect behavior
+  - status now distinguishes `Connected` / `Reconnecting...` / `Disconnected`
+
+**Key Files**:
+- `frontend/src/pages/DashboardPage.tsx`
+- `frontend/src/pages/StockDetailPage.tsx`
+- `frontend/src/pages/MacroContextPage.tsx`
+- `frontend/src/pages/AlertCenterPage.tsx`
+- `frontend/src/hooks/useAlertsSocket.ts`
+- `frontend/src/lib/api.ts`
+- `frontend/src/i18n.tsx`
+
+### version 0.1.6 Realtime Auth & Sentiment Availability Hardening ✓
+**Objective**: 提升实时告警鉴权稳定性并消除个股情绪分缺失
+
+**Implemented Features**:
+- WebSocket auth compatibility enhancement:
+  - backend alerts consumer now supports JWT query-token authentication fallback for `/ws/alerts/`
+  - frontend socket URL now appends JWT token when available
+- Sentiment data availability enhancement:
+  - `calculate_daily_sentiment` now creates neutral fallback `ASSET_7D` entries for active assets without article aggregation
+  - prevents stock detail sentiment from showing persistent `N/A` when source article coverage is sparse
+- End-to-end checks completed:
+  - frontend production build passed
+  - Django system checks passed
+  - target APIs returned `200` for OHLCV / sentiment / macro-current smoke checks
+
+**Key Files**:
+- `apps/analytics/consumers.py`
+- `apps/sentiment/tasks.py`
+- `frontend/src/hooks/useAlertsSocket.ts`
+- `frontend/src/lib/api.ts`
+- `frontend/src/pages/AlertCenterPage.tsx`
 
 ---
 
-### Phase 18: Mobile Application
-**Objective**: iOS / Android 移动端应用
+## Future Phases & Roadmap
 
-**核心功能**:
-- 个股搜索与收藏
-- 实时价格跟踪 + 预测概率查看
-- 底部候选推送通知
-- 移动端优化图表
-- 离线数据缓存
-
-**技术选型**:
-- **React Native** — 跨平台首选（复用前端逻辑）
-- 或 **Flutter** — 更高性能需求时备选
-
----
-
-### Phase 19: Production Deployment
+### Production Deployment
 **Objective**: 云端部署 + CI/CD 全自动化
 
 **基础设施**:
@@ -775,32 +872,10 @@ Market (3 exchanges)
 
 ---
 
-## 📡 API Usage Examples
+## 📡 API Documentation
 
-### Obtain JWT Token
-```bash
-curl -X POST http://localhost:8000/api/v1/auth/token/ \
-  -H "Content-Type: application/json" \
-  -d '{"username": "your_username", "password": "your_password"}'
-```
-
-### List Assets (Authenticated)
-```bash
-curl http://localhost:8000/api/v1/assets/ \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-### Get Top RSI Stocks
-```bash
-curl http://localhost:8000/api/v1/indicators/top_rsi/ \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-### Search Stocks
-```bash
-curl "http://localhost:8000/api/v1/assets/?search=平安" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
+http://localhost:8000/api/v1/schema/swagger-ui/
+http://localhost:8000/api/v1/schema/redoc/
 
 ---
 
@@ -839,4 +914,4 @@ This project is private and proprietary.
 
 
 **Last Updated**: April 12, 2026  
-**Version**: 1.2.0 (Phases 1-16 Complete)
+**Version**: v0.1.6

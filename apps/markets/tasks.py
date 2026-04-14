@@ -1,8 +1,11 @@
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
-import akshare as ak
 import pandas as pd
 from decimal import Decimal
+from datetime import timedelta
+
+import tushare as ts
 
 from .models import Asset, OHLCV, Market
 
@@ -14,14 +17,17 @@ def sync_asset_history(stock_code, stock_name, market_code):
     This is a worker task that processes one asset at a time.
     """
     try:
-        # Get the market
+        token = getattr(settings, 'TUSHARE_TOKEN', None)
+        if not token:
+            return 'TUSHARE_TOKEN is not configured.'
+
+        pro = ts.pro_api(token)
+
         market = Market.objects.get(code=market_code)
-        
-        # Determine market suffix
+
         market_suffix = 'SH' if market_code == 'SSE' else 'SZ' if market_code == 'SZSE' else 'BJ'
         ts_code = f"{stock_code}.{market_suffix}"
 
-        # Get or create the Asset
         asset, created = Asset.objects.get_or_create(
             ts_code=ts_code,
             defaults={
@@ -30,44 +36,53 @@ def sync_asset_history(stock_code, stock_name, market_code):
                 'name': stock_name,
             }
         )
-        
+
         if created:
             print(f"Created new asset: {asset}")
 
-        # Fetch daily data
-        ohlcv_df = ak.stock_zh_a_hist(symbol=stock_code, adjust="qfq")
+        latest = OHLCV.objects.filter(asset=asset).order_by('-date').first()
+        if latest:
+            start_date = (latest.date + timedelta(days=1)).strftime('%Y%m%d')
+        else:
+            start_date = (timezone.now().date() - timedelta(days=365 * 10)).strftime('%Y%m%d')
+        end_date = timezone.now().date().strftime('%Y%m%d')
 
-        if ohlcv_df.empty:
-            print(f"No historical data found for {stock_code}. Skipping.")
-            return f"No data for {stock_code}"
+        ohlcv_df = ts.pro_bar(
+            ts_code=ts_code,
+            adj='qfq',
+            start_date=start_date,
+            end_date=end_date,
+            api=pro,
+        )
 
-        # Prepare and save the data
-        ohlcv_count = 0
-        for i, ohlcv_row in ohlcv_df.iterrows():
-            dt_object = pd.to_datetime(ohlcv_row['日期']).tz_localize('Asia/Shanghai')
-            date_only = dt_object.date()
+        if ohlcv_df is None or ohlcv_df.empty:
+            print(f"No historical data found for {ts_code}. Skipping.")
+            return f"No data for {ts_code}"
 
-            # Use get_or_create to avoid modeltranslation conflict
-            # For initial sync, we only create new records
-            obj, ohlcv_created = OHLCV.objects.get_or_create(
-                asset=asset,
-                date=date_only,
-                defaults={
-                    'open': Decimal(str(ohlcv_row['开盘'])),
-                    'high': Decimal(str(ohlcv_row['最高'])),
-                    'low': Decimal(str(ohlcv_row['最低'])),
-                    'close': Decimal(str(ohlcv_row['收盘'])),
-                    'volume': int(ohlcv_row['成交量']),
-                    'adj_close': Decimal(str(ohlcv_row.get('后复权价', ohlcv_row['收盘']))),
-                    'amount': Decimal(str(ohlcv_row.get('成交额', 0))),
-                }
+        rows = []
+        for _, ohlcv_row in ohlcv_df.iterrows():
+            trade_date = pd.to_datetime(str(ohlcv_row['trade_date'])).date()
+            rows.append(
+                OHLCV(
+                    asset=asset,
+                    date=trade_date,
+                    open=Decimal(str(ohlcv_row['open'])),
+                    high=Decimal(str(ohlcv_row['high'])),
+                    low=Decimal(str(ohlcv_row['low'])),
+                    close=Decimal(str(ohlcv_row['close'])),
+                    volume=int(float(ohlcv_row['vol']) * 100),
+                    adj_close=Decimal(str(ohlcv_row['close'])),
+                    amount=Decimal(str(ohlcv_row['amount'])),
+                )
             )
-            
-            if ohlcv_created:
-                ohlcv_count += 1
 
-        print(f"Processed {stock_code}: Saved {ohlcv_count} new OHLCV records.")
-        return f"Completed {stock_code}: {ohlcv_count} records"
+        before = OHLCV.objects.filter(asset=asset).count()
+        OHLCV.objects.bulk_create(rows, batch_size=2000, ignore_conflicts=True)
+        after = OHLCV.objects.filter(asset=asset).count()
+        ohlcv_count = max(0, after - before)
+
+        print(f"Processed {ts_code}: Saved {ohlcv_count} new OHLCV records.")
+        return f"Completed {ts_code}: {ohlcv_count} records"
 
     except Exception as e:
         print(f"Error processing {stock_code}: {e}")
@@ -80,7 +95,7 @@ def sync_daily_a_shares():
     Dispatcher task: Fetches CSI 300 list and dispatches individual sync tasks.
     This task completes quickly - the actual work is done by sync_asset_history tasks.
     """
-    print("Starting CSI 300 synchronization dispatcher...")
+    print("Starting CSI 300 synchronization dispatcher from TuShare...")
 
     try:
         # 1. Ensure Markets exist
@@ -88,25 +103,49 @@ def sync_daily_a_shares():
         Market.objects.get_or_create(code='SZSE', defaults={'name': 'Shenzhen Stock Exchange'})
         Market.objects.get_or_create(code='BSE', defaults={'name': 'Beijing Stock Exchange'})
 
-        # 2. Fetch CSI 300 constituent stocks
-        stock_info_df = ak.index_stock_cons_csindex(symbol="000300")
-        print(f"Fetched {len(stock_info_df)} CSI 300 stocks from AkShare.")
+        token = getattr(settings, 'TUSHARE_TOKEN', None)
+        if not token:
+            return 'Dispatch failed: TUSHARE_TOKEN is not configured.'
+
+        pro = ts.pro_api(token)
+
+        # 2. Fetch CSI 300 constituents from TuShare index weights (latest rebalance snapshot)
+        today = timezone.now().date()
+        start = (today - timedelta(days=30)).strftime('%Y%m%d')
+        end = today.strftime('%Y%m%d')
+        weights_df = pro.index_weight(index_code='000300.SH', start_date=start, end_date=end)
+
+        if weights_df is None or weights_df.empty:
+            return 'Dispatch failed: no CSI300 constituents from TuShare.'
+
+        latest_trade_date = str(weights_df['trade_date'].max())
+        latest_df = weights_df[weights_df['trade_date'] == latest_trade_date].copy()
+        latest_df = latest_df.drop_duplicates(subset=['con_code'])
+
+        basics_df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name')
+        name_map = {}
+        if basics_df is not None and not basics_df.empty:
+            for _, row in basics_df.iterrows():
+                name_map[str(row['ts_code'])] = str(row['name'])
+
+        print(f"Fetched {len(latest_df)} CSI 300 stocks from TuShare ({latest_trade_date}).")
 
         # 3. Dispatch individual tasks for each stock
         task_count = 0
-        for index, row in stock_info_df.iterrows():
-            stock_code = row['成分券代码']
-            stock_name = row['成分券名称']
-            
-            # Determine market from stock code
-            if stock_code.startswith('6'):
+        for _, row in latest_df.iterrows():
+            ts_code = str(row['con_code'])
+            if '.' not in ts_code:
+                continue
+            stock_code, suffix = ts_code.split('.', 1)
+            stock_name = name_map.get(ts_code, stock_code)
+
+            if suffix == 'SH':
                 market_code = 'SSE'
-            elif stock_code.startswith('0') or stock_code.startswith('3'):
+            elif suffix == 'SZ':
                 market_code = 'SZSE'
-            elif stock_code.startswith('8') or stock_code.startswith('4') or stock_code.startswith('9'):
+            elif suffix == 'BJ':
                 market_code = 'BSE'
             else:
-                print(f"Could not determine market for {stock_code}. Skipping.")
                 continue
 
             # Dispatch the task

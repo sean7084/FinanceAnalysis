@@ -10,9 +10,12 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 import environ
 from pathlib import Path
 from celery.schedules import crontab
+
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN")
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -178,6 +181,10 @@ CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_TASK_SOFT_TIME_LIMIT = 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
+    'sync-a-shares-daily-from-tushare': {
+        'task': 'apps.markets.tasks.sync_daily_a_shares',
+        'schedule': crontab(hour='16', minute='10'),
+    },
     'check-alert-rules-every-5-min': {
         'task': 'apps.analytics.tasks.check_alert_rules',
         'schedule': crontab(minute='*/5'),

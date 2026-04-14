@@ -10,7 +10,22 @@
 		"chat.tools.terminal.autoApprove": {
 			"docker-compose": true,
 			"sg": true,
-			"docker exec": true
+			"docker exec": true,
+			"npm run build": true,
+			"docker compose": true,
+			"from": true,
+			"/^sudo docker compose run --rm django python -c \"import importlib\\.util; print\\('drf_spectacular=', bool\\(importlib\\.util\\.find_spec\\('drf_spectacular'\\)\\)\\)\"$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^sudo docker compose images$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^sudo docker compose build --no-cache django && sudo docker compose up -d django celery_worker celery_beat && sudo docker compose ps$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
 		}
 	}
 }

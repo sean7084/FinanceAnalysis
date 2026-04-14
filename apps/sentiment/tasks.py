@@ -7,6 +7,7 @@ from celery import shared_task
 from django.db.models import Avg
 from django.utils import timezone
 
+from apps.markets.models import Asset
 from .models import NewsArticle, SentimentScore, ConceptHeat
 
 try:
@@ -163,7 +164,9 @@ def calculate_daily_sentiment(target_date=None):
         .annotate(avg_sentiment=Avg('sentiment_score'))
     )
 
+    aggregated_asset_ids = set()
     for row in asset_daily:
+        aggregated_asset_ids.add(row['asset'])
         avg_sent = Decimal(str(row['avg_sentiment'] or 0)).quantize(Decimal('0.000001'))
         pos = max(Decimal('0'), avg_sent)
         neg = max(Decimal('0'), -avg_sent)
@@ -180,6 +183,25 @@ def calculate_daily_sentiment(target_date=None):
                 'sentiment_score': avg_sent,
                 'sentiment_label': _label(avg_sent),
                 'metadata': {'window_days': 7},
+            },
+        )
+
+    # Ensure each active asset has a 7d sentiment row to avoid N/A UI states.
+    for asset in Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE):
+        if asset.id in aggregated_asset_ids:
+            continue
+        SentimentScore.objects.update_or_create(
+            article=None,
+            asset=asset,
+            date=d,
+            score_type=SentimentScore.ScoreType.ASSET_7D,
+            defaults={
+                'positive_score': Decimal('0.000000'),
+                'neutral_score': Decimal('1.000000'),
+                'negative_score': Decimal('0.000000'),
+                'sentiment_score': Decimal('0.000000'),
+                'sentiment_label': SentimentScore.Label.NEUTRAL,
+                'metadata': {'window_days': 7, 'fallback': 'no_related_article'},
             },
         )
 
