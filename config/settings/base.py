@@ -180,6 +180,11 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_TASK_SOFT_TIME_LIMIT = 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+NEWS_BACKFILL_ENABLED = env.bool('NEWS_BACKFILL_ENABLED', default=True)
+NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
+NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
+NEWS_BACKFILL_FLOOR = env('NEWS_BACKFILL_FLOOR', default='2021-04-15 00:00:00')
+NEWS_BACKFILL_LIMIT_PER_PROVIDER = env.int('NEWS_BACKFILL_LIMIT_PER_PROVIDER', default=0)
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
@@ -196,6 +201,14 @@ CELERY_BEAT_SCHEDULE = {
     'sync-macro-data-monthly': {
         'task': 'apps.macro.tasks.sync_macro_data_monthly',
         'schedule': crontab(day_of_month='1', hour='2', minute='0'),
+    },
+    'fetch-latest-market-news-daily': {
+        'task': 'apps.sentiment.tasks.fetch_latest_market_news',
+        'schedule': crontab(hour='16', minute='35'),
+    },
+    'run-hourly-historical-news-backfill': {
+        'task': 'apps.sentiment.tasks.run_hourly_historical_news_backfill',
+        'schedule': crontab(minute='12'),
     },
     'run-daily-sentiment-pipeline': {
         'task': 'apps.sentiment.tasks.run_daily_sentiment_pipeline',

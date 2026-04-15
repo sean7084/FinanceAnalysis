@@ -103,3 +103,29 @@ class EnsembleWeightSnapshot(models.Model):
         verbose_name = _('Ensemble Weight Snapshot')
         verbose_name_plural = _('Ensemble Weight Snapshots')
         ordering = ['-date']
+
+
+class FeatureImportanceSnapshot(models.Model):
+    """Historical per-feature importance for a trained LightGBM artifact."""
+
+    model_artifact = models.ForeignKey(
+        LightGBMModelArtifact,
+        on_delete=models.CASCADE,
+        related_name='feature_importance_snapshots',
+        verbose_name=_('Model Artifact'),
+    )
+    horizon_days = models.PositiveIntegerField(_('Horizon Days'), choices=[(3, '3'), (7, '7'), (30, '30')], db_index=True)
+    feature_name = models.CharField(_('Feature Name'), max_length=120, db_index=True)
+    importance_score = models.FloatField(_('Importance Score'), default=0.0)
+    importance_rank = models.PositiveIntegerField(_('Importance Rank'), default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Feature Importance Snapshot')
+        verbose_name_plural = _('Feature Importance Snapshots')
+        ordering = ['horizon_days', 'importance_rank', 'feature_name']
+        unique_together = ('model_artifact', 'feature_name')
+        indexes = [
+            models.Index(fields=['horizon_days', 'feature_name']),
+            models.Index(fields=['model_artifact', 'importance_rank']),
+        ]

@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -12,7 +13,7 @@ from apps.factors.tasks import calculate_factor_scores_for_date
 from apps.factors.models import FactorScore, FundamentalFactorSnapshot, CapitalFlowSnapshot
 from apps.markets.models import Market, Asset
 from .models import NewsArticle, SentimentScore
-from .tasks import calculate_daily_sentiment
+from .tasks import calculate_daily_sentiment, fetch_latest_market_news, ingest_latest_news, run_hourly_historical_news_backfill
 
 
 class Phase13SentimentTests(TestCase):
@@ -118,3 +119,108 @@ class Phase13SentimentTests(TestCase):
         response = self.client.get(f'/api/v1/sentiment/latest/?asset={self.asset.id}&score_type=ASSET_7D&date={d}')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['results']), 1)
+
+    def test_ingest_links_assets_and_infers_concepts(self):
+        message = ingest_latest_news(news_items=[{
+            'source': NewsArticle.Source.EASTMONEY,
+            'title': 'Sentiment Asset 切入 AI 芯片 赛道',
+            'summary': '603001 推进半导体和人工智能业务。',
+            'content': '公司在芯片与人工智能领域持续扩张。',
+            'url': 'https://example.com/real-news',
+            'published_at': timezone.now(),
+            'language': 'zh',
+            'concept_tags': ['自定义概念'],
+            'metadata': {'provider': 'test'},
+        }])
+
+        article = NewsArticle.objects.get(url='https://example.com/real-news')
+        self.assertIn('Created', message)
+        self.assertEqual(list(article.related_assets.values_list('id', flat=True)), [self.asset.id])
+        self.assertIn('AI', article.concept_tags)
+        self.assertIn('芯片', article.concept_tags)
+        self.assertIn('自定义概念', article.concept_tags)
+
+    @patch('apps.sentiment.tasks.fetch_normalized_news_items')
+    def test_fetch_latest_market_news_handles_provider_payloads(self, mock_fetch):
+        mock_fetch.return_value = [{
+            'source': NewsArticle.Source.SINA,
+            'title': 'Sentiment Asset 利好',
+            'summary': '增长突破',
+            'content': 'Sentiment Asset 业绩增长',
+            'url': 'https://example.com/provider-news',
+            'published_at': timezone.now(),
+            'language': 'zh',
+            'concept_tags': [],
+            'metadata': {'provider': 'mock'},
+        }]
+
+        message = fetch_latest_market_news(providers=['sina'], limit_per_provider=5)
+        self.assertIn('Fetched 1 items', message)
+        self.assertTrue(NewsArticle.objects.filter(url='https://example.com/provider-news').exists())
+
+    @patch('apps.sentiment.management.commands.backfill_news.fetch_normalized_news_items')
+    def test_backfill_command_ingests_rows(self, mock_fetch):
+        mock_fetch.return_value = [{
+            'source': NewsArticle.Source.TONGHUASHUN,
+            'title': 'Sentiment Asset 获得新订单',
+            'summary': '业务扩张',
+            'content': 'Sentiment Asset 业务扩张并获得新订单。',
+            'url': 'https://example.com/command-news',
+            'published_at': timezone.now(),
+            'language': 'zh',
+            'concept_tags': [],
+            'metadata': {'provider': 'mock'},
+        }]
+
+        call_command('backfill_news', '--providers=eastmoney', '--limit-per-provider=2')
+        self.assertTrue(NewsArticle.objects.filter(url='https://example.com/command-news').exists())
+
+    @patch('apps.sentiment.tasks.fetch_normalized_news_items')
+    def test_hourly_historical_backfill_fetches_next_window(self, mock_fetch):
+        NewsArticle.objects.create(
+            source=NewsArticle.Source.SINA,
+            title='Current boundary',
+            summary='Boundary row',
+            content='Boundary row',
+            url='https://example.com/boundary-news',
+            published_at=timezone.make_aware(timezone.datetime(2026, 4, 7)),
+        )
+        mock_fetch.return_value = [{
+            'source': NewsArticle.Source.OTHER,
+            'title': 'Historical row',
+            'summary': 'Historical summary',
+            'content': 'Historical content',
+            'url': 'https://example.com/historical-news',
+            'published_at': timezone.make_aware(timezone.datetime(2026, 4, 1)),
+            'language': 'zh',
+            'concept_tags': [],
+            'metadata': {'provider': 'mock'},
+        }]
+
+        message = run_hourly_historical_news_backfill()
+
+        self.assertIn('Historical backfill window 2026-03-07 00:00:00 -> 2026-04-06 23:59:59', message)
+        self.assertTrue(NewsArticle.objects.filter(url='https://example.com/historical-news').exists())
+        mock_fetch.assert_called_once_with(
+            providers=['tushare_major'],
+            limit_per_provider=0,
+            start_at='2026-03-07 00:00:00',
+            end_at='2026-04-06 23:59:59',
+        )
+
+    @patch('apps.sentiment.tasks.fetch_normalized_news_items')
+    def test_hourly_historical_backfill_returns_quota_message(self, mock_fetch):
+        NewsArticle.objects.create(
+            source=NewsArticle.Source.SINA,
+            title='Current boundary',
+            summary='Boundary row',
+            content='Boundary row',
+            url='https://example.com/boundary-news-2',
+            published_at=timezone.make_aware(timezone.datetime(2026, 4, 7)),
+        )
+        mock_fetch.side_effect = Exception('抱歉，您每小时最多访问该接口4次')
+
+        message = run_hourly_historical_news_backfill()
+
+        self.assertIn('Historical backfill deferred for tushare_major', message)
+        self.assertIn('provider quota', message)

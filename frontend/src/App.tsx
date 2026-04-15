@@ -10,6 +10,7 @@ const MacroContextPage = lazy(() => import('./pages/MacroContextPage').then((m) 
 const BacktestWorkbenchPage = lazy(() => import('./pages/BacktestWorkbenchPage').then((m) => ({ default: m.BacktestWorkbenchPage })))
 const AlertCenterPage = lazy(() => import('./pages/AlertCenterPage').then((m) => ({ default: m.AlertCenterPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const ModelMonitoringPage = lazy(() => import('./pages/ModelMonitoringPage').then((m) => ({ default: m.ModelMonitoringPage })))
 
 function withSuspense(element: ReactElement) {
   return <Suspense fallback={<RouteLoadingFallback />}>{element}</Suspense>
@@ -29,6 +30,7 @@ const router = createBrowserRouter([
       { path: 'stock/:symbol', element: withSuspense(<StockDetailPage />) },
       { path: 'screener', element: withSuspense(<ScreenerPage />) },
       { path: 'macro', element: withSuspense(<MacroContextPage />) },
+      { path: 'models', element: withSuspense(<ModelMonitoringPage />) },
       { path: 'backtest', element: withSuspense(<BacktestWorkbenchPage />) },
       { path: 'alerts', element: withSuspense(<AlertCenterPage />) },
       { path: 'settings', element: withSuspense(<SettingsPage />) },

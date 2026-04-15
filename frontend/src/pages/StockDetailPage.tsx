@@ -6,10 +6,13 @@ import {
   ApiRequestError,
   fetchAssetBySymbol,
   fetchAssets,
+  fetchLightGBMPredictionBySymbol,
   fetchOhlcvByAsset,
   fetchPredictionBySymbol,
   fetchSentimentByAsset,
   hasAnyAuthCredential,
+  type LightGBMPredictionStockDto,
+  type PredictionStockDto,
 } from '../lib/api'
 import { useI18n } from '../i18n'
 
@@ -22,6 +25,8 @@ export function StockDetailPage() {
   const [stockName, setStockName] = useState('')
   const [klineData, setKlineData] = useState<Array<{ time: string; open: number; high: number; low: number; close: number }>>([])
   const [predData, setPredData] = useState<Array<{ horizon: string; up: number; flat: number; down: number }>>([])
+  const [heuristicPrediction, setHeuristicPrediction] = useState<PredictionStockDto | null>(null)
+  const [lightgbmPrediction, setLightgbmPrediction] = useState<LightGBMPredictionStockDto | null>(null)
   const [sentimentLatest, setSentimentLatest] = useState<number | null>(null)
   const [assetOptions, setAssetOptions] = useState<Array<{ symbol: string; name: string }>>([])
 
@@ -55,13 +60,16 @@ export function StockDetailPage() {
           setStockName('')
           setKlineData([])
           setPredData([])
+          setHeuristicPrediction(null)
+          setLightgbmPrediction(null)
           setSentimentLatest(null)
           return
         }
 
         const ohlcvRows = await fetchOhlcvByAsset(asset.id, 3000)
-        const [predictionResult, sentimentResult] = await Promise.allSettled([
+        const [predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
           fetchPredictionBySymbol(asset.symbol),
+          fetchLightGBMPredictionBySymbol(asset.symbol),
           fetchSentimentByAsset(asset.id),
         ])
 
@@ -82,8 +90,11 @@ export function StockDetailPage() {
         setKlineData(points)
 
         const prediction = predictionResult.status === 'fulfilled' ? predictionResult.value : null
+        const lightgbm = lightgbmResult.status === 'fulfilled' ? lightgbmResult.value : null
         const sentimentRows = sentimentResult.status === 'fulfilled' ? sentimentResult.value : []
 
+        setHeuristicPrediction(prediction)
+        setLightgbmPrediction(lightgbm)
         setPredData(
           (prediction?.results ?? []).map((x) => ({
             horizon: `${x.horizon_days}D`,
@@ -129,6 +140,52 @@ export function StockDetailPage() {
     return sentimentLatest.toFixed(3)
   }, [sentimentLatest, t])
 
+  const comparisonRows = useMemo(() => {
+    const comparison = new Map<number, {
+      heuristicLabel: string
+      heuristicConfidence: string
+      heuristicUp: string
+      lightgbmLabel: string
+      lightgbmConfidence: string
+      lightgbmUp: string
+    }>()
+
+    for (const result of heuristicPrediction?.results ?? []) {
+      comparison.set(result.horizon_days, {
+        heuristicLabel: result.predicted_label,
+        heuristicConfidence: `${(Number(result.confidence) * 100).toFixed(1)}%`,
+        heuristicUp: `${(Number(result.up) * 100).toFixed(1)}%`,
+        lightgbmLabel: '--',
+        lightgbmConfidence: '--',
+        lightgbmUp: '--',
+      })
+    }
+
+    for (const result of lightgbmPrediction?.results ?? []) {
+      const existing = comparison.get(result.horizon_days) ?? {
+        heuristicLabel: '--',
+        heuristicConfidence: '--',
+        heuristicUp: '--',
+        lightgbmLabel: '--',
+        lightgbmConfidence: '--',
+        lightgbmUp: '--',
+      }
+      comparison.set(result.horizon_days, {
+        ...existing,
+        lightgbmLabel: result.predicted_label,
+        lightgbmConfidence: `${(Number(result.confidence) * 100).toFixed(1)}%`,
+        lightgbmUp: `${(Number(result.up) * 100).toFixed(1)}%`,
+      })
+    }
+
+    return Array.from(comparison.entries())
+      .sort((left, right) => left[0] - right[0])
+      .map(([horizonDays, values]) => ({
+        horizon: `${horizonDays}D`,
+        ...values,
+      }))
+  }, [heuristicPrediction, lightgbmPrediction])
+
   return (
     <section>
       <header className="page-header">
@@ -157,7 +214,41 @@ export function StockDetailPage() {
         <span>{sentimentText}</span>
       </div>
       <CandlestickChart data={klineData} />
-      <ProbabilityChart title={t('chart.probability')} data={predData} />
+      <ProbabilityChart title={t('stock.heuristicProbability')} data={predData} />
+      <div className="card">
+        <h3>{t('stock.modelComparison')}</h3>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>{t('models.horizon')}</th>
+              <th>{t('comparison.heuristic')}</th>
+              <th>{t('models.confidence')}</th>
+              <th>{t('comparison.upProbability')}</th>
+              <th>{t('comparison.lightgbm')}</th>
+              <th>{t('models.confidence')}</th>
+              <th>{t('comparison.upProbability')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {comparisonRows.map((row) => (
+              <tr key={row.horizon}>
+                <td>{row.horizon}</td>
+                <td>{row.heuristicLabel}</td>
+                <td>{row.heuristicConfidence}</td>
+                <td>{row.heuristicUp}</td>
+                <td>{row.lightgbmLabel}</td>
+                <td>{row.lightgbmConfidence}</td>
+                <td>{row.lightgbmUp}</td>
+              </tr>
+            ))}
+            {comparisonRows.length === 0 && !loading && (
+              <tr>
+                <td colSpan={7}>{t('common.noData')}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
   )
 }

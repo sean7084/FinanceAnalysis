@@ -1,6 +1,11 @@
 from rest_framework import serializers
 
-from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot
+from .models_lightgbm import (
+    EnsembleWeightSnapshot,
+    FeatureImportanceSnapshot,
+    LightGBMModelArtifact,
+    LightGBMPrediction,
+)
 
 
 class LightGBMModelArtifactSerializer(serializers.ModelSerializer):
@@ -37,4 +42,16 @@ class EnsembleWeightSnapshotSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'date', 'lightgbm_weight', 'lstm_weight', 'heuristic_weight',
             'basis_lookback_days', 'basis_metrics', 'created_at',
+        ]
+
+
+class FeatureImportanceSnapshotSerializer(serializers.ModelSerializer):
+    model_version = serializers.CharField(source='model_artifact.version', read_only=True)
+    trained_at = serializers.DateTimeField(source='model_artifact.trained_at', read_only=True)
+
+    class Meta:
+        model = FeatureImportanceSnapshot
+        fields = [
+            'model_artifact', 'model_version', 'trained_at', 'horizon_days',
+            'feature_name', 'importance_score', 'importance_rank', 'created_at',
         ]

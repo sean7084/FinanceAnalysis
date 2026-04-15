@@ -1,14 +1,16 @@
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import re
 
 from celery import shared_task
-from django.db.models import Avg
+from django.conf import settings
+from django.db.models import Avg, Min
 from django.utils import timezone
 
 from apps.markets.models import Asset
 from .models import NewsArticle, SentimentScore, ConceptHeat
+from .providers import DEFAULT_PROVIDER_NAMES, fetch_normalized_news_items
 
 try:
     import jieba  # type: ignore
@@ -23,6 +25,30 @@ POSITIVE_WORDS = {
 NEGATIVE_WORDS = {
     '下滑', '利空', '下跌', '看跌', '风险', '亏损', '恶化', '裁员',
     'sell', 'bearish', 'downgrade', 'underperform',
+}
+
+CONCEPT_KEYWORDS = {
+    'AI': {'ai', '人工智能', '大模型', '算力'},
+    '芯片': {'芯片', '半导体', '集成电路', '光刻'},
+    '新能源': {'新能源', '锂电', '光伏', '储能', '电池'},
+    '白酒': {'白酒', '茅台', '五粮液', '泸州老窖'},
+    '医药': {'医药', '创新药', '医疗', '医保'},
+    '消费': {'消费', '零售', '电商', '食品饮料'},
+    '银行': {'银行', '信贷', '存款', '贷款'},
+    '保险': {'保险', '寿险', '财险'},
+    '地产': {'地产', '房地产', '楼市', '物业'},
+    '军工': {'军工', '航天', '航空装备', '国防'},
+    '汽车': {'汽车', '新能源车', 'robotaxi', '无人驾驶'},
+    '航运': {'航运', '港口', '海运'},
+    '航空': {'航空', '客机', '机场'},
+}
+
+LEGAL_NAME_SUFFIXES = ('股份有限公司', '有限公司', '股份', '集团', '科技', '控股')
+
+ASSET_ALIAS_OVERRIDES = {
+    '贵州茅台': {'茅台'},
+    '比亚迪': {'BYD'},
+    '中国平安': {'平安'},
 }
 
 
@@ -70,12 +96,134 @@ def _label(score):
     return SentimentScore.Label.NEUTRAL
 
 
+def _normalize_match_text(text):
+    if not text:
+        return ''
+    return re.sub(r'\s+', '', str(text).lower())
+
+
+def _asset_aliases(asset):
+    aliases = {asset.name.strip(), asset.symbol.strip(), asset.ts_code.strip().lower()}
+    stripped = asset.name.strip()
+    for suffix in LEGAL_NAME_SUFFIXES:
+        if stripped.endswith(suffix):
+            stripped = stripped[: -len(suffix)].strip()
+    if len(stripped) >= 2:
+        aliases.add(stripped)
+    aliases.update(ASSET_ALIAS_OVERRIDES.get(asset.name.strip(), set()))
+    return {alias for alias in aliases if alias}
+
+
+def _build_asset_match_index():
+    assets = Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE).only('id', 'symbol', 'ts_code', 'name')
+    entries = []
+    for asset in assets:
+        for alias in _asset_aliases(asset):
+            entries.append((alias, _normalize_match_text(alias), asset))
+    entries.sort(key=lambda item: len(item[1]), reverse=True)
+    return entries
+
+
+def _match_related_assets(title, summary, content, index, max_matches=8):
+    raw_text = ' '.join(filter(None, [title, summary, content]))
+    normalized_text = _normalize_match_text(raw_text)
+    matched_assets = []
+    matched_ids = set()
+
+    for raw_alias, normalized_alias, asset in index:
+        if asset.id in matched_ids:
+            continue
+        if raw_alias.isdigit():
+            if not re.search(rf'(?<!\d){re.escape(raw_alias)}(?!\d)', raw_text):
+                continue
+        elif normalized_alias not in normalized_text:
+            continue
+        matched_assets.append(asset)
+        matched_ids.add(asset.id)
+        if len(matched_assets) >= max_matches:
+            break
+
+    return matched_assets
+
+
+def _infer_concept_tags(title, summary, content):
+    normalized_text = _normalize_match_text(' '.join(filter(None, [title, summary, content])))
+    matched = []
+    for concept, keywords in CONCEPT_KEYWORDS.items():
+        if any(_normalize_match_text(keyword) in normalized_text for keyword in keywords):
+            matched.append(concept)
+    return matched
+
+
+def _prepare_news_items(news_items):
+    asset_index = _build_asset_match_index()
+    prepared = []
+
+    for item in news_items or []:
+        title = str(item.get('title') or '').strip()
+        summary = str(item.get('summary') or '').strip()
+        content = str(item.get('content') or '').strip()
+        matched_assets = _match_related_assets(title, summary, content, asset_index)
+        inferred_concepts = _infer_concept_tags(title, summary, content)
+        concept_tags = sorted({str(tag).strip() for tag in (item.get('concept_tags') or []) if str(tag).strip()} | set(inferred_concepts))
+        metadata = dict(item.get('metadata') or {})
+        metadata.update({
+            'matched_asset_ids': [asset.id for asset in matched_assets],
+            'matched_symbols': [asset.symbol for asset in matched_assets],
+            'asset_match_count': len(matched_assets),
+            'concept_tags_inferred': inferred_concepts,
+            'ingested_at': timezone.now().isoformat(),
+        })
+        prepared.append({
+            'source': item.get('source', NewsArticle.Source.OTHER),
+            'title': title,
+            'url': str(item.get('url') or '').strip(),
+            'published_at': item.get('published_at') or timezone.now(),
+            'content': content,
+            'summary': summary,
+            'language': str(item.get('language') or 'zh'),
+            'concept_tags': concept_tags,
+            'metadata': metadata,
+            '_matched_asset_ids': [asset.id for asset in matched_assets],
+        })
+
+    return prepared
+
+
+def _parse_backfill_floor(value):
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+        except ValueError:
+            continue
+    raise ValueError(f'Invalid NEWS_BACKFILL_FLOOR: {value}')
+
+
+def _compute_historical_backfill_window(chunk_days, floor_value):
+    earliest = NewsArticle.objects.aggregate(value=Min('published_at'))['value']
+    if earliest is None:
+        return None, None, 'No NewsArticle rows exist yet. Seed current news before historical auto-backfill.'
+
+    floor = _parse_backfill_floor(floor_value)
+    if earliest <= floor:
+        return None, None, f'Historical backfill already reached floor {floor.isoformat()}.'
+
+    window_end = earliest - timedelta(seconds=1)
+    window_start = max(floor, window_end - timedelta(days=max(1, int(chunk_days))) + timedelta(seconds=1))
+    return window_start, window_end, None
+
+
 @shared_task
 def ingest_latest_news(news_items=None):
     """Create NewsArticle records from provided items (integration point for AkShare/news crawlers)."""
-    news_items = news_items or []
+    prepared_items = _prepare_news_items(news_items)
     created = 0
-    for item in news_items:
+    updated = 0
+    linked = 0
+
+    for item in prepared_items:
+        matched_asset_ids = item.pop('_matched_asset_ids', [])
         published = item.get('published_at')
         if isinstance(published, str):
             try:
@@ -84,7 +232,7 @@ def ingest_latest_news(news_items=None):
                 published = timezone.now()
         published = published or timezone.now()
 
-        obj, was_created = NewsArticle.objects.get_or_create(
+        obj, was_created = NewsArticle.objects.update_or_create(
             url=item['url'],
             defaults={
                 'source': item.get('source', NewsArticle.Source.OTHER),
@@ -97,9 +245,83 @@ def ingest_latest_news(news_items=None):
                 'metadata': item.get('metadata', {}),
             },
         )
+        if matched_asset_ids:
+            obj.related_assets.set(Asset.objects.filter(id__in=matched_asset_ids))
+            linked += 1
+        elif not was_created:
+            obj.related_assets.clear()
+
         if was_created:
             created += 1
-    return f'News ingest complete. Created {created} records.'
+        else:
+            updated += 1
+
+    return f'News ingest complete. Created {created}, updated {updated}, linked {linked} records.'
+
+
+@shared_task
+def fetch_latest_market_news(providers=None, limit_per_provider=50, start_at=None, end_at=None):
+    provider_names = providers or DEFAULT_PROVIDER_NAMES
+    payloads = []
+    errors = []
+
+    for provider_name in provider_names:
+        try:
+            payloads.extend(
+                fetch_normalized_news_items(
+                    providers=[provider_name],
+                    limit_per_provider=int(limit_per_provider),
+                    start_at=start_at,
+                    end_at=end_at,
+                )
+            )
+        except Exception as exc:
+            errors.append(f'{provider_name}: {exc}')
+
+    ingest_message = ingest_latest_news(news_items=payloads)
+    if errors:
+        return f'Fetched {len(payloads)} items with provider errors: {"; ".join(errors)}. {ingest_message}'
+    return f'Fetched {len(payloads)} items. {ingest_message}'
+
+
+@shared_task
+def run_hourly_historical_news_backfill():
+    if not getattr(settings, 'NEWS_BACKFILL_ENABLED', True):
+        return 'Historical news backfill is disabled by settings.'
+
+    provider = getattr(settings, 'NEWS_BACKFILL_PROVIDER', 'tushare_major')
+    chunk_days = int(getattr(settings, 'NEWS_BACKFILL_CHUNK_DAYS', 31))
+    floor_value = getattr(settings, 'NEWS_BACKFILL_FLOOR', '2021-04-15 00:00:00')
+    limit_per_provider = int(getattr(settings, 'NEWS_BACKFILL_LIMIT_PER_PROVIDER', 0))
+
+    window_start, window_end, status_message = _compute_historical_backfill_window(chunk_days, floor_value)
+    if status_message:
+        return status_message
+
+    start_at = window_start.strftime('%Y-%m-%d %H:%M:%S')
+    end_at = window_end.strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        items = fetch_normalized_news_items(
+            providers=[provider],
+            limit_per_provider=limit_per_provider,
+            start_at=start_at,
+            end_at=end_at,
+        )
+    except Exception as exc:
+        message = str(exc)
+        if '最多访问该接口' in message:
+            return (
+                f'Historical backfill deferred for {provider} '
+                f'({start_at} -> {end_at}) due to provider quota: {message}'
+            )
+        raise
+
+    ingest_message = ingest_latest_news(news_items=items)
+    return (
+        f'Historical backfill window {start_at} -> {end_at} fetched {len(items)} items via {provider}. '
+        f'{ingest_message}'
+    )
 
 
 @shared_task

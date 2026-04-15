@@ -260,6 +260,15 @@ nav {
 }
 
 .data-table th {
+  color: #9cb2c7;
+  font-size: 0.84rem;
+}
+
+.data-table td {
+  vertical-align: top;
+}
+
+.data-table th {
   color: #8ca7c2;
   font-weight: 600;
 }

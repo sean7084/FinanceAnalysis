@@ -25,6 +25,17 @@
 			"/^sudo docker compose build --no-cache django && sudo docker compose up -d django celery_worker celery_beat && sudo docker compose ps$/": {
 				"approve": true,
 				"matchCommandLine": true
+			},
+			"set": true,
+			"mktemp": true,
+			"mv": true,
+			"/^perl -i -pe 's/\\^\\\\\\]633;E;echo \"# Changelog\";\\[0-9a-f-\\]\\+\\\\\\]633;C# Changelog/# Changelog/' CHANGELOG\\.md$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^sudo docker ps --format 'table \\{\\{\\.Names\\}\\}\\\\t\\{\\{\\.Status\\}\\}'$/": {
+				"approve": true,
+				"matchCommandLine": true
 			}
 		}
 	}

@@ -97,4 +97,5 @@ from .models_lightgbm import (  # noqa: F401, E402
     LightGBMModelArtifact,
     LightGBMPrediction,
     EnsembleWeightSnapshot,
+    FeatureImportanceSnapshot,
 )

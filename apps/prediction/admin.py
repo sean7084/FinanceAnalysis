@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import ModelVersion, PredictionResult
-from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot
+from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 
 
 @admin.register(ModelVersion)
@@ -38,3 +38,10 @@ class EnsembleWeightSnapshotAdmin(admin.ModelAdmin):
     list_display = ('date', 'lightgbm_weight', 'lstm_weight', 'heuristic_weight')
     list_filter = ('date',)
     date_hierarchy = 'date'
+
+
+@admin.register(FeatureImportanceSnapshot)
+class FeatureImportanceSnapshotAdmin(admin.ModelAdmin):
+    list_display = ('model_artifact', 'feature_name', 'importance_score', 'importance_rank')
+    list_filter = ('horizon_days',)
+    search_fields = ('feature_name', 'model_artifact__version')

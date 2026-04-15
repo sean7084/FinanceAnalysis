@@ -7,11 +7,17 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.markets.models import Asset
-from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot
+from .models_lightgbm import (
+    EnsembleWeightSnapshot,
+    FeatureImportanceSnapshot,
+    LightGBMModelArtifact,
+    LightGBMPrediction,
+)
 from .serializers_lightgbm import (
     LightGBMModelArtifactSerializer,
     LightGBMPredictionSerializer,
     EnsembleWeightSnapshotSerializer,
+    FeatureImportanceSnapshotSerializer,
 )
 from .tasks_lightgbm import (
     generate_lightgbm_predictions_for_date,
@@ -38,6 +44,73 @@ class LightGBMModelArtifactViewSet(viewsets.ReadOnlyModelViewSet):
             except ValueError:
                 pass
         return qs
+
+    @action(detail=False, methods=['get'], url_path='feature-importance-trends')
+    def feature_importance_trends(self, request):
+        horizon = request.query_params.get('horizon_days')
+        limit_models = request.query_params.get('limit_models', '5')
+        top_n = request.query_params.get('top_n', '10')
+
+        try:
+            limit_models = max(1, min(int(limit_models), 20))
+        except ValueError:
+            limit_models = 5
+
+        try:
+            top_n = max(1, min(int(top_n), 50))
+        except ValueError:
+            top_n = 10
+
+        artifacts = self.get_queryset().filter(status=LightGBMModelArtifact.Status.READY)
+        if horizon:
+            try:
+                artifacts = artifacts.filter(horizon_days=int(horizon))
+            except ValueError:
+                pass
+
+        artifacts = list(artifacts[:limit_models])
+        snapshots = FeatureImportanceSnapshot.objects.select_related('model_artifact').filter(model_artifact__in=artifacts)
+        serialized_rows = FeatureImportanceSnapshotSerializer(snapshots, many=True).data
+
+        grouped = {}
+        for row in serialized_rows:
+            horizon_key = row['horizon_days']
+            grouped.setdefault(horizon_key, {})
+            grouped[horizon_key].setdefault(row['feature_name'], []).append({
+                'model_artifact': row['model_artifact'],
+                'model_version': row['model_version'],
+                'trained_at': row['trained_at'],
+                'importance_score': row['importance_score'],
+                'importance_rank': row['importance_rank'],
+                'created_at': row['created_at'],
+            })
+
+        results = []
+        for horizon_key, feature_map in sorted(grouped.items()):
+            ranked_features = sorted(
+                feature_map.items(),
+                key=lambda item: sum(point['importance_score'] for point in item[1]),
+                reverse=True,
+            )[:top_n]
+            feature_trends = []
+            for feature_name, history in ranked_features:
+                feature_trends.append({
+                    'feature_name': feature_name,
+                    'snapshots': sorted(
+                        history,
+                        key=lambda item: item['trained_at'] or item['created_at'] or '',
+                    ),
+                })
+            results.append({
+                'horizon_days': horizon_key,
+                'feature_trends': feature_trends,
+            })
+
+        return Response({
+            'limit_models': limit_models,
+            'top_n': top_n,
+            'results': results,
+        })
 
 
 class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -69,6 +142,60 @@ class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
             except ValueError:
                 pass
         return qs
+
+    @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>(?!(?:train|recalculate|batch)(?:/|$))[^/.]+)')
+    def stock(self, request, stock_code=None):
+        date_str = request.query_params.get('date')
+        if date_str:
+            try:
+                target_date = date.fromisoformat(date_str)
+            except ValueError:
+                target_date = timezone.now().date()
+        else:
+            target_date = timezone.now().date()
+
+        horizons = request.query_params.get('horizons', '3,7,30').split(',')
+        horizons = [int(h) for h in horizons if h.strip().isdigit()]
+        if not horizons:
+            horizons = [3, 7, 30]
+
+        asset = get_object_or_404(Asset, symbol=stock_code)
+        qs = LightGBMPrediction.objects.select_related('asset', 'model_artifact').filter(
+            asset=asset,
+            date=target_date,
+            horizon_days__in=horizons,
+        ).order_by('horizon_days')
+
+        if not qs.exists():
+            generate_lightgbm_prediction_for_asset(
+                asset_id=asset.id,
+                target_date=str(target_date),
+                horizons=horizons,
+            )
+            qs = LightGBMPrediction.objects.select_related('asset', 'model_artifact').filter(
+                asset=asset,
+                date=target_date,
+                horizon_days__in=horizons,
+            ).order_by('horizon_days')
+
+        results = LightGBMPredictionSerializer(qs, many=True).data
+        output = {
+            'stock_code': asset.symbol,
+            'date': str(target_date),
+            'results': [],
+        }
+        for row in results:
+            output['results'].append({
+                'horizon_days': row['horizon_days'],
+                'up': row['up_probability'],
+                'flat': row['flat_probability'],
+                'down': row['down_probability'],
+                'confidence': row['confidence'],
+                'predicted_label': row['predicted_label'],
+                'model_version': row['model_version'],
+            })
+
+        return Response(output)
 
     @action(detail=False, methods=['post'])
     def train(self, request):

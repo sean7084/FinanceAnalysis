@@ -3,10 +3,12 @@ import os
 import pickle
 from datetime import date, timedelta
 from decimal import Decimal
+from statistics import pstdev
 
 import numpy as np
 from celery import shared_task
 from django.conf import settings
+from django.db.models import Avg
 from django.utils import timezone
 
 try:
@@ -22,7 +24,8 @@ from apps.factors.models import FactorScore
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
-from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot
+from .models import ModelVersion
+from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 
 
 # ============================================================================
@@ -91,31 +94,241 @@ def _load_model_artifacts(horizon_days, version):
 # Feature Engineering
 # ============================================================================
 
+LAG_WINDOWS = (3, 5, 10)
+
+
+class IdentityCalibrator:
+    """Fallback calibrator for LightGBM boosters that already emit class probabilities."""
+
+    def __init__(self, model):
+        self.model = model
+
+    def fit(self, matrix, labels=None):
+        return self
+
+    def predict_proba(self, matrix):
+        return np.asarray(self.model.predict(matrix))
+
+
+def _safe_float(value, default=0.0):
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _indicator_value(asset_id, indicator_type, as_of, days_ago=0, default=0.0):
+    target_date = as_of - timedelta(days=days_ago)
+    indicator = TechnicalIndicator.objects.filter(
+        asset_id=asset_id,
+        indicator_type=indicator_type,
+        timestamp__date__lte=target_date,
+    ).order_by('-timestamp').first()
+    return _safe_float(getattr(indicator, 'value', default), default)
+
+
+def _get_recent_ohlcv_rows(asset_id, as_of, limit=30):
+    return list(
+        OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
+        .order_by('-date')
+        .values('date', 'close', 'volume')[:limit]
+    )
+
+
+def _row_value(rows, index, key, default):
+    if index >= len(rows):
+        return float(default)
+    return _safe_float(rows[index].get(key), default)
+
+
+def _compute_return(rows, periods, default=0.0):
+    if len(rows) <= periods:
+        return float(default)
+    current_close = _row_value(rows, 0, 'close', 0.0)
+    historical_close = _row_value(rows, periods, 'close', 0.0)
+    if not historical_close:
+        return float(default)
+    return (current_close - historical_close) / historical_close
+
+
+def _compute_realized_volatility(rows, window=5):
+    if len(rows) <= window:
+        return 0.0
+    closes = [_row_value(rows, idx, 'close', 0.0) for idx in range(window + 1)]
+    closes = list(reversed([close for close in closes if close]))
+    if len(closes) <= 1:
+        return 0.0
+    returns = []
+    for previous_close, current_close in zip(closes, closes[1:]):
+        if previous_close:
+            returns.append((current_close - previous_close) / previous_close)
+    if len(returns) <= 1:
+        return 0.0
+    return float(pstdev(returns))
+
+
+def _build_interaction_features(df, feature_names):
+    interaction_specs = [
+        ('rsi_x_relative_volume_5d', 'rsi', 'relative_volume_5d'),
+        ('rsi_x_macro_phase', 'rsi', 'macro_phase'),
+        ('factor_composite_x_sentiment', 'factor_composite', 'sentiment_7d'),
+        ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
+        ('pe_percentile_x_macro_phase', 'pe_percentile', 'macro_phase'),
+    ]
+    created = []
+    for output_name, left_name, right_name in interaction_specs:
+        if left_name in df.columns and right_name in df.columns:
+            df[output_name] = df[left_name] * df[right_name]
+            created.append(output_name)
+    return df, feature_names + created
+
+
+def _get_recent_feature_artifacts(horizon_days, lookback_runs=3):
+    artifacts = list(
+        LightGBMModelArtifact.objects.filter(status=LightGBMModelArtifact.Status.READY, horizon_days=horizon_days)
+        .order_by('-trained_at')[:lookback_runs]
+    )
+    if len(artifacts) < 2:
+        return []
+    return artifacts
+
+
+def _get_pruned_feature_names(horizon_days, feature_names):
+    artifacts = _get_recent_feature_artifacts(horizon_days)
+    if not artifacts:
+        return []
+
+    snapshots = FeatureImportanceSnapshot.objects.filter(model_artifact__in=artifacts)
+    if not snapshots.exists():
+        return []
+
+    grouped = {}
+    for snapshot in snapshots:
+        grouped.setdefault(snapshot.feature_name, []).append(snapshot.importance_score)
+
+    pruned = []
+    required_history = len(artifacts)
+    for feature_name in feature_names:
+        scores = grouped.get(feature_name, [])
+        if len(scores) < required_history:
+            continue
+        average_importance = sum(scores) / len(scores)
+        if average_importance <= 0.01:
+            pruned.append(feature_name)
+
+    max_pruned = max(1, len(feature_names) // 5)
+    return sorted(pruned)[:max_pruned]
+
+
+def _register_lightgbm_model_version(horizon_days, model_version, training_start, training_end, metrics, feature_names, metadata):
+    ModelVersion.objects.filter(model_type=ModelVersion.ModelType.LIGHTGBM, is_active=True).update(is_active=False)
+    return ModelVersion.objects.create(
+        model_type=ModelVersion.ModelType.LIGHTGBM,
+        version=model_version,
+        status=ModelVersion.Status.READY,
+        artifact_path=_get_model_path(horizon_days, model_version),
+        metrics=metrics,
+        feature_schema=feature_names,
+        training_window_start=training_start,
+        training_window_end=training_end,
+        trained_at=timezone.now(),
+        is_active=True,
+        metadata=metadata,
+    )
+
+
+def _store_feature_importance_snapshots(artifact, feature_names, importance_values):
+    ordered = sorted(
+        [(feature_name, float(importance_score)) for feature_name, importance_score in zip(feature_names, importance_values)],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    FeatureImportanceSnapshot.objects.bulk_create([
+        FeatureImportanceSnapshot(
+            model_artifact=artifact,
+            horizon_days=artifact.horizon_days,
+            feature_name=feature_name,
+            importance_score=importance_score,
+            importance_rank=index + 1,
+        )
+        for index, (feature_name, importance_score) in enumerate(ordered)
+    ])
+    return ordered
+
+
+def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
+    heuristic_version = ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.ENSEMBLE,
+        is_active=True,
+    ).order_by('-trained_at').first()
+    lstm_version = ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.LSTM,
+        is_active=True,
+    ).order_by('-trained_at').first()
+
+    lightgbm_accuracy = np.mean(
+        [result['accuracy'] for result in lightgbm_results.values() if result.get('status') == 'success']
+    ) if lightgbm_results else 0.0
+    heuristic_accuracy = _safe_float((heuristic_version.metrics if heuristic_version else {}).get('accuracy'), 0.5)
+    lstm_accuracy = _safe_float((lstm_version.metrics if lstm_version else {}).get('accuracy'), 0.0)
+
+    total = lightgbm_accuracy + heuristic_accuracy + lstm_accuracy
+    if total <= 0:
+        weights = (Decimal('0.3333'), Decimal('0.3333'), Decimal('0.3334'))
+    else:
+        weights = (
+            Decimal(str(lightgbm_accuracy / total)).quantize(Decimal('0.0001')),
+            Decimal(str(lstm_accuracy / total)).quantize(Decimal('0.0001')),
+            Decimal(str(heuristic_accuracy / total)).quantize(Decimal('0.0001')),
+        )
+
+    EnsembleWeightSnapshot.objects.update_or_create(
+        date=snapshot_date,
+        defaults={
+            'lightgbm_weight': weights[0],
+            'lstm_weight': weights[1],
+            'heuristic_weight': weights[2],
+            'basis_lookback_days': 60,
+            'basis_metrics': {
+                'lightgbm_accuracy': lightgbm_accuracy,
+                'heuristic_accuracy': heuristic_accuracy,
+                'lstm_accuracy': lstm_accuracy,
+            },
+        },
+    )
+
 def _extract_features_for_asset(asset_id, as_of):
     """Extract all available features for a single asset on a given date."""
     features = {}
+    recent_rows = _get_recent_ohlcv_rows(asset_id, as_of, limit=25)
 
     # Phase 10: Technical Indicators
-    rsi = TechnicalIndicator.objects.filter(
-        asset_id=asset_id,
-        indicator_type='RSI',
-        timestamp__date__lte=as_of,
-    ).order_by('-timestamp').first()
-    features['rsi'] = float(getattr(rsi, 'value', 50)) if rsi else 50.0
+    features['rsi'] = _indicator_value(asset_id, 'RSI', as_of, default=50.0)
+    features['mom_5d'] = _indicator_value(asset_id, 'MOM_5D', as_of, default=0.0)
+    features['rs_score'] = _indicator_value(asset_id, 'RS_SCORE', as_of, default=0.5)
 
-    mom_5d = TechnicalIndicator.objects.filter(
-        asset_id=asset_id,
-        indicator_type='MOM_5D',
-        timestamp__date__lte=as_of,
-    ).order_by('-timestamp').first()
-    features['mom_5d'] = float(getattr(mom_5d, 'value', 0)) if mom_5d else 0.0
+    for lag_window in LAG_WINDOWS:
+        lagged_rsi = _indicator_value(asset_id, 'RSI', as_of, days_ago=lag_window, default=features['rsi'])
+        lagged_momentum = _indicator_value(asset_id, 'MOM_5D', as_of, days_ago=lag_window, default=features['mom_5d'])
+        lagged_rs = _indicator_value(asset_id, 'RS_SCORE', as_of, days_ago=lag_window, default=features['rs_score'])
+        features[f'rsi_lag_{lag_window}d'] = lagged_rsi
+        features[f'rsi_delta_{lag_window}d'] = features['rsi'] - lagged_rsi
+        features[f'mom_5d_delta_{lag_window}d'] = features['mom_5d'] - lagged_momentum
+        features[f'rs_score_delta_{lag_window}d'] = features['rs_score'] - lagged_rs
 
-    rs_score = TechnicalIndicator.objects.filter(
-        asset_id=asset_id,
-        indicator_type='RS_SCORE',
-        timestamp__date__lte=as_of,
-    ).order_by('-timestamp').first()
-    features['rs_score'] = float(getattr(rs_score, 'value', 0.5)) if rs_score else 0.5
+    features['return_3d'] = _compute_return(recent_rows, 3)
+    features['return_5d'] = _compute_return(recent_rows, 5)
+    features['return_10d'] = _compute_return(recent_rows, 10)
+    current_volume = _row_value(recent_rows, 0, 'volume', 0.0)
+    volume_samples_5 = [_row_value(recent_rows, index, 'volume', 0.0) for index in range(min(5, len(recent_rows)))]
+    volume_samples_20 = [_row_value(recent_rows, index, 'volume', 0.0) for index in range(min(20, len(recent_rows)))]
+    average_volume_5 = float(np.mean(volume_samples_5)) if volume_samples_5 else 0.0
+    average_volume_20 = float(np.mean(volume_samples_20)) if volume_samples_20 else 0.0
+    features['relative_volume_5d'] = current_volume / average_volume_5 if average_volume_5 else 1.0
+    features['relative_volume_20d'] = current_volume / average_volume_20 if average_volume_20 else 1.0
+    features['realized_volatility_5d'] = _compute_realized_volatility(recent_rows, window=5)
 
     # Phase 11: Multi-Factor Scores
     factor = FactorScore.objects.filter(
@@ -124,13 +337,13 @@ def _extract_features_for_asset(asset_id, as_of):
         mode=FactorScore.FactorMode.COMPOSITE,
     ).order_by('-date').first()
 
-    features['pe_percentile'] = float(getattr(factor, 'pe_percentile_score', 0.5)) if factor else 0.5
-    features['pb_percentile'] = float(getattr(factor, 'pb_percentile_score', 0.5)) if factor else 0.5
-    features['roe_trend'] = float(getattr(factor, 'roe_trend_score', 0.5)) if factor else 0.5
-    features['northbound_flow'] = float(getattr(factor, 'northbound_flow_score', 0.5)) if factor else 0.5
-    features['main_force_flow'] = float(getattr(factor, 'main_force_flow_score', 0.5)) if factor else 0.5
-    features['margin_flow'] = float(getattr(factor, 'margin_flow_score', 0.5)) if factor else 0.5
-    features['factor_composite'] = float(getattr(factor, 'composite_score', 0.5)) if factor else 0.5
+    features['pe_percentile'] = _safe_float(getattr(factor, 'pe_percentile_score', 0.5), 0.5) if factor else 0.5
+    features['pb_percentile'] = _safe_float(getattr(factor, 'pb_percentile_score', 0.5), 0.5) if factor else 0.5
+    features['roe_trend'] = _safe_float(getattr(factor, 'roe_trend_score', 0.5), 0.5) if factor else 0.5
+    features['northbound_flow'] = _safe_float(getattr(factor, 'northbound_flow_score', 0.5), 0.5) if factor else 0.5
+    features['main_force_flow'] = _safe_float(getattr(factor, 'main_force_flow_score', 0.5), 0.5) if factor else 0.5
+    features['margin_flow'] = _safe_float(getattr(factor, 'margin_flow_score', 0.5), 0.5) if factor else 0.5
+    features['factor_composite'] = _safe_float(getattr(factor, 'composite_score', 0.5), 0.5) if factor else 0.5
 
     # Phase 12: Macro Context
     current_context = MarketContext.objects.filter(
@@ -143,11 +356,12 @@ def _extract_features_for_asset(asset_id, as_of):
     features['macro_phase'] = float(phase_to_int.get(getattr(current_context, 'macro_phase', 'RECOVERY'), 1))
 
     macro_snap = MacroSnapshot.objects.filter(date__lte=as_of).order_by('-date').first()
-    features['pmi_manufacturing'] = float(getattr(macro_snap, 'pmi_manufacturing', 50)) if macro_snap else 50.0
-    features['pmi_non_manufacturing'] = float(getattr(macro_snap, 'pmi_non_manufacturing', 50)) if macro_snap else 50.0
-    features['yield_curve'] = float(
-        (getattr(macro_snap, 'cn10y_yield', 2.0) - getattr(macro_snap, 'cn2y_yield', 2.0)) if macro_snap else 0.0
-    )
+    features['pmi_manufacturing'] = _safe_float(getattr(macro_snap, 'pmi_manufacturing', 50), 50.0) if macro_snap else 50.0
+    features['pmi_non_manufacturing'] = _safe_float(getattr(macro_snap, 'pmi_non_manufacturing', 50), 50.0) if macro_snap else 50.0
+    features['yield_curve'] = (
+        _safe_float(getattr(macro_snap, 'cn10y_yield', 2.0), 2.0) -
+        _safe_float(getattr(macro_snap, 'cn2y_yield', 2.0), 2.0)
+    ) if macro_snap else 0.0
 
     # Phase 13: Sentiment
     sentiment = SentimentScore.objects.filter(
@@ -155,7 +369,14 @@ def _extract_features_for_asset(asset_id, as_of):
         date__lte=as_of,
         score_type=SentimentScore.ScoreType.ASSET_7D,
     ).order_by('-date').first()
-    features['sentiment_7d'] = float(getattr(sentiment, 'sentiment_score', 0)) if sentiment else 0.0
+    features['sentiment_7d'] = _safe_float(getattr(sentiment, 'sentiment_score', 0), 0.0) if sentiment else 0.0
+    sentiment_window = SentimentScore.objects.filter(
+        asset_id=asset_id,
+        date__lte=as_of,
+        date__gte=as_of - timedelta(days=20),
+        score_type=SentimentScore.ScoreType.ASSET_7D,
+    )
+    features['sentiment_7d_avg_20d'] = _safe_float(sentiment_window.aggregate(avg=Avg('sentiment_score'))['avg'], 0.0)
 
     return features
 
@@ -185,6 +406,9 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             rows.append(features)
 
     df = pd.DataFrame(rows)
+    base_feature_names = [col for col in df.columns if col not in ['date', 'asset_id']]
+    df, feature_names = _build_interaction_features(df, base_feature_names)
+    df.attrs['feature_names'] = feature_names
     return df
 
 
@@ -268,16 +492,17 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
     import pandas as pd
 
     X_df = _create_feature_matrix(training_start, training_end)
-    feature_names = [col for col in X_df.columns if col not in ['date', 'asset_id']]
+    feature_names = list(X_df.attrs.get('feature_names') or [col for col in X_df.columns if col not in ['date', 'asset_id']])
 
     results = {}
 
     for horizon in [3, 7, 30]:
         print(f'Training model for {horizon}-day horizon...')
+        pruned_feature_names = _get_pruned_feature_names(horizon, feature_names)
+        selected_feature_names = [name for name in feature_names if name not in pruned_feature_names]
 
         # Create labels
         labels_dict = _create_labels_for_training(training_start, training_end, horizon)
-        y_series = pd.Series(labels_dict)
 
         # Align data
         X_train_aligned = X_df.copy()
@@ -291,7 +516,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
             print(f'Insufficient training data for {horizon}-day horizon (n={len(X_train_aligned)})')
             continue
 
-        X_train = X_train_aligned[feature_names].values
+        X_train = X_train_aligned[selected_feature_names].values
         y_train = X_train_aligned['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
 
         # Standardize features
@@ -317,9 +542,14 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
         train_data = lgb.Dataset(X_train_scaled, label=y_train)
         model = lgb.train(lgb_params, train_data, num_boost_round=200)
 
-        # Calibrate probabilities
-        calibrator = CalibratedClassifierCV(model, method='sigmoid', cv=5)
-        calibrator.fit(X_train_scaled, y_train)
+        # Calibrate probabilities when the model exposes a scikit-learn style API.
+        if hasattr(model, 'fit') and (hasattr(model, 'predict_proba') or hasattr(model, 'decision_function')):
+            calibrator = CalibratedClassifierCV(model, method='sigmoid', cv=5)
+            calibrator.fit(X_train_scaled, y_train)
+            calibration_method = 'sigmoid'
+        else:
+            calibrator = IdentityCalibrator(model)
+            calibration_method = 'identity'
 
         # Calculate metrics
         y_pred_proba = calibrator.predict_proba(X_train_scaled)
@@ -329,7 +559,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
         # Get feature importance
         importance = model.feature_importance('gain')
         top_features = sorted(
-            [(feature_names[i], float(importance[i])) for i in range(len(feature_names))],
+            [(feature_name, float(importance_score)) for feature_name, importance_score in zip(selected_feature_names, importance)],
             key=lambda x: x[1],
             reverse=True
         )[:10]
@@ -340,7 +570,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
             'model': model,
             'scaler': scaler,
             'calibrator': calibrator,
-            'feature_names': feature_names,
+            'feature_names': selected_feature_names,
         }
         _save_model_artifacts(artifacts, horizon, model_version)
 
@@ -356,18 +586,48 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
             metrics_json={
                 'accuracy': float(accuracy),
                 'training_samples': len(X_train),
-                'feature_count': len(feature_names),
+                'feature_count': len(selected_feature_names),
             },
-            feature_names=feature_names,
+            feature_names=selected_feature_names,
             training_window_start=training_start,
             training_window_end=training_end,
             trained_at=timezone.now(),
             is_active=True,
             feature_importance=dict(top_features),
+            metadata={
+                'engineered_feature_version': 'v2',
+                'calibration_method': calibration_method,
+                'interaction_features': [name for name in selected_feature_names if '_x_' in name],
+                'pruned_features': pruned_feature_names,
+                'feature_schema_size': len(selected_feature_names),
+            },
+        )
+
+        _store_feature_importance_snapshots(artifact, selected_feature_names, importance)
+        _register_lightgbm_model_version(
+            horizon_days=horizon,
+            model_version=model_version,
+            training_start=training_start,
+            training_end=training_end,
+            metrics={
+                'accuracy': float(accuracy),
+                'training_samples': len(X_train),
+                'feature_count': len(selected_feature_names),
+            },
+            feature_names=selected_feature_names,
+            metadata={
+                'artifact_id': artifact.id,
+                'engineered_feature_version': 'v2',
+                'calibration_method': calibration_method,
+                'pruned_features': pruned_feature_names,
+                'top_features': dict(top_features),
+            },
         )
 
         results[horizon] = {'status': 'success', 'accuracy': accuracy, 'artifact_id': artifact.id}
         print(f'Trained {horizon}-day model: accuracy={accuracy:.4f}')
+
+    _refresh_ensemble_weights(training_end, results)
 
     return results
 

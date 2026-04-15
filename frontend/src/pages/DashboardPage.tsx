@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ProbabilityChart } from '../components/charts/ProbabilityChart'
 import {
   fetchDashboardData,
+  fetchLightGBMPredictionBySymbol,
   fetchPredictionBySymbol,
   fetchScreenerRows,
   hasAnyAuthCredential,
@@ -21,10 +21,17 @@ export function DashboardPage() {
     completedBacktests: 0,
     avgBottomProbability: 0,
   })
-  const [candidateCharts, setCandidateCharts] = useState<Array<{
+  const [comparisonRows, setComparisonRows] = useState<Array<{
+    key: string
     symbol: string
     name: string
-    data: Array<{ horizon: string; up: number; flat: number; down: number }>
+    horizon: string
+    heuristicLabel: string
+    heuristicConfidence: string
+    heuristicUp: string
+    lightgbmLabel: string
+    lightgbmConfidence: string
+    lightgbmUp: string
   }>>([])
   const [topN, setTopN] = useState(5)
   const [candidates, setCandidates] = useState<CandidateDto[]>([])
@@ -41,16 +48,58 @@ export function DashboardPage() {
 
         const predictionRows = await Promise.all(
           rows.map(async (row) => {
-            const prediction = await fetchPredictionBySymbol(row.asset_symbol)
+            const [prediction, lightgbmPrediction] = await Promise.all([
+              fetchPredictionBySymbol(row.asset_symbol),
+              fetchLightGBMPredictionBySymbol(row.asset_symbol),
+            ])
+
+            const comparison = new Map<number, {
+              heuristicLabel: string
+              heuristicConfidence: string
+              heuristicUp: string
+              lightgbmLabel: string
+              lightgbmConfidence: string
+              lightgbmUp: string
+            }>()
+
+            for (const result of prediction?.results ?? []) {
+              comparison.set(result.horizon_days, {
+                heuristicLabel: result.predicted_label,
+                heuristicConfidence: `${(Number(result.confidence) * 100).toFixed(1)}%`,
+                heuristicUp: `${(Number(result.up) * 100).toFixed(1)}%`,
+                lightgbmLabel: '--',
+                lightgbmConfidence: '--',
+                lightgbmUp: '--',
+              })
+            }
+
+            for (const result of lightgbmPrediction?.results ?? []) {
+              const existing = comparison.get(result.horizon_days) ?? {
+                heuristicLabel: '--',
+                heuristicConfidence: '--',
+                heuristicUp: '--',
+                lightgbmLabel: '--',
+                lightgbmConfidence: '--',
+                lightgbmUp: '--',
+              }
+              comparison.set(result.horizon_days, {
+                ...existing,
+                lightgbmLabel: result.predicted_label,
+                lightgbmConfidence: `${(Number(result.confidence) * 100).toFixed(1)}%`,
+                lightgbmUp: `${(Number(result.up) * 100).toFixed(1)}%`,
+              })
+            }
+
             return {
-              symbol: row.asset_symbol,
-              name: row.asset_name,
-              data: (prediction?.results ?? []).map((x) => ({
-                horizon: `${x.horizon_days}D`,
-                up: Number(x.up),
-                flat: Number(x.flat),
-                down: Number(x.down),
-              })),
+              comparisonRows: Array.from(comparison.entries())
+                .sort((left, right) => left[0] - right[0])
+                .map(([horizonDays, values]) => ({
+                  key: `${row.asset_symbol}-${horizonDays}`,
+                  symbol: row.asset_symbol,
+                  name: row.asset_name,
+                  horizon: `${horizonDays}D`,
+                  ...values,
+                })),
             }
           }),
         )
@@ -58,7 +107,7 @@ export function DashboardPage() {
         if (alive) {
           setDashboard(data)
           setCandidates(rows)
-          setCandidateCharts(predictionRows)
+          setComparisonRows(predictionRows.flatMap((row) => row.comparisonRows))
           setError(null)
         }
       } catch {
@@ -145,16 +194,43 @@ export function DashboardPage() {
         </table>
       </div>
 
-      <div>
-        <h3>{t('dash.topProbOutlook')}</h3>
-        {candidateCharts.map((row) => (
-          <ProbabilityChart
-            key={row.symbol}
-            title={`${t('chart.probability')} · ${row.symbol}${row.name ? ` (${row.name})` : ''}`}
-            data={row.data}
-          />
-        ))}
-        {candidateCharts.length === 0 && !loading && <p className="status">{t('common.noData')}</p>}
+      <div className="card">
+        <h3>{t('dash.modelComparison')}</h3>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>{t('screener.symbol')}</th>
+              <th>{t('screener.name')}</th>
+              <th>{t('models.horizon')}</th>
+              <th>{t('comparison.heuristic')}</th>
+              <th>{t('models.confidence')}</th>
+              <th>{t('comparison.upProbability')}</th>
+              <th>{t('comparison.lightgbm')}</th>
+              <th>{t('models.confidence')}</th>
+              <th>{t('comparison.upProbability')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {comparisonRows.map((row) => (
+              <tr key={row.key}>
+                <td>{row.symbol}</td>
+                <td>{row.name}</td>
+                <td>{row.horizon}</td>
+                <td>{row.heuristicLabel}</td>
+                <td>{row.heuristicConfidence}</td>
+                <td>{row.heuristicUp}</td>
+                <td>{row.lightgbmLabel}</td>
+                <td>{row.lightgbmConfidence}</td>
+                <td>{row.lightgbmUp}</td>
+              </tr>
+            ))}
+            {comparisonRows.length === 0 && !loading && (
+              <tr>
+                <td colSpan={9}>{t('common.noData')}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </section>
   )

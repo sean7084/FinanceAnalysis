@@ -82,9 +82,110 @@ export interface PredictionStockDto {
   }>
 }
 
+export interface LightGBMPredictionStockDto {
+  stock_code: string
+  date: string
+  results: Array<{
+    horizon_days: number
+    up: number
+    flat: number
+    down: number
+    confidence: number
+    predicted_label: string
+    model_version?: string
+  }>
+}
+
 export interface SentimentDto {
   date: string
   sentiment_score: number
+}
+
+export interface ModelVersionDto {
+  id: number
+  model_type: string
+  version: string
+  status: string
+  artifact_path: string
+  metrics: Record<string, number | string>
+  feature_schema: string[]
+  training_window_start: string | null
+  training_window_end: string | null
+  trained_at: string | null
+  is_active: boolean
+  metadata: Record<string, unknown>
+}
+
+export interface LightGBMModelArtifactDto {
+  id: number
+  horizon_days: number
+  version: string
+  status: string
+  artifact_path: string
+  metrics_json: Record<string, number | string>
+  feature_names: string[]
+  training_window_start: string | null
+  training_window_end: string | null
+  trained_at: string | null
+  is_active: boolean
+  feature_importance: Record<string, number>
+  metadata: Record<string, unknown>
+}
+
+export interface LightGBMPredictionDto {
+  id: number
+  asset: number
+  asset_symbol: string
+  asset_name: string
+  date: string
+  horizon_days: number
+  up_probability: number
+  flat_probability: number
+  down_probability: number
+  predicted_label: string
+  confidence: number
+  model_artifact: number | null
+  model_version: string
+  model_horizon: number | null
+  feature_snapshot: Record<string, number>
+  raw_scores: Record<string, number>
+  calibrated_scores: Record<string, number>
+  metadata: Record<string, unknown>
+}
+
+export interface EnsembleWeightSnapshotDto {
+  id: number
+  date: string
+  lightgbm_weight: number
+  lstm_weight: number
+  heuristic_weight: number
+  basis_lookback_days: number
+  basis_metrics: Record<string, number>
+}
+
+export interface FeatureImportanceTrendSnapshotDto {
+  model_artifact: number
+  model_version: string
+  trained_at: string | null
+  importance_score: number
+  importance_rank: number
+  created_at: string
+}
+
+export interface FeatureImportanceTrendDto {
+  feature_name: string
+  snapshots: FeatureImportanceTrendSnapshotDto[]
+}
+
+export interface FeatureImportanceTrendGroupDto {
+  horizon_days: number
+  feature_trends: FeatureImportanceTrendDto[]
+}
+
+export interface FeatureImportanceTrendResponseDto {
+  limit_models: number
+  top_n: number
+  results: FeatureImportanceTrendGroupDto[]
 }
 
 export interface BacktestRunDto {
@@ -410,4 +511,46 @@ export async function fetchSentimentByAsset(assetId: number): Promise<SentimentD
   } catch {
     return []
   }
+}
+
+export async function fetchModelVersions(modelType?: string, limit = 30): Promise<ModelVersionDto[]> {
+  const query = modelType ? `&model_type=${encodeURIComponent(modelType)}` : ''
+  const payload = await apiGet<Paginated<ModelVersionDto>>(`/prediction-model-versions/?page_size=${limit}${query}`)
+  return payload.results
+}
+
+export async function fetchLightGBMModels(limit = 30, horizonDays?: number): Promise<LightGBMModelArtifactDto[]> {
+  const query = horizonDays ? `&horizon_days=${horizonDays}` : ''
+  const payload = await apiGet<Paginated<LightGBMModelArtifactDto>>(`/lightgbm-models/?page_size=${limit}${query}`)
+  return payload.results
+}
+
+export async function fetchLightGBMPredictions(limit = 60, date?: string): Promise<LightGBMPredictionDto[]> {
+  const query = date ? `&date=${encodeURIComponent(date)}` : ''
+  const payload = await apiGet<Paginated<LightGBMPredictionDto>>(`/lightgbm-predictions/?page_size=${limit}${query}`)
+  return payload.results
+}
+
+export async function fetchLightGBMPredictionBySymbol(symbol: string): Promise<LightGBMPredictionStockDto | null> {
+  try {
+    return await apiGet<LightGBMPredictionStockDto>(`/lightgbm-predictions/${encodeURIComponent(symbol)}/`)
+  } catch {
+    return null
+  }
+}
+
+export async function fetchLightGBMFeatureImportanceTrends(horizonDays?: number, limitModels = 5, topN = 10): Promise<FeatureImportanceTrendResponseDto> {
+  const params = new URLSearchParams({
+    limit_models: String(limitModels),
+    top_n: String(topN),
+  })
+  if (horizonDays) {
+    params.set('horizon_days', String(horizonDays))
+  }
+  return apiGet<FeatureImportanceTrendResponseDto>(`/lightgbm-models/feature-importance-trends/?${params.toString()}`)
+}
+
+export async function fetchEnsembleWeights(limit = 30): Promise<EnsembleWeightSnapshotDto[]> {
+  const payload = await apiGet<Paginated<EnsembleWeightSnapshotDto>>(`/ensemble-weights/?page_size=${limit}`)
+  return payload.results
 }

@@ -6,6 +6,7 @@ const navItems = [
   { to: '/stock/600519', key: 'nav.stock' },
   { to: '/screener', key: 'nav.screener' },
   { to: '/macro', key: 'nav.macro' },
+  { to: '/models', key: 'nav.models' },
   { to: '/backtest', key: 'nav.backtest' },
   { to: '/alerts', key: 'nav.alerts' },
   { to: '/settings', key: 'nav.settings' },

@@ -37,3 +37,8 @@ export interface MacroOverview {
   eventTag: string
   confidence: number
 }
+
+export interface ModelMetricRow {
+  label: string
+  value: string
+}
