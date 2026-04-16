@@ -193,6 +193,11 @@ class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
                 'confidence': row['confidence'],
                 'predicted_label': row['predicted_label'],
                 'model_version': row['model_version'],
+                'target_price': row['target_price'],
+                'stop_loss_price': row['stop_loss_price'],
+                'risk_reward_ratio': row['risk_reward_ratio'],
+                'trade_score': row['trade_score'],
+                'suggested': row['suggested'],
             })
 
         return Response(output)
@@ -264,6 +269,11 @@ class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
                 'down': float(row.down_probability),
                 'confidence': float(row.confidence),
                 'predicted_label': row.predicted_label,
+                'target_price': float(row.target_price) if row.target_price is not None else None,
+                'stop_loss_price': float(row.stop_loss_price) if row.stop_loss_price is not None else None,
+                'risk_reward_ratio': float(row.risk_reward_ratio) if row.risk_reward_ratio is not None else None,
+                'trade_score': float(row.trade_score) if row.trade_score is not None else None,
+                'suggested': row.suggested,
             })
 
         return Response({'date': str(target_date), 'results': grouped})

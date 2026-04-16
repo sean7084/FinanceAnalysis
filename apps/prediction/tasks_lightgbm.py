@@ -26,6 +26,7 @@ from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
+from .odds import estimate_trade_decision
 
 
 # ============================================================================
@@ -669,6 +670,13 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
     confidence = max(calibrated_probs)
     label_idx = np.argmax(calibrated_probs)
     predicted_label = ['DOWN', 'FLAT', 'UP'][label_idx]
+    trade_decision = estimate_trade_decision(
+        asset_id=asset_id,
+        as_of=target_date,
+        horizon_days=horizon_days,
+        up_probability=Decimal(str(up_prob)),
+        predicted_label=predicted_label,
+    )
 
     return {
         'up_probability': Decimal(str(up_prob)),
@@ -676,10 +684,19 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
         'down_probability': Decimal(str(down_prob)),
         'confidence': Decimal(str(confidence)),
         'predicted_label': predicted_label,
+        'target_price': trade_decision['target_price'],
+        'stop_loss_price': trade_decision['stop_loss_price'],
+        'risk_reward_ratio': trade_decision['risk_reward_ratio'],
+        'trade_score': trade_decision['trade_score'],
+        'suggested': trade_decision['suggested'],
         'feature_snapshot': features_dict,
         'raw_scores': {'down': float(raw_probs[0]), 'flat': float(raw_probs[1]), 'up': float(raw_probs[2])},
         'calibrated_scores': {'down': float(down_prob), 'flat': float(flat_prob), 'up': float(up_prob)},
         'model_artifact': model_artifact,
+        'metadata': {
+            'source': 'phase14_lightgbm_prediction',
+            'trade_decision_engine': 'v1',
+        },
     }
 
 
@@ -715,9 +732,15 @@ def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
                     'down_probability': pred['down_probability'],
                     'confidence': pred['confidence'],
                     'predicted_label': pred['predicted_label'],
+                    'target_price': pred['target_price'],
+                    'stop_loss_price': pred['stop_loss_price'],
+                    'risk_reward_ratio': pred['risk_reward_ratio'],
+                    'trade_score': pred['trade_score'],
+                    'suggested': pred['suggested'],
                     'feature_snapshot': pred['feature_snapshot'],
                     'raw_scores': pred['raw_scores'],
                     'calibrated_scores': pred['calibrated_scores'],
+                    'metadata': pred['metadata'],
                 },
             )
             processed += 1
@@ -761,9 +784,15 @@ def generate_lightgbm_prediction_for_asset(asset_id, target_date=None, horizons=
                 'down_probability': pred['down_probability'],
                 'confidence': pred['confidence'],
                 'predicted_label': pred['predicted_label'],
+                'target_price': pred['target_price'],
+                'stop_loss_price': pred['stop_loss_price'],
+                'risk_reward_ratio': pred['risk_reward_ratio'],
+                'trade_score': pred['trade_score'],
+                'suggested': pred['suggested'],
                 'feature_snapshot': pred['feature_snapshot'],
                 'raw_scores': pred['raw_scores'],
                 'calibrated_scores': pred['calibrated_scores'],
+                'metadata': pred['metadata'],
             },
         )
         processed += 1

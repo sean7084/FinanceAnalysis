@@ -65,6 +65,11 @@ class PredictionResult(models.Model):
     down_probability = models.DecimalField(_('Down Probability'), max_digits=7, decimal_places=6)
     confidence = models.DecimalField(_('Confidence'), max_digits=7, decimal_places=6)
     predicted_label = models.CharField(_('Predicted Label'), max_length=10, choices=Label.choices, db_index=True)
+    target_price = models.DecimalField(_('Target Price'), max_digits=12, decimal_places=4, null=True, blank=True)
+    stop_loss_price = models.DecimalField(_('Stop Loss Price'), max_digits=12, decimal_places=4, null=True, blank=True)
+    risk_reward_ratio = models.DecimalField(_('Risk Reward Ratio'), max_digits=12, decimal_places=6, null=True, blank=True)
+    trade_score = models.DecimalField(_('Trade Score'), max_digits=12, decimal_places=6, null=True, blank=True)
+    suggested = models.BooleanField(_('Suggested'), default=False, db_index=True)
 
     model_version = models.ForeignKey(
         ModelVersion,

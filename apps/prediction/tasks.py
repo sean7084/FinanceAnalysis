@@ -10,6 +10,7 @@ from apps.markets.models import Asset
 from apps.macro.models import MarketContext
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
+from .odds import estimate_trade_decision
 
 
 def _clamp(value, low=Decimal('0'), high=Decimal('1')):
@@ -188,6 +189,13 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
             up, flat, down = _probabilities_from_features(features, int(horizon), ctx_macro)
             label = _predicted_label(up, flat, down)
             conf = _confidence(up, flat, down)
+            trade_decision = estimate_trade_decision(
+                asset_id=asset.id,
+                as_of=as_of,
+                horizon_days=int(horizon),
+                up_probability=up,
+                predicted_label=label,
+            )
 
             PredictionResult.objects.update_or_create(
                 asset=asset,
@@ -200,6 +208,11 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
                     'down_probability': down,
                     'confidence': conf,
                     'predicted_label': label,
+                    'target_price': trade_decision['target_price'],
+                    'stop_loss_price': trade_decision['stop_loss_price'],
+                    'risk_reward_ratio': trade_decision['risk_reward_ratio'],
+                    'trade_score': trade_decision['trade_score'],
+                    'suggested': trade_decision['suggested'],
                     'macro_phase': ctx_macro,
                     'event_tag': ctx_event,
                     'feature_payload': {
@@ -213,6 +226,7 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
                     'metadata': {
                         'source': 'phase14_baseline_prediction',
                         'horizon': int(horizon),
+                        'trade_decision_engine': 'v1',
                     },
                 },
             )
@@ -231,6 +245,13 @@ def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=N
         up, flat, down = _probabilities_from_features(features, int(horizon), ctx_macro)
         label = _predicted_label(up, flat, down)
         conf = _confidence(up, flat, down)
+        trade_decision = estimate_trade_decision(
+            asset_id=asset.id,
+            as_of=as_of,
+            horizon_days=int(horizon),
+            up_probability=up,
+            predicted_label=label,
+        )
 
         PredictionResult.objects.update_or_create(
             asset=asset,
@@ -243,6 +264,11 @@ def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=N
                 'down_probability': down,
                 'confidence': conf,
                 'predicted_label': label,
+                'target_price': trade_decision['target_price'],
+                'stop_loss_price': trade_decision['stop_loss_price'],
+                'risk_reward_ratio': trade_decision['risk_reward_ratio'],
+                'trade_score': trade_decision['trade_score'],
+                'suggested': trade_decision['suggested'],
                 'macro_phase': ctx_macro,
                 'event_tag': ctx_event,
                 'feature_payload': {
@@ -256,6 +282,7 @@ def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=N
                 'metadata': {
                     'source': 'phase14_baseline_prediction',
                     'horizon': int(horizon),
+                    'trade_decision_engine': 'v1',
                 },
             },
         )

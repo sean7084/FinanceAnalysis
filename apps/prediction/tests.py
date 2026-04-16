@@ -8,7 +8,8 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.factors.models import FactorScore
-from apps.markets.models import Asset, Market
+from apps.markets.models import Asset, Market, OHLCV
+from apps.analytics.models import TechnicalIndicator
 from apps.sentiment.models import SentimentScore
 from .models import PredictionResult
 from .tasks import generate_predictions_for_date
@@ -56,6 +57,33 @@ class Phase14PredictionTests(TestCase):
             sentiment_score=Decimal('0.3'),
             sentiment_label=SentimentScore.Label.POSITIVE,
         )
+        for offset in range(30):
+            as_of = d - timezone.timedelta(days=offset)
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=as_of,
+                open=Decimal('10.0'),
+                high=Decimal('10.8') + Decimal(offset) / Decimal('100'),
+                low=Decimal('9.6') - Decimal(offset) / Decimal('200'),
+                close=Decimal('10.2'),
+                adj_close=Decimal('10.2'),
+                volume=1000000,
+                amount=Decimal('10200000'),
+            )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time())),
+            indicator_type='BBANDS',
+            value=Decimal('10.2'),
+            parameters={'timeperiod': 20, 'upper': 10.9, 'middle': 10.2, 'lower': 9.7},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time())),
+            indicator_type='SMA',
+            value=Decimal('9.9'),
+            parameters={'timeperiod': 60},
+        )
         return d
 
     def test_prediction_endpoints_require_auth(self):
@@ -69,6 +97,11 @@ class Phase14PredictionTests(TestCase):
         d = self._seed_features()
         generate_predictions_for_date(target_date=str(d), horizons=[3, 7, 30])
         self.assertEqual(PredictionResult.objects.filter(asset=self.asset, date=d).count(), 3)
+        prediction = PredictionResult.objects.filter(asset=self.asset, date=d, horizon_days=7).first()
+        self.assertIsNotNone(prediction.target_price)
+        self.assertIsNotNone(prediction.stop_loss_price)
+        self.assertIsNotNone(prediction.risk_reward_ratio)
+        self.assertIsNotNone(prediction.trade_score)
 
     def test_single_stock_prediction_endpoint_shape(self):
         self._auth()
@@ -84,6 +117,10 @@ class Phase14PredictionTests(TestCase):
         self.assertIn('flat', first)
         self.assertIn('down', first)
         self.assertIn('confidence', first)
+        self.assertIn('target_price', first)
+        self.assertIn('stop_loss_price', first)
+        self.assertIn('trade_score', first)
+        self.assertIn('suggested', first)
 
     def test_batch_prediction_endpoint(self):
         self._auth()

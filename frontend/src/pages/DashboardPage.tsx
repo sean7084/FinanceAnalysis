@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   fetchDashboardData,
-  fetchLightGBMPredictionBySymbol,
-  fetchPredictionBySymbol,
-  fetchScreenerRows,
+  fetchDashboardStocks,
   hasAnyAuthCredential,
-  type CandidateDto,
+  type DashboardStockRowDto,
 } from '../lib/api'
 import { useI18n } from '../i18n'
 
@@ -21,20 +19,13 @@ export function DashboardPage() {
     completedBacktests: 0,
     avgBottomProbability: 0,
   })
-  const [comparisonRows, setComparisonRows] = useState<Array<{
-    key: string
-    symbol: string
-    name: string
-    horizon: string
-    heuristicLabel: string
-    heuristicConfidence: string
-    heuristicUp: string
-    lightgbmLabel: string
-    lightgbmConfidence: string
-    lightgbmUp: string
-  }>>([])
+  const [dashboardRows, setDashboardRows] = useState<DashboardStockRowDto[]>([])
   const [topN, setTopN] = useState(5)
-  const [candidates, setCandidates] = useState<CandidateDto[]>([])
+  const [modelFamily, setModelFamily] = useState<'both' | 'heuristic' | 'lightgbm'>('both')
+  const [candidateScope, setCandidateScope] = useState<'all' | 'suggested'>('all')
+  const [sortField, setSortField] = useState<keyof DashboardStockRowDto>('composite_score')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let alive = true
@@ -43,71 +34,12 @@ export function DashboardPage() {
         setLoading(true)
         const [data, rows] = await Promise.all([
           fetchDashboardData(),
-          fetchScreenerRows(topN),
+          fetchDashboardStocks(7),
         ])
-
-        const predictionRows = await Promise.all(
-          rows.map(async (row) => {
-            const [prediction, lightgbmPrediction] = await Promise.all([
-              fetchPredictionBySymbol(row.asset_symbol),
-              fetchLightGBMPredictionBySymbol(row.asset_symbol),
-            ])
-
-            const comparison = new Map<number, {
-              heuristicLabel: string
-              heuristicConfidence: string
-              heuristicUp: string
-              lightgbmLabel: string
-              lightgbmConfidence: string
-              lightgbmUp: string
-            }>()
-
-            for (const result of prediction?.results ?? []) {
-              comparison.set(result.horizon_days, {
-                heuristicLabel: result.predicted_label,
-                heuristicConfidence: `${(Number(result.confidence) * 100).toFixed(1)}%`,
-                heuristicUp: `${(Number(result.up) * 100).toFixed(1)}%`,
-                lightgbmLabel: '--',
-                lightgbmConfidence: '--',
-                lightgbmUp: '--',
-              })
-            }
-
-            for (const result of lightgbmPrediction?.results ?? []) {
-              const existing = comparison.get(result.horizon_days) ?? {
-                heuristicLabel: '--',
-                heuristicConfidence: '--',
-                heuristicUp: '--',
-                lightgbmLabel: '--',
-                lightgbmConfidence: '--',
-                lightgbmUp: '--',
-              }
-              comparison.set(result.horizon_days, {
-                ...existing,
-                lightgbmLabel: result.predicted_label,
-                lightgbmConfidence: `${(Number(result.confidence) * 100).toFixed(1)}%`,
-                lightgbmUp: `${(Number(result.up) * 100).toFixed(1)}%`,
-              })
-            }
-
-            return {
-              comparisonRows: Array.from(comparison.entries())
-                .sort((left, right) => left[0] - right[0])
-                .map(([horizonDays, values]) => ({
-                  key: `${row.asset_symbol}-${horizonDays}`,
-                  symbol: row.asset_symbol,
-                  name: row.asset_name,
-                  horizon: `${horizonDays}D`,
-                  ...values,
-                })),
-            }
-          }),
-        )
 
         if (alive) {
           setDashboard(data)
-          setCandidates(rows)
-          setComparisonRows(predictionRows.flatMap((row) => row.comparisonRows))
+          setDashboardRows(rows)
           setError(null)
         }
       } catch {
@@ -124,7 +56,107 @@ export function DashboardPage() {
     return () => {
       alive = false
     }
-  }, [topN])
+  }, [])
+
+  const topCandidateRows = useMemo(() => {
+    const filtered = dashboardRows.filter((row) => {
+      if (candidateScope === 'suggested') {
+        if (modelFamily === 'heuristic') return row.heuristic_suggested
+        if (modelFamily === 'lightgbm') return row.lightgbm_suggested
+        return row.heuristic_suggested || row.lightgbm_suggested
+      }
+      return true
+    })
+
+    const scoreForModel = (row: DashboardStockRowDto) => {
+      if (modelFamily === 'heuristic') return Number(row.heuristic_trade_score ?? row.heuristic_up_probability ?? 0)
+      if (modelFamily === 'lightgbm') return Number(row.lightgbm_trade_score ?? row.lightgbm_up_probability ?? 0)
+      return Math.max(
+        Number(row.heuristic_trade_score ?? row.heuristic_up_probability ?? 0),
+        Number(row.lightgbm_trade_score ?? row.lightgbm_up_probability ?? 0),
+      )
+    }
+
+    return [...filtered]
+      .sort((left, right) => scoreForModel(right) - scoreForModel(left))
+      .slice(0, topN)
+  }, [candidateScope, dashboardRows, modelFamily, topN])
+
+  const allStocksRows = useMemo(() => {
+    const matchesFilter = (value: unknown, filter: string) => String(value ?? '').toLowerCase().includes(filter.toLowerCase())
+    const filtered = dashboardRows.filter((row) => (
+      Object.entries(columnFilters).every(([key, value]) => !value || matchesFilter(row[key as keyof DashboardStockRowDto], value))
+    ))
+
+    return [...filtered].sort((left, right) => {
+      const leftValue = left[sortField]
+      const rightValue = right[sortField]
+      if (leftValue == null && rightValue == null) return 0
+      if (leftValue == null) return 1
+      if (rightValue == null) return -1
+      if (typeof leftValue === 'string' && typeof rightValue === 'string') {
+        return sortDirection === 'asc' ? leftValue.localeCompare(rightValue) : rightValue.localeCompare(leftValue)
+      }
+      const leftNumber = Number(leftValue)
+      const rightNumber = Number(rightValue)
+      return sortDirection === 'asc' ? leftNumber - rightNumber : rightNumber - leftNumber
+    })
+  }, [columnFilters, dashboardRows, sortDirection, sortField])
+
+  const handleSort = (field: keyof DashboardStockRowDto) => {
+    if (sortField === field) {
+      setSortDirection((value) => value === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setSortField(field)
+    setSortDirection('desc')
+  }
+
+  const setColumnFilter = (field: keyof DashboardStockRowDto, value: string) => {
+    setColumnFilters((current) => ({
+      ...current,
+      [field]: value,
+    }))
+  }
+
+  const tableColumns: Array<{ key: keyof DashboardStockRowDto; label: string }> = [
+    { key: 'asset_symbol', label: t('screener.symbol') },
+    { key: 'asset_name', label: t('screener.name') },
+    { key: 'composite_score', label: t('screener.comp') },
+    { key: 'bottom_probability_score', label: t('screener.bottomProb') },
+    { key: 'fundamental_score', label: t('dash.fundamental') },
+    { key: 'capital_flow_score', label: t('dash.capitalFlow') },
+    { key: 'technical_score', label: t('dash.technical') },
+    { key: 'factor_sentiment_score', label: t('dash.factorSentiment') },
+    { key: 'rsi', label: 'RSI' },
+    { key: 'macd', label: 'MACD' },
+    { key: 'bb_upper', label: 'BB Upper' },
+    { key: 'bb_lower', label: 'BB Lower' },
+    { key: 'sma_60', label: 'SMA60' },
+    { key: 'heuristic_trade_score', label: t('dash.heuristicTradeScore') },
+    { key: 'heuristic_risk_reward_ratio', label: t('dash.heuristicRR') },
+    { key: 'heuristic_suggested', label: t('dash.heuristicSuggested') },
+    { key: 'lightgbm_trade_score', label: t('dash.lightgbmTradeScore') },
+    { key: 'lightgbm_risk_reward_ratio', label: t('dash.lightgbmRR') },
+    { key: 'lightgbm_suggested', label: t('dash.lightgbmSuggested') },
+  ]
+
+  const renderValue = (value: unknown) => {
+    if (typeof value === 'boolean') {
+      return value ? t('common.yes') : t('common.no')
+    }
+    if (value == null || value === '') {
+      return '--'
+    }
+    if (typeof value === 'number') {
+      return value.toFixed(2)
+    }
+    const numericValue = Number(value)
+    if (!Number.isNaN(numericValue) && String(value).trim() !== '') {
+      return numericValue.toFixed(2)
+    }
+    return String(value)
+  }
 
   const translatedMetrics = [
     { label: t('dash.macro'), value: dashboard.macroPhase },
@@ -133,6 +165,8 @@ export function DashboardPage() {
     { label: t('dash.alertTriggers'), value: `${dashboard.alertTriggers} ${t('dash.live')}` },
     { label: t('dash.completedBacktests'), value: String(dashboard.completedBacktests) },
     { label: t('dash.avgBottomProb'), value: `${(dashboard.avgBottomProbability * 100).toFixed(1)}%` },
+    { label: t('dash.suggestedSetups'), value: String(dashboardRows.filter((row) => row.heuristic_suggested || row.lightgbm_suggested).length) },
+    { label: t('dash.topTradeScore'), value: dashboardRows.length ? Number(Math.max(...dashboardRows.map((row) => Math.max(Number(row.heuristic_trade_score ?? 0), Number(row.lightgbm_trade_score ?? 0))))).toFixed(2) : '--' },
   ]
 
   return (
@@ -166,71 +200,116 @@ export function DashboardPage() {
           <option value={20}>Top 20</option>
         </select>
 
-        <h3>{t('dash.topCandidates')}</h3>
+        <label htmlFor="dashboard-model-family">{t('dash.modelFamily')}</label>
+        <select
+          id="dashboard-model-family"
+          value={modelFamily}
+          onChange={(e) => setModelFamily(e.target.value as 'both' | 'heuristic' | 'lightgbm')}
+        >
+          <option value="both">{t('dash.modelBoth')}</option>
+          <option value="heuristic">{t('dash.modelHeuristic')}</option>
+          <option value="lightgbm">{t('dash.modelLightgbm')}</option>
+        </select>
+
+        <label htmlFor="dashboard-candidate-scope">{t('dash.candidateScope')}</label>
+        <select
+          id="dashboard-candidate-scope"
+          value={candidateScope}
+          onChange={(e) => setCandidateScope(e.target.value as 'all' | 'suggested')}
+        >
+          <option value="all">{t('dash.allCandidates')}</option>
+          <option value="suggested">{t('dash.suggestedOnly')}</option>
+        </select>
+
+        <h3>{t('dash.topCandidate')}</h3>
+        <div className="table-wrap">
         <table className="data-table">
           <thead>
             <tr>
               <th>{t('screener.symbol')}</th>
               <th>{t('screener.name')}</th>
-              <th>{t('screener.comp')}</th>
-              <th>{t('screener.bottomProb')}</th>
+              <th>{t('comparison.heuristic')}</th>
+              <th>{t('comparison.upProbability')}</th>
+              <th>{t('trade.rr')}</th>
+              <th>{t('trade.tradeScore')}</th>
+              <th>{t('trade.suggested')}</th>
+              <th>{t('comparison.lightgbm')}</th>
+              <th>{t('comparison.upProbability')}</th>
+              <th>{t('trade.rr')}</th>
+              <th>{t('trade.tradeScore')}</th>
+              <th>{t('trade.suggested')}</th>
             </tr>
           </thead>
           <tbody>
-            {candidates.map((row) => (
-              <tr key={row.id}>
+            {topCandidateRows.map((row) => (
+              <tr key={row.asset_symbol}>
                 <td>{row.asset_symbol}</td>
                 <td>{row.asset_name}</td>
-                <td>{Number(row.composite_score).toFixed(2)}</td>
-                <td>{(Number(row.bottom_probability_score) * 100).toFixed(1)}%</td>
+                <td>{row.heuristic_label || '--'}</td>
+                <td>{row.heuristic_up_probability != null ? `${(Number(row.heuristic_up_probability) * 100).toFixed(1)}%` : '--'}</td>
+                <td>{row.heuristic_risk_reward_ratio != null ? Number(row.heuristic_risk_reward_ratio).toFixed(2) : '--'}</td>
+                <td>{row.heuristic_trade_score != null ? Number(row.heuristic_trade_score).toFixed(2) : '--'}</td>
+                <td>{row.heuristic_suggested ? t('common.yes') : t('common.no')}</td>
+                <td>{row.lightgbm_label || '--'}</td>
+                <td>{row.lightgbm_up_probability != null ? `${(Number(row.lightgbm_up_probability) * 100).toFixed(1)}%` : '--'}</td>
+                <td>{row.lightgbm_risk_reward_ratio != null ? Number(row.lightgbm_risk_reward_ratio).toFixed(2) : '--'}</td>
+                <td>{row.lightgbm_trade_score != null ? Number(row.lightgbm_trade_score).toFixed(2) : '--'}</td>
+                <td>{row.lightgbm_suggested ? t('common.yes') : t('common.no')}</td>
               </tr>
             ))}
-            {candidates.length === 0 && !loading && (
+            {topCandidateRows.length === 0 && !loading && (
               <tr>
-                <td colSpan={4}>{t('common.noData')}</td>
+                <td colSpan={12}>{t('common.noData')}</td>
               </tr>
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div className="card">
-        <h3>{t('dash.modelComparison')}</h3>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>{t('screener.symbol')}</th>
-              <th>{t('screener.name')}</th>
-              <th>{t('models.horizon')}</th>
-              <th>{t('comparison.heuristic')}</th>
-              <th>{t('models.confidence')}</th>
-              <th>{t('comparison.upProbability')}</th>
-              <th>{t('comparison.lightgbm')}</th>
-              <th>{t('models.confidence')}</th>
-              <th>{t('comparison.upProbability')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {comparisonRows.map((row) => (
-              <tr key={row.key}>
-                <td>{row.symbol}</td>
-                <td>{row.name}</td>
-                <td>{row.horizon}</td>
-                <td>{row.heuristicLabel}</td>
-                <td>{row.heuristicConfidence}</td>
-                <td>{row.heuristicUp}</td>
-                <td>{row.lightgbmLabel}</td>
-                <td>{row.lightgbmConfidence}</td>
-                <td>{row.lightgbmUp}</td>
-              </tr>
-            ))}
-            {comparisonRows.length === 0 && !loading && (
+        <h3>{t('dash.allStocks')}</h3>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
               <tr>
-                <td colSpan={9}>{t('common.noData')}</td>
+                {tableColumns.map((column) => (
+                  <th key={column.key}>
+                    <button type="button" className="table-sort-button" onClick={() => handleSort(column.key)}>
+                      {column.label}
+                      {sortField === column.key ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}
+                    </button>
+                  </th>
+                ))}
               </tr>
-            )}
-          </tbody>
-        </table>
+              <tr>
+                {tableColumns.map((column) => (
+                  <th key={`${column.key}-filter`}>
+                    <input
+                      value={columnFilters[column.key] ?? ''}
+                      onChange={(e) => setColumnFilter(column.key, e.target.value)}
+                      placeholder={t('dash.filterColumn')}
+                    />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {allStocksRows.map((row) => (
+                <tr key={row.asset_symbol}>
+                  {tableColumns.map((column) => (
+                    <td key={`${row.asset_symbol}-${column.key}`}>{renderValue(row[column.key])}</td>
+                  ))}
+                </tr>
+              ))}
+              {allStocksRows.length === 0 && !loading && (
+                <tr>
+                  <td colSpan={tableColumns.length}>{t('common.noData')}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   )

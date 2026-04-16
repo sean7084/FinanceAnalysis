@@ -30,6 +30,7 @@ class LightGBMPredictionSerializer(serializers.ModelSerializer):
             'id', 'asset', 'asset_symbol', 'asset_name', 'date', 'horizon_days',
             'up_probability', 'flat_probability', 'down_probability',
             'predicted_label', 'confidence',
+            'target_price', 'stop_loss_price', 'risk_reward_ratio', 'trade_score', 'suggested',
             'model_artifact', 'model_version', 'model_horizon',
             'feature_snapshot', 'raw_scores', 'calibrated_scores',
             'metadata', 'created_at', 'updated_at',

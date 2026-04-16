@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django.core.cache import cache
+from django.db.models import Max
 from django_filters.rest_framework import DjangoFilterBackend
 
 from django.utils import timezone
@@ -12,12 +13,17 @@ from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent,
 from .serializers import (
     TechnicalIndicatorSerializer,
     TechnicalIndicatorListSerializer,
+    DashboardStockRowSerializer,
     ScreenerTemplateSerializer,
     AlertRuleSerializer,
     AlertEventSerializer,
     SignalEventSerializer,
 )
 from apps.markets.models import Asset, OHLCV
+from apps.factors.models import FactorScore
+from apps.prediction.models import PredictionResult
+from apps.prediction.models_lightgbm import LightGBMPrediction
+from apps.sentiment.models import SentimentScore
 from .tasks import (
     calculate_rsi_for_asset,
     calculate_macd_for_asset,
@@ -30,6 +36,169 @@ from .tasks import (
     calculate_fibonacci_retracement_for_asset,
     calculate_signals_for_all_assets,
 )
+
+
+def _parse_bool(value):
+    if value is None:
+        return False
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _latest_by_asset(queryset, asset_attr='asset_id'):
+    results = {}
+    for item in queryset:
+        results.setdefault(getattr(item, asset_attr), item)
+    return results
+
+
+class DashboardStockViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def list(self, request):
+        try:
+            prediction_horizon = int(request.query_params.get('prediction_horizon', 7))
+        except (TypeError, ValueError):
+            prediction_horizon = 7
+
+        model_family = str(request.query_params.get('model_family', 'both')).strip().lower()
+        if model_family not in {'both', 'heuristic', 'lightgbm'}:
+            model_family = 'both'
+
+        suggested_only = _parse_bool(request.query_params.get('suggested_only'))
+        search = str(request.query_params.get('search', '')).strip().lower()
+        ordering = str(request.query_params.get('ordering', '-composite_score')).strip() or '-composite_score'
+
+        latest_date = FactorScore.objects.filter(mode=FactorScore.FactorMode.COMPOSITE).aggregate(latest=Max('date'))['latest']
+        if latest_date is None:
+            return Response({'count': 0, 'results': []})
+
+        factor_rows = list(
+            FactorScore.objects.select_related('asset').filter(
+                mode=FactorScore.FactorMode.COMPOSITE,
+                date=latest_date,
+            ).order_by('asset__symbol')
+        )
+        asset_ids = [row.asset_id for row in factor_rows]
+
+        ohlcv_map = _latest_by_asset(
+            OHLCV.objects.filter(asset_id__in=asset_ids, date__lte=latest_date)
+            .order_by('asset_id', '-date')
+        )
+        sentiment_map = _latest_by_asset(
+            SentimentScore.objects.filter(
+                asset_id__in=asset_ids,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+                date__lte=latest_date,
+            ).order_by('asset_id', '-date', '-created_at')
+        )
+        heuristic_map = _latest_by_asset(
+            PredictionResult.objects.filter(
+                asset_id__in=asset_ids,
+                date=latest_date,
+                horizon_days=prediction_horizon,
+            ).order_by('asset_id', '-created_at')
+        )
+        lightgbm_map = _latest_by_asset(
+            LightGBMPrediction.objects.filter(
+                asset_id__in=asset_ids,
+                date=latest_date,
+                horizon_days=prediction_horizon,
+            ).order_by('asset_id', '-created_at')
+        )
+
+        indicator_queryset = TechnicalIndicator.objects.filter(
+            asset_id__in=asset_ids,
+            timestamp__date__lte=latest_date,
+            indicator_type__in=['RSI', 'MACD', 'BBANDS', 'SMA'],
+        ).order_by('asset_id', 'indicator_type', '-timestamp')
+
+        indicator_map = {}
+        for indicator in indicator_queryset:
+            indicator_map.setdefault(indicator.asset_id, {})
+            asset_indicators = indicator_map[indicator.asset_id]
+            if indicator.indicator_type == 'SMA':
+                timeperiod = (indicator.parameters or {}).get('timeperiod')
+                if timeperiod not in {50, 60}:
+                    continue
+                if 'sma_60' not in asset_indicators or timeperiod == 60:
+                    asset_indicators['sma_60'] = indicator
+                continue
+            asset_indicators.setdefault(indicator.indicator_type, indicator)
+
+        rows = []
+        for factor in factor_rows:
+            heuristic = heuristic_map.get(factor.asset_id)
+            lightgbm = lightgbm_map.get(factor.asset_id)
+            sentiment = sentiment_map.get(factor.asset_id)
+            latest_bar = ohlcv_map.get(factor.asset_id)
+            indicators = indicator_map.get(factor.asset_id, {})
+            bbands = indicators.get('BBANDS')
+            bbands_parameters = bbands.parameters if bbands else {}
+            row = {
+                'asset_id': factor.asset_id,
+                'asset_symbol': factor.asset.symbol,
+                'asset_name': factor.asset.name,
+                'date': factor.date,
+                'composite_score': factor.composite_score,
+                'bottom_probability_score': factor.bottom_probability_score,
+                'fundamental_score': factor.fundamental_score,
+                'capital_flow_score': factor.capital_flow_score,
+                'technical_score': factor.technical_score,
+                'factor_sentiment_score': factor.sentiment_score,
+                'pe_percentile_score': factor.pe_percentile_score,
+                'pb_percentile_score': factor.pb_percentile_score,
+                'roe_trend_score': factor.roe_trend_score,
+                'northbound_flow_score': factor.northbound_flow_score,
+                'main_force_flow_score': factor.main_force_flow_score,
+                'margin_flow_score': factor.margin_flow_score,
+                'technical_reversal_score': factor.technical_reversal_score,
+                'current_close': latest_bar.close if latest_bar else None,
+                'sentiment_score': sentiment.sentiment_score if sentiment else None,
+                'sentiment_label': sentiment.sentiment_label if sentiment else '',
+                'rsi': getattr(indicators.get('RSI'), 'value', None),
+                'macd': getattr(indicators.get('MACD'), 'value', None),
+                'bb_upper': bbands_parameters.get('upper'),
+                'bb_lower': bbands_parameters.get('lower'),
+                'sma_60': getattr(indicators.get('sma_60'), 'value', None),
+                'heuristic_label': heuristic.predicted_label if heuristic else '',
+                'heuristic_up_probability': heuristic.up_probability if heuristic else None,
+                'heuristic_confidence': heuristic.confidence if heuristic else None,
+                'heuristic_trade_score': heuristic.trade_score if heuristic else None,
+                'heuristic_risk_reward_ratio': heuristic.risk_reward_ratio if heuristic else None,
+                'heuristic_suggested': bool(heuristic.suggested) if heuristic else False,
+                'lightgbm_label': lightgbm.predicted_label if lightgbm else '',
+                'lightgbm_up_probability': lightgbm.up_probability if lightgbm else None,
+                'lightgbm_confidence': lightgbm.confidence if lightgbm else None,
+                'lightgbm_trade_score': lightgbm.trade_score if lightgbm else None,
+                'lightgbm_risk_reward_ratio': lightgbm.risk_reward_ratio if lightgbm else None,
+                'lightgbm_suggested': bool(lightgbm.suggested) if lightgbm else False,
+            }
+            rows.append(row)
+
+        if search:
+            rows = [
+                row for row in rows
+                if search in row['asset_symbol'].lower() or search in row['asset_name'].lower()
+            ]
+
+        if suggested_only:
+            if model_family == 'heuristic':
+                rows = [row for row in rows if row['heuristic_suggested']]
+            elif model_family == 'lightgbm':
+                rows = [row for row in rows if row['lightgbm_suggested']]
+            else:
+                rows = [row for row in rows if row['heuristic_suggested'] or row['lightgbm_suggested']]
+
+        descending = ordering.startswith('-')
+        order_field = ordering[1:] if descending else ordering
+        if rows and order_field in rows[0]:
+            rows.sort(
+                key=lambda row: (row.get(order_field) is None, row.get(order_field) or 0),
+                reverse=descending,
+            )
+
+        serializer = DashboardStockRowSerializer(rows, many=True)
+        return Response({'count': len(rows), 'results': serializer.data})
 
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):

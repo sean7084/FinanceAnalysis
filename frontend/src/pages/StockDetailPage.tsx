@@ -186,6 +186,70 @@ export function StockDetailPage() {
       }))
   }, [heuristicPrediction, lightgbmPrediction])
 
+  const setupComparisonRows = useMemo(() => {
+    const formatPrice = (value: number | string | null | undefined) => value != null ? Number(value).toFixed(2) : '--'
+    const formatRatio = (value: number | string | null | undefined) => value != null ? Number(value).toFixed(2) : '--'
+    const formatSuggested = (value: boolean | undefined) => value ? t('common.yes') : t('common.no')
+
+    const comparison = new Map<number, {
+      heuristicTargetPrice: string
+      heuristicStopLossPrice: string
+      heuristicRiskRewardRatio: string
+      heuristicTradeScore: string
+      heuristicSuggested: string
+      lightgbmTargetPrice: string
+      lightgbmStopLossPrice: string
+      lightgbmRiskRewardRatio: string
+      lightgbmTradeScore: string
+      lightgbmSuggested: string
+    }>()
+
+    for (const result of heuristicPrediction?.results ?? []) {
+      comparison.set(result.horizon_days, {
+        heuristicTargetPrice: formatPrice(result.target_price),
+        heuristicStopLossPrice: formatPrice(result.stop_loss_price),
+        heuristicRiskRewardRatio: formatRatio(result.risk_reward_ratio),
+        heuristicTradeScore: formatRatio(result.trade_score),
+        heuristicSuggested: formatSuggested(result.suggested),
+        lightgbmTargetPrice: '--',
+        lightgbmStopLossPrice: '--',
+        lightgbmRiskRewardRatio: '--',
+        lightgbmTradeScore: '--',
+        lightgbmSuggested: '--',
+      })
+    }
+
+    for (const result of lightgbmPrediction?.results ?? []) {
+      const existing = comparison.get(result.horizon_days) ?? {
+        heuristicTargetPrice: '--',
+        heuristicStopLossPrice: '--',
+        heuristicRiskRewardRatio: '--',
+        heuristicTradeScore: '--',
+        heuristicSuggested: '--',
+        lightgbmTargetPrice: '--',
+        lightgbmStopLossPrice: '--',
+        lightgbmRiskRewardRatio: '--',
+        lightgbmTradeScore: '--',
+        lightgbmSuggested: '--',
+      }
+      comparison.set(result.horizon_days, {
+        ...existing,
+        lightgbmTargetPrice: formatPrice(result.target_price),
+        lightgbmStopLossPrice: formatPrice(result.stop_loss_price),
+        lightgbmRiskRewardRatio: formatRatio(result.risk_reward_ratio),
+        lightgbmTradeScore: formatRatio(result.trade_score),
+        lightgbmSuggested: formatSuggested(result.suggested),
+      })
+    }
+
+    return Array.from(comparison.entries())
+      .sort((left, right) => left[0] - right[0])
+      .map(([horizonDays, values]) => ({
+        horizon: `${horizonDays}D`,
+        ...values,
+      }))
+  }, [heuristicPrediction, lightgbmPrediction, t])
+
   return (
     <section>
       <header className="page-header">
@@ -215,6 +279,52 @@ export function StockDetailPage() {
       </div>
       <CandlestickChart data={klineData} />
       <ProbabilityChart title={t('stock.heuristicProbability')} data={predData} />
+      <div className="card">
+        <h3>{t('stock.tradeSignals')}</h3>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>{t('models.horizon')}</th>
+              <th>{t('comparison.heuristic')}</th>
+              <th>{t('trade.targetPrice')}</th>
+              <th>{t('trade.stopLoss')}</th>
+              <th>{t('trade.rr')}</th>
+              <th>{t('trade.tradeScore')}</th>
+              <th>{t('trade.suggested')}</th>
+              <th>{t('comparison.lightgbm')}</th>
+              <th>{t('trade.targetPrice')}</th>
+              <th>{t('trade.stopLoss')}</th>
+              <th>{t('trade.rr')}</th>
+              <th>{t('trade.tradeScore')}</th>
+              <th>{t('trade.suggested')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {setupComparisonRows.map((row) => (
+              <tr key={row.horizon}>
+                <td>{row.horizon}</td>
+                <td>{t('comparison.heuristic')}</td>
+                <td>{row.heuristicTargetPrice}</td>
+                <td>{row.heuristicStopLossPrice}</td>
+                <td>{row.heuristicRiskRewardRatio}</td>
+                <td>{row.heuristicTradeScore}</td>
+                <td>{row.heuristicSuggested}</td>
+                <td>{t('comparison.lightgbm')}</td>
+                <td>{row.lightgbmTargetPrice}</td>
+                <td>{row.lightgbmStopLossPrice}</td>
+                <td>{row.lightgbmRiskRewardRatio}</td>
+                <td>{row.lightgbmTradeScore}</td>
+                <td>{row.lightgbmSuggested}</td>
+              </tr>
+            ))}
+            {setupComparisonRows.length === 0 && !loading && (
+              <tr>
+                <td colSpan={13}>{t('common.noData')}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
       <div className="card">
         <h3>{t('stock.modelComparison')}</h3>
         <table className="data-table">

@@ -11,6 +11,10 @@ from rest_framework.test import APIClient
 import datetime
 from apps.markets.models import Market, Asset, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
+from apps.factors.models import FactorScore
+from apps.prediction.models import ModelVersion, PredictionResult
+from apps.prediction.models_lightgbm import LightGBMModelArtifact, LightGBMPrediction
+from apps.sentiment.models import SentimentScore
 from .tasks import (
     check_alert_rules,
     calculate_fibonacci_retracement_for_asset,
@@ -175,6 +179,173 @@ class Phase9ApiTests(TestCase):
         response = self.client.get('/api/v1/screeners/prebuilt/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('screeners', response.data)
+
+
+class Phase17DashboardStockApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='dashboard_user',
+            email='dashboard_user@example.com',
+            password='Passw0rd!123',
+        )
+        self.market = Market.objects.create(code='DASH', name='Dashboard Market')
+        self.asset1 = Asset.objects.create(market=self.market, symbol='600111', ts_code='600111.SH', name='Alpha Corp')
+        self.asset2 = Asset.objects.create(market=self.market, symbol='600222', ts_code='600222.SH', name='Beta Corp')
+        self.as_of = timezone.now().date()
+
+        for asset, base_price, composite_score, bottom_prob in [
+            (self.asset1, Decimal('10.2'), Decimal('0.810000'), Decimal('0.760000')),
+            (self.asset2, Decimal('20.4'), Decimal('0.610000'), Decimal('0.520000')),
+        ]:
+            FactorScore.objects.create(
+                asset=asset,
+                date=self.as_of,
+                mode=FactorScore.FactorMode.COMPOSITE,
+                pe_percentile_score=Decimal('0.300000'),
+                pb_percentile_score=Decimal('0.400000'),
+                roe_trend_score=Decimal('0.600000'),
+                northbound_flow_score=Decimal('0.500000'),
+                main_force_flow_score=Decimal('0.550000'),
+                margin_flow_score=Decimal('0.450000'),
+                technical_reversal_score=Decimal('0.700000'),
+                sentiment_score=Decimal('0.350000'),
+                fundamental_score=Decimal('0.400000'),
+                capital_flow_score=Decimal('0.500000'),
+                technical_score=Decimal('0.650000'),
+                composite_score=composite_score,
+                bottom_probability_score=bottom_prob,
+            )
+            OHLCV.objects.create(
+                asset=asset,
+                date=self.as_of,
+                open=base_price,
+                high=base_price + Decimal('0.5'),
+                low=base_price - Decimal('0.4'),
+                close=base_price,
+                adj_close=base_price,
+                volume=1000000,
+                amount=base_price * Decimal('1000000'),
+            )
+            SentimentScore.objects.create(
+                article=None,
+                asset=asset,
+                date=self.as_of,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+                positive_score=Decimal('0.55'),
+                neutral_score=Decimal('0.25'),
+                negative_score=Decimal('0.20'),
+                sentiment_score=Decimal('0.350000'),
+                sentiment_label=SentimentScore.Label.POSITIVE,
+            )
+            for indicator_type, value, parameters in [
+                ('RSI', Decimal('62.50000000'), {}),
+                ('MACD', Decimal('0.82000000'), {}),
+                ('BBANDS', Decimal('10.20000000'), {'upper': 11.0, 'lower': 9.4, 'timeperiod': 20}),
+                ('SMA', Decimal('9.90000000'), {'timeperiod': 60}),
+            ]:
+                TechnicalIndicator.objects.create(
+                    asset=asset,
+                    indicator_type=indicator_type,
+                    value=value,
+                    parameters=parameters,
+                    timestamp=timezone.make_aware(timezone.datetime.combine(self.as_of, timezone.datetime.min.time())),
+                )
+
+        heuristic_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.ENSEMBLE,
+            version='dashboard-heuristic-v1',
+            status=ModelVersion.Status.READY,
+            is_active=True,
+        )
+        lightgbm_artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='dashboard-lgbm-v1',
+            status=LightGBMModelArtifact.Status.READY,
+            is_active=True,
+        )
+
+        PredictionResult.objects.create(
+            asset=self.asset1,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.610000'),
+            flat_probability=Decimal('0.210000'),
+            down_probability=Decimal('0.180000'),
+            confidence=Decimal('0.610000'),
+            predicted_label=PredictionResult.Label.UP,
+            risk_reward_ratio=Decimal('2.400000'),
+            trade_score=Decimal('1.850000'),
+            suggested=True,
+            model_version=heuristic_version,
+        )
+        PredictionResult.objects.create(
+            asset=self.asset2,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.410000'),
+            flat_probability=Decimal('0.290000'),
+            down_probability=Decimal('0.300000'),
+            confidence=Decimal('0.410000'),
+            predicted_label=PredictionResult.Label.FLAT,
+            risk_reward_ratio=Decimal('1.100000'),
+            trade_score=Decimal('0.720000'),
+            suggested=False,
+            model_version=heuristic_version,
+        )
+        LightGBMPrediction.objects.create(
+            asset=self.asset1,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.650000'),
+            flat_probability=Decimal('0.180000'),
+            down_probability=Decimal('0.170000'),
+            confidence=Decimal('0.650000'),
+            predicted_label=LightGBMPrediction.Label.UP,
+            risk_reward_ratio=Decimal('2.800000'),
+            trade_score=Decimal('2.120000'),
+            suggested=True,
+            model_artifact=lightgbm_artifact,
+        )
+        LightGBMPrediction.objects.create(
+            asset=self.asset2,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.380000'),
+            flat_probability=Decimal('0.330000'),
+            down_probability=Decimal('0.290000'),
+            confidence=Decimal('0.380000'),
+            predicted_label=LightGBMPrediction.Label.FLAT,
+            risk_reward_ratio=Decimal('1.050000'),
+            trade_score=Decimal('0.540000'),
+            suggested=False,
+            model_artifact=lightgbm_artifact,
+        )
+
+    def test_dashboard_stocks_requires_authentication(self):
+        response = self.client.get('/api/v1/dashboard/stocks/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_dashboard_stocks_returns_composite_rows(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 2)
+        first = response.data['results'][0]
+        self.assertEqual(first['asset_symbol'], '600111')
+        self.assertEqual(first['heuristic_label'], 'UP')
+        self.assertEqual(first['lightgbm_label'], 'UP')
+        self.assertEqual(first['rsi'], '62.50000000')
+        self.assertEqual(first['bb_upper'], '11.00000000')
+
+    def test_dashboard_stocks_filters_and_orders_rows(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&model_family=lightgbm&suggested_only=true&ordering=-lightgbm_trade_score&search=alpha')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
 
 
 class Phase8IndicatorTests(TestCase):

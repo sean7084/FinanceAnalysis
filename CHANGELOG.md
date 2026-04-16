@@ -754,3 +754,67 @@ Open: `http://localhost:5173`
 
 ---
 
+### version 0.1.7: Trade-Decision Engine, LightGBM Parity, and Dashboard Consolidation ✓
+**Objective**: 把概率预测升级为可执行的交易决策，并把 Heuristic / LightGBM 的对比收敛到统一的日常操作界面
+
+**Implemented Features**:
+- Added a shared odds and trade-decision engine:
+  - introduced `apps/prediction/odds.py` to estimate `target_price`, `stop_loss_price`, `risk_reward_ratio`, `trade_score`, and `suggested`
+  - derived trade levels from OHLCV history, Bollinger Bands, SMA support, and simple resistance rounding rules
+  - stabilized `trade_score` so near-1.0 `p_up` values do not create unusable rankings
+- Extended heuristic prediction outputs end to end:
+  - added persistent trade-decision fields to `PredictionResult`
+  - added migration `apps/prediction/migrations/0004_predictionresult_trade_decision_fields.py`
+  - integrated trade-decision generation into heuristic prediction tasks and stock/batch APIs
+  - extended bottom-candidate screener responses to expose and sort by `trade_score` and `risk_reward_ratio`
+- Extended LightGBM prediction outputs to the same contract:
+  - added persistent trade-decision fields to `LightGBMPrediction`
+  - added migration `apps/prediction/migrations/0005_lightgbmprediction_trade_decision_fields.py`
+  - reused the same odds engine in `tasks_lightgbm.py` so heuristic and LightGBM setup quality remain directly comparable
+  - updated LightGBM serializers and stock/batch endpoints with the same additive fields
+- Consolidated the frontend stock-selection workflow around the dashboard:
+  - stock detail now compares heuristic and LightGBM setup quality by horizon alongside probability comparison
+  - dashboard now surfaces top-candidate comparison with model-family and suggested-only filtering
+  - added a new all-stocks indicator board backed by a composite `dashboard/stocks` API
+  - removed the dedicated screener page from routing and navigation
+- Added the new dashboard aggregation API:
+  - introduced `DashboardStockViewSet` and `DashboardStockRowSerializer`
+  - new endpoint returns one row per asset with factor scores, key indicators, sentiment, and heuristic/LightGBM trade summaries
+
+**Validation**:
+- Applied both prediction migrations successfully.
+- Backend tests passed:
+  - `apps.prediction.tests` and `apps.factors.tests`
+  - `apps.prediction.tests_lightgbm` with 12 tests passing
+  - `apps.analytics.tests` with 22 tests passing
+- Frontend production build passed after the dashboard consolidation.
+- Regenerated live heuristic predictions for `2026-04-15` so the new trade fields are populated on current rows.
+- Regenerated live LightGBM predictions for `2026-04-15` with 600 asset-horizon rows updated.
+- Live smoke checks confirmed:
+  - `/api/v1/prediction/600519/?date=2026-04-15` returns target/stop/R:R/trade-score/suggested fields
+  - `/api/v1/lightgbm-predictions/600519/?date=2026-04-15` and the LightGBM batch endpoint return the same trade-decision fields
+  - `/api/v1/dashboard/stocks/?prediction_horizon=7&ordering=-composite_score` returns 300 mixed-source dashboard rows with factor, indicator, sentiment, and dual-model trade fields
+
+**Current Notes**:
+- The dashboard is now the primary stock-selection surface; the dedicated screener page was removed from the frontend.
+- 30-day LightGBM training still depends on a deeper historical factor-score and sentiment backfill window.
+- Frontend build still warns that `StockDetailPage.tsx` exceeds the default chunk-size warning threshold.
+
+**Key Files**:
+- `apps/prediction/odds.py`
+- `apps/prediction/models.py`
+- `apps/prediction/models_lightgbm.py`
+- `apps/prediction/tasks.py`
+- `apps/prediction/tasks_lightgbm.py`
+- `apps/prediction/views.py`
+- `apps/prediction/views_lightgbm.py`
+- `apps/factors/views.py`
+- `apps/analytics/views.py`
+- `apps/analytics/serializers.py`
+- `frontend/src/pages/DashboardPage.tsx`
+- `frontend/src/pages/StockDetailPage.tsx`
+- `frontend/src/lib/api.ts`
+- `frontend/src/App.tsx`
+- `frontend/src/components/layout/AppShell.tsx`
+- `frontend/src/i18n.tsx`
+

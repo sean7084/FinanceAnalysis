@@ -7,13 +7,14 @@ export function ScreenerPage() {
   const [rows, setRows] = useState<CandidateDto[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState('bottom_probability_score')
 
   useEffect(() => {
     let alive = true
     ;(async () => {
       try {
         setLoading(true)
-        const data = await fetchScreenerRows(30)
+        const data = await fetchScreenerRows(30, sortBy, 7)
         if (alive) {
           setRows(data)
           setError(null)
@@ -32,7 +33,7 @@ export function ScreenerPage() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [sortBy])
 
   return (
     <section>
@@ -41,6 +42,12 @@ export function ScreenerPage() {
         <p>{t('screener.desc')}</p>
       </header>
       <div className="card">
+        <label htmlFor="screener-sort-by">{t('screener.sortBy')}</label>
+        <select id="screener-sort-by" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="bottom_probability_score">{t('screener.bottomProb')}</option>
+          <option value="trade_score">{t('screener.tradeScore')}</option>
+          <option value="risk_reward_ratio">{t('screener.rr')}</option>
+        </select>
         {loading && <p className="status">{t('common.loading')}</p>}
         {error && <p className="status disconnected">{error}</p>}
         <table className="data-table">
@@ -50,6 +57,9 @@ export function ScreenerPage() {
               <th>{t('screener.name')}</th>
               <th>{t('screener.comp')}</th>
               <th>{t('screener.bottomProb')}</th>
+              <th>{t('screener.tradeScore')}</th>
+              <th>{t('screener.rr')}</th>
+              <th>{t('screener.suggested')}</th>
             </tr>
           </thead>
           <tbody>
@@ -59,6 +69,9 @@ export function ScreenerPage() {
                 <td>{row.asset_name}</td>
                 <td>{Number(row.composite_score).toFixed(2)}</td>
                 <td>{(Number(row.bottom_probability_score) * 100).toFixed(1)}%</td>
+                <td>{row.trade_score != null ? Number(row.trade_score).toFixed(2) : '--'}</td>
+                <td>{row.risk_reward_ratio != null ? Number(row.risk_reward_ratio).toFixed(2) : '--'}</td>
+                <td>{row.suggested ? t('common.yes') : t('common.no')}</td>
               </tr>
             ))}
           </tbody>

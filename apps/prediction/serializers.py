@@ -25,6 +25,7 @@ class PredictionResultSerializer(serializers.ModelSerializer):
             'id', 'asset', 'asset_symbol', 'asset_name', 'date', 'horizon_days',
             'up_probability', 'flat_probability', 'down_probability',
             'confidence', 'predicted_label',
+            'target_price', 'stop_loss_price', 'risk_reward_ratio', 'trade_score', 'suggested',
             'model_version', 'model_type', 'model_version_name',
             'macro_phase', 'event_tag', 'feature_payload', 'metadata',
             'created_at', 'updated_at',

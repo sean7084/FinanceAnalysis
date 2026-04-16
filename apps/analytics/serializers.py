@@ -22,6 +22,46 @@ class TechnicalIndicatorListSerializer(serializers.ModelSerializer):
         fields = ['indicator_type', 'value', 'timestamp']
 
 
+class DashboardStockRowSerializer(serializers.Serializer):
+    asset_id = serializers.IntegerField()
+    asset_symbol = serializers.CharField()
+    asset_name = serializers.CharField()
+    date = serializers.DateField()
+    composite_score = serializers.DecimalField(max_digits=7, decimal_places=6)
+    bottom_probability_score = serializers.DecimalField(max_digits=7, decimal_places=6)
+    fundamental_score = serializers.DecimalField(max_digits=7, decimal_places=6)
+    capital_flow_score = serializers.DecimalField(max_digits=7, decimal_places=6)
+    technical_score = serializers.DecimalField(max_digits=7, decimal_places=6)
+    factor_sentiment_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    pe_percentile_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    pb_percentile_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    roe_trend_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    northbound_flow_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    main_force_flow_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    margin_flow_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    technical_reversal_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    current_close = serializers.DecimalField(max_digits=18, decimal_places=4, allow_null=True)
+    sentiment_score = serializers.DecimalField(max_digits=8, decimal_places=6, allow_null=True)
+    sentiment_label = serializers.CharField(allow_blank=True)
+    rsi = serializers.DecimalField(max_digits=18, decimal_places=8, allow_null=True)
+    macd = serializers.DecimalField(max_digits=18, decimal_places=8, allow_null=True)
+    bb_upper = serializers.DecimalField(max_digits=18, decimal_places=8, allow_null=True)
+    bb_lower = serializers.DecimalField(max_digits=18, decimal_places=8, allow_null=True)
+    sma_60 = serializers.DecimalField(max_digits=18, decimal_places=8, allow_null=True)
+    heuristic_label = serializers.CharField(allow_blank=True)
+    heuristic_up_probability = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    heuristic_confidence = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    heuristic_trade_score = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
+    heuristic_risk_reward_ratio = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
+    heuristic_suggested = serializers.BooleanField()
+    lightgbm_label = serializers.CharField(allow_blank=True)
+    lightgbm_up_probability = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    lightgbm_confidence = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    lightgbm_trade_score = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
+    lightgbm_risk_reward_ratio = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
+    lightgbm_suggested = serializers.BooleanField()
+
+
 class ScreenerTemplateSerializer(serializers.ModelSerializer):
     owner_username = serializers.CharField(source='owner.username', read_only=True)
 

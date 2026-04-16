@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.markets.models import Market, Asset, OHLCV
+from apps.prediction.models import ModelVersion, PredictionResult
 from .models import FundamentalFactorSnapshot, CapitalFlowSnapshot, FactorScore
 from .tasks import calculate_factor_scores_for_date
 
@@ -127,6 +128,54 @@ class Phase11FactorTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['count'], 1)
         self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
+
+    def test_bottom_candidates_can_sort_by_trade_score(self):
+        current_date = timezone.now().date()
+        calculate_factor_scores_for_date(target_date=str(current_date))
+        version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.ENSEMBLE,
+            version='ensemble-test',
+            status=ModelVersion.Status.READY,
+            is_active=True,
+        )
+        PredictionResult.objects.create(
+            asset=self.asset1,
+            date=current_date,
+            horizon_days=7,
+            up_probability=Decimal('0.55'),
+            flat_probability=Decimal('0.25'),
+            down_probability=Decimal('0.20'),
+            confidence=Decimal('0.55'),
+            predicted_label=PredictionResult.Label.UP,
+            trade_score=Decimal('1.800000'),
+            risk_reward_ratio=Decimal('2.100000'),
+            target_price=Decimal('11.0000'),
+            stop_loss_price=Decimal('9.8000'),
+            suggested=True,
+            model_version=version,
+        )
+        PredictionResult.objects.create(
+            asset=self.asset2,
+            date=current_date,
+            horizon_days=7,
+            up_probability=Decimal('0.45'),
+            flat_probability=Decimal('0.30'),
+            down_probability=Decimal('0.25'),
+            confidence=Decimal('0.45'),
+            predicted_label=PredictionResult.Label.FLAT,
+            trade_score=Decimal('0.700000'),
+            risk_reward_ratio=Decimal('1.100000'),
+            target_price=Decimal('20.8000'),
+            stop_loss_price=Decimal('19.6000'),
+            suggested=False,
+            model_version=version,
+        )
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/v1/screener/bottom-candidates/?top_n=2&sort_by=trade_score&prediction_horizon=7')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
+        self.assertEqual(response.data['results'][0]['suggested'], True)
+        self.assertEqual(response.data['results'][0]['trade_score'], 1.8)
 
     @patch('apps.factors.views.calculate_factor_scores_for_date.delay')
     def test_recalculate_endpoint_queues_task(self, mock_delay):

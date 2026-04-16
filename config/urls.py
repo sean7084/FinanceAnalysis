@@ -21,6 +21,7 @@ from drf_spectacular.views import (
 from apps.markets.views import MarketViewSet, AssetViewSet, OHLCVViewSet
 from apps.analytics.views import (
     TechnicalIndicatorViewSet,
+    DashboardStockViewSet,
     ScreenerTemplateViewSet,
     ScreenerViewSet,
     AlertRuleViewSet,
@@ -75,6 +76,7 @@ router.register(r'markets', MarketViewSet, basename='market')
 router.register(r'assets', AssetViewSet, basename='asset')
 router.register(r'ohlcv', OHLCVViewSet, basename='ohlcv')
 router.register(r'indicators', TechnicalIndicatorViewSet, basename='indicator')
+router.register(r'dashboard/stocks', DashboardStockViewSet, basename='dashboard-stock')
 router.register(r'screener-templates', ScreenerTemplateViewSet, basename='screener-template')
 router.register(r'screeners', ScreenerViewSet, basename='screener')
 router.register(r'alerts', AlertRuleViewSet, basename='alert-rule')

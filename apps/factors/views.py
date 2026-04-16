@@ -6,6 +6,7 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.prediction.models import PredictionResult
 from .models import FundamentalFactorSnapshot, CapitalFlowSnapshot, FactorScore
 from .serializers import (
     FundamentalFactorSnapshotSerializer,
@@ -79,10 +80,16 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
 
     def list(self, request, *args, **kwargs):
         top_n = request.query_params.get('top_n', 20)
+        sort_by = request.query_params.get('sort_by', 'bottom_probability_score')
+        prediction_horizon = request.query_params.get('prediction_horizon', 7)
         try:
             top_n = max(1, min(200, int(top_n)))
         except ValueError:
             top_n = 20
+        try:
+            prediction_horizon = int(prediction_horizon)
+        except ValueError:
+            prediction_horizon = 7
 
         queryset = self.get_queryset()
         macro_context = request.query_params.get('macro_context')
@@ -110,7 +117,7 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
                 rescored.append((item, float(adj_score)))
 
             rescored.sort(key=lambda x: x[1], reverse=True)
-            top_items = [x[0] for x in rescored[:top_n]]
+            top_items = [x[0] for x in rescored]
             serializer = self.get_serializer(top_items, many=True)
             data = serializer.data
             score_map = {obj.id: score for obj, score in rescored}
@@ -124,9 +131,44 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
                     'technical_weight': float(tw),
                 }
         else:
-            queryset = queryset[:top_n]
+            queryset = list(queryset)
             serializer = self.get_serializer(queryset, many=True)
             data = serializer.data
+
+        target_date = None
+        if data:
+            try:
+                target_date = date.fromisoformat(str(data[0]['date']))
+            except ValueError:
+                target_date = None
+
+        prediction_map = {}
+        if data and target_date is not None:
+            asset_ids = [row['asset'] for row in data]
+            predictions = PredictionResult.objects.filter(
+                asset_id__in=asset_ids,
+                date=target_date,
+                horizon_days=prediction_horizon,
+                model_version__model_type='ENSEMBLE',
+            ).select_related('asset').order_by('asset_id', '-created_at')
+            for prediction in predictions:
+                prediction_map.setdefault(prediction.asset_id, prediction)
+
+        for row in data:
+            prediction = prediction_map.get(row['asset'])
+            row['prediction_horizon'] = prediction_horizon
+            row['target_price'] = float(prediction.target_price) if prediction and prediction.target_price is not None else None
+            row['stop_loss_price'] = float(prediction.stop_loss_price) if prediction and prediction.stop_loss_price is not None else None
+            row['risk_reward_ratio'] = float(prediction.risk_reward_ratio) if prediction and prediction.risk_reward_ratio is not None else None
+            row['trade_score'] = float(prediction.trade_score) if prediction and prediction.trade_score is not None else None
+            row['suggested'] = bool(prediction.suggested) if prediction else False
+
+        if sort_by == 'trade_score':
+            data.sort(key=lambda row: ((row.get('trade_score') is not None), row.get('trade_score') or 0), reverse=True)
+        elif sort_by == 'risk_reward_ratio':
+            data.sort(key=lambda row: ((row.get('risk_reward_ratio') is not None), row.get('risk_reward_ratio') or 0), reverse=True)
+
+        data = data[:top_n]
 
         return Response({
             'count': len(data),

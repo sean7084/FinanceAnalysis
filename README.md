@@ -49,9 +49,10 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **OHLCV Records**: 647,164 daily price points
 - **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
 - **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
-- **Feature Table Volume**: 6,297 technical indicators, 360 signal events, 296 news articles, 8,831 sentiment scores, 5 concept heat rows, 8,700 factor scores, and 900 heuristic prediction rows
-- **LightGBM Monitoring Volume**: 2 trained LightGBM artifacts, 2 LightGBM model versions, 600 LightGBM prediction rows, 78 feature-importance snapshots, and 1 ensemble-weight snapshot
+- **Feature Table Volume**: 6,297 technical indicators, 360 signal events, 296 news articles, 8,831 sentiment scores, 5 concept heat rows, 8,700 factor scores, 900 heuristic prediction rows, and 600 LightGBM prediction rows
+- **Model Monitoring Volume**: 2 trained LightGBM artifacts, 2 LightGBM model versions, 78 feature-importance snapshots, and 1 ensemble-weight snapshot
 - **Coverage**: 300/300 assets with OHLCV data; latest synced OHLCV date is April 14, 2026
+- **Trade Decision Coverage**: heuristic and LightGBM predictions now persist target price, stop loss, risk/reward ratio, trade score, and suggested flags for current-date predictions
 - **Backtest Engine**: async strategy simulation with trade logs and performance metrics is wired, but the current dataset still has 0 completed validation runs
 
 ### API Endpoints
@@ -60,13 +61,14 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **OHLCV API**: 2 endpoints + date range filtering
 - **Indicators API**: list/detail + compare/recalculate/fibonacci + ranking endpoints
 - **Screeners API**: 4 pre-built screeners + screener templates
+- **Dashboard Stocks API**: composite stock board with factor, indicator, sentiment, and dual-model trade-decision fields
 - **Alerts API**: alert rules + alert events
 - **Signals API**: list/filter/recent/recalculate signal events
 - **Factors API**: fundamentals, capital-flows, and bottom-candidates screener
 - **Macro API**: snapshots, current context, event-impact statistics
 - **Sentiment API**: news ingestion, sentiment scores, latest sentiment, concept heat ranking
-- **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry
-- **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking
+- **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry, and trade-decision outputs
+- **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking, and trade-decision outputs
 - **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
 - **Developer Portal API**: API key management, sandbox keys, key rotation, changelog
 - **Schema / Docs API**: OpenAPI 3.0 schema, Swagger UI, ReDoc
@@ -84,7 +86,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ### Latest Highlights
-- 0.1.7: LightGBM monitoring, comparison views, and live training hardening
+- 0.1.7: odds engine, LightGBM trade-decision parity, and dashboard consolidation
 - 0.1.6: Realtime auth and sentiment availability hardening
 - 0.1.5: Dashboard, stock, macro, and alerts UX fixes
 
@@ -92,7 +94,7 @@ Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANG
 
 ### Priority 1: Validate and Close the Model Loop
 
-The system now produces heuristic and LightGBM predictions, but the validation loop is still incomplete. This is the highest-priority future work because model confidence is not trustworthy without repeated historical evaluation.
+The system now produces heuristic and LightGBM predictions, and odds/trade-decision fields for them, but the validation loop is still incomplete. This is the highest-priority future work because model confidence is not trustworthy without repeated historical evaluation.
 
 | Workstream | Why it matters | Planned implementation |
 | ---------- | -------------- | ---------------------- |
@@ -103,17 +105,15 @@ The system now produces heuristic and LightGBM predictions, but the validation l
 
 ### Priority 2: Turn Probabilities Into Trade Decisions
 
-Current outputs estimate direction probabilities, but the next product step is to decide whether a trade is worth taking. The core idea is to combine win probability with potential reward and risk rather than ranking by probability alone.
-
-> **期望值 = 胜率 × 盈利幅度 − 败率 × 亏损幅度**
+The core trade-decision layer is now live for both heuristic and LightGBM predictions, and the dashboard has absorbed the old screener workflow. The next step is to turn that into a tighter operator workflow rather than adding another parallel page.
 
 | Workstream | Planned implementation |
 | ---------- | ---------------------- |
-| Odds engine | Estimate target price and stop-loss price from technical resistance/support zones such as recent highs, Bollinger bands, round-number levels, recent lows, and MA60 |
-| Risk/reward scoring | Compute reward, risk, and `risk_reward_ratio`, then derive `trade_score = p_up * reward / ((1 - p_up) * risk)` |
-| API extensions | Add `target_price`, `stop_loss_price`, `risk_reward_ratio`, `trade_score`, and `suggested` to `/api/v1/prediction/{stock_code}/` |
-| Frontend trade signal UI | Add a dedicated trade-signal card on stock detail and support screener ranking by `trade_score` |
-| Backend support | Introduce `apps/prediction/odds.py` and extend `PredictionResult` persistence for odds-engine outputs |
+| Dashboard action queue | Add stronger dashboard presets for `suggested only`, per-model ranking, and quick switching between heuristic-first and LightGBM-first candidate views |
+| Indicator board UX hardening | Refine the all-stocks indicator board for smaller screens, denser tables, and optional column presets or toggles |
+| Multi-horizon dashboard visibility | Reintroduce clearer 3-day and 30-day visibility on the dashboard where it improves decision-making instead of keeping the view effectively 7-day-only |
+| Ranking parity beyond comparison views | Extend the persisted LightGBM trade-decision fields into more ranking and list surfaces where heuristic trade fields are already used |
+| Position sizing guidance | Build on the current target/stop/R:R outputs with position-sizing suggestions rather than only binary `suggested` flags |
 
 ### Priority 3: Strengthen Data and Monitoring Discipline
 
@@ -263,6 +263,7 @@ This project is private and proprietary.
 ## 🙏 Acknowledgments
 
 - **TuShare** - Chinese financial data provider
+- **AKShare** - Chinese financial data provider
 - **TA-Lib** - Technical analysis library
 - **Django & DRF** - Web framework and API tools
 - **Celery** - Distributed task queue

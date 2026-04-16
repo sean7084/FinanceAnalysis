@@ -53,6 +53,52 @@ export interface CandidateDto {
   asset_name: string
   composite_score: number
   bottom_probability_score: number
+  prediction_horizon?: number
+  target_price?: number | null
+  stop_loss_price?: number | null
+  risk_reward_ratio?: number | null
+  trade_score?: number | null
+  suggested?: boolean
+}
+
+export interface DashboardStockRowDto {
+  asset_id: number
+  asset_symbol: string
+  asset_name: string
+  date: string
+  composite_score: number
+  bottom_probability_score: number
+  fundamental_score: number
+  capital_flow_score: number
+  technical_score: number
+  factor_sentiment_score: number | null
+  pe_percentile_score: number | null
+  pb_percentile_score: number | null
+  roe_trend_score: number | null
+  northbound_flow_score: number | null
+  main_force_flow_score: number | null
+  margin_flow_score: number | null
+  technical_reversal_score: number | null
+  current_close: number | null
+  sentiment_score: number | null
+  sentiment_label: string
+  rsi: number | null
+  macd: number | null
+  bb_upper: number | null
+  bb_lower: number | null
+  sma_60: number | null
+  heuristic_label: string
+  heuristic_up_probability: number | null
+  heuristic_confidence: number | null
+  heuristic_trade_score: number | null
+  heuristic_risk_reward_ratio: number | null
+  heuristic_suggested: boolean
+  lightgbm_label: string
+  lightgbm_up_probability: number | null
+  lightgbm_confidence: number | null
+  lightgbm_trade_score: number | null
+  lightgbm_risk_reward_ratio: number | null
+  lightgbm_suggested: boolean
 }
 
 export interface AssetDto {
@@ -79,6 +125,11 @@ export interface PredictionStockDto {
     down: number
     confidence: number
     predicted_label: string
+    target_price?: number | string | null
+    stop_loss_price?: number | string | null
+    risk_reward_ratio?: number | string | null
+    trade_score?: number | string | null
+    suggested?: boolean
   }>
 }
 
@@ -93,6 +144,11 @@ export interface LightGBMPredictionStockDto {
     confidence: number
     predicted_label: string
     model_version?: string
+    target_price?: number | string | null
+    stop_loss_price?: number | string | null
+    risk_reward_ratio?: number | string | null
+    trade_score?: number | string | null
+    suggested?: boolean
   }>
 }
 
@@ -446,11 +502,21 @@ export async function fetchDashboardProbabilityData() {
   }
 }
 
-export async function fetchScreenerRows(topN = 20): Promise<CandidateDto[]> {
+export async function fetchScreenerRows(topN = 20, sortBy = 'bottom_probability_score', predictionHorizon = 7): Promise<CandidateDto[]> {
   const payload = await apiGet<Paginated<CandidateDto> | { count: number; results: CandidateDto[] }>(
-    `/screener/bottom-candidates/?top_n=${topN}`,
+    `/screener/bottom-candidates/?top_n=${topN}&sort_by=${encodeURIComponent(sortBy)}&prediction_horizon=${predictionHorizon}`,
   )
   if (isPaginated<CandidateDto>(payload)) {
+    return payload.results
+  }
+  return payload.results
+}
+
+export async function fetchDashboardStocks(predictionHorizon = 7): Promise<DashboardStockRowDto[]> {
+  const payload = await apiGet<Paginated<DashboardStockRowDto> | { count: number; results: DashboardStockRowDto[] }>(
+    `/dashboard/stocks/?prediction_horizon=${predictionHorizon}`,
+  )
+  if (isPaginated<DashboardStockRowDto>(payload)) {
     return payload.results
   }
   return payload.results

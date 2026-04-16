@@ -5,7 +5,6 @@ import { useI18n } from './i18n'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 const StockDetailPage = lazy(() => import('./pages/StockDetailPage').then((m) => ({ default: m.StockDetailPage })))
-const ScreenerPage = lazy(() => import('./pages/ScreenerPage').then((m) => ({ default: m.ScreenerPage })))
 const MacroContextPage = lazy(() => import('./pages/MacroContextPage').then((m) => ({ default: m.MacroContextPage })))
 const BacktestWorkbenchPage = lazy(() => import('./pages/BacktestWorkbenchPage').then((m) => ({ default: m.BacktestWorkbenchPage })))
 const AlertCenterPage = lazy(() => import('./pages/AlertCenterPage').then((m) => ({ default: m.AlertCenterPage })))
@@ -28,7 +27,6 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: withSuspense(<DashboardPage />) },
       { path: 'stock/:symbol', element: withSuspense(<StockDetailPage />) },
-      { path: 'screener', element: withSuspense(<ScreenerPage />) },
       { path: 'macro', element: withSuspense(<MacroContextPage />) },
       { path: 'models', element: withSuspense(<ModelMonitoringPage />) },
       { path: 'backtest', element: withSuspense(<BacktestWorkbenchPage />) },

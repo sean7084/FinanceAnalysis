@@ -4,7 +4,6 @@ import { useI18n } from '../../i18n'
 const navItems = [
   { to: '/', key: 'nav.dashboard' },
   { to: '/stock/600519', key: 'nav.stock' },
-  { to: '/screener', key: 'nav.screener' },
   { to: '/macro', key: 'nav.macro' },
   { to: '/models', key: 'nav.models' },
   { to: '/backtest', key: 'nav.backtest' },

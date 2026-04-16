@@ -267,6 +267,11 @@ class LightGBMPredictionTests(TestCase):
             down_probability=Decimal('0.25'),
             predicted_label='UP',
             confidence=Decimal('0.45'),
+            target_price=Decimal('12.3000'),
+            stop_loss_price=Decimal('9.8000'),
+            risk_reward_ratio=Decimal('2.500000'),
+            trade_score=Decimal('1.450000'),
+            suggested=True,
             model_artifact=artifact,
             feature_snapshot={'rsi': 60, 'pe_percentile': 0.3},
             raw_scores={'down': 0.2, 'flat': 0.35, 'up': 0.45},
@@ -277,6 +282,8 @@ class LightGBMPredictionTests(TestCase):
         retrieved = LightGBMPrediction.objects.get(id=pred.id)
         self.assertEqual(retrieved.predicted_label, 'UP')
         self.assertEqual(float(retrieved.confidence), 0.45)
+        self.assertEqual(float(retrieved.trade_score), 1.45)
+        self.assertTrue(retrieved.suggested)
 
     def test_lightgbm_batch_endpoint(self):
         """Batch endpoint should handle multiple stock_codes."""
@@ -329,6 +336,11 @@ class LightGBMPredictionTests(TestCase):
             down_probability=Decimal('0.15'),
             predicted_label='UP',
             confidence=Decimal('0.61'),
+            target_price=Decimal('12.3000'),
+            stop_loss_price=Decimal('10.9000'),
+            risk_reward_ratio=Decimal('1.800000'),
+            trade_score=Decimal('1.120000'),
+            suggested=True,
             model_artifact=artifact,
         )
 
@@ -339,6 +351,11 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(len(response.data['results']), 1)
         self.assertEqual(response.data['results'][0]['horizon_days'], 3)
         self.assertEqual(response.data['results'][0]['model_version'], artifact.version)
+        self.assertEqual(response.data['results'][0]['target_price'], '12.3000')
+        self.assertEqual(response.data['results'][0]['stop_loss_price'], '10.9000')
+        self.assertEqual(response.data['results'][0]['risk_reward_ratio'], '1.800000')
+        self.assertEqual(response.data['results'][0]['trade_score'], '1.120000')
+        self.assertTrue(response.data['results'][0]['suggested'])
 
     def test_feature_importance_trends_endpoint_groups_recent_history(self):
         self._auth()
