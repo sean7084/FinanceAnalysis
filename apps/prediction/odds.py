@@ -1,7 +1,7 @@
 from decimal import Decimal, ROUND_CEILING
 
-from apps.analytics.models import TechnicalIndicator
 from apps.markets.models import OHLCV
+from .historical_features import latest_bbands, latest_ohlcv, latest_sma
 
 
 def _to_decimal(value, default='0'):
@@ -35,19 +35,8 @@ def _round_price_ceiling(price):
     return ((price / step).to_integral_value(rounding=ROUND_CEILING)) * step
 
 
-def _latest_indicator(asset_id, as_of, indicator_type, timeperiod=None):
-    queryset = TechnicalIndicator.objects.filter(
-        asset_id=asset_id,
-        indicator_type=indicator_type,
-        timestamp__date__lte=as_of,
-    )
-    if timeperiod is not None:
-        queryset = queryset.filter(parameters__timeperiod=timeperiod)
-    return queryset.order_by('-timestamp').first()
-
-
 def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predicted_label):
-    latest_bar = OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of).order_by('-date').first()
+    latest_bar = latest_ohlcv(asset_id, as_of)
     if latest_bar is None:
         return {
             'target_price': None,
@@ -78,12 +67,13 @@ def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predi
     lows_20 = [_to_decimal(row['low'], current_close) for row in recent_rows[:20]]
     lows_60 = [_to_decimal(row['low'], current_close) for row in recent_rows]
 
-    bbands = _latest_indicator(asset_id, as_of, 'BBANDS')
-    sma_60 = _latest_indicator(asset_id, as_of, 'SMA', timeperiod=60) or _latest_indicator(asset_id, as_of, 'SMA', timeperiod=50)
+    bbands = latest_bbands(asset_id, as_of)
+    sma_60 = latest_sma(asset_id, as_of, timeperiod=60)
+    sma_50 = latest_sma(asset_id, as_of, timeperiod=50)
 
-    upper_band = _to_decimal((bbands.parameters if bbands else {}).get('upper'), current_close)
-    lower_band = _to_decimal((bbands.parameters if bbands else {}).get('lower'), current_close)
-    moving_average_support = _to_decimal(getattr(sma_60, 'value', None), current_close)
+    upper_band = _to_decimal((bbands or {}).get('upper'), current_close)
+    lower_band = _to_decimal((bbands or {}).get('lower'), current_close)
+    moving_average_support = _to_decimal(sma_60 or sma_50, current_close)
 
     resistance_candidates = [
         value for value in [

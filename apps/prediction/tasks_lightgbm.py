@@ -1,11 +1,13 @@
 import json
 import os
 import pickle
+from bisect import bisect_left
 from datetime import date, timedelta
 from decimal import Decimal
 from statistics import pstdev
 
 import numpy as np
+import pandas as pd
 from celery import shared_task
 from django.conf import settings
 from django.db.models import Avg
@@ -19,11 +21,12 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
+from apps.analytics.models import TechnicalIndicator
+from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 from .odds import estimate_trade_decision
@@ -120,16 +123,6 @@ def _safe_float(value, default=0.0):
         return float(default)
 
 
-def _indicator_value(asset_id, indicator_type, as_of, days_ago=0, default=0.0):
-    target_date = as_of - timedelta(days=days_ago)
-    indicator = TechnicalIndicator.objects.filter(
-        asset_id=asset_id,
-        indicator_type=indicator_type,
-        timestamp__date__lte=target_date,
-    ).order_by('-timestamp').first()
-    return _safe_float(getattr(indicator, 'value', default), default)
-
-
 def _get_recent_ohlcv_rows(asset_id, as_of, limit=30):
     return list(
         OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
@@ -224,20 +217,27 @@ def _get_pruned_feature_names(horizon_days, feature_names):
 
 
 def _register_lightgbm_model_version(horizon_days, model_version, training_start, training_end, metrics, feature_names, metadata):
-    ModelVersion.objects.filter(model_type=ModelVersion.ModelType.LIGHTGBM, is_active=True).update(is_active=False)
-    return ModelVersion.objects.create(
+    ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.LIGHTGBM,
+        is_active=True,
+    ).exclude(version=model_version).update(is_active=False)
+
+    version_row, _ = ModelVersion.objects.update_or_create(
         model_type=ModelVersion.ModelType.LIGHTGBM,
         version=model_version,
-        status=ModelVersion.Status.READY,
-        artifact_path=_get_model_path(horizon_days, model_version),
-        metrics=metrics,
-        feature_schema=feature_names,
-        training_window_start=training_start,
-        training_window_end=training_end,
-        trained_at=timezone.now(),
-        is_active=True,
-        metadata=metadata,
+        defaults={
+            'status': ModelVersion.Status.READY,
+            'artifact_path': _get_model_path(horizon_days, model_version),
+            'metrics': metrics,
+            'feature_schema': feature_names,
+            'training_window_start': training_start,
+            'training_window_end': training_end,
+            'trained_at': timezone.now(),
+            'is_active': True,
+            'metadata': metadata,
+        },
     )
+    return version_row
 
 
 def _store_feature_importance_snapshots(artifact, feature_names, importance_values):
@@ -269,11 +269,22 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
         is_active=True,
     ).order_by('-trained_at').first()
 
-    lightgbm_accuracy = np.mean(
-        [result['accuracy'] for result in lightgbm_results.values() if result.get('status') == 'success']
-    ) if lightgbm_results else 0.0
+    success_accuracies = [
+        _safe_float(result.get('accuracy'), 0.0)
+        for result in (lightgbm_results or {}).values()
+        if result.get('status') == 'success'
+    ]
+    success_accuracies = [value for value in success_accuracies if np.isfinite(value)]
+    lightgbm_accuracy = float(np.mean(success_accuracies)) if success_accuracies else 0.0
     heuristic_accuracy = _safe_float((heuristic_version.metrics if heuristic_version else {}).get('accuracy'), 0.5)
     lstm_accuracy = _safe_float((lstm_version.metrics if lstm_version else {}).get('accuracy'), 0.0)
+
+    if not np.isfinite(lightgbm_accuracy):
+        lightgbm_accuracy = 0.0
+    if not np.isfinite(heuristic_accuracy):
+        heuristic_accuracy = 0.5
+    if not np.isfinite(lstm_accuracy):
+        lstm_accuracy = 0.0
 
     total = lightgbm_accuracy + heuristic_accuracy + lstm_accuracy
     if total <= 0:
@@ -300,20 +311,72 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
         },
     )
 
+    active_artifacts = LightGBMModelArtifact.objects.filter(is_active=True).order_by('training_window_start', 'training_window_end')
+    if active_artifacts.exists():
+        training_window_start = active_artifacts.first().training_window_start
+        training_window_end = active_artifacts.last().training_window_end
+    else:
+        training_window_start = snapshot_date - timedelta(days=365 * 5)
+        training_window_end = snapshot_date
+
+    ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.ENSEMBLE,
+        is_active=True,
+    ).exclude(version=f'ensemble-{snapshot_date.isoformat()}').update(is_active=False)
+
+    ModelVersion.objects.update_or_create(
+        model_type=ModelVersion.ModelType.ENSEMBLE,
+        version=f'ensemble-{snapshot_date.isoformat()}',
+        defaults={
+            'status': ModelVersion.Status.READY,
+            'artifact_path': 'models/ensemble/latest.json',
+            'metrics': {
+                'lightgbm_accuracy': lightgbm_accuracy,
+                'heuristic_accuracy': heuristic_accuracy,
+                'lstm_accuracy': lstm_accuracy,
+            },
+            'feature_schema': [
+                'rsi',
+                'mom_5d',
+                'rs_score',
+                'factor_composite',
+                'factor_bottom_prob',
+                'sentiment_score',
+            ],
+            'training_window_start': training_window_start,
+            'training_window_end': training_window_end,
+            'trained_at': timezone.now(),
+            'is_active': True,
+            'metadata': {
+                'source': 'lightgbm_pipeline_refresh',
+                'snapshot_date': snapshot_date.isoformat(),
+                'weights': {
+                    'lightgbm': str(weights[0]),
+                    'lstm': str(weights[1]),
+                    'heuristic': str(weights[2]),
+                },
+            },
+        },
+    )
+
 def _extract_features_for_asset(asset_id, as_of):
     """Extract all available features for a single asset on a given date."""
     features = {}
     recent_rows = _get_recent_ohlcv_rows(asset_id, as_of, limit=25)
 
     # Phase 10: Technical Indicators
-    features['rsi'] = _indicator_value(asset_id, 'RSI', as_of, default=50.0)
-    features['mom_5d'] = _indicator_value(asset_id, 'MOM_5D', as_of, default=0.0)
-    features['rs_score'] = _indicator_value(asset_id, 'RS_SCORE', as_of, default=0.5)
+    features['rsi'] = _safe_float(latest_rsi(asset_id, as_of, default=Decimal('50')), 50.0)
+    features['mom_5d'] = _safe_float(latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0')), 0.0)
+    features['rs_score'] = _safe_float(latest_rs_score(asset_id, as_of, default=Decimal('0.5')), 0.5)
 
     for lag_window in LAG_WINDOWS:
-        lagged_rsi = _indicator_value(asset_id, 'RSI', as_of, days_ago=lag_window, default=features['rsi'])
-        lagged_momentum = _indicator_value(asset_id, 'MOM_5D', as_of, days_ago=lag_window, default=features['mom_5d'])
-        lagged_rs = _indicator_value(asset_id, 'RS_SCORE', as_of, days_ago=lag_window, default=features['rs_score'])
+        lag_date = as_of - timedelta(days=lag_window)
+        lagged_rsi = _safe_float(latest_rsi(asset_id, lag_date, default=Decimal(str(features['rsi']))), features['rsi'])
+        lagged_momentum = _safe_float(
+            latest_momentum(asset_id, lag_date, n_days=5, default=Decimal(str(features['mom_5d']))),
+            features['mom_5d'],
+        )
+        lagged_rs = _safe_float(latest_rs_score(asset_id, lag_date, default=Decimal(str(features['rs_score']))), features['rs_score'])
         features[f'rsi_lag_{lag_window}d'] = lagged_rsi
         features[f'rsi_delta_{lag_window}d'] = features['rsi'] - lagged_rsi
         features[f'mom_5d_delta_{lag_window}d'] = features['mom_5d'] - lagged_momentum
@@ -382,6 +445,53 @@ def _extract_features_for_asset(asset_id, as_of):
     return features
 
 
+def _compute_rsi_series(close_series, period=14):
+    delta = close_series.diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+    avg_gain = gains.rolling(window=period, min_periods=period).mean()
+    avg_loss = losses.rolling(window=period, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0)
+
+
+def _prepare_macro_dataframe(end_date):
+    macro_rows = list(
+        MacroSnapshot.objects.filter(date__lte=end_date)
+        .values('date', 'pmi_manufacturing', 'pmi_non_manufacturing', 'cn10y_yield', 'cn2y_yield')
+        .order_by('date')
+    )
+    macro_df = pd.DataFrame.from_records(macro_rows)
+    if macro_df.empty:
+        macro_df = pd.DataFrame({'date': [], 'pmi_manufacturing': [], 'pmi_non_manufacturing': [], 'yield_curve': []})
+    else:
+        macro_df['date'] = pd.to_datetime(macro_df['date'])
+        macro_df['yield_curve'] = (
+            macro_df['cn10y_yield'].astype(float).fillna(2.0) -
+            macro_df['cn2y_yield'].astype(float).fillna(2.0)
+        )
+        macro_df['pmi_manufacturing'] = macro_df['pmi_manufacturing'].astype(float).fillna(50.0)
+        macro_df['pmi_non_manufacturing'] = macro_df['pmi_non_manufacturing'].astype(float).fillna(50.0)
+        macro_df = macro_df[['date', 'pmi_manufacturing', 'pmi_non_manufacturing', 'yield_curve']]
+
+    phase_map = {'RECOVERY': 1.0, 'OVERHEAT': 2.0, 'STAGFLATION': 3.0, 'RECESSION': 0.0}
+    context_rows = list(
+        MarketContext.objects.filter(context_key='current', is_active=True, starts_at__lte=end_date)
+        .values('starts_at', 'macro_phase')
+        .order_by('starts_at')
+    )
+    context_df = pd.DataFrame.from_records(context_rows)
+    if context_df.empty:
+        context_df = pd.DataFrame({'date': [], 'macro_phase': []})
+    else:
+        context_df['date'] = pd.to_datetime(context_df['starts_at']).dt.normalize()
+        context_df['macro_phase'] = context_df['macro_phase'].map(phase_map).fillna(1.0)
+        context_df = context_df[['date', 'macro_phase']]
+
+    return macro_df.sort_values('date'), context_df.sort_values('date')
+
+
 def _create_feature_matrix(start_date, end_date, asset_ids=None):
     """
     Create a feature matrix for all assets over a date range.
@@ -391,22 +501,219 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         DataFrame with shape (n_samples, n_features)
         Index: (date, asset_id)
     """
-    import pandas as pd
-
     if asset_ids is None:
         asset_ids = list(Asset.objects.values_list('id', flat=True))
 
-    all_dates = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-    rows = []
+    warmup_start = start_date - timedelta(days=40)
+    ohlcv_rows = list(
+        OHLCV.objects.filter(asset_id__in=asset_ids, date__gte=warmup_start, date__lte=end_date)
+        .values('asset_id', 'date', 'close', 'volume')
+        .order_by('asset_id', 'date')
+    )
+    if not ohlcv_rows:
+        df = pd.DataFrame(columns=['date', 'asset_id'])
+        df.attrs['feature_names'] = []
+        return df
 
-    for target_date in all_dates:
-        for asset_id in asset_ids:
-            features = _extract_features_for_asset(asset_id, target_date)
-            features['date'] = target_date
-            features['asset_id'] = asset_id
-            rows.append(features)
+    ohlcv_df = pd.DataFrame.from_records(ohlcv_rows)
+    ohlcv_df['date'] = pd.to_datetime(ohlcv_df['date'])
+    ohlcv_df['close'] = ohlcv_df['close'].astype(float)
+    ohlcv_df['volume'] = ohlcv_df['volume'].astype(float)
 
-    df = pd.DataFrame(rows)
+    factor_rows = list(
+        FactorScore.objects.filter(
+            asset_id__in=asset_ids,
+            mode=FactorScore.FactorMode.COMPOSITE,
+            date__gte=warmup_start,
+            date__lte=end_date,
+        ).values(
+            'asset_id',
+            'date',
+            'pe_percentile_score',
+            'pb_percentile_score',
+            'roe_trend_score',
+            'northbound_flow_score',
+            'main_force_flow_score',
+            'margin_flow_score',
+            'composite_score',
+        ).order_by('asset_id', 'date')
+    )
+    factor_df = pd.DataFrame.from_records(factor_rows)
+    if factor_df.empty:
+        factor_df = pd.DataFrame({
+            'asset_id': [], 'date': [], 'pe_percentile_score': [], 'pb_percentile_score': [], 'roe_trend_score': [],
+            'northbound_flow_score': [], 'main_force_flow_score': [], 'margin_flow_score': [], 'composite_score': [],
+        })
+    else:
+        factor_df['date'] = pd.to_datetime(factor_df['date'])
+        for column in [
+            'pe_percentile_score', 'pb_percentile_score', 'roe_trend_score',
+            'northbound_flow_score', 'main_force_flow_score', 'margin_flow_score', 'composite_score',
+        ]:
+            factor_df[column] = factor_df[column].astype(float)
+
+    sentiment_rows = list(
+        SentimentScore.objects.filter(
+            asset_id__in=asset_ids,
+            score_type=SentimentScore.ScoreType.ASSET_7D,
+            date__gte=warmup_start,
+            date__lte=end_date,
+        ).values('asset_id', 'date', 'sentiment_score').order_by('asset_id', 'date')
+    )
+    sentiment_df = pd.DataFrame.from_records(sentiment_rows)
+    if sentiment_df.empty:
+        sentiment_df = pd.DataFrame({'asset_id': [], 'date': [], 'sentiment_score': []})
+    else:
+        sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
+        sentiment_df['sentiment_score'] = sentiment_df['sentiment_score'].astype(float)
+
+    rs_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=asset_ids,
+            indicator_type='RS_SCORE',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value').order_by('asset_id', 'timestamp')
+    )
+    rs_df = pd.DataFrame.from_records(rs_rows)
+    if rs_df.empty:
+        rs_df = pd.DataFrame({'asset_id': [], 'date': [], 'rs_score': []})
+    else:
+        rs_df['date'] = pd.to_datetime(rs_df['timestamp'], utc=True).dt.tz_localize(None).dt.normalize()
+        rs_df['rs_score'] = rs_df['value'].astype(float)
+        rs_df = rs_df[['asset_id', 'date', 'rs_score']]
+
+    macro_df, context_df = _prepare_macro_dataframe(end_date)
+
+    frames = []
+    target_start_ts = pd.Timestamp(start_date)
+    target_end_ts = pd.Timestamp(end_date)
+
+    for asset_id, asset_df in ohlcv_df.groupby('asset_id', sort=False):
+        asset_df = asset_df.sort_values('date').copy()
+        asset_df['rsi'] = _compute_rsi_series(asset_df['close'])
+        asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).fillna(0.0)
+        asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).fillna(0.0)
+        asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).fillna(0.0)
+        asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).fillna(0.0)
+        asset_df['relative_volume_5d'] = (asset_df['volume'] / asset_df['volume'].rolling(window=5, min_periods=1).mean()).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+        asset_df['relative_volume_20d'] = (asset_df['volume'] / asset_df['volume'].rolling(window=20, min_periods=1).mean()).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+        close_returns = asset_df['close'].pct_change().fillna(0.0)
+        asset_df['realized_volatility_5d'] = close_returns.rolling(window=5, min_periods=2).std(ddof=0).fillna(0.0)
+
+        asset_rs_df = rs_df[rs_df['asset_id'] == asset_id][['date', 'rs_score']].sort_values('date')
+        if asset_rs_df.empty:
+            asset_df['rs_score'] = 0.5
+        else:
+            asset_df = pd.merge_asof(
+                asset_df.sort_values('date'),
+                asset_rs_df,
+                on='date',
+                direction='backward',
+            )
+            asset_df['rs_score'] = asset_df['rs_score'].fillna(0.5)
+
+        for lag_window in LAG_WINDOWS:
+            lag_rsi = asset_df['rsi'].shift(lag_window)
+            lag_mom = asset_df['mom_5d'].shift(lag_window)
+            lag_rs = asset_df['rs_score'].shift(lag_window)
+            asset_df[f'rsi_lag_{lag_window}d'] = lag_rsi.fillna(asset_df['rsi'])
+            asset_df[f'rsi_delta_{lag_window}d'] = asset_df['rsi'] - asset_df[f'rsi_lag_{lag_window}d']
+            asset_df[f'mom_5d_delta_{lag_window}d'] = asset_df['mom_5d'] - lag_mom.fillna(asset_df['mom_5d'])
+            asset_df[f'rs_score_delta_{lag_window}d'] = asset_df['rs_score'] - lag_rs.fillna(asset_df['rs_score'])
+
+        asset_factor_df = factor_df[factor_df['asset_id'] == asset_id][[
+            'date',
+            'pe_percentile_score',
+            'pb_percentile_score',
+            'roe_trend_score',
+            'northbound_flow_score',
+            'main_force_flow_score',
+            'margin_flow_score',
+            'composite_score',
+        ]].sort_values('date')
+        if asset_factor_df.empty:
+            asset_df['pe_percentile'] = 0.5
+            asset_df['pb_percentile'] = 0.5
+            asset_df['roe_trend'] = 0.5
+            asset_df['northbound_flow'] = 0.5
+            asset_df['main_force_flow'] = 0.5
+            asset_df['margin_flow'] = 0.5
+            asset_df['factor_composite'] = 0.5
+        else:
+            asset_df = pd.merge_asof(asset_df.sort_values('date'), asset_factor_df, on='date', direction='backward')
+            asset_df['pe_percentile'] = asset_df['pe_percentile_score'].fillna(0.5)
+            asset_df['pb_percentile'] = asset_df['pb_percentile_score'].fillna(0.5)
+            asset_df['roe_trend'] = asset_df['roe_trend_score'].fillna(0.5)
+            asset_df['northbound_flow'] = asset_df['northbound_flow_score'].fillna(0.5)
+            asset_df['main_force_flow'] = asset_df['main_force_flow_score'].fillna(0.5)
+            asset_df['margin_flow'] = asset_df['margin_flow_score'].fillna(0.5)
+            asset_df['factor_composite'] = asset_df['composite_score'].fillna(0.5)
+
+        asset_sentiment_df = sentiment_df[sentiment_df['asset_id'] == asset_id][['date', 'sentiment_score']].sort_values('date')
+        if asset_sentiment_df.empty:
+            asset_df['sentiment_7d'] = 0.0
+            asset_df['sentiment_7d_avg_20d'] = 0.0
+        else:
+            asset_df = pd.merge_asof(asset_df.sort_values('date'), asset_sentiment_df, on='date', direction='backward')
+            asset_df['sentiment_7d'] = asset_df['sentiment_score'].fillna(0.0)
+            asset_df['sentiment_7d_avg_20d'] = asset_df['sentiment_7d'].rolling(window=20, min_periods=1).mean().fillna(0.0)
+
+        if not macro_df.empty:
+            asset_df = pd.merge_asof(asset_df.sort_values('date'), macro_df, on='date', direction='backward')
+        else:
+            asset_df['pmi_manufacturing'] = 50.0
+            asset_df['pmi_non_manufacturing'] = 50.0
+            asset_df['yield_curve'] = 0.0
+
+        if not context_df.empty:
+            asset_df = pd.merge_asof(asset_df.sort_values('date'), context_df, on='date', direction='backward')
+        else:
+            asset_df['macro_phase'] = 1.0
+
+        if 'pmi_manufacturing' not in asset_df:
+            asset_df['pmi_manufacturing'] = 50.0
+        else:
+            asset_df['pmi_manufacturing'] = asset_df['pmi_manufacturing'].fillna(50.0)
+        if 'pmi_non_manufacturing' not in asset_df:
+            asset_df['pmi_non_manufacturing'] = 50.0
+        else:
+            asset_df['pmi_non_manufacturing'] = asset_df['pmi_non_manufacturing'].fillna(50.0)
+        if 'yield_curve' not in asset_df:
+            asset_df['yield_curve'] = 0.0
+        else:
+            asset_df['yield_curve'] = asset_df['yield_curve'].fillna(0.0)
+        if 'macro_phase' not in asset_df:
+            asset_df['macro_phase'] = 1.0
+        else:
+            asset_df['macro_phase'] = asset_df['macro_phase'].fillna(1.0)
+
+        asset_df = asset_df[(asset_df['date'] >= target_start_ts) & (asset_df['date'] <= target_end_ts)].copy()
+        if asset_df.empty:
+            continue
+        asset_df['asset_id'] = int(asset_id)
+        asset_df['date'] = asset_df['date'].dt.date
+
+        frames.append(asset_df[[
+            'date', 'asset_id',
+            'rsi', 'mom_5d', 'rs_score',
+            'rsi_lag_3d', 'rsi_delta_3d', 'mom_5d_delta_3d', 'rs_score_delta_3d',
+            'rsi_lag_5d', 'rsi_delta_5d', 'mom_5d_delta_5d', 'rs_score_delta_5d',
+            'rsi_lag_10d', 'rsi_delta_10d', 'mom_5d_delta_10d', 'rs_score_delta_10d',
+            'return_3d', 'return_5d', 'return_10d',
+            'relative_volume_5d', 'relative_volume_20d', 'realized_volatility_5d',
+            'pe_percentile', 'pb_percentile', 'roe_trend',
+            'northbound_flow', 'main_force_flow', 'margin_flow', 'factor_composite',
+            'macro_phase', 'pmi_manufacturing', 'pmi_non_manufacturing', 'yield_curve',
+            'sentiment_7d', 'sentiment_7d_avg_20d',
+        ]])
+
+    if not frames:
+        df = pd.DataFrame(columns=['date', 'asset_id'])
+        df.attrs['feature_names'] = []
+        return df
+
+    df = pd.concat(frames, ignore_index=True)
     base_feature_names = [col for col in df.columns if col not in ['date', 'asset_id']]
     df, feature_names = _build_interaction_features(df, base_feature_names)
     df.attrs['feature_names'] = feature_names
@@ -421,28 +728,37 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
     DOWN: forward_return <= -2%
     FLAT: -2% < return < +2%
     """
-    import pandas as pd
-
     labels = {}
 
-    for asset in Asset.objects.all():
-        asset_ohlcv = OHLCV.objects.filter(
-            asset=asset,
-            date__gte=start_date,
-            date__lte=end_date + timedelta(days=horizon_days),
-        ).order_by('date').values('date', 'close')
+    rows = list(
+        OHLCV.objects.filter(date__gte=start_date, date__lte=end_date + timedelta(days=horizon_days + 7))
+        .values('asset_id', 'date', 'close')
+        .order_by('asset_id', 'date')
+    )
+    if not rows:
+        return labels
 
-        price_dict = {row['date']: float(row['close']) for row in asset_ohlcv}
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row['asset_id'], {'dates': [], 'closes': []})
+        grouped[row['asset_id']]['dates'].append(row['date'])
+        grouped[row['asset_id']]['closes'].append(float(row['close']))
 
-        for target_date in pd.date_range(start_date, end_date):
-            target_date = target_date.date()
-            future_date = target_date + timedelta(days=horizon_days)
-
-            if target_date not in price_dict or future_date not in price_dict:
+    for asset_id, payload in grouped.items():
+        dates = payload['dates']
+        closes = payload['closes']
+        for index, target_date in enumerate(dates):
+            if target_date < start_date or target_date > end_date:
+                continue
+            future_threshold = target_date + timedelta(days=horizon_days)
+            future_index = bisect_left(dates, future_threshold)
+            if future_index >= len(dates):
                 continue
 
-            start_price = price_dict[target_date]
-            end_price = price_dict[future_date]
+            start_price = closes[index]
+            end_price = closes[future_index]
+            if start_price <= 0:
+                continue
             forward_return = (end_price - start_price) / start_price
 
             if forward_return >= 0.02:
@@ -452,8 +768,7 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
             else:
                 label = 'FLAT'
 
-            key = (target_date, asset.id, horizon_days)
-            labels[key] = label
+            labels[(target_date, asset_id, horizon_days)] = label
 
     return labels
 
@@ -463,13 +778,35 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
 # ============================================================================
 
 @shared_task
-def train_lightgbm_models(training_start_date=None, training_end_date=None):
+def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None):
     """
     Train LightGBM models for 3, 7, 30-day horizons.
     Runs weekly via Celery Beat.
     """
+    default_horizons = [3, 7, 30]
+    if horizons is None:
+        selected_horizons = default_horizons
+    else:
+        selected_horizons = []
+        for value in horizons:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed in default_horizons and parsed not in selected_horizons:
+                selected_horizons.append(parsed)
+        if not selected_horizons:
+            selected_horizons = default_horizons
+
     if not LIGHTGBM_AVAILABLE:
-        return 'LightGBM not installed. Skipping training.'
+        return {
+            horizon: {
+                'status': 'unavailable',
+                'reason': 'lightgbm_not_installed',
+                'training_samples': 0,
+            }
+            for horizon in selected_horizons
+        }
 
     if training_end_date:
         try:
@@ -483,150 +820,187 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None):
         try:
             training_start = date.fromisoformat(str(training_start_date))
         except ValueError:
-            training_start = training_end - timedelta(days=365 * 5)
+            floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
+            try:
+                training_start = date.fromisoformat(str(floor_raw))
+            except ValueError:
+                training_start = training_end - timedelta(days=365 * 5)
     else:
-        training_start = training_end - timedelta(days=365 * 5)
+        floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
+        try:
+            training_start = date.fromisoformat(str(floor_raw))
+        except ValueError:
+            training_start = training_end - timedelta(days=365 * 5)
 
     print(f'Training LightGBM models from {training_start} to {training_end}')
 
     # Create feature and label matrices
-    import pandas as pd
-
     X_df = _create_feature_matrix(training_start, training_end)
     feature_names = list(X_df.attrs.get('feature_names') or [col for col in X_df.columns if col not in ['date', 'asset_id']])
 
-    results = {}
+    results = {
+        horizon: {
+            'status': 'pending',
+            'training_samples': 0,
+            'feature_count': 0,
+            'artifact_id': None,
+            'model_version': None,
+        }
+        for horizon in selected_horizons
+    }
 
-    for horizon in [3, 7, 30]:
+    for horizon in selected_horizons:
         print(f'Training model for {horizon}-day horizon...')
-        pruned_feature_names = _get_pruned_feature_names(horizon, feature_names)
-        selected_feature_names = [name for name in feature_names if name not in pruned_feature_names]
+        try:
+            pruned_feature_names = _get_pruned_feature_names(horizon, feature_names)
+            selected_feature_names = [name for name in feature_names if name not in pruned_feature_names]
 
-        # Create labels
-        labels_dict = _create_labels_for_training(training_start, training_end, horizon)
-
-        # Align data
-        X_train_aligned = X_df.copy()
-        X_train_aligned['label'] = X_train_aligned.apply(
-            lambda row: labels_dict.get((row['date'], row['asset_id'], horizon), None),
-            axis=1
-        )
-        X_train_aligned = X_train_aligned.dropna(subset=['label'])
-
-        if len(X_train_aligned) < 100:
-            print(f'Insufficient training data for {horizon}-day horizon (n={len(X_train_aligned)})')
-            continue
-
-        X_train = X_train_aligned[selected_feature_names].values
-        y_train = X_train_aligned['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
-
-        # Standardize features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-
-        # Train LightGBM
-        lgb_params = {
-            'objective': 'multiclass',
-            'num_class': 3,
-            'num_leaves': 31,
-            'learning_rate': 0.05,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
-            'bagging_freq': 5,
-            'lambda_l1': 0.1,
-            'lambda_l2': 0.1,
-            'min_data_in_leaf': 20,
-            'random_state': 42,
-            'verbose': -1,
-        }
-
-        train_data = lgb.Dataset(X_train_scaled, label=y_train)
-        model = lgb.train(lgb_params, train_data, num_boost_round=200)
-
-        # Calibrate probabilities when the model exposes a scikit-learn style API.
-        if hasattr(model, 'fit') and (hasattr(model, 'predict_proba') or hasattr(model, 'decision_function')):
-            calibrator = CalibratedClassifierCV(model, method='sigmoid', cv=5)
-            calibrator.fit(X_train_scaled, y_train)
-            calibration_method = 'sigmoid'
-        else:
-            calibrator = IdentityCalibrator(model)
-            calibration_method = 'identity'
-
-        # Calculate metrics
-        y_pred_proba = calibrator.predict_proba(X_train_scaled)
-        y_pred = np.argmax(y_pred_proba, axis=1)
-        accuracy = np.mean(y_pred == y_train)
-
-        # Get feature importance
-        importance = model.feature_importance('gain')
-        top_features = sorted(
-            [(feature_name, float(importance_score)) for feature_name, importance_score in zip(selected_feature_names, importance)],
-            key=lambda x: x[1],
-            reverse=True
-        )[:10]
-
-        # Save artifacts
-        model_version = f'lgb-{horizon}d-{training_end.isoformat()}'
-        artifacts = {
-            'model': model,
-            'scaler': scaler,
-            'calibrator': calibrator,
-            'feature_names': selected_feature_names,
-        }
-        _save_model_artifacts(artifacts, horizon, model_version)
-
-        # Register in database
-        if LightGBMModelArtifact.objects.filter(horizon_days=horizon, is_active=True).exists():
-            LightGBMModelArtifact.objects.filter(horizon_days=horizon, is_active=True).update(is_active=False)
-
-        artifact = LightGBMModelArtifact.objects.create(
-            horizon_days=horizon,
-            version=model_version,
-            status=LightGBMModelArtifact.Status.READY,
-            artifact_path=_get_model_path(horizon, model_version),
-            metrics_json={
-                'accuracy': float(accuracy),
-                'training_samples': len(X_train),
+            labels_dict = _create_labels_for_training(training_start, training_end, horizon)
+            if labels_dict:
+                labels_df = pd.DataFrame([
+                    {'date': key[0], 'asset_id': key[1], 'label': value}
+                    for key, value in labels_dict.items()
+                ])
+                X_train_aligned = X_df.merge(labels_df, on=['date', 'asset_id'], how='left')
+            else:
+                X_train_aligned = X_df.copy()
+                X_train_aligned['label'] = None
+            X_train_aligned = X_train_aligned.dropna(subset=['label'])
+            training_samples = len(X_train_aligned)
+            results[horizon].update({
+                'training_samples': training_samples,
                 'feature_count': len(selected_feature_names),
-            },
-            feature_names=selected_feature_names,
-            training_window_start=training_start,
-            training_window_end=training_end,
-            trained_at=timezone.now(),
-            is_active=True,
-            feature_importance=dict(top_features),
-            metadata={
-                'engineered_feature_version': 'v2',
-                'calibration_method': calibration_method,
-                'interaction_features': [name for name in selected_feature_names if '_x_' in name],
-                'pruned_features': pruned_feature_names,
-                'feature_schema_size': len(selected_feature_names),
-            },
-        )
+                'pruned_feature_count': len(pruned_feature_names),
+            })
 
-        _store_feature_importance_snapshots(artifact, selected_feature_names, importance)
-        _register_lightgbm_model_version(
-            horizon_days=horizon,
-            model_version=model_version,
-            training_start=training_start,
-            training_end=training_end,
-            metrics={
+            if training_samples < 100:
+                print(f'Insufficient training data for {horizon}-day horizon (n={training_samples})')
+                results[horizon].update({
+                    'status': 'insufficient_data',
+                    'reason': 'training_samples_below_threshold',
+                })
+                continue
+
+            X_train = X_train_aligned[selected_feature_names].values
+            y_train = X_train_aligned['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
+
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+
+            lgb_params = {
+                'objective': 'multiclass',
+                'num_class': 3,
+                'num_leaves': 31,
+                'learning_rate': 0.05,
+                'feature_fraction': 0.8,
+                'bagging_fraction': 0.8,
+                'bagging_freq': 5,
+                'lambda_l1': 0.1,
+                'lambda_l2': 0.1,
+                'min_data_in_leaf': 20,
+                'random_state': 42,
+                'verbose': -1,
+            }
+
+            train_data = lgb.Dataset(X_train_scaled, label=y_train)
+            model = lgb.train(lgb_params, train_data, num_boost_round=200)
+
+            if hasattr(model, 'fit') and (hasattr(model, 'predict_proba') or hasattr(model, 'decision_function')):
+                calibrator = CalibratedClassifierCV(model, method='sigmoid', cv=5)
+                calibrator.fit(X_train_scaled, y_train)
+                calibration_method = 'sigmoid'
+            else:
+                calibrator = IdentityCalibrator(model)
+                calibration_method = 'identity'
+
+            y_pred_proba = calibrator.predict_proba(X_train_scaled)
+            y_pred = np.argmax(y_pred_proba, axis=1)
+            accuracy = np.mean(y_pred == y_train)
+
+            importance = model.feature_importance('gain')
+            top_features = sorted(
+                [(feature_name, float(importance_score)) for feature_name, importance_score in zip(selected_feature_names, importance)],
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+
+            model_version = f'lgb-{horizon}d-{training_end.isoformat()}'
+            artifacts = {
+                'model': model,
+                'scaler': scaler,
+                'calibrator': calibrator,
+                'feature_names': selected_feature_names,
+            }
+            _save_model_artifacts(artifacts, horizon, model_version)
+
+            LightGBMModelArtifact.objects.filter(
+                horizon_days=horizon,
+                is_active=True,
+            ).exclude(version=model_version).update(is_active=False)
+
+            artifact_defaults = {
+                'status': LightGBMModelArtifact.Status.READY,
+                'artifact_path': _get_model_path(horizon, model_version),
+                'metrics_json': {
+                    'accuracy': float(accuracy),
+                    'training_samples': len(X_train),
+                    'feature_count': len(selected_feature_names),
+                },
+                'feature_names': selected_feature_names,
+                'training_window_start': training_start,
+                'training_window_end': training_end,
+                'trained_at': timezone.now(),
+                'is_active': True,
+                'feature_importance': dict(top_features),
+                'metadata': {
+                    'engineered_feature_version': 'v2',
+                    'calibration_method': calibration_method,
+                    'interaction_features': [name for name in selected_feature_names if '_x_' in name],
+                    'pruned_features': pruned_feature_names,
+                    'feature_schema_size': len(selected_feature_names),
+                },
+            }
+            artifact, _ = LightGBMModelArtifact.objects.update_or_create(
+                horizon_days=horizon,
+                version=model_version,
+                defaults=artifact_defaults,
+            )
+
+            FeatureImportanceSnapshot.objects.filter(model_artifact=artifact).delete()
+            _store_feature_importance_snapshots(artifact, selected_feature_names, importance)
+            model_version_row = _register_lightgbm_model_version(
+                horizon_days=horizon,
+                model_version=model_version,
+                training_start=training_start,
+                training_end=training_end,
+                metrics={
+                    'accuracy': float(accuracy),
+                    'training_samples': len(X_train),
+                    'feature_count': len(selected_feature_names),
+                },
+                feature_names=selected_feature_names,
+                metadata={
+                    'artifact_id': artifact.id,
+                    'engineered_feature_version': 'v2',
+                    'calibration_method': calibration_method,
+                    'pruned_features': pruned_feature_names,
+                    'top_features': dict(top_features),
+                },
+            )
+
+            results[horizon].update({
+                'status': 'success',
                 'accuracy': float(accuracy),
-                'training_samples': len(X_train),
-                'feature_count': len(selected_feature_names),
-            },
-            feature_names=selected_feature_names,
-            metadata={
                 'artifact_id': artifact.id,
-                'engineered_feature_version': 'v2',
-                'calibration_method': calibration_method,
-                'pruned_features': pruned_feature_names,
-                'top_features': dict(top_features),
-            },
-        )
-
-        results[horizon] = {'status': 'success', 'accuracy': accuracy, 'artifact_id': artifact.id}
-        print(f'Trained {horizon}-day model: accuracy={accuracy:.4f}')
+                'model_version': model_version_row.version,
+            })
+            print(f'Trained {horizon}-day model: accuracy={accuracy:.4f}')
+        except Exception as exc:
+            results[horizon].update({
+                'status': 'failed',
+                'reason': str(exc),
+            })
+            print(f'Failed to train {horizon}-day model: {exc}')
 
     _refresh_ensemble_weights(training_end, results)
 

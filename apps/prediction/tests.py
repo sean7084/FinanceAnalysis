@@ -103,6 +103,31 @@ class Phase14PredictionTests(TestCase):
         self.assertIsNotNone(prediction.risk_reward_ratio)
         self.assertIsNotNone(prediction.trade_score)
 
+    def test_generate_predictions_ignores_future_ohlcv_rows(self):
+        d = self._seed_features()
+        generate_predictions_for_date(target_date=str(d), horizons=[7])
+        baseline = PredictionResult.objects.get(asset=self.asset, date=d, horizon_days=7)
+        baseline_payload = dict(baseline.feature_payload)
+        baseline_up = baseline.up_probability
+
+        OHLCV.objects.create(
+            asset=self.asset,
+            date=d + timezone.timedelta(days=1),
+            open=Decimal('30.0'),
+            high=Decimal('32.0'),
+            low=Decimal('29.5'),
+            close=Decimal('31.5'),
+            adj_close=Decimal('31.5'),
+            volume=6000000,
+            amount=Decimal('189000000'),
+        )
+
+        generate_predictions_for_date(target_date=str(d), horizons=[7])
+        refreshed = PredictionResult.objects.get(asset=self.asset, date=d, horizon_days=7)
+
+        self.assertEqual(refreshed.feature_payload, baseline_payload)
+        self.assertEqual(refreshed.up_probability, baseline_up)
+
     def test_single_stock_prediction_endpoint_shape(self):
         self._auth()
         d = self._seed_features()

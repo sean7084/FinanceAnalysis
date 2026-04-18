@@ -3,15 +3,41 @@ from django.conf import settings
 from django.utils import timezone
 import pandas as pd
 from decimal import Decimal
-from datetime import timedelta
+from datetime import date, timedelta
 
 import tushare as ts
 
 from .models import Asset, OHLCV, Market
 
 
+def _historical_floor_date():
+    floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
+    try:
+        return date.fromisoformat(str(floor_raw))
+    except ValueError:
+        return date(2000, 1, 1)
+
+
+def _safe_decimal(value, default=None):
+    if pd.isna(value):
+        return default
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return default
+
+
+def _safe_int(value, default=0):
+    if pd.isna(value):
+        return default
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
 @shared_task
-def sync_asset_history(stock_code, stock_name, market_code):
+def sync_asset_history(stock_code, stock_name, market_code, force_floor_backfill=False):
     """
     Synchronizes historical data for a single stock.
     This is a worker task that processes one asset at a time.
@@ -40,11 +66,14 @@ def sync_asset_history(stock_code, stock_name, market_code):
         if created:
             print(f"Created new asset: {asset}")
 
+        floor_date = _historical_floor_date()
         latest = OHLCV.objects.filter(asset=asset).order_by('-date').first()
-        if latest:
-            start_date = (latest.date + timedelta(days=1)).strftime('%Y%m%d')
+        if latest and not force_floor_backfill:
+            start_dt = latest.date + timedelta(days=1)
         else:
-            start_date = (timezone.now().date() - timedelta(days=365 * 10)).strftime('%Y%m%d')
+            start_dt = floor_date
+
+        start_date = start_dt.strftime('%Y%m%d')
         end_date = timezone.now().date().strftime('%Y%m%d')
 
         ohlcv_df = ts.pro_bar(
@@ -61,18 +90,26 @@ def sync_asset_history(stock_code, stock_name, market_code):
 
         rows = []
         for _, ohlcv_row in ohlcv_df.iterrows():
+            open_value = _safe_decimal(ohlcv_row.get('open'))
+            high_value = _safe_decimal(ohlcv_row.get('high'))
+            low_value = _safe_decimal(ohlcv_row.get('low'))
+            close_value = _safe_decimal(ohlcv_row.get('close'))
+            amount_value = _safe_decimal(ohlcv_row.get('amount'), Decimal('0'))
+            if None in (open_value, high_value, low_value, close_value):
+                continue
+
             trade_date = pd.to_datetime(str(ohlcv_row['trade_date'])).date()
             rows.append(
                 OHLCV(
                     asset=asset,
                     date=trade_date,
-                    open=Decimal(str(ohlcv_row['open'])),
-                    high=Decimal(str(ohlcv_row['high'])),
-                    low=Decimal(str(ohlcv_row['low'])),
-                    close=Decimal(str(ohlcv_row['close'])),
-                    volume=int(float(ohlcv_row['vol']) * 100),
-                    adj_close=Decimal(str(ohlcv_row['close'])),
-                    amount=Decimal(str(ohlcv_row['amount'])),
+                    open=open_value,
+                    high=high_value,
+                    low=low_value,
+                    close=close_value,
+                    volume=_safe_int(ohlcv_row.get('vol'), default=0) * 100,
+                    adj_close=close_value,
+                    amount=amount_value,
                 )
             )
 

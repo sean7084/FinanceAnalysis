@@ -134,9 +134,13 @@ export function DashboardPage() {
     { key: 'bb_lower', label: 'BB Lower' },
     { key: 'sma_60', label: 'SMA60' },
     { key: 'heuristic_trade_score', label: t('dash.heuristicTradeScore') },
+    { key: 'heuristic_target_price', label: t('trade.targetPrice') },
+    { key: 'heuristic_stop_loss_price', label: t('trade.stopLoss') },
     { key: 'heuristic_risk_reward_ratio', label: t('dash.heuristicRR') },
     { key: 'heuristic_suggested', label: t('dash.heuristicSuggested') },
     { key: 'lightgbm_trade_score', label: t('dash.lightgbmTradeScore') },
+    { key: 'lightgbm_target_price', label: t('trade.targetPrice') },
+    { key: 'lightgbm_stop_loss_price', label: t('trade.stopLoss') },
     { key: 'lightgbm_risk_reward_ratio', label: t('dash.lightgbmRR') },
     { key: 'lightgbm_suggested', label: t('dash.lightgbmSuggested') },
   ]
@@ -232,11 +236,15 @@ export function DashboardPage() {
               <th>{t('comparison.upProbability')}</th>
               <th>{t('trade.rr')}</th>
               <th>{t('trade.tradeScore')}</th>
+              <th>{t('trade.targetPrice')}</th>
+              <th>{t('trade.stopLoss')}</th>
               <th>{t('trade.suggested')}</th>
               <th>{t('comparison.lightgbm')}</th>
               <th>{t('comparison.upProbability')}</th>
               <th>{t('trade.rr')}</th>
               <th>{t('trade.tradeScore')}</th>
+              <th>{t('trade.targetPrice')}</th>
+              <th>{t('trade.stopLoss')}</th>
               <th>{t('trade.suggested')}</th>
             </tr>
           </thead>
@@ -249,17 +257,21 @@ export function DashboardPage() {
                 <td>{row.heuristic_up_probability != null ? `${(Number(row.heuristic_up_probability) * 100).toFixed(1)}%` : '--'}</td>
                 <td>{row.heuristic_risk_reward_ratio != null ? Number(row.heuristic_risk_reward_ratio).toFixed(2) : '--'}</td>
                 <td>{row.heuristic_trade_score != null ? Number(row.heuristic_trade_score).toFixed(2) : '--'}</td>
+                <td>{row.heuristic_target_price != null ? Number(row.heuristic_target_price).toFixed(2) : '--'}</td>
+                <td>{row.heuristic_stop_loss_price != null ? Number(row.heuristic_stop_loss_price).toFixed(2) : '--'}</td>
                 <td>{row.heuristic_suggested ? t('common.yes') : t('common.no')}</td>
                 <td>{row.lightgbm_label || '--'}</td>
                 <td>{row.lightgbm_up_probability != null ? `${(Number(row.lightgbm_up_probability) * 100).toFixed(1)}%` : '--'}</td>
                 <td>{row.lightgbm_risk_reward_ratio != null ? Number(row.lightgbm_risk_reward_ratio).toFixed(2) : '--'}</td>
                 <td>{row.lightgbm_trade_score != null ? Number(row.lightgbm_trade_score).toFixed(2) : '--'}</td>
+                <td>{row.lightgbm_target_price != null ? Number(row.lightgbm_target_price).toFixed(2) : '--'}</td>
+                <td>{row.lightgbm_stop_loss_price != null ? Number(row.lightgbm_stop_loss_price).toFixed(2) : '--'}</td>
                 <td>{row.lightgbm_suggested ? t('common.yes') : t('common.no')}</td>
               </tr>
             ))}
             {topCandidateRows.length === 0 && !loading && (
               <tr>
-                <td colSpan={12}>{t('common.noData')}</td>
+                <td colSpan={16}>{t('common.noData')}</td>
               </tr>
             )}
           </tbody>

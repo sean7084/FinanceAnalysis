@@ -2,6 +2,7 @@ from datetime import date
 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.core.cache import cache
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -50,6 +51,11 @@ class LightGBMModelArtifactViewSet(viewsets.ReadOnlyModelViewSet):
         horizon = request.query_params.get('horizon_days')
         limit_models = request.query_params.get('limit_models', '5')
         top_n = request.query_params.get('top_n', '10')
+
+        cache_key = f'feature_importance_trends:{horizon or "all"}:{limit_models}:{top_n}'
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
         try:
             limit_models = max(1, min(int(limit_models), 20))
@@ -106,11 +112,13 @@ class LightGBMModelArtifactViewSet(viewsets.ReadOnlyModelViewSet):
                 'feature_trends': feature_trends,
             })
 
-        return Response({
+        payload = {
             'limit_models': limit_models,
             'top_n': top_n,
             'results': results,
-        })
+        }
+        cache.set(cache_key, payload, 60 * 60)
+        return Response(payload)
 
 
 class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):

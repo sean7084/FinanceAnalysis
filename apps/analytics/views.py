@@ -67,10 +67,27 @@ class DashboardStockViewSet(viewsets.ViewSet):
         suggested_only = _parse_bool(request.query_params.get('suggested_only'))
         search = str(request.query_params.get('search', '')).strip().lower()
         ordering = str(request.query_params.get('ordering', '-composite_score')).strip() or '-composite_score'
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get('page_size', 120))
+        except (TypeError, ValueError):
+            page_size = 120
+        page_size = max(20, min(page_size, 300))
 
         latest_date = FactorScore.objects.filter(mode=FactorScore.FactorMode.COMPOSITE).aggregate(latest=Max('date'))['latest']
         if latest_date is None:
             return Response({'count': 0, 'results': []})
+
+        cache_key = (
+            f'dashboard_stocks:{latest_date}:{prediction_horizon}:{model_family}:{int(suggested_only)}:'
+            f'{search}:{ordering}:{page}:{page_size}'
+        )
+        cached_payload = cache.get(cache_key)
+        if cached_payload is not None:
+            return Response(cached_payload)
 
         factor_rows = list(
             FactorScore.objects.select_related('asset').filter(
@@ -83,6 +100,7 @@ class DashboardStockViewSet(viewsets.ViewSet):
         ohlcv_map = _latest_by_asset(
             OHLCV.objects.filter(asset_id__in=asset_ids, date__lte=latest_date)
             .order_by('asset_id', '-date')
+            .distinct('asset_id')
         )
         sentiment_map = _latest_by_asset(
             SentimentScore.objects.filter(
@@ -90,6 +108,7 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 score_type=SentimentScore.ScoreType.ASSET_7D,
                 date__lte=latest_date,
             ).order_by('asset_id', '-date', '-created_at')
+            .distinct('asset_id')
         )
         heuristic_map = _latest_by_asset(
             PredictionResult.objects.filter(
@@ -97,6 +116,7 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 date=latest_date,
                 horizon_days=prediction_horizon,
             ).order_by('asset_id', '-created_at')
+            .distinct('asset_id')
         )
         lightgbm_map = _latest_by_asset(
             LightGBMPrediction.objects.filter(
@@ -104,13 +124,14 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 date=latest_date,
                 horizon_days=prediction_horizon,
             ).order_by('asset_id', '-created_at')
+            .distinct('asset_id')
         )
 
         indicator_queryset = TechnicalIndicator.objects.filter(
             asset_id__in=asset_ids,
             timestamp__date__lte=latest_date,
             indicator_type__in=['RSI', 'MACD', 'BBANDS', 'SMA'],
-        ).order_by('asset_id', 'indicator_type', '-timestamp')
+        ).order_by('asset_id', 'indicator_type', '-timestamp').distinct('asset_id', 'indicator_type')
 
         indicator_map = {}
         for indicator in indicator_queryset:
@@ -164,12 +185,16 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 'heuristic_up_probability': heuristic.up_probability if heuristic else None,
                 'heuristic_confidence': heuristic.confidence if heuristic else None,
                 'heuristic_trade_score': heuristic.trade_score if heuristic else None,
+                'heuristic_target_price': heuristic.target_price if heuristic else None,
+                'heuristic_stop_loss_price': heuristic.stop_loss_price if heuristic else None,
                 'heuristic_risk_reward_ratio': heuristic.risk_reward_ratio if heuristic else None,
                 'heuristic_suggested': bool(heuristic.suggested) if heuristic else False,
                 'lightgbm_label': lightgbm.predicted_label if lightgbm else '',
                 'lightgbm_up_probability': lightgbm.up_probability if lightgbm else None,
                 'lightgbm_confidence': lightgbm.confidence if lightgbm else None,
                 'lightgbm_trade_score': lightgbm.trade_score if lightgbm else None,
+                'lightgbm_target_price': lightgbm.target_price if lightgbm else None,
+                'lightgbm_stop_loss_price': lightgbm.stop_loss_price if lightgbm else None,
                 'lightgbm_risk_reward_ratio': lightgbm.risk_reward_ratio if lightgbm else None,
                 'lightgbm_suggested': bool(lightgbm.suggested) if lightgbm else False,
             }
@@ -197,8 +222,20 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 reverse=descending,
             )
 
-        serializer = DashboardStockRowSerializer(rows, many=True)
-        return Response({'count': len(rows), 'results': serializer.data})
+        total_count = len(rows)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged_rows = rows[start:end]
+
+        serializer = DashboardStockRowSerializer(paged_rows, many=True)
+        payload = {
+            'count': total_count,
+            'page': page,
+            'page_size': page_size,
+            'results': serializer.data,
+        }
+        cache.set(cache_key, payload, 60 * 5)
+        return Response(payload)
 
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):

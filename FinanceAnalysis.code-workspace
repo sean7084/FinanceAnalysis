@@ -36,7 +36,8 @@
 			"/^sudo docker ps --format 'table \\{\\{\\.Names\\}\\}\\\\t\\{\\{\\.Status\\}\\}'$/": {
 				"approve": true,
 				"matchCommandLine": true
-			}
+			},
+			"docker restart": true
 		}
 	}
 }

@@ -1,4 +1,4 @@
-# FinanceAnalysis - Bilingual Financial Data SaaS Platform
+# FinanceAnalysis - Financial Data SaaS Platform
 
 A production-ready Django-based SaaS platform for analyzing Chinese financial markets with bilingual (English/Chinese) support, real-time data ingestion, technical analysis, and RESTful API.
 
@@ -42,18 +42,23 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 
 ## 📊 Current System Status
 
-### Data Metrics
-- **Snapshot Date**: April 15, 2026
+### Data Scope
 - **Markets**: 3 (SSE, SZSE, BSE)
 - **Assets**: 300 synced constituents
 - **OHLCV Records**: 647,164 daily price points
+
+### Data Metrics
+- **OHLCV**
 - **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
 - **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
 - **Feature Table Volume**: 6,297 technical indicators, 360 signal events, 296 news articles, 8,831 sentiment scores, 5 concept heat rows, 8,700 factor scores, 900 heuristic prediction rows, and 600 LightGBM prediction rows
 - **Model Monitoring Volume**: 2 trained LightGBM artifacts, 2 LightGBM model versions, 78 feature-importance snapshots, and 1 ensemble-weight snapshot
-- **Coverage**: 300/300 assets with OHLCV data; latest synced OHLCV date is April 14, 2026
 - **Trade Decision Coverage**: heuristic and LightGBM predictions now persist target price, stop loss, risk/reward ratio, trade score, and suggested flags for current-date predictions
-- **Backtest Engine**: async strategy simulation with trade logs and performance metrics is wired, but the current dataset still has 0 completed validation runs
+
+### Models
+- **Heuristic**: rule-based multi-horizon baseline with trade-decision outputs
+- **LightGBM**: multi-class model with artifact registry, monitoring, and dashboard comparison
+- **LSTM (PyTorch)**: real retrain pipeline and live inference path (3/7/30 horizons)
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
@@ -69,6 +74,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **Sentiment API**: news ingestion, sentiment scores, latest sentiment, concept heat ranking
 - **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry, and trade-decision outputs
 - **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking, and trade-decision outputs
+- **Prediction API (LSTM ML)**: single-stock predictions, batch predictions, retrain/recalculate actions, and trade-decision outputs
 - **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
 - **Developer Portal API**: API key management, sandbox keys, key rotation, changelog
 - **Schema / Docs API**: OpenAPI 3.0 schema, Swagger UI, ReDoc
@@ -86,6 +92,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ### Latest Highlights
+- 0.1.8: LSTM real retrain + inference, all-model backtest source selection, and backtest/stock page UX upgrades
 - 0.1.7: odds engine, LightGBM trade-decision parity, and dashboard consolidation
 - 0.1.6: Realtime auth and sentiment availability hardening
 - 0.1.5: Dashboard, stock, macro, and alerts UX fixes
@@ -94,14 +101,7 @@ Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANG
 
 ### Priority 1: Validate and Close the Model Loop
 
-The system now produces heuristic and LightGBM predictions, and odds/trade-decision fields for them, but the validation loop is still incomplete. This is the highest-priority future work because model confidence is not trustworthy without repeated historical evaluation.
-
-| Workstream | Why it matters | Planned implementation |
-| ---------- | -------------- | ---------------------- |
-| Backtest coverage | The current dataset still has no completed backtest runs, so prediction quality is not yet verified under repeated market conditions | Run systematic backtests by model, horizon, and historical window; store run summaries and benchmark comparisons |
-| Backtest trade detail UI | The backtest page does not yet expose transaction-level fills and exits | Extend `/backtest` frontend views to show per-trade records, fees, slippage, and realized PnL |
-| Prediction accuracy tracking | Predictions are stored, but there is no automatic “predicted up vs actual outcome” evaluation loop | Add daily accuracy attribution by symbol, horizon, and model version, plus drift alerts and degradation reporting |
-| 30-day LightGBM readiness | 3-day and 7-day LightGBM models are trained, but the 30-day model still lacks enough prepared historical feature rows | Backfill older factor-score and sentiment dates further into February or earlier so 30-day labels can train consistently |
+add a compact summary output mode to run_validation_backtests that prints per-run return/sharpe/win-rate deltas by source and model version, so we can quickly iterate on the LightGBM model and confirm that it’s actually improving over the heuristic baseline before investing in the next layers of trade-decision integration and dashboard consolidation.
 
 ### Priority 2: Turn Probabilities Into Trade Decisions
 

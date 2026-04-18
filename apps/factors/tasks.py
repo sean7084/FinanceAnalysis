@@ -4,8 +4,9 @@ from datetime import date
 from celery import shared_task
 from django.utils import timezone
 
-from apps.analytics.models import SignalEvent, TechnicalIndicator
+from apps.analytics.models import SignalEvent
 from apps.markets.models import Asset, OHLCV
+from apps.prediction.historical_features import latest_bbands, latest_ohlcv, latest_rsi
 from apps.sentiment.models import SentimentScore
 from .models import FundamentalFactorSnapshot, CapitalFlowSnapshot, FactorScore
 
@@ -26,27 +27,47 @@ def _avg_decimal(values, default=Decimal('0.5')):
     return sum(valid) / Decimal(len(valid))
 
 
-def _technical_reversal_score(asset_id):
+def _technical_reversal_score(asset_id, as_of):
     """Build a technical reversal score from existing indicators and phase 10 signals."""
     score = Decimal('0')
 
-    rsi = TechnicalIndicator.objects.filter(asset_id=asset_id, indicator_type='RSI').order_by('-timestamp').first()
-    bb = TechnicalIndicator.objects.filter(asset_id=asset_id, indicator_type='BBANDS').order_by('-timestamp').first()
-    close = OHLCV.objects.filter(asset_id=asset_id).order_by('-date').first()
+    rsi_value = latest_rsi(asset_id, as_of, default=Decimal('50'))
+    bbands = latest_bbands(asset_id, as_of)
+    latest_bar = latest_ohlcv(asset_id, as_of)
 
-    if rsi and Decimal(str(rsi.value)) <= Decimal('35'):
+    if rsi_value <= Decimal('35'):
         score += Decimal('0.35')
 
-    if bb and close:
-        lower = bb.parameters.get('lower')
-        if lower is not None and Decimal(str(close.close)) <= Decimal(str(lower)) * Decimal('1.03'):
+    current_close = Decimal(str(latest_bar.close)) if latest_bar else None
+    lower_band = bbands.get('lower') if bbands else None
+
+    if lower_band is not None and current_close is not None and current_close <= lower_band * Decimal('1.03'):
             score += Decimal('0.25')
 
     oversold_signal = SignalEvent.objects.filter(
         asset_id=asset_id,
         signal_type=SignalEvent.SignalType.OVERSOLD_COMBINATION,
+        timestamp__date__lte=as_of,
     ).exists()
-    if oversold_signal:
+
+    recent_rows = list(
+        OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
+        .order_by('-date')
+        .values_list('volume', flat=True)[:21]
+    )
+    volume_confirmation = False
+    if len(recent_rows) >= 21:
+        latest_volume = Decimal(str(recent_rows[0]))
+        average_volume = sum(Decimal(str(volume)) for volume in recent_rows[1:21]) / Decimal('20')
+        volume_confirmation = average_volume > 0 and latest_volume < average_volume * Decimal('0.8')
+
+    if oversold_signal or (
+        current_close is not None and
+        lower_band is not None and
+        rsi_value < Decimal('30') and
+        current_close <= lower_band * Decimal('1.02') and
+        volume_confirmation
+    ):
         score += Decimal('0.40')
 
     return min(score, Decimal('1'))
@@ -156,7 +177,7 @@ def calculate_factor_scores_for_date(
             mb_values,
         )
 
-        technical_score = _technical_reversal_score(asset.id)
+        technical_score = _technical_reversal_score(asset.id, as_of)
         sentiment_score = _sentiment_factor_score(asset.id, as_of)
         fundamental_score = _avg_decimal([pe_score, pb_score, roe_trend])
         capital_flow_score = _avg_decimal([nb_score, mf_score, mb_score])

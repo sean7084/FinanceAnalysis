@@ -8,6 +8,7 @@ from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.markets.models import Asset
 from apps.macro.models import MarketContext
+from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
 from .odds import estimate_trade_decision
@@ -25,14 +26,6 @@ def _latest_decimal(queryset, attr='value', default=Decimal('0.5')):
     if raw is None:
         return default
     return Decimal(str(raw))
-
-
-def _latest_indicator_value(asset_id, indicator_type, default=Decimal('50')):
-    return _latest_decimal(
-        TechnicalIndicator.objects.filter(asset_id=asset_id, indicator_type=indicator_type).order_by('-timestamp'),
-        attr='value',
-        default=default,
-    )
 
 
 def _resolve_context(explicit_macro_phase=None, explicit_event_tag=None):
@@ -58,9 +51,9 @@ def _feature_snapshot(asset_id, as_of):
         score_type=SentimentScore.ScoreType.ASSET_7D,
     ).order_by('-date').first()
 
-    rsi = _latest_indicator_value(asset_id, 'RSI', default=Decimal('50'))
-    mom_5d = _latest_indicator_value(asset_id, 'MOM_5D', default=Decimal('0'))
-    rs_score = _latest_indicator_value(asset_id, 'RS_SCORE', default=Decimal('0.5'))
+    rsi = latest_rsi(asset_id, as_of, default=Decimal('50'))
+    mom_5d = latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0'))
+    rs_score = latest_rs_score(asset_id, as_of, default=Decimal('0.5'))
 
     return {
         'factor_composite': Decimal(str(getattr(factor, 'composite_score', Decimal('0.5')))),

@@ -210,6 +210,11 @@ class LightGBMPredictionTests(TestCase):
         results = train_lightgbm_models(training_start_date=str(d - timezone.timedelta(days=10)), training_end_date=str(d))
 
         self.assertIn(3, results)
+        self.assertIn(7, results)
+        self.assertIn(30, results)
+        self.assertEqual(results[3]['status'], 'success')
+        self.assertEqual(results[7]['status'], 'success')
+        self.assertEqual(results[30]['status'], 'insufficient_data')
         artifact = LightGBMModelArtifact.objects.filter(horizon_days=3).latest('created_at')
         self.assertEqual(artifact.metadata['engineered_feature_version'], 'v2')
         self.assertTrue(any(name.endswith('_x_macro_phase') for name in artifact.feature_names))

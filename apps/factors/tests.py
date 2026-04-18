@@ -117,6 +117,29 @@ class Phase11FactorTests(TestCase):
         top = FactorScore.objects.order_by('-bottom_probability_score').first()
         self.assertEqual(top.asset, self.asset1)
 
+    def test_calculate_factor_scores_ignores_future_ohlcv_rows(self):
+        target_date = timezone.now().date()
+        calculate_factor_scores_for_date(target_date=str(target_date))
+        baseline = FactorScore.objects.get(asset=self.asset1, date=target_date, mode=FactorScore.FactorMode.COMPOSITE)
+
+        OHLCV.objects.create(
+            asset=self.asset1,
+            date=target_date + timedelta(days=1),
+            open=Decimal('40'),
+            high=Decimal('42'),
+            low=Decimal('39'),
+            close=Decimal('41'),
+            adj_close=Decimal('41'),
+            volume=5000000,
+            amount=Decimal('205000000'),
+        )
+
+        calculate_factor_scores_for_date(target_date=str(target_date))
+        refreshed = FactorScore.objects.get(asset=self.asset1, date=target_date, mode=FactorScore.FactorMode.COMPOSITE)
+
+        self.assertEqual(refreshed.technical_score, baseline.technical_score)
+        self.assertEqual(refreshed.bottom_probability_score, baseline.bottom_probability_score)
+
     def test_bottom_candidates_requires_auth(self):
         response = self.client.get('/api/v1/screener/bottom-candidates/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

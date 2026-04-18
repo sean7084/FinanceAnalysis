@@ -1,9 +1,11 @@
 from datetime import date
 
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 
 from .models import MacroSnapshot, MarketContext
+from .providers import fetch_macro_snapshot_with_fallback
 
 
 def _infer_phase(snapshot):
@@ -34,7 +36,7 @@ def _infer_phase(snapshot):
 
 @shared_task
 def sync_macro_data_monthly(payload=None):
-    """Monthly macro synchronization entrypoint (payload-friendly for tests/manual backfill)."""
+    """Macro synchronization entrypoint using TuShare primary and AkShare fallback."""
     payload = payload or {}
     snapshot_date = payload.get('date')
     if snapshot_date:
@@ -45,8 +47,15 @@ def sync_macro_data_monthly(payload=None):
     else:
         d = timezone.now().date().replace(day=1)
 
+    if not payload:
+        payload = fetch_macro_snapshot_with_fallback(
+            snapshot_date=d,
+            primary=getattr(settings, 'MACRO_SYNC_PRIMARY_PROVIDER', 'tushare'),
+            fallback=getattr(settings, 'MACRO_SYNC_FALLBACK_PROVIDER', 'akshare'),
+        )
+
     snapshot, _ = MacroSnapshot.objects.update_or_create(
-        date=d,
+        date=payload.get('date') or d,
         defaults={
             'dxy': payload.get('dxy'),
             'cny_usd': payload.get('cny_usd'),

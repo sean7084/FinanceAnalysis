@@ -1,6 +1,7 @@
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.db import transaction
 
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer, BacktestTradeSerializer
@@ -23,7 +24,7 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         run = serializer.save(user=self.request.user)
-        run_backtest.delay(run.id)
+        transaction.on_commit(lambda: run_backtest.delay(run.id))
 
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
@@ -36,7 +37,7 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         run.status = BacktestRun.Status.PENDING
         run.error_message = ''
         run.save(update_fields=['status', 'error_message', 'updated_at'])
-        run_backtest.delay(run.id)
+        transaction.on_commit(lambda: run_backtest.delay(run.id))
         return Response({'message': 'Backtest rerun queued.', 'id': run.id}, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['get'])

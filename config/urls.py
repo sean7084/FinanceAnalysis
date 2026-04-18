@@ -61,6 +61,9 @@ from apps.prediction.views_lightgbm import (
     LightGBMModelArtifactViewSet,
     EnsembleWeightSnapshotViewSet,
 )
+from apps.prediction.views_lstm import (
+    LSTMPredictionViewSet,
+)
 from apps.backtest.views import (
     BacktestRunViewSet,
     BacktestTradeViewSet,
@@ -97,6 +100,7 @@ router.register(r'sentiment/concepts', ConceptHeatViewSet, basename='sentiment-c
 router.register(r'prediction', PredictionViewSet, basename='prediction')
 router.register(r'prediction-model-versions', ModelVersionViewSet, basename='prediction-model-version')
 router.register(r'lightgbm-predictions', LightGBMPredictionViewSet, basename='lightgbm-prediction')
+router.register(r'lstm-predictions', LSTMPredictionViewSet, basename='lstm-prediction')
 router.register(r'lightgbm-models', LightGBMModelArtifactViewSet, basename='lightgbm-model')
 router.register(r'ensemble-weights', EnsembleWeightSnapshotViewSet, basename='ensemble-weight')
 router.register(r'backtest', BacktestRunViewSet, basename='backtest')

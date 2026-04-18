@@ -1,0 +1,41 @@
+{
+  "version": "lstm-2024-12-31",
+  "training_window_start": "2000-01-01",
+  "training_window_end": "2024-12-31",
+  "horizons": [
+    3,
+    7,
+    30
+  ],
+  "sequence_length": 20,
+  "results": {
+    "3": {
+      "status": "success",
+      "accuracy": 0.47125,
+      "training_samples": 9600,
+      "validation_samples": 2400,
+      "artifact_path": "/app/models/lstm/lstm-2024-12-31/3d_model.pt",
+      "feature_count": 39,
+      "sequence_length": 20
+    },
+    "7": {
+      "status": "success",
+      "accuracy": 0.36541666666666667,
+      "training_samples": 9600,
+      "validation_samples": 2400,
+      "artifact_path": "/app/models/lstm/lstm-2024-12-31/7d_model.pt",
+      "feature_count": 39,
+      "sequence_length": 20
+    },
+    "30": {
+      "status": "success",
+      "accuracy": 0.4404166666666667,
+      "training_samples": 9600,
+      "validation_samples": 2400,
+      "artifact_path": "/app/models/lstm/lstm-2024-12-31/30d_model.pt",
+      "feature_count": 39,
+      "sequence_length": 20
+    }
+  },
+  "aggregate_accuracy": 0.42569444444444443
+}

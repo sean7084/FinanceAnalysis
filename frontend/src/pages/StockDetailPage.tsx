@@ -29,6 +29,7 @@ export function StockDetailPage() {
   const [lightgbmPrediction, setLightgbmPrediction] = useState<LightGBMPredictionStockDto | null>(null)
   const [sentimentLatest, setSentimentLatest] = useState<number | null>(null)
   const [assetOptions, setAssetOptions] = useState<Array<{ symbol: string; name: string }>>([])
+  const [assetSearch, setAssetSearch] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -250,6 +251,18 @@ export function StockDetailPage() {
       }))
   }, [heuristicPrediction, lightgbmPrediction, t])
 
+  const filteredAssetOptions = useMemo(() => {
+    const keyword = assetSearch.trim().toLowerCase()
+    if (!keyword) {
+      return assetOptions
+    }
+    return assetOptions.filter((asset) => {
+      const symbolMatch = asset.symbol.toLowerCase().includes(keyword)
+      const nameMatch = asset.name.toLowerCase().includes(keyword)
+      return symbolMatch || nameMatch
+    })
+  }, [assetOptions, assetSearch])
+
   return (
     <section>
       <header className="page-header">
@@ -258,13 +271,20 @@ export function StockDetailPage() {
       </header>
       <div className="card">
         <label htmlFor="stock-switch">{t('stock.selector')}</label>
+        <input
+          id="stock-search"
+          value={assetSearch}
+          onChange={(event) => setAssetSearch(event.target.value)}
+          placeholder={t('stock.searchPlaceholder')}
+          aria-label={t('stock.searchLabel')}
+        />
         <select
           id="stock-switch"
           value={symbol}
           onChange={(e) => navigate(`/stock/${e.target.value}`)}
         >
-          {assetOptions.length === 0 && <option value={symbol}>{symbol}</option>}
-          {assetOptions.map((asset) => (
+          {filteredAssetOptions.length === 0 && <option value={symbol}>{symbol}</option>}
+          {filteredAssetOptions.map((asset) => (
             <option key={asset.symbol} value={asset.symbol}>
               {asset.symbol} - {asset.name}
             </option>

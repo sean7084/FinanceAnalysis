@@ -1,5 +1,49 @@
 # Changelog
 
+### version 0.1.8: LSTM Pipeline + Multi-Model Backtest ✓
+**Objective**: 让 LSTM 成为可训练、可推理、可回测的一等模型，并完善回测与个股页面操作体验
+
+**Implemented Features**:
+- Delivered real LSTM training (not registry-only):
+  - added PyTorch LSTM retrain task with temporal sequence samples
+  - added memory-safe chunked feature extraction and sample caps for long windows
+  - added end-to-end command `rebuild_lstm_pipeline` with date-window/horizon controls
+  - activated LSTM model version on `2000-01-01..2024-12-31`
+- Delivered LSTM inference path parallel to LightGBM:
+  - added runtime artifact loading + sequence feature build + probability inference
+  - persisted LSTM predictions into `PredictionResult` with trade-decision fields
+  - added API route family `/api/v1/lstm-predictions/` (stock, batch, train, recalculate)
+- Expanded backtest source system:
+  - added `lstm` as valid `prediction_source`
+  - added frontend source option `all-models` that fans out one submission into heuristic/lightgbm/lstm runs
+  - wired LSTM candidate selection into backtest runtime and serializer validation
+- Backtest page UX upgrades:
+  - run history: 10-row pagination
+  - run history columns: added max drawdown + win rate
+  - trade history: 10-row pagination
+  - selected run metrics: expanded to full summary set (initial/final capital, returns, drawdown, sharpe, win-rate, trades, benchmark)
+- Stock detail page UX upgrade:
+  - added searchable stock selector (symbol/name filter)
+- Documentation updates:
+  - refreshed technical guide for LSTM training/inference and backtest source options
+
+**Current Notes**:
+- LSTM now supports both training and inference in production code paths.
+- Backtest runner default source is now `all-models`.
+
+**Key Files**:
+- `apps/prediction/tasks_lstm.py`
+- `apps/prediction/management/commands/rebuild_lstm_pipeline.py`
+- `apps/prediction/views_lstm.py`
+- `config/urls.py`
+- `apps/backtest/tasks.py`
+- `apps/backtest/serializers.py`
+- `frontend/src/pages/BacktestWorkbenchPage.tsx`
+- `frontend/src/pages/StockDetailPage.tsx`
+- `frontend/src/lib/api.ts`
+- `frontend/src/i18n.tsx`
+- `TechnicalGuide.md`
+
 ### version 0.1.7: LightGBM Monitoring & Model Comparison ✓
 **Objective**: 完成 LightGBM 的可观测性闭环，并把模型对比结果带到日常使用页面
 

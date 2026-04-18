@@ -91,12 +91,16 @@ export interface DashboardStockRowDto {
   heuristic_up_probability: number | null
   heuristic_confidence: number | null
   heuristic_trade_score: number | null
+  heuristic_target_price: number | null
+  heuristic_stop_loss_price: number | null
   heuristic_risk_reward_ratio: number | null
   heuristic_suggested: boolean
   lightgbm_label: string
   lightgbm_up_probability: number | null
   lightgbm_confidence: number | null
   lightgbm_trade_score: number | null
+  lightgbm_target_price: number | null
+  lightgbm_stop_loss_price: number | null
   lightgbm_risk_reward_ratio: number | null
   lightgbm_suggested: boolean
 }
@@ -246,11 +250,59 @@ export interface FeatureImportanceTrendResponseDto {
 
 export interface BacktestRunDto {
   id: number
+  name: string
   strategy_type: string
   status: string
+  initial_capital: number
+  final_value: number | null
   total_return: number | null
+  annualized_return: number | null
+  max_drawdown: number | null
   sharpe_ratio: number | null
+  win_rate: number | null
+  total_trades: number
+  winning_trades: number
+  parameters: Record<string, unknown>
+  report: Record<string, unknown>
   created_at: string
+}
+
+export interface BacktestTradeDto {
+  id: number
+  asset_symbol: string
+  asset_name: string
+  trade_date: string
+  side: string
+  quantity: number | string
+  price: number | string
+  fee: number | string
+  slippage: number | string
+  amount: number | string
+  pnl: number | string
+  signal_payload: Record<string, unknown>
+}
+
+export interface BacktestCreatePayload {
+  name: string
+  strategy_type: 'PREDICTION_THRESHOLD'
+  start_date: string
+  end_date: string
+  initial_capital: string
+  parameters: {
+    prediction_source: 'heuristic' | 'lightgbm' | 'lstm'
+    top_n: number
+    horizon_days: 3 | 7 | 30
+    up_threshold: number
+    entry_weekdays: Array<'MON' | 'TUE' | 'WED' | 'THU' | 'FRI'>
+    holding_period_days: number
+    capital_fraction_per_entry: number
+    candidate_mode?: 'top_n' | 'trade_score'
+    trade_score_scope?: 'independent' | 'combined'
+    trade_score_threshold?: number
+    max_positions?: number
+    use_macro_context?: boolean
+    enable_stop_target_exit?: boolean
+  }
 }
 
 function isPaginated<T>(payload: unknown): payload is Paginated<T> {
@@ -512,9 +564,9 @@ export async function fetchScreenerRows(topN = 20, sortBy = 'bottom_probability_
   return payload.results
 }
 
-export async function fetchDashboardStocks(predictionHorizon = 7): Promise<DashboardStockRowDto[]> {
+export async function fetchDashboardStocks(predictionHorizon = 7, pageSize = 120): Promise<DashboardStockRowDto[]> {
   const payload = await apiGet<Paginated<DashboardStockRowDto> | { count: number; results: DashboardStockRowDto[] }>(
-    `/dashboard/stocks/?prediction_horizon=${predictionHorizon}`,
+    `/dashboard/stocks/?prediction_horizon=${predictionHorizon}&page_size=${pageSize}`,
   )
   if (isPaginated<DashboardStockRowDto>(payload)) {
     return payload.results
@@ -530,6 +582,14 @@ export async function fetchMacroContexts(limit = 20): Promise<MacroContextDto[]>
 export async function fetchBacktestRuns(limit = 20): Promise<BacktestRunDto[]> {
   const payload = await apiGet<Paginated<BacktestRunDto>>(`/backtest/?page_size=${limit}`)
   return payload.results
+}
+
+export async function fetchBacktestTrades(runId: number): Promise<BacktestTradeDto[]> {
+  return await apiGet<BacktestTradeDto[]>(`/backtest/${runId}/trades/`)
+}
+
+export async function createBacktestRun(payload: BacktestCreatePayload): Promise<BacktestRunDto> {
+  return await apiPost<BacktestRunDto>('/backtest/', payload)
 }
 
 export async function fetchAssetBySymbol(symbol: string): Promise<AssetDto | null> {
