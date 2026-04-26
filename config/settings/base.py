@@ -184,6 +184,11 @@ HISTORICAL_DATA_FLOOR = env('HISTORICAL_DATA_FLOOR', default='2000-01-01')
 MACRO_SYNC_PRIMARY_PROVIDER = env('MACRO_SYNC_PRIMARY_PROVIDER', default='tushare')
 MACRO_SYNC_FALLBACK_PROVIDER = env('MACRO_SYNC_FALLBACK_PROVIDER', default='akshare')
 MACRO_SYNC_PROVIDER_SLEEP_SECONDS = env.float('MACRO_SYNC_PROVIDER_SLEEP_SECONDS', default=0.2)
+MACRO_YIELD_BACKFILL_WINDOW_MONTHS = env.int('MACRO_YIELD_BACKFILL_WINDOW_MONTHS', default=36)
+MACRO_YIELD_BACKFILL_MAX_RETRIES = env.int('MACRO_YIELD_BACKFILL_MAX_RETRIES', default=3)
+MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS = env.float('MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS', default=65.0)
+MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS = env.float('MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS', default=31.0)
+CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS = env.int('CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS', default=20)
 NEWS_BACKFILL_ENABLED = env.bool('NEWS_BACKFILL_ENABLED', default=True)
 NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
 NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
@@ -193,6 +198,10 @@ CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
         'schedule': crontab(hour='16', minute='10'),
+    },
+    'sync-capital-flow-daily': {
+        'task': 'apps.factors.tasks.sync_daily_capital_flow_snapshots',
+        'schedule': crontab(hour='16', minute='20'),
     },
     'check-alert-rules-every-5-min': {
         'task': 'apps.analytics.tasks.check_alert_rules',

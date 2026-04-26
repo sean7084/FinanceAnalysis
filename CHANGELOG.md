@@ -1,5 +1,63 @@
 # Changelog
 
+### version 0.1.9: Full Backfill + Runtime Backtest Validation ✓
+**Objective**: 收尾 backfill/backtest 阶段，让数据、模型、文档和导出报告与当前实现保持一致，准备 v0.1.9 提交
+
+**Implemented Features**:
+- Refreshed the production data surface after the latest backfill:
+  - confirmed 300 active listed assets with complete `list_date` coverage
+  - extended OHLCV to 1,145,611 rows through `2026-04-24`
+  - populated fundamental, moneyflow, margin-detail, factor-score, macro, sentiment, and LightGBM prediction history
+  - refreshed TechnicalGuide data ranges with usage and missing-data impact notes
+- Cleaned stale per-stock northbound fields:
+  - removed `northbound_net_5d`, `northbound_net_10d`, and `northbound_net_20d` from `CapitalFlowSnapshot`
+  - removed `northbound_flow_score` from `FactorScore`, dashboard DTOs, fixtures, and factor/backfill code paths
+  - added cleanup migration `apps/factors/migrations/0004_remove_northbound_fields.py`
+  - kept LightGBM `northbound_flow=0.5` as a neutral artifact-compatibility placeholder until active artifacts are retrained without that feature name
+- Hardened release migration state:
+  - pinned existing `FeatureImportanceSnapshot` index names to avoid generated-name drift
+  - applied the northbound cleanup migration successfully in the live Docker database
+- Completed model/backtest validation reporting:
+  - documented active LightGBM artifacts trained on `2016-06-01..2024-12-31` with 3d/7d/30d accuracies `0.569238`, `0.513034`, and `0.593609`
+  - documented active LSTM registry metrics: aggregate `0.465278`, 3d `0.547333`, 7d `0.428000`, 30d `0.420500`
+  - captured post-retrain validation backtests 107-112 and comparison deltas against 101-106
+- Added detailed backtest CSV export tooling:
+  - new command `export_backtest_runs` exports run summary, flattened config/results, trades, macro monthly rows, model references, and comparison deltas
+  - generated `reports/backtests_89_112_v0_1_9/` with 6 CSV files for BacktestRun IDs 89-112
+  - summary/config sheets explicitly mark missing IDs 95-100 instead of silently skipping them
+- Updated release documentation:
+  - removed stale admin error text and stale factor assumptions from TechnicalGuide
+  - cleaned README scratch notes and refreshed release status/counts
+  - added v0.1.9 changelog notes for commit readiness
+
+**Current Notes**:
+- Backtests now generate heuristic, LightGBM, and LSTM candidates at runtime; stored LightGBM prediction coverage remains useful for API/dashboard/history but is not required by the backtest runner.
+- `FactorScore.sentiment_score` is still stored, but default composite weighting keeps sentiment at `0.0` unless weights are changed.
+- `northbound_flow` in LightGBM features is deliberately neutral and should disappear after the next artifact family is trained on a schema that omits it.
+
+**Key Files**:
+- `TechnicalGuide.md`
+- `README.md`
+- `apps/factors/models.py`
+- `apps/factors/tasks.py`
+- `apps/factors/migrations/0004_remove_northbound_fields.py`
+- `apps/backtest/management/commands/export_backtest_runs.py`
+- `apps/prediction/tasks_lightgbm.py`
+- `apps/prediction/models_lightgbm.py`
+- `apps/prediction/management/commands/backfill_model_data.py`
+- `frontend/src/lib/api.ts`
+- `reports/backtests_89_112_v0_1_9/`
+
+**Test Coverage / Verification**:
+- `docker exec -i finance_analysis_django python manage.py makemigrations --check`: no changes detected after pinning existing prediction index names
+- `docker exec -i finance_analysis_django python manage.py migrate --plan`: confirmed only `factors.0004_remove_northbound_fields`
+- `docker exec -i finance_analysis_django python manage.py migrate`: applied `factors.0004_remove_northbound_fields` successfully
+- Database introspection: confirmed removed northbound columns are absent from `factors_capitalflowsnapshot` and `factors_factorscore`
+- `docker exec -i finance_analysis_django python manage.py export_backtest_runs --start-id 89 --end-id 112 --output-dir reports/backtests_89_112_v0_1_9`: generated 6 CSV files; summary/config 24 requested run rows, comparison 6 rows, trades 11,255 data rows
+- `docker exec -i finance_analysis_django python manage.py test apps.factors.tests apps.prediction.tests apps.prediction.tests_lightgbm apps.backtest.tests apps.macro.tests apps.markets.tests`: ran 64 tests, OK
+- `cd frontend && npm test`: 1 test file passed, 3 tests passed
+- Broad app-label Django test discovery still hits a namespace-package loader issue, so release verification uses explicit test modules.
+
 ### version 0.1.8: LSTM Pipeline + Multi-Model Backtest ✓
 **Objective**: 让 LSTM 成为可训练、可推理、可回测的一等模型，并完善回测与个股页面操作体验
 

@@ -1,43 +1,76 @@
 # Technical Guide
 
-Last refreshed: `2026-04-18` (from live DB snapshots).
+Last refreshed: `2026-04-26` (from live DB snapshots after v0.1.9 backfill and cleanup migration).
 
 ## Data Metrics Sheet
-
 Date range format: `YYYY-MM-DD`.
 
-| Metric Name | Source of Metric | Storage | Current Date Range |
-| --- | --- | --- | --- |
-| OHLCV | TuShare (markets sync tasks + backfill command) | `markets_ohlcv` | `2001-07-24` to `2026-04-17` |
-| Macro Snapshots | TuShare primary, AkShare fallback | `macro_macrosnapshot` | `2000-01-01` to `2026-04-01` |
-| Technical Indicators (all) | Calculated from OHLCV (TA-Lib + analytics tasks) | `analytics_technicalindicator` | `2001-08-21` to `2026-04-18` |
-| Technical Indicator: RSI | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=RSI`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: MACD | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=MACD`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: BBANDS | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=BBANDS`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: SMA | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=SMA`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: EMA | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=EMA`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: STOCH | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=STOCH`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: ADX | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=ADX`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: OBV | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=OBV`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: FIB_RET | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=FIB_RET`) | `2026-04-14` to `2026-04-14` |
-| Technical Indicator: MOM_5D | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=MOM_5D`) | `2026-04-14` to `2026-04-17` |
-| Technical Indicator: MOM_10D | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=MOM_10D`) | `2026-04-14` to `2026-04-17` |
-| Technical Indicator: MOM_20D | Calculated from OHLCV | `analytics_technicalindicator` (`indicator_type=MOM_20D`) | `2026-04-14` to `2026-04-17` |
-| Technical Indicator: RS_SCORE | Calculated from OHLCV cross-section | `analytics_technicalindicator` (`indicator_type=RS_SCORE`) | `2001-08-21` to `2026-04-18` |
-| Signal Events (all types) | Calculated from technical indicators and OHLCV patterns | `analytics_signalevent` | `2026-04-14` to `2026-04-18` |
-| News Articles | Multi-provider sentiment ingestion pipeline | `sentiment_newsarticle` | `2026-03-27` to `2026-04-18` |
-| Sentiment Scores (ARTICLE/ASSET_7D/MARKET_7D) | Calculated from ingested news + neutral backfill | `sentiment_sentimentscore` | `2001-07-24` to `2026-04-18` |
-| Concept Heat | Calculated from tagged news/sentiment | `sentiment_conceptheat` | `2026-04-15` to `2026-04-16` |
-| Fundamental Factor Snapshots | TuShare/AkShare ingestion (currently unpopulated) | `factors_fundamentalfactorsnapshot` | `N/A` |
-| Capital Flow Snapshots | TuShare/AkShare ingestion (currently unpopulated) | `factors_capitalflowsnapshot` | `N/A` |
-| Factor Scores (composite and components) | Calculated from fundamentals/flows/technical/sentiment | `factors_factorscore` | `2001-07-24` to `2026-04-16` |
-| Heuristic Prediction Rows | Model-generated (rule-based probabilities) | `prediction_predictionresult` | `2026-04-15` to `2026-04-18` |
-| LightGBM Prediction Rows | Model-generated (LightGBM inference) | `prediction_lightgbmprediction` | `2016-06-30` to `2026-04-18` |
-| LightGBM Model Artifacts | Model training output metadata | `prediction_lightgbmmodelartifact` | `2026-04-15` to `2026-04-16` |
-| Model Versions | Training registry metadata | `prediction_modelversion` | `2026-04-15` to `2026-04-18` |
-| Feature Importance Snapshots | Model-generated diagnostics | `prediction_featureimportancesnapshot` | `2026-04-15` to `2026-04-16` |
-| Ensemble Weight Snapshots | Model-generated blending weights | `prediction_ensembleweightsnapshot` | `2026-04-11` to `2026-04-15` |
-| Trade Decision Coverage (target/stop/R:R/trade_score/suggested) | Prediction + odds logic | `prediction_predictionresult`, `prediction_lightgbmprediction` | Heuristic: `2026-04-15` to `2026-04-18`; LightGBM: `2016-06-30` to `2026-04-18` |
+| Metric Name | Source of Metric | Storage | Live Coverage | Current Usage and Missing Data Impact |
+| --- | --- | --- | --- | --- |
+| Assets | TuShare CSI 300 universe sync | `markets_asset` | `300` active listed assets; list dates `1991-01-29` to `2025-07-16`; no null `list_date` | Universe for all model/backtest/API surfaces. Missing `list_date` would weaken listing-age filters, but current coverage is complete. |
+| OHLCV | TuShare market sync + backfill | `markets_ohlcv` | `1,145,611` rows, `300` assets, `2001-07-24` to `2026-04-24` | Core price/volume source for indicators, factors, model features, labels, and backtests. Missing rows directly reduce runtime feature quality and tradable dates. |
+| Macro Snapshots | TuShare primary, AkShare fallback | `macro_macrosnapshot` | `316` monthly rows, `2000-01-01` to `2026-04-01`; field-level coverage varies | Feeds MarketContext, LightGBM macro features, and macro-aware backtest ranking. Missing macro fields fall back to neutral values and reduce regime sensitivity. |
+| Market Context History | Derived from monthly macro snapshots | `macro_marketcontext` | `263` rows, `2005-01-01` to `2026-04-01` | Date-aware macro phase timeline for heuristic adjustments, LightGBM features, and backtest reports. Missing rows fall back to recovery/neutral behavior. |
+| Technical Indicators (all) | Stored analytics snapshots from OHLCV | `analytics_technicalindicator` | `1,141,393` rows, `300` assets, `2001-08-21` to `2026-04-25` | API/display store and source for `RS_SCORE`. Runtime RSI/momentum/volatility are recomputed from OHLCV when needed. Missing stored non-RS indicators mainly affects inspection APIs. |
+| Signal Events | Calculated from technical indicators and OHLCV patterns | `analytics_signalevent` | `2,795` rows, `294` assets, `2026-04-14` to `2026-04-25` | Used by the factor reversal scorer for oversold confirmation and by signal APIs. Missing rows reduce confirmation strength but OHLCV fallback logic still runs. |
+| News Articles | Multi-provider sentiment ingestion | `sentiment_newsarticle` | `40,066` rows, `2026-02-04T18:26:00` to `2026-04-26T00:31:40` | Raw text source for sentiment/concept features. Missing articles make sentiment less informative and can push outputs toward neutral backfill. |
+| Sentiment Scores | News-derived article, asset 7-day, and market 7-day scores plus neutral history | `sentiment_sentimentscore` | `1,835,998` rows, `300` assets, `2001-07-24` to `2026-04-25` | Used by heuristic probabilities, LightGBM/LSTM features, dashboards, and factor score storage. Missing asset sentiment falls back to neutral and removes news-tone signal. |
+| Concept Heat | Tagged news/sentiment aggregation | `sentiment_conceptheat` | `80` rows, `2026-04-15` to `2026-04-25` | Theme/sector monitoring surface. Missing rows affect concept ranking only, not core prediction/backtest execution. |
+| Fundamental Factor Snapshots | TuShare `daily_basic` and `fina_indicator` backfill | `factors_fundamentalfactorsnapshot` | `1,145,013` rows, `300` assets, `2001-07-24` to `2026-04-22`; non-null PE `1,099,979`, PB `1,144,671`, ROE `1,116,509`, ROE QoQ `1,096,762` | Feeds valuation/profitability component scores and LightGBM/LSTM factor features. Null PE/ROE values fall back to neutral feature scores for affected asset-dates. |
+| Capital Flow Snapshots | TuShare moneyflow and margin-detail backfill | `factors_capitalflowsnapshot` | `1,145,611` rows, `300` assets, `2001-07-24` to `2026-04-24`; main-force 5d non-null `990,025`; margin 5d non-null `757,510` | Feeds main-force and margin flow component scores. Per-stock northbound columns were removed in v0.1.9 because the stored values were all null/not asset-specific. |
+| Asset Money Flow Raw Rows | TuShare stock-level moneyflow | `factors_assetmoneyflowsnapshot` | `990,029` rows, `300` assets, `2007-01-04` to `2026-04-24`; net moneyflow non-null `967,479` | Raw input for main-force flow features. Earlier dates fall back to neutral flow scores. |
+| Asset Margin Detail Raw Rows | TuShare margin detail | `factors_assetmargindetailsnapshot` | `768,393` rows, `300` assets, `2010-03-31` to `2026-04-24`; balance non-null `768,041` | Raw input for margin-flow features. Earlier dates fall back to neutral margin score. |
+| Factor Scores | Stored composite and component factor surface | `factors_factorscore` | `1,801,500` rows, `300` assets, `2001-07-24` to `2026-04-24`; latest date has `300` rows | Used by factor APIs, heuristic features, and LightGBM/LSTM factor features. Latest nulls: PE percentile `16`, margin flow `110`, other key retained components `0`. |
+| Heuristic Prediction Rows | Rule-based multi-horizon probabilities | `prediction_predictionresult` | `9,901` rows, `300` assets, `2024-12-31` to `2026-04-25` | API/dashboard prediction surface and heuristic backtest payload reference. Runtime backtests can also generate candidates on demand. |
+| LightGBM Prediction Rows | Stored LightGBM inference output | `prediction_lightgbmprediction` | `444,980` rows, `300` assets, `2016-06-30` to `2026-04-25` | API/dashboard prediction surface. Backtests no longer require precomputed rows and can generate model candidates at runtime. |
+| LightGBM Model Artifacts | Per-horizon model artifact registry | `prediction_lightgbmmodelartifact` | `8` total, `3` active; active artifacts trained on `2016-06-01` to `2024-12-31` | Deployment source for LightGBM inference. Missing active artifact for a horizon blocks that horizon's LightGBM runtime path. |
+| Model Versions | Model registry metadata | `prediction_modelversion` | `17` total; active LightGBM, LSTM, and ensemble registry rows | Tracks high-level active model families and metrics. For per-horizon LightGBM deployment, use `LightGBMModelArtifact`. |
+| Feature Importance Snapshots | LightGBM diagnostics | `prediction_featureimportancesnapshot` | `304` rows, `2026-04-15` to `2026-04-25` | Monitoring and feature-pruning input. Missing snapshots disables historical pruning and falls back to the full engineered feature set. |
+| Ensemble Weight Snapshots | Model blending diagnostics | `prediction_ensembleweightsnapshot` | `3` rows, `2024-12-31` to `2026-04-15` | Tracks model-weight history. The latest date reflects a 60-day basis snapshot; the retrain registry stores the 2024-12-31 model-window ensemble metrics. |
+| Backtest Export Sheet | Management command export from `BacktestRun` and `BacktestTrade` | `reports/backtests_89_112_v0_1_9/*.csv` | `6` CSVs; run summary/config include IDs `89..112` with IDs `95..100` marked `MISSING`; trades CSV has `11,255` data rows | Release audit artifact for v0.1.9. Missing run IDs are explicitly represented so comparisons do not imply nonexistent rows. |
+
+### precomputed data
+
+Historical model inputs and stored prediction tables are still populated for API/reporting surfaces and retrospective inspection.
+That precomputed layer currently covers the backfilled model inputs used by LightGBM and the stored `LightGBMPrediction` history for horizons `3/7/30`.
+
+Backtests no longer depend on stored LightGBM prediction coverage.
+In the current implementation, heuristic, LightGBM, and LSTM backtest candidate selection is generated at runtime in `apps/backtest/tasks.py`, and long windows resume through chunked execution state persisted in `BacktestRun.report`.
+
+### stored analytics vs runtime-computed features
+
+Stored analytics rows are primarily for API, dashboard, and inspection surfaces.
+
+- `analytics_technicalindicator` serves the stored indicator history exposed by the technical-indicator API.
+- Those stored rows are not the sole source of truth for model/runtime feature extraction.
+- Current heuristic and LightGBM runtime paths recompute several features directly from OHLCV when needed, including RSI, momentum, returns, volume ratios, realized volatility, and Bollinger-band-derived checks.
+- `RS_SCORE` remains a stored analytics dependency and is still read from `analytics_technicalindicator`.
+- `FactorScore` remains a stored dependency for heuristic and LightGBM factor features.
+
+Implication:
+- Sparse stored RSI/MACD/BBANDS rows do not by themselves break runtime backtests or runtime LightGBM inference.
+- Stale or missing `RS_SCORE` / `FactorScore` rows still affect model behavior.
+
+### macro snapshot coverage and semantics
+
+`MacroSnapshot` stores monthly rows normalized to the first day of each month. Coverage is not uniform across fields because TuShare exposes different historical floors per macro series.
+
+| Field | Upstream source | Stored semantics | Verified non-null range | Current usage |
+| --- | --- | --- | --- | --- |
+| `dxy` | TuShare `fx_daily` using `USDOLLAR.FXCM` then `USDOLLAR` | Monthly first-of-month normalization of DXY close | `2011-01-01` to `2026-04-01` (`184` rows) | Stored for API/admin; not currently consumed by model or backtest logic |
+| `cny_usd` | TuShare `fx_daily` using `USDCNH.FXCM` | Stored as inverted `CNY/USD` from offshore `USD/CNH` quote | `2012-02-01` to `2026-04-01` (`171` rows) | Stored for API/admin; not currently consumed by model or backtest logic |
+| `cn10y_yield` | TuShare `yc_cb` with `curve_term=10`, deterministic `curve_type` preference | Monthly first-of-month normalization of China 10Y yield | `2016-06-01` to `2026-04-01` (`119` rows) | Used directly in yield-curve features and MarketContext phase inference |
+| `cn2y_yield` | TuShare `yc_cb` with `curve_term=2`, deterministic `curve_type` preference | Monthly first-of-month normalization of China 2Y yield | `2016-06-01` to `2026-04-01` (`119` rows) | Used directly in yield-curve features and MarketContext phase inference |
+| `pmi_manufacturing` | TuShare `cn_pmi` field `PMI010000` | Manufacturing PMI | `2005-01-01` to `2026-04-01` (`256` rows) | Used directly in MarketContext phase inference and LightGBM macro features |
+| `pmi_non_manufacturing` | TuShare `cn_pmi` field `PMI020100` | Non-manufacturing business activity PMI | `2007-01-01` to `2026-03-01` (`231` rows) | Used directly in MarketContext phase inference and LightGBM macro features |
+| `cpi_yoy` | TuShare `cn_cpi` | CPI year-over-year growth | `2000-01-01` to `2026-03-01` (`315` rows) | Used in MarketContext phase inference |
+| `ppi_yoy` | TuShare `cn_ppi` | PPI year-over-year growth | `2000-01-01` to `2026-03-01` (`315` rows) | Stored for API/admin; not currently consumed by model or backtest logic |
+
+Important notes:
+- `pmi_non_manufacturing` now maps to `PMI020100`. It previously and incorrectly followed the composite PMI field `PMI030000`.
+- TuShare `cn_pmi` currently returns `MONTH` uppercase by default. The ingestion path now reads `MONTH`/`month` first and only falls back to `CREATE_TIME` if needed.
+- Historical `MarketContext` is now backfilled from `MacroSnapshot` and remains queryable by date. Active historical rows currently span `2005-01-01` to `2026-04-01` (`263` rows).
+- Training windows that depend on yield-curve or MarketContext features should start no earlier than `2016-06-01` if you want macro-driven features to be based on real yield data rather than fallback defaults.
 
 ## Current Models and Formulas
 
@@ -78,14 +111,43 @@ Macro adjustments:
 
 Primary code: `apps/factors/tasks.py` (`calculate_factor_scores_for_date`, `_technical_reversal_score`).
 
+Current implementation note:
+- The daily scorer writes one `FactorScore(mode=COMPOSITE)` row per asset/date.
+- In that scorer, `technical_score` is exactly the same value as `technical_reversal_score`.
+- The technical component is intentionally a bottom-fishing reversal signal, not a general trend-strength score.
+
 #### Component scores
 - Fundamental score: average of `pe_score`, `pb_score`, `roe_trend`
-- Capital flow score: average of northbound/main-force/margin percentile scores
-- Technical reversal score:
-  - RSI <= 35: `+0.35`
-  - Close near lower BBAND (`<= 1.03 * lower`): `+0.25`
-  - Oversold reversal block: `+0.40`
-  - Capped at `1.0`
+- Capital flow score: average of `main_force_flow_score` and `margin_flow_score`; asset-level northbound fields were physically removed in v0.1.9 because northbound flow is not a valid per-stock field in the current schema.
+- Technical reversal score (`technical_score`):
+  - Input lookups use the latest available rows on or before `as_of`, not strictly same-day rows.
+  - Inputs:
+    - `latest_rsi(asset_id, as_of, default=50)`
+    - `latest_bbands(asset_id, as_of)` lower band
+    - `latest_ohlcv(asset_id, as_of)` close and recent volume
+    - `SignalEvent(signal_type=OVERSOLD_COMBINATION)` on or before `as_of`
+  - Score blocks:
+    - RSI oversold: if `RSI <= 35`, add `0.35`
+    - Lower-band proximity: if `close <= lower_band * 1.03`, add `0.25`
+    - Confirmed oversold reversal: add `0.40` if either:
+      - an `OVERSOLD_COMBINATION` signal exists on or before `as_of`; or
+      - the fallback confirmation block passes all of:
+        - `RSI < 30`
+        - `close <= lower_band * 1.02`
+        - latest volume is below `80%` of the average volume over the prior 20 sessions
+  - Final formula:
+    - `technical_score = min(rsi_block + lower_band_block + reversal_block, 1.0)`
+  - Missing-data behavior:
+    - missing RSI falls back to `50`, which disables the RSI-driven blocks
+    - missing BBANDS or latest OHLCV disables the price-vs-band checks
+    - fewer than 21 OHLCV rows disables the fallback volume-confirmed reversal block
+  - Interpretation:
+    - near `0.00`: no oversold/reversal evidence
+    - around `0.35`: RSI-only oversold setup
+    - around `0.60`: oversold plus lower-band proximity
+    - `1.00`: strongest confirmed reversal setup after capping
+  - Not included today:
+    - stored MACD, ADX, OBV, SMA/EMA, and RS score analytics do not currently feed `technical_score` in `FactorScore`
 - Sentiment score mapping: from `[-1, 1]` to `[0, 1]`
 
 #### Weights in composite formula
@@ -101,7 +163,7 @@ Composite:
 
 ### 3) LightGBM Multi-class Model
 
-Primary code: `apps/prediction/tasks_lightgbm.py` (`_create_feature_matrix`, `_create_labels_for_training`, `train_lightgbm_models`).
+Primary code: `apps/prediction/tasks_lightgbm.py` (`_extract_features_for_asset`, `_create_feature_matrix`, `_create_labels_for_training`, `train_lightgbm_models`, `_predict_with_lightgbm`).
 
 #### Prediction target / labels
 For each horizon (`3`, `7`, `30` days):
@@ -109,29 +171,70 @@ For each horizon (`3`, `7`, `30` days):
 - `DOWN` if forward return <= `-2%`
 - `FLAT` otherwise
 
-#### Feature families
-- Technical: RSI, momentum, returns, volume ratios, volatility, RS score
-- Lag/derivative features: lag windows `3/5/10` days (delta and lag terms)
-- Fundamental/flow: PE/PB/ROE trend, northbound/main-force/margin, factor composite
-- Macro: phase code + PMI + yield curve
-- Sentiment: 7d sentiment and 20d moving average
-- Interaction features (engineered):
-  - `rsi_x_relative_volume_5d`
-  - `rsi_x_macro_phase`
-  - `factor_composite_x_sentiment`
-  - `northbound_flow_x_mom_5d`
-  - `pe_percentile_x_macro_phase`
+The label builder uses the first available trading day on or after `target_date + horizon_days`, not a fixed calendar-row offset.
+
+#### Feature inventory
+
+Current active artifacts are on engineered feature set `v2` and prune historically weak features before training. The live active artifacts currently keep `37` features for `3d`, `37` features for `7d`, and `35` features for `30d`.
+
+| Feature(s) | Source surface | Producer / lookup path | Usage in model pipeline | Fallback behavior | Current live range |
+| --- | --- | --- | --- | --- | --- |
+| `rsi` | `markets_ohlcv` | Runtime: `latest_rsi()` in `apps/prediction/historical_features.py`; training: `_compute_rsi_series()` in `apps/prediction/tasks_lightgbm.py` | Core technical level / oversold state | Defaults to `50.0` when unavailable | OHLCV source: `2001-07-24` to `2026-04-24` |
+| `mom_5d` | `markets_ohlcv` | Runtime: `latest_momentum(..., n_days=5)`; training: 5-day close pct change | Short-horizon price momentum | Defaults to `0.0` when unavailable | OHLCV source: `2001-07-24` to `2026-04-24` |
+| `rs_score` | `analytics_technicalindicator` (`RS_SCORE`) | Runtime/training: `latest_rs_score()` and `RS_SCORE` merge in `_create_feature_matrix()` | Cross-sectional relative-strength signal | Defaults to `0.5` when unavailable | `2001-08-21` to `2026-04-25` |
+| `rsi_lag_3d`, `rsi_delta_3d` | `markets_ohlcv` | Runtime: lagged `latest_rsi()` lookups; training: shifted RSI series | Short-lag RSI regime and change | Lag falls back to current `rsi`; delta becomes `0` | OHLCV source with 3-day lookback: `2001-07-24` to `2026-04-24` |
+| `rsi_lag_5d`, `rsi_delta_5d` | `markets_ohlcv` | Same as above with 5-day lag | Medium-lag RSI regime and change | Lag falls back to current `rsi`; delta becomes `0` | OHLCV source with 5-day lookback: `2001-07-24` to `2026-04-24` |
+| `rsi_lag_10d`, `rsi_delta_10d` | `markets_ohlcv` | Same as above with 10-day lag | Longer RSI change signal | Lag falls back to current `rsi`; delta becomes `0` | OHLCV source with 10-day lookback: `2001-07-24` to `2026-04-24` |
+| `mom_5d_delta_3d`, `mom_5d_delta_5d`, `mom_5d_delta_10d` | `markets_ohlcv` | Runtime: lagged `latest_momentum()`; training: shifted momentum series | Momentum acceleration / deceleration | Missing lag falls back to current `mom_5d`; delta becomes `0` | OHLCV source with lagged lookback: `2001-07-24` to `2026-04-24` |
+| `rs_score_delta_3d`, `rs_score_delta_5d`, `rs_score_delta_10d` | `analytics_technicalindicator` (`RS_SCORE`) | Runtime: lagged `latest_rs_score()`; training: shifted RS score series | Relative-strength change signal | Missing lag falls back to current `rs_score`; delta becomes `0` | `RS_SCORE` source with lagged lookback: `2001-08-21` to `2026-04-25` |
+| `return_3d`, `return_5d`, `return_10d` | `markets_ohlcv` | Runtime: `_compute_return()` over recent OHLCV rows; training: pct-change windows | Price trend / reversal context | Defaults to `0.0` when insufficient history | OHLCV source: `2001-07-24` to `2026-04-24` |
+| `relative_volume_5d`, `relative_volume_20d` | `markets_ohlcv` | Runtime/training: current volume over rolling mean | Participation / abnormal-volume signal | Defaults to `1.0` when rolling average unavailable | OHLCV source: `2001-07-24` to `2026-04-24` |
+| `realized_volatility_5d` | `markets_ohlcv` | Runtime: `_compute_realized_volatility()`; training: rolling std of close returns | Short-term realized risk / noise level | Defaults to `0.0` when insufficient history | OHLCV source: `2001-07-24` to `2026-04-24` |
+| `pe_percentile` | `factors_factorscore` derived from `factors_fundamentalfactorsnapshot` | Runtime: latest `FactorScore.pe_percentile_score`; training: `merge_asof` from `FactorScore` | Valuation percentile for bottom-catching logic | Fills to `0.5` if no score or `NULL` | FactorScore `2001-07-24` to `2026-04-24`; fundamental source `1,145,013` rows through `2026-04-22` |
+| `pb_percentile` | `factors_factorscore` derived from `factors_fundamentalfactorsnapshot` | Same path as above | Book-value valuation percentile | Fills to `0.5` if no score or `NULL` | FactorScore `2001-07-24` to `2026-04-24`; source PB non-null `1,144,671` rows |
+| `roe_trend` | `factors_factorscore` derived from `factors_fundamentalfactorsnapshot` | Same path as above | Fundamental profitability trend signal | Fills to `0.5` if no score or `NULL` | FactorScore `2001-07-24` to `2026-04-24`; ROE non-null `1,116,509`, ROE QoQ non-null `1,096,762` |
+| `northbound_flow` | Neutral compatibility placeholder | Runtime/training: fixed `0.5` in LightGBM feature extraction/matrix build | Preserves compatibility with active artifacts that still contain the feature name | Always `0.5` | Per-stock DB/API field removed in v0.1.9; not read from `FactorScore` |
+| `main_force_flow` | `factors_factorscore` derived from moneyflow snapshots | Runtime/training: latest `main_force_flow_score` from `FactorScore` | Main-force flow pressure signal | Fills to `0.5` if no score or `NULL` | FactorScore `2001-07-24` to `2026-04-24`; raw moneyflow from `2007-01-04` |
+| `margin_flow` | `factors_factorscore` derived from margin detail snapshots | Runtime/training: latest `margin_flow_score` from `FactorScore` | Margin-balance pressure signal | Fills to `0.5` if no score or `NULL` | FactorScore `2001-07-24` to `2026-04-24`; raw margin detail from `2010-03-31` |
+| `factor_composite` | `factors_factorscore` | Runtime/training: latest `FactorScore.composite_score` | Aggregate factor regime / bottom-probability context | Fills to `0.5` if no score or `NULL` | `2001-07-24` to `2026-04-24` |
+| `macro_phase` | `macro_marketcontext` | Runtime: latest active `MarketContext` on or before `as_of`; training: as-of merge from `MarketContext` timeline | Encodes current macro regime (`RECESSION/RECOVERY/OVERHEAT/STAGFLATION`) | Fills to `1.0` (`RECOVERY`) when unavailable | Active historical timeline: `2005-01-01` to `2026-04-01` |
+| `pmi_manufacturing` | `macro_macrosnapshot` | Runtime/training: latest `MacroSnapshot` <= `as_of` | Manufacturing activity backdrop | Fills to `50.0` when unavailable | Non-null `2005-01-01` to `2026-04-01` (`256` rows) |
+| `pmi_non_manufacturing` | `macro_macrosnapshot` | Runtime/training: latest `MacroSnapshot` <= `as_of` | Services activity backdrop | Fills to `50.0` when unavailable | Non-null `2007-01-01` to `2026-03-01` (`231` rows) |
+| `yield_curve` | `macro_macrosnapshot` | Runtime/training: `cn10y_yield - cn2y_yield` from latest `MacroSnapshot` | Rates / cycle-state signal | Fills to `0.0` when unavailable | Yield fields non-null `2016-06-01` to `2026-04-01` (`119` rows) |
+| `sentiment_7d` | `sentiment_sentimentscore` (`ASSET_7D`) | Runtime/training: latest asset 7-day sentiment <= `as_of` | Asset-level news tone signal | Fills to `0.0` when unavailable | `2001-07-24` to `2026-04-25` |
+| `sentiment_7d_avg_20d` | `sentiment_sentimentscore` (`ASSET_7D`) | Runtime: 20-day aggregate query; training: 20-day rolling mean after as-of merge | Smoothed sentiment regime | Fills to `0.0` when unavailable | `2001-07-24` to `2026-04-25` |
+| `rsi_x_relative_volume_5d` | Runtime-engineered from OHLCV features | `_build_interaction_features()` | Captures oversold/overbought state under abnormal volume | Inherits constituent fallbacks | Effective range inherits `rsi` and `relative_volume_5d`: `2001-07-24` to `2026-04-24` |
+| `rsi_x_macro_phase` | Runtime-engineered from OHLCV + macro | `_build_interaction_features()` | Technical signal conditioned on macro regime | Inherits constituent fallbacks | Effective range inherits `rsi` plus macro fallback behavior |
+| `factor_composite_x_sentiment` | Runtime-engineered from factor + sentiment | `_build_interaction_features()` | Joint bottom-score and news-tone interaction | Inherits constituent fallbacks | Effective range inherits `factor_composite` and `sentiment_7d`: `2001-07-24` to `2026-04-24/25` |
+| `northbound_flow_x_mom_5d` | Runtime-engineered from neutral placeholder + OHLCV | `_build_interaction_features()` | Artifact-compatible interaction term | Inherits constant `northbound_flow=0.5` and momentum fallback | Kept only because active artifacts include the feature; DB/API northbound score was removed |
+| `pe_percentile_x_macro_phase` | Runtime-engineered from factor + macro | `_build_interaction_features()` | Valuation conditioned on macro regime | Inherits constituent fallbacks | Effective range inherits populated factor and macro snapshots; PE nulls still fall back to `0.5` |
+
+Current implementation note:
+- Fundamental, moneyflow, margin, factor-score, macro, sentiment, and LightGBM prediction history have been backfilled for the current v0.1.9 release window.
+- `northbound_flow` remains as a neutral `0.5` feature only for LightGBM artifact compatibility. It is no longer stored on `FactorScore`, exposed in the dashboard DTO, or stored in per-stock capital-flow snapshots.
 
 #### Training process
 1. Build feature matrix for training window.
 2. Build labels per horizon.
 3. Align labels to feature rows.
-4. Prune historically weak features when available.
+4. Prune historically weak features using recent feature-importance history when available.
 5. Standardize features with `StandardScaler`.
 6. Train LightGBM multiclass booster.
-7. Calibrate probabilities (`sigmoid` when possible; identity fallback).
+7. Calibrate probabilities (`sigmoid` for sklearn-style estimators when available; `identity` fallback for the native booster).
 8. Save artifact files + DB metadata + feature importance snapshots.
 9. Refresh ensemble weights based on latest metrics.
+
+Current active artifact snapshot:
+- Training window: `2016-06-01` to `2024-12-31`
+- Training samples: `548605` for each active horizon artifact
+- 3d artifact: `lgb-3d-2024-12-31`, accuracy `0.569238`, features `37`
+- 7d artifact: `lgb-7d-2024-12-31`, accuracy `0.513034`, features `37`
+- 30d artifact: `lgb-30d-2024-12-31`, accuracy `0.593609`, features `35`
+- Current calibration metadata on all active artifacts: `identity`
+
+Registry note:
+- Per-horizon deployment state should be read from `LightGBMModelArtifact`.
+- `ModelVersion(model_type=LIGHTGBM)` is refreshed during training, but it does not retain one simultaneously active row per horizon.
 
 #### Hyperparameters (current)
 - objective: `multiclass`
@@ -158,6 +261,7 @@ Current implementation status:
 - LSTM now has a real retraining pipeline implemented with PyTorch.
 - Training supports horizons `3/7/30`, user-configurable sequence length, chunked feature extraction, and capped per-horizon sequence sampling to keep memory stable on long windows.
 - Artifacts are persisted under `models/lstm/<version>/` (`3d_model.pt`, `7d_model.pt`, `30d_model.pt`, and `summary.json`) and the active `ModelVersion` row is updated via `update_or_create`.
+- Each successful LSTM retrain now also refreshes the active ensemble weights against the current active LightGBM artifacts.
 
 Model structure and training flow:
 - Sequence model: 2-layer LSTM (`hidden_size=64`, `dropout=0.2`) + MLP classifier head.
@@ -169,18 +273,18 @@ Current active LSTM registry snapshot:
 - id: `15`
 - version: `lstm-2024-12-31`
 - status: `READY`
-- trained_at: `2026-04-18` (latest retrain run)
-- training window: `2000-01-01` to `2024-12-31`
+- trained_at: `2026-04-25` (latest retrain run)
+- training window: `2016-06-01` to `2024-12-31`
 - artifact_path: `/app/models/lstm/lstm-2024-12-31`
 - metrics:
-  - aggregate accuracy: `0.425694`
-  - 3d accuracy: `0.471250`
-  - 7d accuracy: `0.365417`
-  - 30d accuracy: `0.440417`
+  - aggregate accuracy: `0.465278`
+  - 3d accuracy: `0.547333`
+  - 7d accuracy: `0.428000`
+  - 30d accuracy: `0.420500`
 
 Formula note:
 - Command example:
-  - `docker exec finance_analysis_django python manage.py rebuild_lstm_pipeline --skip-backfill --start-date 2000-01-01 --end-date 2024-12-31 --horizons 3,7,30 --sequence-length 20 --asset-chunk-size 40 --max-samples-per-horizon 12000`
+  - `docker exec finance_analysis_django python manage.py rebuild_lstm_pipeline --skip-backfill --start-date 2016-06-01 --end-date 2024-12-31 --horizons 3,7,30 --sequence-length 20 --asset-chunk-size 60 --max-samples-per-horizon 30000`
 
 ### 5) Active Model Registry Snapshot
 
@@ -188,17 +292,18 @@ Formula note:
 
 | Horizon | Version | Trained At (UTC) | Training Window | Samples | Features | Accuracy |
 | --- | --- | --- | --- | ---: | ---: | ---: |
-| 3d | `lgb-3d-2026-04-15` | `2026-04-16 08:56:36` | `2016-04-16` to `2026-04-15` | 363854 | 39 | 0.585669 |
-| 7d | `lgb-7d-2026-04-15` | `2026-04-16 08:57:02` | `2016-04-16` to `2026-04-15` | 598499 | 39 | 0.468084 |
-| 30d | `lgb-30d-2026-04-15` | `2026-04-16 08:57:22` | `2016-04-16` to `2026-04-15` | 358127 | 39 | 0.481488 |
+| 3d | `lgb-3d-2024-12-31` | `2026-04-25 15:45:25` | `2016-06-01` to `2024-12-31` | 548605 | 37 | 0.569238 |
+| 7d | `lgb-7d-2024-12-31` | `2026-04-25 15:45:42` | `2016-06-01` to `2024-12-31` | 548605 | 37 | 0.513034 |
+| 30d | `lgb-30d-2024-12-31` | `2026-04-25 15:45:59` | `2016-06-01` to `2024-12-31` | 548605 | 35 | 0.593609 |
 
 #### Active ensemble model version
-- id: `9`
-- version: `ensemble-2026-04-18`
+- id: `14`
+- version: `ensemble-2024-12-31`
 - status: `READY`
-- trained_at: `2026-04-18 04:00:00+00:00`
-- training window: `2021-04-18` to `2026-04-18`
-- metrics: `accuracy=0.5`, `f1_macro=0.5`
+- trained_at: `2026-04-25 15:47:28+00:00`
+- training window: `2016-06-01` to `2024-12-31`
+- metrics: `lightgbm_accuracy=0.558627`, `heuristic_accuracy=0.5`, `lstm_accuracy=0.465278`
+- implied registry weights from those metrics: `lightgbm=0.3666`, `lstm=0.3053`, `heuristic=0.3281`
 
 ### 6) Ensemble Weight Model
 
@@ -216,6 +321,10 @@ Latest snapshot (`2026-04-15`):
   - `lightgbm_accuracy = 0.511747...`
   - `heuristic_accuracy = 0.5`
   - `lstm_accuracy = 0.0`
+
+Registry nuance:
+- The active ensemble `ModelVersion` is dated to the retrain window end (`2024-12-31`) and carries the latest retrain metrics for LightGBM/LSTM/heuristic blending.
+- The latest `EnsembleWeightSnapshot` row is a chronological monitoring snapshot dated `2026-04-15`; it reflects the 60-day basis available for that date, not the latest retrain artifact window.
 
 ### 7) Trade Decision Model
 

@@ -1,6 +1,7 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const AUTH_MODE_KEY = 'finance_auth_persistence'
 const JWT_KEY = 'finance_jwt'
+const JWT_REFRESH_KEY = 'finance_jwt_refresh'
 const API_KEY = 'finance_api_key'
 
 export class ApiRequestError extends Error {
@@ -75,7 +76,6 @@ export interface DashboardStockRowDto {
   pe_percentile_score: number | null
   pb_percentile_score: number | null
   roe_trend_score: number | null
-  northbound_flow_score: number | null
   main_force_flow_score: number | null
   margin_flow_score: number | null
   technical_reversal_score: number | null
@@ -253,6 +253,8 @@ export interface BacktestRunDto {
   name: string
   strategy_type: string
   status: string
+  start_date: string
+  end_date: string
   initial_capital: number
   final_value: number | null
   total_return: number | null
@@ -297,6 +299,7 @@ export interface BacktestCreatePayload {
     holding_period_days: number
     capital_fraction_per_entry: number
     candidate_mode?: 'top_n' | 'trade_score'
+    top_n_metric?: 'trade_score' | 'up_prob_3d' | 'up_prob_7d' | 'up_prob_30d'
     trade_score_scope?: 'independent' | 'combined'
     trade_score_threshold?: number
     max_positions?: number
@@ -373,8 +376,21 @@ export function getAuthTokenForSocket(): string {
   return readAuthToken()
 }
 
+export async function getSocketAuthToken(): Promise<string> {
+  const current = readAuthToken()
+  if (current) {
+    return current
+  }
+  const refreshed = await refreshJwtAccessToken()
+  return refreshed ?? ''
+}
+
 export function readApiKey(): string {
   return sessionStorage.getItem(API_KEY) ?? localStorage.getItem(API_KEY) ?? ''
+}
+
+export function readRefreshToken(): string {
+  return sessionStorage.getItem(JWT_REFRESH_KEY) ?? localStorage.getItem(JWT_REFRESH_KEY) ?? ''
 }
 
 export function readAuthPersistenceMode(): AuthPersistenceMode {
@@ -385,17 +401,21 @@ export function readAuthPersistenceMode(): AuthPersistenceMode {
   return 'local'
 }
 
-export function saveAuthSettings(token: string, apiKey: string, mode: AuthPersistenceMode): void {
+export function saveAuthSettings(token: string, apiKey: string, mode: AuthPersistenceMode, refreshToken = ''): void {
   localStorage.removeItem(JWT_KEY)
+  localStorage.removeItem(JWT_REFRESH_KEY)
   localStorage.removeItem(API_KEY)
   sessionStorage.removeItem(JWT_KEY)
+  sessionStorage.removeItem(JWT_REFRESH_KEY)
   sessionStorage.removeItem(API_KEY)
 
   if (mode === 'local') {
     if (token.trim()) localStorage.setItem(JWT_KEY, token.trim())
+    if (refreshToken.trim()) localStorage.setItem(JWT_REFRESH_KEY, refreshToken.trim())
     if (apiKey.trim()) localStorage.setItem(API_KEY, apiKey.trim())
   } else if (mode === 'session') {
     if (token.trim()) sessionStorage.setItem(JWT_KEY, token.trim())
+    if (refreshToken.trim()) sessionStorage.setItem(JWT_REFRESH_KEY, refreshToken.trim())
     if (apiKey.trim()) sessionStorage.setItem(API_KEY, apiKey.trim())
   }
 
@@ -404,13 +424,61 @@ export function saveAuthSettings(token: string, apiKey: string, mode: AuthPersis
 
 export function clearAuthSettings(): void {
   localStorage.removeItem(JWT_KEY)
+  localStorage.removeItem(JWT_REFRESH_KEY)
   localStorage.removeItem(API_KEY)
   sessionStorage.removeItem(JWT_KEY)
+  sessionStorage.removeItem(JWT_REFRESH_KEY)
   sessionStorage.removeItem(API_KEY)
 }
 
 export function hasAnyAuthCredential(): boolean {
   return Boolean(readAuthToken() || readApiKey())
+}
+
+function persistAccessToken(accessToken: string): void {
+  const mode = readAuthPersistenceMode()
+  const refreshToken = readRefreshToken()
+  const apiKey = readApiKey()
+  saveAuthSettings(accessToken, apiKey, mode, refreshToken)
+}
+
+async function refreshJwtAccessToken(): Promise<string | null> {
+  const refreshToken = readRefreshToken()
+  if (!refreshToken) return null
+
+  const response = await fetch(`${API_BASE}/auth/token/refresh/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ refresh: refreshToken }),
+  })
+
+  if (!response.ok) {
+    return null
+  }
+
+  const payload = (await response.json()) as { access?: string }
+  const access = payload.access?.trim()
+  if (!access) return null
+  persistAccessToken(access)
+  return access
+}
+
+async function fetchWithAuthRefresh(url: string, init: RequestInit): Promise<Response> {
+  let response = await fetch(url, init)
+  if (response.status !== 401) return response
+
+  const nextAccess = await refreshJwtAccessToken()
+  if (!nextAccess) return response
+
+  const retryHeaders = new Headers(init.headers as HeadersInit | undefined)
+  retryHeaders.set('Authorization', `Bearer ${nextAccess}`)
+  response = await fetch(url, {
+    ...init,
+    headers: retryHeaders,
+  })
+  return response
 }
 
 export async function obtainJwtToken(username: string, password: string): Promise<string> {
@@ -431,6 +499,26 @@ export async function obtainJwtToken(username: string, password: string): Promis
     throw new Error('No access token returned')
   }
   return data.access
+}
+
+export async function obtainJwtTokenPair(username: string, password: string): Promise<{ access: string; refresh: string }> {
+  const response = await fetch(`${API_BASE}/auth/token/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ username, password }),
+  })
+
+  if (!response.ok) {
+    throw await toApiRequestError(response, 'AUTH token failed')
+  }
+
+  const data = (await response.json()) as { access?: string; refresh?: string }
+  if (!data.access || !data.refresh) {
+    throw new Error('No access or refresh token returned')
+  }
+  return { access: data.access, refresh: data.refresh }
 }
 
 export async function createDeveloperApiKey(name = 'frontend-ui', jwtToken?: string): Promise<string> {
@@ -462,7 +550,7 @@ export async function createDeveloperApiKey(name = 'frontend-ui', jwtToken?: str
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithAuthRefresh(`${API_BASE}${path}`, {
     method: 'GET',
     headers: getHeaders(),
   })
@@ -475,7 +563,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body: object): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithAuthRefresh(`${API_BASE}${path}`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(body),
@@ -609,7 +697,7 @@ export async function fetchOhlcvByAsset(assetId: number, limit = 120): Promise<O
   let nextUrl: string | null = `${API_BASE}/ohlcv/?asset=${assetId}&ordering=-date`
 
   while (nextUrl && rows.length < limit) {
-    const response = await fetch(nextUrl, { headers: getHeaders() })
+    const response = await fetchWithAuthRefresh(nextUrl, { headers: getHeaders() })
     if (!response.ok) {
       throw await toApiRequestError(response, 'API request failed')
     }

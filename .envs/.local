@@ -1,3 +1,0 @@
-DATABASE_URL=postgres://finance_analysis:finance_analysis@postgres:5432/finance_analysis
-DJANGO_READ_DOT_ENV_FILE=True
-DJANGO_SECRET_KEY=django-insecure-local-secret-key

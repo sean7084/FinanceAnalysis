@@ -74,7 +74,6 @@ class Phase13SentimentTests(TestCase):
         )
         CapitalFlowSnapshot.objects.create(
             asset=self.asset, date=d,
-            northbound_net_5d=Decimal('1000000'),
             main_force_net_5d=Decimal('800000'),
             margin_balance_change_5d=Decimal('200000'),
         )

@@ -1,5 +1,5 @@
 from bisect import bisect_left
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from statistics import mean, pstdev
 
@@ -11,12 +11,12 @@ from django.utils import timezone
 from apps.factors.models import FactorScore
 from apps.markets.models import OHLCV
 from apps.macro.models import MarketContext
+from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
-from apps.prediction.models import PredictionResult
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
 from apps.prediction.tasks_lightgbm import _extract_features_for_asset, _load_model_artifacts
+from apps.prediction.tasks_lstm import _predict_with_lstm
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
-from apps.prediction.models_lightgbm import LightGBMPrediction
 from .models import BacktestRun, BacktestTrade
 
 
@@ -32,6 +32,12 @@ WEEKDAY_NAME_TO_INDEX = {
     'FRI': 4,
 }
 VALID_TRADE_SCORE_SCOPES = {'independent', 'combined'}
+TOP_N_METRIC_HORIZON_MAP = {
+    'up_prob_3d': 3,
+    'up_prob_7d': 7,
+    'up_prob_30d': 30,
+}
+BACKTEST_CHUNK_TRADING_DAYS = 20
 
 
 def _to_decimal_or_none(value):
@@ -83,7 +89,7 @@ def _resolve_macro_context_for_date(dt, cache):
 
     if context is None:
         context = (
-            MarketContext.objects.filter(context_key='current', starts_at__lte=dt)
+            MarketContext.objects.filter(context_key='current', is_active=True, starts_at__lte=dt)
             .order_by('-starts_at', '-updated_at')
             .first()
         )
@@ -122,9 +128,24 @@ def _candidate_mode(run):
     return mode if mode in {'top_n', 'trade_score'} else 'top_n'
 
 
+def _top_n_metric(run, fallback_horizon):
+    params = run.parameters or {}
+    metric = str(params.get('top_n_metric') or '').lower()
+    if metric not in {'trade_score', 'up_prob_3d', 'up_prob_7d', 'up_prob_30d'}:
+        metric = {
+            3: 'up_prob_3d',
+            7: 'up_prob_7d',
+            30: 'up_prob_30d',
+        }.get(int(fallback_horizon), 'up_prob_7d')
+    metric_horizon = TOP_N_METRIC_HORIZON_MAP.get(metric, int(fallback_horizon))
+    return metric, metric_horizon
+
+
 def _max_positions(run):
     params = run.parameters or {}
-    return max(1, int(params.get('max_positions', params.get('top_n', 5))))
+    if _candidate_mode(run) == 'trade_score':
+        return max(1, int(params.get('max_positions', params.get('top_n', 5))))
+    return 10 ** 6
 
 
 def _trade_score_threshold(run):
@@ -139,56 +160,159 @@ def _enable_stop_target_exit(run):
     return bool((run.parameters or {}).get('enable_stop_target_exit', False))
 
 
-def _build_prediction_store_map(dt, horizon, source):
-    if source == 'lightgbm':
-        rows = (
-            LightGBMPrediction.objects.filter(date=dt, horizon_days=horizon)
-            .order_by('asset_id', '-created_at')
-            .values(
-                'asset_id',
-                'up_probability',
-                'flat_probability',
-                'down_probability',
-                'confidence',
-                'predicted_label',
-                'trade_score',
-                'target_price',
-                'stop_loss_price',
-                'suggested',
-                'model_artifact_id',
-            )
-        )
-    else:
-        model_type_map = {
-            'heuristic': ModelVersion.ModelType.ENSEMBLE,
-            'lstm': ModelVersion.ModelType.LSTM,
-        }
-        model_type = model_type_map.get(source, ModelVersion.ModelType.ENSEMBLE)
-        rows = (
-            PredictionResult.objects.filter(
-                date=dt,
-                horizon_days=horizon,
-                model_version__model_type=model_type,
-            )
-            .order_by('asset_id', '-created_at')
-            .values(
-                'asset_id',
-                'up_probability',
-                'flat_probability',
-                'down_probability',
-                'confidence',
-                'predicted_label',
-                'trade_score',
-                'target_price',
-                'stop_loss_price',
-                'suggested',
-                'model_version_id',
-            )
-        )
+def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache):
+    cache_key = ('lightgbm_prediction', int(asset_id), dt.isoformat(), int(horizon))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    runtime = _get_lightgbm_runtime(horizon, cache)
+    model_artifact = runtime['model_artifact']
+    artifacts = runtime['artifacts']
+    feature_names = runtime['feature_names']
+
+    features_dict = _extract_features_for_asset(asset_id, dt)
+    X = np.array([features_dict.get(name, 0.0) for name in feature_names]).reshape(1, -1)
+    X_scaled = artifacts['scaler'].transform(X)
+    calibrated_probs = artifacts['calibrator'].predict_proba(X_scaled)[0]
+    down_prob, flat_prob, up_prob = [Decimal(str(value)) for value in calibrated_probs]
+    confidence = max(up_prob, flat_prob, down_prob)
+    predicted_label = ['DOWN', 'FLAT', 'UP'][int(np.argmax(calibrated_probs))]
+    trade_decision = estimate_trade_decision(
+        asset_id=asset_id,
+        as_of=dt,
+        horizon_days=horizon,
+        up_probability=up_prob,
+        predicted_label=predicted_label,
+    )
+
+    payload = {
+        'up_probability': up_prob,
+        'flat_probability': flat_prob,
+        'down_probability': down_prob,
+        'confidence': confidence,
+        'predicted_label': predicted_label,
+        'trade_score': trade_decision.get('trade_score'),
+        'target_price': trade_decision.get('target_price'),
+        'stop_loss_price': trade_decision.get('stop_loss_price'),
+        'suggested': bool(trade_decision.get('suggested') or False),
+        'model_artifact_id': model_artifact.id,
+        'model_version': model_artifact.version,
+        'generated_on_demand': True,
+    }
+    cache[cache_key] = payload
+    return payload
+
+
+def _build_lightgbm_prediction_map(dt, horizon, cache):
+    cache_key = ('lightgbm_prediction_map', dt.isoformat(), int(horizon))
+    if cache_key in cache:
+        return cache[cache_key]
 
     mapping = {}
-    for row in rows:
-        mapping.setdefault(row['asset_id'], row)
+    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
+        mapping[asset_id] = _predict_lightgbm_for_asset(asset_id, dt, horizon, cache)
+
+    cache[cache_key] = mapping
+    return mapping
+
+
+def _predict_heuristic_for_asset(asset_id, dt, horizon, cache):
+    cache_key = ('heuristic_prediction', int(asset_id), dt.isoformat(), int(horizon))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    model_context = _get_heuristic_model_context(cache)
+    features = _feature_snapshot(asset_id, dt)
+    up, flat, down = _probabilities_from_features(features, horizon, '')
+    predicted_label = _predicted_label(up, flat, down)
+    confidence = _confidence(up, flat, down)
+    trade_decision = estimate_trade_decision(
+        asset_id=asset_id,
+        as_of=dt,
+        horizon_days=horizon,
+        up_probability=up,
+        predicted_label=predicted_label,
+    )
+
+    payload = {
+        'up_probability': up,
+        'flat_probability': flat,
+        'down_probability': down,
+        'confidence': confidence,
+        'predicted_label': predicted_label,
+        'trade_score': trade_decision.get('trade_score'),
+        'target_price': trade_decision.get('target_price'),
+        'stop_loss_price': trade_decision.get('stop_loss_price'),
+        'suggested': bool(trade_decision.get('suggested') or False),
+        'model_version_id': model_context['model_version_id'],
+        'model_version': model_context['model_version'],
+        'generated_on_demand': True,
+    }
+    cache[cache_key] = payload
+    return payload
+
+
+def _build_heuristic_prediction_map(dt, horizon, cache):
+    cache_key = ('heuristic_prediction_map', dt.isoformat(), int(horizon))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    mapping = {}
+    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
+        mapping[asset_id] = _predict_heuristic_for_asset(asset_id, dt, horizon, cache)
+
+    cache[cache_key] = mapping
+    return mapping
+
+
+def _predict_lstm_for_asset(asset_id, dt, horizon, cache):
+    cache_key = ('lstm_prediction', int(asset_id), dt.isoformat(), int(horizon))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    runtime_cache = cache.setdefault('lstm_runtime_cache', {})
+    prediction = _predict_with_lstm(
+        asset_id=asset_id,
+        target_date=dt,
+        horizon_days=horizon,
+        cache=runtime_cache,
+    )
+    if prediction is None:
+        cache[cache_key] = None
+        return None
+
+    trade_decision = prediction.get('trade_decision') or {}
+    model_version = prediction.get('model_version')
+    payload = {
+        'up_probability': _d(prediction.get('up_probability', 0)),
+        'flat_probability': _d(prediction.get('flat_probability', 0)),
+        'down_probability': _d(prediction.get('down_probability', 0)),
+        'confidence': _d(prediction.get('confidence', 0)),
+        'predicted_label': prediction.get('predicted_label') or '',
+        'trade_score': trade_decision.get('trade_score'),
+        'target_price': trade_decision.get('target_price'),
+        'stop_loss_price': trade_decision.get('stop_loss_price'),
+        'suggested': bool(trade_decision.get('suggested') or False),
+        'model_version_id': getattr(model_version, 'id', None),
+        'model_version': getattr(model_version, 'version', None),
+        'generated_on_demand': True,
+    }
+    cache[cache_key] = payload
+    return payload
+
+
+def _build_lstm_prediction_map(dt, horizon, cache):
+    cache_key = ('lstm_prediction_map', dt.isoformat(), int(horizon))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    mapping = {}
+    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
+        payload = _predict_lstm_for_asset(asset_id, dt, horizon, cache)
+        if payload is not None:
+            mapping[asset_id] = payload
+
+    cache[cache_key] = mapping
     return mapping
 
 
@@ -201,8 +325,9 @@ def _build_trade_score_candidates(run, dt, horizon, up_threshold, max_positions,
     if cache_key in cache:
         return cache[cache_key]
 
-    heuristic_map = _build_prediction_store_map(dt, horizon, 'heuristic')
-    lightgbm_map = _build_prediction_store_map(dt, horizon, 'lightgbm')
+    heuristic_map = _build_heuristic_prediction_map(dt, horizon, cache)
+    lightgbm_map = _build_lightgbm_prediction_map(dt, horizon, cache) if scope == 'combined' or prediction_source == 'lightgbm' else {}
+    lstm_map = _build_lstm_prediction_map(dt, horizon, cache) if prediction_source == 'lstm' else {}
     selected_rows = []
 
     if scope == 'combined':
@@ -234,13 +359,14 @@ def _build_trade_score_candidates(run, dt, horizon, up_threshold, max_positions,
                     'lightgbm_trade_score': float(l_row['trade_score']) if l_row and l_row.get('trade_score') is not None else None,
                     'target_price': float(h_row['target_price']) if h_row and h_row.get('target_price') is not None else (float(l_row['target_price']) if l_row and l_row.get('target_price') is not None else None),
                     'stop_loss_price': float(h_row['stop_loss_price']) if h_row and h_row.get('stop_loss_price') is not None else (float(l_row['stop_loss_price']) if l_row and l_row.get('stop_loss_price') is not None else None),
+                    'generated_on_demand': True,
                 },
             })
     else:
         if prediction_source == 'lightgbm':
             source_map = lightgbm_map
         elif prediction_source == 'lstm':
-            source_map = _build_prediction_store_map(dt, horizon, 'lstm')
+            source_map = lstm_map
         else:
             source_map = heuristic_map
         for asset_id, row in source_map.items():
@@ -266,7 +392,10 @@ def _build_trade_score_candidates(run, dt, horizon, up_threshold, max_positions,
                 'target_price': float(row['target_price']) if row.get('target_price') is not None else None,
                 'stop_loss_price': float(row['stop_loss_price']) if row.get('stop_loss_price') is not None else None,
                 'suggested': bool(row.get('suggested') or False),
-                'generated_on_demand': False,
+                'model_version_id': row.get('model_version_id'),
+                'model_version': row.get('model_version'),
+                'model_artifact_id': row.get('model_artifact_id'),
+                'generated_on_demand': bool(row.get('generated_on_demand', False)),
             }
             selected_rows.append({
                 'asset_id': asset_id,
@@ -276,6 +405,58 @@ def _build_trade_score_candidates(run, dt, horizon, up_threshold, max_positions,
 
     selected_rows.sort(key=lambda row: row['rank_value'], reverse=True)
     rows = selected_rows[:max_positions]
+    cache[cache_key] = rows
+    return rows
+
+
+def _build_top_n_trade_score_candidates(run, dt, horizon, up_threshold, top_n, cache):
+    prediction_source = _prediction_source(run)
+    cache_key = ('top_n_trade_score_candidates', prediction_source, dt.isoformat(), horizon, str(up_threshold), top_n)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    if prediction_source == 'lightgbm':
+        source_map = _build_lightgbm_prediction_map(dt, horizon, cache)
+    elif prediction_source == 'lstm':
+        source_map = _build_lstm_prediction_map(dt, horizon, cache)
+    else:
+        source_map = _build_heuristic_prediction_map(dt, horizon, cache)
+
+    selected_rows = []
+    for asset_id, row in source_map.items():
+        up_prob = _to_decimal_or_none(row.get('up_probability'))
+        trade_score = _to_decimal_or_none(row.get('trade_score'))
+        if up_prob is None or trade_score is None:
+            continue
+        if up_prob < up_threshold:
+            continue
+
+        selected_rows.append({
+            'asset_id': asset_id,
+            'rank_value': trade_score,
+            'signal_payload': {
+                'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                'prediction_source': prediction_source,
+                'candidate_mode': 'top_n',
+                'top_n_metric': 'trade_score',
+                'horizon_days': horizon,
+                'up_probability': float(up_prob),
+                'flat_probability': float(row.get('flat_probability') or 0),
+                'down_probability': float(row.get('down_probability') or 0),
+                'confidence': float(row.get('confidence') or 0),
+                'predicted_label': row.get('predicted_label') or '',
+                'trade_score': float(trade_score),
+                'target_price': float(row['target_price']) if row.get('target_price') is not None else None,
+                'stop_loss_price': float(row['stop_loss_price']) if row.get('stop_loss_price') is not None else None,
+                'suggested': bool(row.get('suggested') or False),
+                'model_artifact_id': row.get('model_artifact_id'),
+                'model_version': row.get('model_version'),
+                'generated_on_demand': bool(row.get('generated_on_demand', False)),
+            },
+        })
+
+    selected_rows.sort(key=lambda row: row['rank_value'], reverse=True)
+    rows = selected_rows[:top_n]
     cache[cache_key] = rows
     return rows
 
@@ -424,15 +605,11 @@ def _get_heuristic_model_context(cache):
 
 
 def _build_heuristic_candidates(dt, horizon, up_threshold, top_n, cache):
-    model_context = _get_heuristic_model_context(cache)
     rows = []
-    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
-        features = _feature_snapshot(asset_id, dt)
-        up, flat, down = _probabilities_from_features(features, horizon, '')
+    for asset_id, payload in _build_heuristic_prediction_map(dt, horizon, cache).items():
+        up = _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0
         if up < up_threshold:
             continue
-        predicted_label = _predicted_label(up, flat, down)
-        confidence = _confidence(up, flat, down)
         rows.append({
             'asset_id': asset_id,
             'rank_value': up,
@@ -441,12 +618,16 @@ def _build_heuristic_candidates(dt, horizon, up_threshold, top_n, cache):
                 'prediction_source': 'heuristic',
                 'horizon_days': horizon,
                 'up_probability': float(up),
-                'flat_probability': float(flat),
-                'down_probability': float(down),
-                'confidence': float(confidence),
-                'predicted_label': predicted_label,
-                'model_version_id': model_context['model_version_id'],
-                'model_version': model_context['model_version'],
+                'flat_probability': float(payload.get('flat_probability') or 0),
+                'down_probability': float(payload.get('down_probability') or 0),
+                'confidence': float(payload.get('confidence') or 0),
+                'predicted_label': payload.get('predicted_label') or '',
+                'trade_score': float(payload['trade_score']) if payload.get('trade_score') is not None else None,
+                'target_price': float(payload['target_price']) if payload.get('target_price') is not None else None,
+                'stop_loss_price': float(payload['stop_loss_price']) if payload.get('stop_loss_price') is not None else None,
+                'suggested': bool(payload.get('suggested') or False),
+                'model_version_id': payload.get('model_version_id'),
+                'model_version': payload.get('model_version'),
                 'generated_on_demand': True,
             },
         })
@@ -550,41 +731,56 @@ def _pick_candidates(run, dt, cache):
         return rows
 
     prediction_source = _prediction_source(run)
-    cache_key = ('prediction_candidates', prediction_source, dt.isoformat(), horizon, str(up_threshold), top_n)
+    top_n_metric, metric_horizon = _top_n_metric(run, horizon)
+    cache_key = ('prediction_candidates', prediction_source, top_n_metric, dt.isoformat(), metric_horizon, str(up_threshold), top_n)
     if cache_key in cache:
         rows = cache[cache_key]
+    elif top_n_metric == 'trade_score':
+        rows = _build_top_n_trade_score_candidates(run, dt, metric_horizon, up_threshold, top_n, cache)
+        cache[cache_key] = rows
     elif prediction_source == 'lightgbm':
-        rows = _build_lightgbm_candidates(dt, horizon, up_threshold, top_n, cache)
+        rows = _build_lightgbm_candidates(dt, metric_horizon, up_threshold, top_n, cache)
+        for row in rows:
+            row['signal_payload']['top_n_metric'] = top_n_metric
+            row['signal_payload']['candidate_mode'] = 'top_n'
         cache[cache_key] = rows
     elif prediction_source == 'lstm':
-        rows = [
-            {
+        rows = []
+        for asset_id, payload in _build_lstm_prediction_map(dt, metric_horizon, cache).items():
+            rank_value = _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0
+            if rank_value < up_threshold:
+                continue
+            rows.append({
                 'asset_id': asset_id,
-                'rank_value': _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0,
+                'rank_value': rank_value,
                 'signal_payload': {
                     'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
                     'prediction_source': 'lstm',
-                    'horizon_days': horizon,
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': top_n_metric,
+                    'horizon_days': metric_horizon,
                     'up_probability': float(payload.get('up_probability') or 0),
                     'flat_probability': float(payload.get('flat_probability') or 0),
                     'down_probability': float(payload.get('down_probability') or 0),
                     'confidence': float(payload.get('confidence') or 0),
                     'predicted_label': payload.get('predicted_label') or '',
+                    'trade_score': float(payload['trade_score']) if payload.get('trade_score') is not None else None,
                     'target_price': float(payload['target_price']) if payload.get('target_price') is not None else None,
                     'stop_loss_price': float(payload['stop_loss_price']) if payload.get('stop_loss_price') is not None else None,
                     'suggested': bool(payload.get('suggested') or False),
                     'model_version_id': payload.get('model_version_id'),
-                    'generated_on_demand': False,
+                    'model_version': payload.get('model_version'),
+                    'generated_on_demand': True,
                 },
-            }
-            for asset_id, payload in _build_prediction_store_map(dt, horizon, 'lstm').items()
-            if (_to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0) >= up_threshold
-        ]
+            })
         rows.sort(key=lambda row: row['rank_value'], reverse=True)
         rows = rows[:top_n]
         cache[cache_key] = rows
     else:
-        rows = _build_heuristic_candidates(dt, horizon, up_threshold, top_n, cache)
+        rows = _build_heuristic_candidates(dt, metric_horizon, up_threshold, top_n, cache)
+        for row in rows:
+            row['signal_payload']['top_n_metric'] = top_n_metric
+            row['signal_payload']['candidate_mode'] = 'top_n'
         cache[cache_key] = rows
 
     if not macro_context_enabled or not rows:
@@ -606,7 +802,7 @@ def _pick_candidates(run, dt, cache):
             'signal_payload': signal_payload,
         })
     adjusted_rows.sort(key=lambda item: item['rank_value'], reverse=True)
-    return adjusted_rows[:max_positions]
+    return adjusted_rows[:top_n]
 
 
 def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_rate, slippage_bps, closed_pnls, enable_stop_target_exit):
@@ -659,9 +855,15 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
     return cash, remaining_positions
 
 
-def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash, initial_capital, capital_fraction, price_map, fee_rate, slippage_bps, open_positions):
+def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash, initial_capital, capital_fraction, price_map, fee_rate, slippage_bps, open_positions, max_positions):
     if not candidate_rows:
         return cash
+
+    available_slots = max(0, int(max_positions) - len(open_positions))
+    if available_slots <= 0:
+        return cash
+
+    candidate_rows = candidate_rows[:available_slots]
 
     deployable_capital = min(cash, initial_capital * capital_fraction)
     if deployable_capital <= 0:
@@ -755,21 +957,99 @@ def _calc_sharpe(daily_returns):
     return _clamp(sharpe, Decimal('-10'), Decimal('10'))
 
 
+def _serialize_open_positions(open_positions):
+    rows = []
+    for position in open_positions:
+        rows.append({
+            **position,
+            'quantity': str(position['quantity']),
+            'buy_amount': str(position['buy_amount']),
+            'buy_fee': str(position['buy_fee']),
+            'buy_price': str(position['buy_price']),
+            'exit_date': position['exit_date'].isoformat(),
+            'target_price': str(position['target_price']) if position.get('target_price') is not None else None,
+            'stop_loss_price': str(position['stop_loss_price']) if position.get('stop_loss_price') is not None else None,
+        })
+    return rows
+
+
+def _deserialize_open_positions(rows):
+    positions = []
+    for position in rows or []:
+        positions.append({
+            **position,
+            'quantity': _d(position['quantity']),
+            'buy_amount': _d(position['buy_amount']),
+            'buy_fee': _d(position['buy_fee']),
+            'buy_price': _d(position['buy_price']),
+            'exit_date': date.fromisoformat(position['exit_date']),
+            'target_price': _d(position['target_price']) if position.get('target_price') is not None else None,
+            'stop_loss_price': _d(position['stop_loss_price']) if position.get('stop_loss_price') is not None else None,
+        })
+    return positions
+
+
+def _load_runtime_state(run):
+    raw_state = (run.report or {}).get('runtime_state')
+    if not raw_state:
+        return None
+
+    return {
+        'current_index': int(raw_state.get('current_index', 0)),
+        'cash': _d(raw_state.get('cash', run.initial_capital)),
+        'equity_curve': [_d(value) for value in raw_state.get('equity_curve', [])],
+        'closed_pnls': [_d(value) for value in raw_state.get('closed_pnls', [])],
+        'open_positions': _deserialize_open_positions(raw_state.get('open_positions', [])),
+        'macro_monthly_report': raw_state.get('macro_monthly_report', {}),
+    }
+
+
+def _save_runtime_state(run, state, total_trading_days):
+    report = dict(run.report or {})
+    report['runtime_state'] = {
+        'current_index': state['current_index'],
+        'cash': str(state['cash']),
+        'equity_curve': [str(value) for value in state['equity_curve']],
+        'closed_pnls': [str(value) for value in state['closed_pnls']],
+        'open_positions': _serialize_open_positions(state['open_positions']),
+        'macro_monthly_report': state['macro_monthly_report'],
+    }
+    report['progress'] = {
+        'processed_trading_days': state['current_index'],
+        'total_trading_days': total_trading_days,
+    }
+    run.report = report
+
+
+def _clear_runtime_state(report):
+    cleaned_report = dict(report or {})
+    cleaned_report.pop('runtime_state', None)
+    cleaned_report.pop('progress', None)
+    return cleaned_report
+
+
 @shared_task(soft_time_limit=1800, time_limit=2100)
 def run_backtest(backtest_run_id):
     run = BacktestRun.objects.filter(id=backtest_run_id).first()
     if not run:
         return f'Backtest run not found: {backtest_run_id}'
 
-    run.status = BacktestRun.Status.RUNNING
-    run.error_message = ''
-    run.started_at = timezone.now()
-    run.completed_at = None
-    run.save(update_fields=['status', 'error_message', 'started_at', 'completed_at', 'updated_at'])
+    runtime_state = _load_runtime_state(run)
+    if runtime_state is None:
+        run.status = BacktestRun.Status.RUNNING
+        run.error_message = ''
+        run.started_at = timezone.now()
+        run.completed_at = None
+        run.save(update_fields=['status', 'error_message', 'started_at', 'completed_at', 'updated_at'])
+    elif run.status != BacktestRun.Status.RUNNING or run.completed_at is not None:
+        run.status = BacktestRun.Status.RUNNING
+        run.completed_at = None
+        run.save(update_fields=['status', 'completed_at', 'updated_at'])
 
     try:
-        with transaction.atomic():
-            run.trades.all().delete()
+        if runtime_state is None:
+            with transaction.atomic():
+                run.trades.all().delete()
 
         trading_dates = _get_trading_dates(run.start_date, run.end_date)
         if len(trading_dates) < 2:
@@ -781,16 +1061,28 @@ def run_backtest(backtest_run_id):
         entry_weekdays = _entry_weekdays(run)
         holding_period_days = _holding_period_days(run)
         capital_fraction = _capital_fraction_per_entry(run, entry_weekdays)
+        max_positions = _max_positions(run)
         candidate_cache = {}
         macro_monthly_report = {}
         stop_target_exit_enabled = _enable_stop_target_exit(run)
 
-        cash = _d(run.initial_capital)
-        equity_curve = []
-        closed_pnls = []
-        open_positions = []
+        if runtime_state is None:
+            current_index = 0
+            cash = _d(run.initial_capital)
+            equity_curve = []
+            closed_pnls = []
+            open_positions = []
+        else:
+            current_index = runtime_state['current_index']
+            cash = runtime_state['cash']
+            equity_curve = runtime_state['equity_curve']
+            closed_pnls = runtime_state['closed_pnls']
+            open_positions = runtime_state['open_positions']
+            macro_monthly_report = runtime_state['macro_monthly_report']
 
-        for current_date in trading_dates:
+        chunk_end = min(current_index + BACKTEST_CHUNK_TRADING_DAYS, len(trading_dates))
+
+        for current_date in trading_dates[current_index:chunk_end]:
             cash, open_positions = _close_positions_for_date(
                 run,
                 current_date,
@@ -834,9 +1126,28 @@ def run_backtest(backtest_run_id):
                         fee_rate,
                         slippage_bps,
                         open_positions,
+                        max_positions,
                     )
 
             equity_curve.append(_portfolio_equity(current_date, cash, open_positions, price_map))
+
+        if chunk_end < len(trading_dates):
+            _save_runtime_state(
+                run,
+                {
+                    'current_index': chunk_end,
+                    'cash': cash,
+                    'equity_curve': equity_curve,
+                    'closed_pnls': closed_pnls,
+                    'open_positions': open_positions,
+                    'macro_monthly_report': macro_monthly_report,
+                },
+                len(trading_dates),
+            )
+            run.cash = cash
+            run.save(update_fields=['cash', 'report', 'updated_at'])
+            run_backtest.delay(run.id)
+            return f'Backtest chunk queued for run_id={run.id}: {chunk_end}/{len(trading_dates)} trading days processed'
 
         final_mark_to_market = equity_curve[-1] if equity_curve else cash
         benchmark_equity_curve = _build_benchmark_equity_curve(trading_dates, price_map, run.initial_capital)
@@ -875,7 +1186,7 @@ def run_backtest(backtest_run_id):
         run.win_rate = _clamp(win_rate, DECIMAL_0, DECIMAL_1)
         run.total_trades = total_trades
         run.winning_trades = winning
-        run.report = {
+        run.report = _clear_runtime_state({
             'equity_curve': [float(v) for v in equity_curve],
             'num_trading_days': len(trading_dates),
             'strategy': run.strategy_type,
@@ -898,7 +1209,7 @@ def run_backtest(backtest_run_id):
                 'equity_curve': [float(v) for v in benchmark_equity_curve],
                 'total_return': float(benchmark_total_return),
             },
-        }
+        })
         run.completed_at = timezone.now()
         run.save()
         return f'Backtest completed for run_id={run.id}'

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getAuthTokenForSocket } from '../lib/api'
+import { getSocketAuthToken, hasAnyAuthCredential } from '../lib/api'
 
 export interface AlertMessage {
   id: string
@@ -9,6 +9,7 @@ export interface AlertMessage {
 }
 
 const SOCKET_URL = import.meta.env.VITE_ALERTS_WS_URL ?? 'ws://localhost:8000/ws/alerts/'
+const MAX_RECONNECT_ATTEMPTS = 5
 
 export function useAlertsSocket() {
   const [connected, setConnected] = useState(false)
@@ -23,8 +24,8 @@ export function useAlertsSocket() {
     let reconnectTimer: number | undefined
     let attempt = 0
 
-    const connect = () => {
-      const token = getAuthTokenForSocket()
+    const connect = async () => {
+      const token = await getSocketAuthToken()
       const url = token ? `${wsUrl}?token=${encodeURIComponent(token)}` : wsUrl
       ws = new WebSocket(url)
 
@@ -42,6 +43,12 @@ export function useAlertsSocket() {
           return
         }
         setConnected(false)
+
+        if (!hasAnyAuthCredential() || attempt >= MAX_RECONNECT_ATTEMPTS) {
+          setReconnecting(false)
+          return
+        }
+
         setReconnecting(true)
         const delay = Math.min(1000 * 2 ** attempt, 15000)
         attempt += 1

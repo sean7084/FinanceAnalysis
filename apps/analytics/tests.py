@@ -205,7 +205,6 @@ class Phase17DashboardStockApiTests(TestCase):
                 pe_percentile_score=Decimal('0.300000'),
                 pb_percentile_score=Decimal('0.400000'),
                 roe_trend_score=Decimal('0.600000'),
-                northbound_flow_score=Decimal('0.500000'),
                 main_force_flow_score=Decimal('0.550000'),
                 margin_flow_score=Decimal('0.450000'),
                 technical_reversal_score=Decimal('0.700000'),

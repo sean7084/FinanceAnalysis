@@ -36,8 +36,39 @@ def _safe_int(value, default=0):
         return default
 
 
+def _parse_tushare_date(value):
+    if value in (None, ''):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    parsed = pd.to_datetime(str(value), format='%Y%m%d', errors='coerce')
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(str(value), errors='coerce')
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _normalize_listing_status(value):
+    token = str(value or '').strip().upper()
+    if token == 'D':
+        return Asset.ListingStatus.DELISTED
+    return Asset.ListingStatus.ACTIVE
+
+
 @shared_task
-def sync_asset_history(stock_code, stock_name, market_code, force_floor_backfill=False):
+def sync_asset_history(
+    stock_code,
+    stock_name,
+    market_code,
+    force_floor_backfill=False,
+    list_date=None,
+    listing_status=Asset.ListingStatus.ACTIVE,
+):
     """
     Synchronizes historical data for a single stock.
     This is a worker task that processes one asset at a time.
@@ -53,6 +84,8 @@ def sync_asset_history(stock_code, stock_name, market_code, force_floor_backfill
 
         market_suffix = 'SH' if market_code == 'SSE' else 'SZ' if market_code == 'SZSE' else 'BJ'
         ts_code = f"{stock_code}.{market_suffix}"
+        resolved_list_date = _parse_tushare_date(list_date)
+        resolved_listing_status = _normalize_listing_status(listing_status)
 
         asset, created = Asset.objects.get_or_create(
             ts_code=ts_code,
@@ -60,11 +93,23 @@ def sync_asset_history(stock_code, stock_name, market_code, force_floor_backfill
                 'market': market,
                 'symbol': stock_code,
                 'name': stock_name,
+                'listing_status': resolved_listing_status,
+                'list_date': resolved_list_date,
             }
         )
 
         if created:
             print(f"Created new asset: {asset}")
+        else:
+            update_values = {}
+            if asset.listing_status != resolved_listing_status:
+                update_values['listing_status'] = resolved_listing_status
+            if resolved_list_date is not None and asset.list_date != resolved_list_date:
+                update_values['list_date'] = resolved_list_date
+            if update_values:
+                Asset.objects.filter(pk=asset.pk).update(**update_values)
+                for field_name, field_value in update_values.items():
+                    setattr(asset, field_name, field_value)
 
         floor_date = _historical_floor_date()
         latest = OHLCV.objects.filter(asset=asset).order_by('-date').first()
@@ -159,11 +204,15 @@ def sync_daily_a_shares():
         latest_df = weights_df[weights_df['trade_date'] == latest_trade_date].copy()
         latest_df = latest_df.drop_duplicates(subset=['con_code'])
 
-        basics_df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name')
-        name_map = {}
+        basics_df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name,list_date,list_status')
+        basic_map = {}
         if basics_df is not None and not basics_df.empty:
             for _, row in basics_df.iterrows():
-                name_map[str(row['ts_code'])] = str(row['name'])
+                basic_map[str(row['ts_code'])] = {
+                    'name': str(row['name']),
+                    'list_date': row.get('list_date'),
+                    'listing_status': _normalize_listing_status(row.get('list_status')),
+                }
 
         print(f"Fetched {len(latest_df)} CSI 300 stocks from TuShare ({latest_trade_date}).")
 
@@ -174,7 +223,8 @@ def sync_daily_a_shares():
             if '.' not in ts_code:
                 continue
             stock_code, suffix = ts_code.split('.', 1)
-            stock_name = name_map.get(ts_code, stock_code)
+            basic_info = basic_map.get(ts_code, {})
+            stock_name = basic_info.get('name', stock_code)
 
             if suffix == 'SH':
                 market_code = 'SSE'
@@ -186,7 +236,14 @@ def sync_daily_a_shares():
                 continue
 
             # Dispatch the task
-            sync_asset_history.delay(stock_code, stock_name, market_code)
+            sync_asset_history.delay(
+                stock_code,
+                stock_name,
+                market_code,
+                False,
+                basic_info.get('list_date'),
+                basic_info.get('listing_status', Asset.ListingStatus.ACTIVE),
+            )
             task_count += 1
 
         print(f"Dispatched {task_count} sync tasks.")

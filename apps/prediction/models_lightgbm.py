@@ -131,6 +131,6 @@ class FeatureImportanceSnapshot(models.Model):
         ordering = ['horizon_days', 'importance_rank', 'feature_name']
         unique_together = ('model_artifact', 'feature_name')
         indexes = [
-            models.Index(fields=['horizon_days', 'feature_name']),
-            models.Index(fields=['model_artifact', 'importance_rank']),
+            models.Index(fields=['horizon_days', 'feature_name'], name='prediction__horizon_145c65_idx'),
+            models.Index(fields=['model_artifact', 'importance_rank'], name='prediction__model_a_eed271_idx'),
         ]

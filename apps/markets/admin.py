@@ -9,8 +9,8 @@ class MarketAdmin(admin.ModelAdmin):
 
 @admin.register(Asset)
 class AssetAdmin(TranslationAdmin):
-    list_display = ('ts_code', 'name', 'market', 'listing_status')
-    list_filter = ('market', 'listing_status')
+    list_display = ('ts_code', 'name', 'market', 'listing_status', 'list_date')
+    list_filter = ('market', 'listing_status', 'list_date')
     search_fields = ('ts_code', 'name', 'symbol')
 
 @admin.register(OHLCV)

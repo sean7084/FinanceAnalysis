@@ -1,4 +1,7 @@
 README.md
 compose/local/django/.env
+.envs/.local
+.vscode/settings.json
+.vscode/git-safe.sh
 FinanceAnalysis.code-workspace
 FinanceAnalysis.code-workspace

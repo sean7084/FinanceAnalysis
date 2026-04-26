@@ -44,16 +44,16 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 
 ### Data Scope
 - **Markets**: 3 (SSE, SZSE, BSE)
-- **Assets**: 300 synced constituents
-- **OHLCV Records**: 647,164 daily price points
+- **Assets**: 300 active listed CSI 300 constituents
+- **OHLCV Records**: 1,145,611 daily price points across 300 assets (`2001-07-24` to `2026-04-24`)
 
 ### Data Metrics
-- **OHLCV**
-- **Technical Indicators**: RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, RS_SCORE
-- **Signal Events**: 15 signal types (MA, Bollinger, Volume, Momentum, Reversal)
-- **Feature Table Volume**: 6,297 technical indicators, 360 signal events, 296 news articles, 8,831 sentiment scores, 5 concept heat rows, 8,700 factor scores, 900 heuristic prediction rows, and 600 LightGBM prediction rows
-- **Model Monitoring Volume**: 2 trained LightGBM artifacts, 2 LightGBM model versions, 78 feature-importance snapshots, and 1 ensemble-weight snapshot
-- **Trade Decision Coverage**: heuristic and LightGBM predictions now persist target price, stop loss, risk/reward ratio, trade score, and suggested flags for current-date predictions
+- **Technical Indicators**: 1,141,393 stored indicator rows across RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, and RS_SCORE
+- **Signal/Sentiment Tables**: 2,795 signal events, 40,066 news articles, 1,835,998 sentiment scores, and 80 concept heat rows
+- **Factor Tables**: 1,145,013 fundamental snapshots, 1,145,611 capital-flow snapshots, 990,029 raw moneyflow rows, 768,393 raw margin-detail rows, and 1,801,500 factor-score rows
+- **Prediction Tables**: 9,901 heuristic prediction rows and 444,980 LightGBM prediction rows, with target/stop/risk-reward/trade-score/suggested fields available on prediction outputs
+- **Model Monitoring Volume**: 8 LightGBM artifacts (3 active), 17 model-version rows, 304 feature-importance snapshots, and 3 ensemble-weight snapshots
+- **Backtest Release Export**: CSV reports for BacktestRun IDs 89-112 are stored under `reports/backtests_89_112_v0_1_9/`
 
 ### Models
 - **Heuristic**: rule-based multi-horizon baseline with trade-decision outputs
@@ -92,6 +92,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ### Latest Highlights
+- 0.1.9: full backfill refresh, runtime backtest validation, northbound field cleanup migration
 - 0.1.8: LSTM real retrain + inference, all-model backtest source selection, and backtest/stock page UX upgrades
 - 0.1.7: odds engine, LightGBM trade-decision parity, and dashboard consolidation
 - 0.1.6: Realtime auth and sentiment availability hardening
@@ -99,9 +100,137 @@ Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANG
 
 ## Future Phases & Roadmap
 
+a500
+
+###
+
+###
+after this backfill, i have questions regarding to two sections:
+
+1. many technical scores are .00 or .50, which is looks like default value.
+1.1 is it true?
+1.2 what are the reasons for that? data issue, calculation issue, or just the nature of the score distribution?
+
+2. many roe and roe qaq fields are null
+2.1 ex. 	阿特斯 (688472.SH)	July 14, 2023
+2.2 what are the reasons for that? data issue or calculation issue?
+
+3. current backfill_model_data takes hours to backfill data between 2000 and 2026. what are the bottlenecks and how can we optimize it for faster iteration?
+
+###
+stored MACD, ADX, OBV, SMA/EMA, and RS score analytics do not currently feed into technical score
+
+Broad Django app-label test discovery still hits the project’s namespace-package loader issue
+
+###
+1. Clean the stale factors in TechnicalGuide.md so the whole guide matches the current implementation.
+2. Refresh the data-range table in TechnicalGuide.md again as the latest backfill finished.
+3. update the document so the guide matches the current implementation
+4. update readme.md and changelog.md for the 66 file changes, and i am ready to commit as version 0.1.9
+5. prepare me a sheet that includes all detailed backtest configuration and results for backtest 89-112
+
+###
+invest in the next layers of trade-decision integration and dashboard consolidation.
+
+Optionally, if you want more value from the macro dataset, promote dxy, cny_usd, cpi_yoy, and ppi_yoy into model/backtest features, because today most of that new history is still just stored, not consumed.
+
+do we need to add moneyflow_hsgt 北向资金（百万元）南向资金（百万元）to MacroSnapshot?
+
+| 指标          | 当前基准（3.2） | 目标                   |
+| ----------- | --------- | -------------------- |
+| 样本外收益       | +10.66%   | >20%（接近或超过benchmark） |
+| 样本外Sharpe   | 0.81      | >1.0                 |
+| 样本外胜率       | 50.56%    | >55%                 |
+| 样本内外Alpha差距 | ~44%      | <20%                 |
+
+
+add a column to Data Metrics Sheet in techinicalguide.md that explains what these metrics are used for, how they feed into models or trade decisions, and what the implications of missing data are.
+
+
+I did not switch prediction APIs, alerts, or the rest of the project to strict real-time mode. This implementation is scoped to backtests only, 
+
+现在值得做：
+1. 补充财务因子数据（PE/PB/ROE，现在全是空的）
+   → 让多因子模型真正跑起来
+
+2. 把heuristic从集成中替换掉
+   → 用调好的多因子线性模型替代，作为LightGBM的互补
+
+将来值得做：
+3. 引入TFT替代LSTM
+   → 真正有效的时序模型
+
+A股预测效果最佳的五种模型
+
+按综合表现排名：
+
+第一：XGBoost / LightGBM（梯度提升树）
+
+会在里面，而且是第一梯队。
+
+• A股实战中表现最稳定的ML模型
+• 可解释性强，特征重要性清晰
+• 对噪声数据鲁棒，不容易过拟合
+• 你的LightGBM 3日准确率已达58.6%，这个数字在A股里属于相当不错的水平
+• 唯一缺点：无法捕捉时序依赖，需要靠lag特征弥补
+
+───
+
+第二：Transformer / Temporal Fusion Transformer（TFT）
+
+不在你系统里，但是当前学术和工业界公认最强的时序预测架构。
+
+• 专门为时序预测设计，同时处理多个时间尺度
+• 能同时消化价格序列+宏观因子+情绪数据
+• 有注意力机制，自动识别哪些历史时间点对当前预测最重要
+• 比LSTM强在：不会遗忘远期信息，训练更稳定
+• 缺点：计算成本高，调参复杂
+───
+
+第四：多因子线性模型（Alpha Factor Model）
+
+不是ML，但在A股实战中持续有效，尤其在中低频策略中。
+
+• 学术界验证过的因子：动量、反转、低波动、价值、质量
+• A股特有有效因子：北向资金、融资余额变化、龙虎榜、涨停效应
+• 优点：稳定、可解释、不过拟合、换手率低
+• 你的系统Phase 11已经在做这个，但财务因子数据还是空的（N/A），这是目前最大的数据短板
+• 这类模型的预测不给"涨跌概率"，而是给"相对排名"，配合你的筛选器逻辑天然契合
+
+───
+
+第三：集成模型（Ensemble / Stacking）
+
+你的系统已经有雏形，但还没做完。
+
+• 单模型都有盲区，集成多个互补模型可以平滑误差
+• 最有效的组合：LightGBM（特征工程强）+ Transformer（时序强）+ 因子模型（基本面强）
+• 你现在的heuristic+LightGBM集成是对的方向，但heuristic太弱，拉低了整体
+• 真正有效的集成是把几个各有所长的强模型合并，而不是强模型+规则模型
+
+关于仓位大小
+
+固定每股2万不是最优解。赔率好的时候应该多投，赔率差的时候少投。
+
+简化版Kelly公式：
+
+建议仓位比例 = (胜率 × 赔率 - 败率) ÷ 赔率
+
+举例：胜率60%，赔率3:1
+
+= (0.6 × 3 - 0.4) ÷ 3 = 1.4 ÷ 3 ≈ 46%
+
+但Kelly公式得出的数字通常过于激进，实际用半Kelly更保守安全，即上面结果再除以2，约23%仓位。
+
+你可以在系统里设定：
+
+• trade_score 10-12 → 每笔¥10,000
+• trade_score 12-14 → 每笔¥15,000
+• trade_score 14+ → 每笔¥20,000
+
 ### Priority 1: Validate and Close the Model Loop
 
-add a compact summary output mode to run_validation_backtests that prints per-run return/sharpe/win-rate deltas by source and model version, so we can quickly iterate on the LightGBM model and confirm that it’s actually improving over the heuristic baseline before investing in the next layers of trade-decision integration and dashboard consolidation.
+Add compact validation summaries and recurring drift checks so each model refresh can be compared quickly against heuristic, LightGBM, and LSTM baselines before deeper trade-decision integration.
 
 ### Priority 2: Turn Probabilities Into Trade Decisions
 
@@ -226,6 +355,11 @@ These items improve model quality and signal usefulness, but they depend on the 
    cd frontend
    npm install --no-bin-links
    npm run dev
+   ```
+
+10. **for changes in python codes**
+   ```bash
+   docker compose restart celery_beat celery_worker django_
    ```
 ---
 

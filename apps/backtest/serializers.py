@@ -6,6 +6,12 @@ from .models import BacktestRun, BacktestTrade
 VALID_ENTRY_WEEKDAYS = {'MON', 'TUE', 'WED', 'THU', 'FRI'}
 VALID_CANDIDATE_MODES = {'top_n', 'trade_score'}
 VALID_TRADE_SCORE_SCOPES = {'independent', 'combined'}
+VALID_TOP_N_METRICS = {'trade_score', 'up_prob_3d', 'up_prob_7d', 'up_prob_30d'}
+TOP_N_METRIC_HORIZON_MAP = {
+    'up_prob_3d': 3,
+    'up_prob_7d': 7,
+    'up_prob_30d': 30,
+}
 
 
 class BacktestTradeSerializer(serializers.ModelSerializer):
@@ -94,6 +100,23 @@ class BacktestRunSerializer(serializers.ModelSerializer):
             if candidate_mode not in VALID_CANDIDATE_MODES:
                 raise serializers.ValidationError({'parameters': 'candidate_mode must be either top_n or trade_score.'})
             parameters['candidate_mode'] = candidate_mode
+
+            top_n_metric = str(parameters.get('top_n_metric') or '').lower()
+            if not top_n_metric:
+                top_n_metric = {
+                    3: 'up_prob_3d',
+                    7: 'up_prob_7d',
+                    30: 'up_prob_30d',
+                }.get(horizon_days, 'up_prob_7d')
+
+            if top_n_metric not in VALID_TOP_N_METRICS:
+                raise serializers.ValidationError({'parameters': 'top_n_metric must be one of trade_score, up_prob_3d, up_prob_7d, or up_prob_30d.'})
+
+            aligned_horizon = TOP_N_METRIC_HORIZON_MAP.get(top_n_metric)
+            if aligned_horizon is not None:
+                parameters['horizon_days'] = aligned_horizon
+                horizon_days = aligned_horizon
+            parameters['top_n_metric'] = top_n_metric
 
             if 'max_positions' in parameters:
                 try:

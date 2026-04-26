@@ -34,6 +34,12 @@ class Asset(models.Model):
         choices=ListingStatus.choices,
         default=ListingStatus.ACTIVE
     )
+    list_date = models.DateField(
+        _("List Date"),
+        null=True,
+        blank=True,
+        help_text=_("IPO/listing date from TuShare stock_basic")
+    )
 
     class Meta:
         verbose_name = _("Asset")

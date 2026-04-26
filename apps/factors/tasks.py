@@ -1,7 +1,10 @@
 from decimal import Decimal
-from datetime import date
+from datetime import date, timedelta
+from io import StringIO
 
 from celery import shared_task
+from django.conf import settings
+from django.core.management import call_command
 from django.utils import timezone
 
 from apps.analytics.models import SignalEvent
@@ -9,6 +12,15 @@ from apps.markets.models import Asset, OHLCV
 from apps.prediction.historical_features import latest_bbands, latest_ohlcv, latest_rsi
 from apps.sentiment.models import SentimentScore
 from .models import FundamentalFactorSnapshot, CapitalFlowSnapshot, FactorScore
+
+
+def _resolve_target_date(target_date=None):
+    if target_date:
+        try:
+            return date.fromisoformat(str(target_date))
+        except ValueError:
+            return timezone.now().date()
+    return timezone.now().date()
 
 
 def _percentile_rank(value, values):
@@ -89,6 +101,33 @@ def _sentiment_factor_score(asset_id, as_of):
 
 
 @shared_task
+def sync_daily_capital_flow_snapshots(target_date=None, lookback_days=None):
+    """Refresh recent capital-flow data daily using the same backfill command path."""
+    as_of = _resolve_target_date(target_date)
+    configured_lookback = lookback_days
+    if configured_lookback is None:
+        configured_lookback = getattr(settings, 'CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS', 20)
+    try:
+        configured_lookback = int(configured_lookback)
+    except (TypeError, ValueError):
+        configured_lookback = 20
+    configured_lookback = max(configured_lookback, 10)
+
+    start_date = as_of - timedelta(days=configured_lookback)
+    output = StringIO()
+    call_command(
+        'backfill_capital_flow_snapshots',
+        start_date=start_date.isoformat(),
+        end_date=as_of.isoformat(),
+        stdout=output,
+    )
+    summary = output.getvalue().strip()
+    if summary:
+        return summary
+    return f'Capital flow sync completed for {start_date}..{as_of}'
+
+
+@shared_task
 def calculate_factor_scores_for_date(
     target_date=None,
     financial_weight=0.4,
@@ -99,13 +138,7 @@ def calculate_factor_scores_for_date(
     """
     Calculate daily multi-factor scores and bottom candidate probabilities.
     """
-    if target_date:
-        try:
-            as_of = date.fromisoformat(str(target_date))
-        except ValueError:
-            as_of = timezone.now().date()
-    else:
-        as_of = timezone.now().date()
+    as_of = _resolve_target_date(target_date)
 
     # Normalize weights
     fw = Decimal(str(financial_weight))
@@ -127,7 +160,6 @@ def calculate_factor_scores_for_date(
     latest_flows = {}
     pe_values = []
     pb_values = []
-    nb_values = []
     mf_values = []
     mb_values = []
 
@@ -141,8 +173,6 @@ def calculate_factor_scores_for_date(
             pe_values.append(Decimal(str(f.pe)))
         if f and f.pb is not None:
             pb_values.append(Decimal(str(f.pb)))
-        if c and c.northbound_net_5d is not None:
-            nb_values.append(Decimal(str(c.northbound_net_5d)))
         if c and c.main_force_net_5d is not None:
             mf_values.append(Decimal(str(c.main_force_net_5d)))
         if c and c.margin_balance_change_5d is not None:
@@ -164,10 +194,6 @@ def calculate_factor_scores_for_date(
             roe_raw = Decimal(str(f.roe_qoq))
             roe_trend = max(Decimal('0'), min(Decimal('1'), (roe_raw + Decimal('0.2')) / Decimal('0.4')))
 
-        nb_score = _percentile_rank(
-            Decimal(str(c.northbound_net_5d)) if c and c.northbound_net_5d is not None else None,
-            nb_values,
-        )
         mf_score = _percentile_rank(
             Decimal(str(c.main_force_net_5d)) if c and c.main_force_net_5d is not None else None,
             mf_values,
@@ -180,7 +206,7 @@ def calculate_factor_scores_for_date(
         technical_score = _technical_reversal_score(asset.id, as_of)
         sentiment_score = _sentiment_factor_score(asset.id, as_of)
         fundamental_score = _avg_decimal([pe_score, pb_score, roe_trend])
-        capital_flow_score = _avg_decimal([nb_score, mf_score, mb_score])
+        capital_flow_score = _avg_decimal([mf_score, mb_score])
 
         composite = (
             fundamental_score * fw +
@@ -198,7 +224,6 @@ def calculate_factor_scores_for_date(
                 'pe_percentile_score': pe_score,
                 'pb_percentile_score': pb_score,
                 'roe_trend_score': roe_trend,
-                'northbound_flow_score': nb_score,
                 'main_force_flow_score': mf_score,
                 'margin_flow_score': mb_score,
                 'technical_reversal_score': technical_score,

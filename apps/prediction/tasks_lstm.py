@@ -13,8 +13,9 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from .models import ModelVersion, PredictionResult
+from .models_lightgbm import LightGBMModelArtifact
 from apps.markets.models import Asset
-from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training
+from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training, _refresh_ensemble_weights
 from .odds import estimate_trade_decision
 
 
@@ -620,6 +621,18 @@ def train_lstm_models(
             },
         },
     )
+
+    lightgbm_results = {}
+    for artifact in LightGBMModelArtifact.objects.filter(
+        is_active=True,
+        status=LightGBMModelArtifact.Status.READY,
+    ):
+        lightgbm_results[artifact.horizon_days] = {
+            'status': 'success',
+            'accuracy': float((artifact.metrics_json or {}).get('accuracy') or 0.0),
+        }
+
+    _refresh_ensemble_weights(training_end, lightgbm_results)
 
     return {
         'version': row.version,

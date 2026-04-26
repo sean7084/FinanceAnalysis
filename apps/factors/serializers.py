@@ -21,7 +21,6 @@ class CapitalFlowSnapshotSerializer(serializers.ModelSerializer):
         model = CapitalFlowSnapshot
         fields = [
             'id', 'asset', 'asset_symbol', 'date',
-            'northbound_net_5d', 'northbound_net_10d', 'northbound_net_20d',
             'main_force_net_5d', 'margin_balance_change_5d',
             'metadata', 'created_at',
         ]
@@ -40,6 +39,6 @@ class FactorScoreSerializer(serializers.ModelSerializer):
             'financial_weight', 'flow_weight', 'technical_weight', 'sentiment_weight',
             'composite_score', 'bottom_probability_score',
             'pe_percentile_score', 'pb_percentile_score', 'roe_trend_score',
-            'northbound_flow_score', 'main_force_flow_score', 'margin_flow_score',
+            'main_force_flow_score', 'margin_flow_score',
             'technical_reversal_score', 'metadata', 'created_at', 'updated_at',
         ]

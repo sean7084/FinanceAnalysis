@@ -24,17 +24,18 @@
     "realized_volatility_5d",
     "pe_percentile",
     "pb_percentile",
-    "northbound_flow",
-    "main_force_flow",
-    "margin_flow",
+    "roe_trend",
     "factor_composite",
     "macro_phase",
     "pmi_manufacturing",
     "pmi_non_manufacturing",
+    "yield_curve",
+    "sentiment_7d",
+    "sentiment_7d_avg_20d",
     "rsi_x_relative_volume_5d",
     "rsi_x_macro_phase",
-    "factor_composite_x_sentiment",
-    "northbound_flow_x_mom_5d"
+    "northbound_flow_x_mom_5d",
+    "pe_percentile_x_macro_phase"
   ],
-  "trained_at": "2026-04-18T05:29:18.689512+00:00"
+  "trained_at": "2026-04-25T15:45:59.278854+00:00"
 }

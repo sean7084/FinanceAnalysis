@@ -168,6 +168,8 @@ def _build_interaction_features(df, feature_names):
         ('rsi_x_relative_volume_5d', 'rsi', 'relative_volume_5d'),
         ('rsi_x_macro_phase', 'rsi', 'macro_phase'),
         ('factor_composite_x_sentiment', 'factor_composite', 'sentiment_7d'),
+        # Retain the feature name for model-artifact compatibility, but keep the asset-level
+        # northbound placeholder neutral because northbound flow is market-wide, not per-stock.
         ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
         ('pe_percentile_x_macro_phase', 'pe_percentile', 'macro_phase'),
     ]
@@ -404,7 +406,7 @@ def _extract_features_for_asset(asset_id, as_of):
     features['pe_percentile'] = _safe_float(getattr(factor, 'pe_percentile_score', 0.5), 0.5) if factor else 0.5
     features['pb_percentile'] = _safe_float(getattr(factor, 'pb_percentile_score', 0.5), 0.5) if factor else 0.5
     features['roe_trend'] = _safe_float(getattr(factor, 'roe_trend_score', 0.5), 0.5) if factor else 0.5
-    features['northbound_flow'] = _safe_float(getattr(factor, 'northbound_flow_score', 0.5), 0.5) if factor else 0.5
+    features['northbound_flow'] = 0.5
     features['main_force_flow'] = _safe_float(getattr(factor, 'main_force_flow_score', 0.5), 0.5) if factor else 0.5
     features['margin_flow'] = _safe_float(getattr(factor, 'margin_flow_score', 0.5), 0.5) if factor else 0.5
     features['factor_composite'] = _safe_float(getattr(factor, 'composite_score', 0.5), 0.5) if factor else 0.5
@@ -532,7 +534,6 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             'pe_percentile_score',
             'pb_percentile_score',
             'roe_trend_score',
-            'northbound_flow_score',
             'main_force_flow_score',
             'margin_flow_score',
             'composite_score',
@@ -542,13 +543,13 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
     if factor_df.empty:
         factor_df = pd.DataFrame({
             'asset_id': [], 'date': [], 'pe_percentile_score': [], 'pb_percentile_score': [], 'roe_trend_score': [],
-            'northbound_flow_score': [], 'main_force_flow_score': [], 'margin_flow_score': [], 'composite_score': [],
+            'main_force_flow_score': [], 'margin_flow_score': [], 'composite_score': [],
         })
     else:
         factor_df['date'] = pd.to_datetime(factor_df['date'])
         for column in [
             'pe_percentile_score', 'pb_percentile_score', 'roe_trend_score',
-            'northbound_flow_score', 'main_force_flow_score', 'margin_flow_score', 'composite_score',
+            'main_force_flow_score', 'margin_flow_score', 'composite_score',
         ]:
             factor_df[column] = factor_df[column].astype(float)
 
@@ -627,7 +628,6 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             'pe_percentile_score',
             'pb_percentile_score',
             'roe_trend_score',
-            'northbound_flow_score',
             'main_force_flow_score',
             'margin_flow_score',
             'composite_score',
@@ -645,10 +645,10 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             asset_df['pe_percentile'] = asset_df['pe_percentile_score'].fillna(0.5)
             asset_df['pb_percentile'] = asset_df['pb_percentile_score'].fillna(0.5)
             asset_df['roe_trend'] = asset_df['roe_trend_score'].fillna(0.5)
-            asset_df['northbound_flow'] = asset_df['northbound_flow_score'].fillna(0.5)
             asset_df['main_force_flow'] = asset_df['main_force_flow_score'].fillna(0.5)
             asset_df['margin_flow'] = asset_df['margin_flow_score'].fillna(0.5)
             asset_df['factor_composite'] = asset_df['composite_score'].fillna(0.5)
+        asset_df['northbound_flow'] = 0.5
 
         asset_sentiment_df = sentiment_df[sentiment_df['asset_id'] == asset_id][['date', 'sentiment_score']].sort_values('date')
         if asset_sentiment_df.empty:

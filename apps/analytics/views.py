@@ -169,7 +169,6 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 'pe_percentile_score': factor.pe_percentile_score,
                 'pb_percentile_score': factor.pb_percentile_score,
                 'roe_trend_score': factor.roe_trend_score,
-                'northbound_flow_score': factor.northbound_flow_score,
                 'main_force_flow_score': factor.main_force_flow_score,
                 'margin_flow_score': factor.margin_flow_score,
                 'technical_reversal_score': factor.technical_reversal_score,
@@ -240,7 +239,8 @@ class DashboardStockViewSet(viewsets.ViewSet):
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    API endpoint for viewing technical indicators.
+    API endpoint for stored technical-indicator rows used by dashboards and inspection.
+    Many model and backtest runtime features are recomputed directly from OHLCV instead of reading this table.
     Supports filtering by asset, indicator type, and date range.
     """
     queryset = TechnicalIndicator.objects.select_related('asset').all()

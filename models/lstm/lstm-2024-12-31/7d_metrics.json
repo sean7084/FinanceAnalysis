@@ -2,12 +2,12 @@
   "horizon_days": 7,
   "version": "lstm-2024-12-31",
   "sequence_length": 20,
-  "training_samples": 9600,
-  "validation_samples": 2400,
-  "accuracy": 0.36541666666666667,
+  "training_samples": 24000,
+  "validation_samples": 6000,
+  "accuracy": 0.428,
   "epochs": 8,
   "hidden_size": 64,
   "num_layers": 2,
   "dropout": 0.2,
-  "trained_at": "2026-04-18T07:28:16.708535+00:00"
+  "trained_at": "2026-04-25T15:47:11.326299+00:00"
 }

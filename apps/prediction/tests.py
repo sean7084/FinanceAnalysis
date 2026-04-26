@@ -1,18 +1,25 @@
+import tempfile
 from decimal import Decimal
 from unittest.mock import patch
 
+import numpy as np
+import pandas as pd
+from django.core.management import call_command
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.factors.models import FundamentalFactorSnapshot
 from apps.factors.models import FactorScore
 from apps.markets.models import Asset, Market, OHLCV
 from apps.analytics.models import TechnicalIndicator
 from apps.sentiment.models import SentimentScore
-from .models import PredictionResult
+from .models import ModelVersion, PredictionResult
+from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
 from .tasks import generate_predictions_for_date
+from .tasks_lstm import train_lstm_models
 
 
 class Phase14PredictionTests(TestCase):
@@ -171,3 +178,155 @@ class Phase14PredictionTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_train_delay.assert_called_once()
         mock_predict_delay.assert_called_once()
+
+
+class BackfillModelDataCommandTests(TestCase):
+    def setUp(self):
+        self.market = Market.objects.create(code='P14CMD', name='Phase 14 Command Market')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='600001',
+            ts_code='600001.SH',
+            name='Command Asset',
+        )
+        self.trading_dates = [
+            timezone.datetime(2024, 1, 2).date(),
+            timezone.datetime(2024, 1, 3).date(),
+            timezone.datetime(2024, 1, 4).date(),
+        ]
+        for trading_date in self.trading_dates:
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=trading_date,
+                open=Decimal('10.0'),
+                high=Decimal('10.5'),
+                low=Decimal('9.8'),
+                close=Decimal('10.2'),
+                adj_close=Decimal('10.2'),
+                volume=100000,
+                amount=Decimal('1020000'),
+            )
+
+        FundamentalFactorSnapshot.objects.create(
+            asset=self.asset,
+            date=self.trading_dates[0],
+            pe=Decimal('10.0'),
+            pb=Decimal('1.0'),
+            roe=Decimal('0.12'),
+            roe_qoq=Decimal('0.01'),
+            metadata={'source': 'test'},
+        )
+        FactorScore.objects.create(
+            asset=self.asset,
+            date=self.trading_dates[0],
+            mode=FactorScore.FactorMode.COMPOSITE,
+            technical_reversal_score=Decimal('0.1'),
+            sentiment_score=Decimal('0.5'),
+            fundamental_score=Decimal('0.5'),
+            capital_flow_score=Decimal('0.5'),
+            technical_score=Decimal('0.1'),
+            financial_weight=Decimal('0.4'),
+            flow_weight=Decimal('0.3'),
+            technical_weight=Decimal('0.3'),
+            sentiment_weight=Decimal('0.0'),
+            composite_score=Decimal('0.3'),
+            bottom_probability_score=Decimal('0.3'),
+            metadata={'source': 'phase11_scoring_with_sentiment'},
+        )
+
+    @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
+    def test_backfill_model_data_resume_factor_scores_skips_completed_dates(self, mock_calculate):
+        call_command(
+            'backfill_model_data',
+            start_date='2024-01-02',
+            end_date='2024-01-04',
+            skip_sentiment=True,
+            skip_rs_score=True,
+            resume_factor_scores=True,
+        )
+
+        self.assertEqual(mock_calculate.call_count, 2)
+        self.assertEqual(
+            [call.kwargs['target_date'] for call in mock_calculate.call_args_list],
+            ['2024-01-03', '2024-01-04'],
+        )
+
+
+class LstmTrainingRegistryTests(TestCase):
+    def setUp(self):
+        self.market = Market.objects.create(code='P14LSTM', name='Phase 14 LSTM Market')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='600777',
+            ts_code='600777.SH',
+            name='LSTM Command Asset',
+        )
+
+    @patch('apps.prediction.tasks_lstm._train_single_horizon_lstm')
+    @patch('apps.prediction.tasks_lstm._build_sequences')
+    @patch('apps.prediction.tasks_lstm._create_feature_matrix')
+    @patch('apps.prediction.tasks_lstm._create_labels_for_training')
+    def test_train_lstm_models_refreshes_ensemble_metrics(
+        self,
+        mock_create_labels,
+        mock_create_feature_matrix,
+        mock_build_sequences,
+        mock_train_single_horizon_lstm,
+    ):
+        training_end = timezone.datetime(2024, 12, 31).date()
+        LightGBMModelArtifact.objects.create(
+            horizon_days=3,
+            version='lgb-3d-2024-12-31',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='/tmp/lightgbm/3d',
+            metrics_json={'accuracy': 0.62},
+            feature_names=['feature_a'],
+            training_window_start=timezone.datetime(2016, 6, 1).date(),
+            training_window_end=training_end,
+            trained_at=timezone.now(),
+            is_active=True,
+        )
+
+        feature_df = pd.DataFrame([
+            {'date': training_end, 'asset_id': self.asset.id, 'feature_a': 1.0},
+        ])
+        feature_df.attrs['feature_names'] = ['feature_a']
+        mock_create_feature_matrix.return_value = feature_df
+        mock_create_labels.return_value = {}
+        mock_build_sequences.return_value = (
+            np.zeros((2, 20, 1), dtype=np.float32),
+            np.asarray([2, 1], dtype=np.int64),
+            [training_end, training_end],
+        )
+        mock_train_single_horizon_lstm.return_value = {
+            'status': 'success',
+            'accuracy': 0.66,
+            'artifact_path': '/tmp/lstm/3d_model.pt',
+            'feature_count': 1,
+            'sequence_length': 20,
+            'training_samples': 2,
+            'validation_samples': 1,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch('apps.prediction.tasks_lstm.LSTM_MODELS_DIR', temp_dir):
+                result = train_lstm_models(
+                    training_start_date='2016-06-01',
+                    training_end_date='2024-12-31',
+                    horizons=[3],
+                    max_samples_per_horizon=2,
+                )
+
+        lstm_version = ModelVersion.objects.get(model_type=ModelVersion.ModelType.LSTM, is_active=True)
+        ensemble_version = ModelVersion.objects.get(model_type=ModelVersion.ModelType.ENSEMBLE, is_active=True)
+        ensemble_snapshot = EnsembleWeightSnapshot.objects.get(date=training_end)
+
+        self.assertEqual(result['status'], 'completed')
+        self.assertAlmostEqual(result['aggregate_accuracy'], 0.66)
+        self.assertEqual(lstm_version.training_window_start.isoformat(), '2016-06-01')
+        self.assertEqual(lstm_version.training_window_end.isoformat(), '2024-12-31')
+        self.assertAlmostEqual(lstm_version.metrics['accuracy'], 0.66)
+        self.assertAlmostEqual(ensemble_version.metrics['lightgbm_accuracy'], 0.62)
+        self.assertAlmostEqual(ensemble_version.metrics['lstm_accuracy'], 0.66)
+        self.assertAlmostEqual(ensemble_snapshot.basis_metrics['lightgbm_accuracy'], 0.62)
+        self.assertAlmostEqual(ensemble_snapshot.basis_metrics['lstm_accuracy'], 0.66)

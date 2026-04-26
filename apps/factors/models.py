@@ -30,6 +30,67 @@ class FundamentalFactorSnapshot(models.Model):
         ]
 
 
+class AssetMoneyFlowSnapshot(models.Model):
+    """Raw per-stock daily money flow snapshot from TuShare moneyflow."""
+    asset = models.ForeignKey(
+        Asset,
+        on_delete=models.CASCADE,
+        related_name='money_flow_snapshots',
+        verbose_name=_('Asset'),
+    )
+    date = models.DateField(_('Date'), db_index=True)
+    buy_sm_amount = models.DecimalField(_('Small Buy Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    sell_sm_amount = models.DecimalField(_('Small Sell Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    buy_md_amount = models.DecimalField(_('Medium Buy Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    sell_md_amount = models.DecimalField(_('Medium Sell Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    buy_lg_amount = models.DecimalField(_('Large Buy Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    sell_lg_amount = models.DecimalField(_('Large Sell Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    buy_elg_amount = models.DecimalField(_('Extra Large Buy Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    sell_elg_amount = models.DecimalField(_('Extra Large Sell Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    net_mf_amount = models.DecimalField(_('Net Main Flow Amount'), max_digits=18, decimal_places=4, null=True, blank=True)
+    metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Asset Money Flow Snapshot')
+        verbose_name_plural = _('Asset Money Flow Snapshots')
+        unique_together = ('asset', 'date')
+        indexes = [
+            models.Index(fields=['asset', 'date']),
+            models.Index(fields=['date']),
+        ]
+
+
+class AssetMarginDetailSnapshot(models.Model):
+    """Raw per-stock daily margin detail snapshot from TuShare margin_detail."""
+    asset = models.ForeignKey(
+        Asset,
+        on_delete=models.CASCADE,
+        related_name='margin_detail_snapshots',
+        verbose_name=_('Asset'),
+    )
+    date = models.DateField(_('Date'), db_index=True)
+    rzye = models.DecimalField(_('Financing Balance'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rqye = models.DecimalField(_('Securities Lending Balance'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rzmre = models.DecimalField(_('Financing Buy Amount'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rzche = models.DecimalField(_('Financing Repayment Amount'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rqyl = models.DecimalField(_('Securities Lending Volume'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rqchl = models.DecimalField(_('Securities Lending Repayment Volume'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rqmcl = models.DecimalField(_('Securities Lending Sell Volume'), max_digits=20, decimal_places=4, null=True, blank=True)
+    rzrqye = models.DecimalField(_('Margin Balance'), max_digits=20, decimal_places=4, null=True, blank=True)
+    metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Asset Margin Detail Snapshot')
+        verbose_name_plural = _('Asset Margin Detail Snapshots')
+        unique_together = ('asset', 'date')
+        indexes = [
+            models.Index(fields=['asset', 'date']),
+            models.Index(fields=['date']),
+        ]
+
+
 class CapitalFlowSnapshot(models.Model):
     """Daily capital flow snapshot used for multi-factor scoring."""
     asset = models.ForeignKey(
@@ -39,9 +100,6 @@ class CapitalFlowSnapshot(models.Model):
         verbose_name=_('Asset'),
     )
     date = models.DateField(_('Date'), db_index=True)
-    northbound_net_5d = models.DecimalField(_('Northbound Net 5D'), max_digits=18, decimal_places=4, null=True, blank=True)
-    northbound_net_10d = models.DecimalField(_('Northbound Net 10D'), max_digits=18, decimal_places=4, null=True, blank=True)
-    northbound_net_20d = models.DecimalField(_('Northbound Net 20D'), max_digits=18, decimal_places=4, null=True, blank=True)
     main_force_net_5d = models.DecimalField(_('Main Force Net 5D'), max_digits=18, decimal_places=4, null=True, blank=True)
     margin_balance_change_5d = models.DecimalField(_('Margin Balance Change 5D'), max_digits=18, decimal_places=4, null=True, blank=True)
     metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
@@ -76,7 +134,6 @@ class FactorScore(models.Model):
     pe_percentile_score = models.DecimalField(_('PE Percentile Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     pb_percentile_score = models.DecimalField(_('PB Percentile Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     roe_trend_score = models.DecimalField(_('ROE Trend Score'), max_digits=7, decimal_places=6, null=True, blank=True)
-    northbound_flow_score = models.DecimalField(_('Northbound Flow Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     main_force_flow_score = models.DecimalField(_('Main Force Flow Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     margin_flow_score = models.DecimalField(_('Margin Flow Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     technical_reversal_score = models.DecimalField(_('Technical Reversal Score'), max_digits=7, decimal_places=6, null=True, blank=True)

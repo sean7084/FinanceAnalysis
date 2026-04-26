@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from celery import shared_task
 from django.conf import settings
@@ -32,6 +32,60 @@ def _infer_phase(snapshot):
     if pmi_val is not None and pmi_val >= 52 and pmi_non_val is not None and pmi_non_val >= 53:
         return MarketContext.MacroPhase.OVERHEAT
     return MarketContext.MacroPhase.RECOVERY
+
+
+def sync_market_context_for_snapshot(
+    snapshot,
+    event_tag='',
+    *,
+    note='Auto-updated from latest macro snapshot.',
+    metadata_source='latest_macro_snapshot',
+):
+    phase = _infer_phase(snapshot)
+    existing_contexts = list(
+        MarketContext.objects.filter(context_key='current', starts_at=snapshot.date)
+        .order_by('-is_active', '-updated_at', '-id')
+    )
+    context = existing_contexts[0] if existing_contexts else MarketContext(context_key='current', starts_at=snapshot.date)
+    created = not existing_contexts
+
+    next_context = (
+        MarketContext.objects.filter(context_key='current', is_active=True, starts_at__gt=snapshot.date)
+        .order_by('starts_at', 'updated_at', 'id')
+        .first()
+    )
+    ends_at = next_context.starts_at - timedelta(days=1) if next_context else None
+
+    metadata = dict(context.metadata or {})
+    metadata.update({
+        'snapshot_id': snapshot.id,
+        'source': metadata_source,
+    })
+
+    context.macro_phase = phase
+    if event_tag or not context.event_tag:
+        context.event_tag = event_tag
+    context.is_active = True
+    context.ends_at = ends_at
+    context.notes = note
+    context.metadata = metadata
+    context.save()
+
+    if len(existing_contexts) > 1:
+        duplicate_ids = [row.id for row in existing_contexts if row.id != context.id]
+        MarketContext.objects.filter(id__in=duplicate_ids).update(is_active=False, ends_at=ends_at)
+
+    previous_context = (
+        MarketContext.objects.filter(context_key='current', is_active=True, starts_at__lt=snapshot.date)
+        .order_by('-starts_at', '-updated_at', '-id')
+        .first()
+    )
+    previous_end = snapshot.date - timedelta(days=1)
+    if previous_context is not None and previous_context.ends_at != previous_end:
+        previous_context.ends_at = previous_end
+        previous_context.save(update_fields=['ends_at', 'updated_at'])
+
+    return context, created
 
 
 @shared_task
@@ -83,17 +137,10 @@ def refresh_current_market_context(snapshot_id=None, event_tag=''):
     if not snapshot:
         return 'No macro snapshot available.'
 
-    phase = _infer_phase(snapshot)
-
-    MarketContext.objects.filter(context_key='current', is_active=True).update(is_active=False)
-
-    MarketContext.objects.create(
-        context_key='current',
-        macro_phase=phase,
+    context, _created = sync_market_context_for_snapshot(
+        snapshot,
         event_tag=event_tag,
-        is_active=True,
-        starts_at=snapshot.date,
-        notes='Auto-updated from latest macro snapshot.',
-        metadata={'snapshot_id': snapshot.id},
+        note='Auto-updated from latest macro snapshot.',
+        metadata_source='latest_macro_snapshot',
     )
-    return f'Current market context set to {phase}'
+    return f'Current market context set to {context.macro_phase}'

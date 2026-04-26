@@ -51,7 +51,6 @@ class LightGBMPredictionTests(TestCase):
             pe_percentile_score=Decimal('0.3'),
             pb_percentile_score=Decimal('0.4'),
             roe_trend_score=Decimal('0.6'),
-            northbound_flow_score=Decimal('0.5'),
             main_force_flow_score=Decimal('0.55'),
             margin_flow_score=Decimal('0.45'),
             technical_reversal_score=Decimal('0.7'),
@@ -115,6 +114,7 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn('return_5d', features)
         self.assertIn('relative_volume_5d', features)
         self.assertIn('sentiment_7d_avg_20d', features)
+        self.assertEqual(features['northbound_flow'], 0.5)
 
     def test_create_feature_matrix_adds_interaction_columns(self):
         d = self._seed_features()
@@ -144,7 +144,6 @@ class LightGBMPredictionTests(TestCase):
                 pe_percentile_score=Decimal('0.3'),
                 pb_percentile_score=Decimal('0.4'),
                 roe_trend_score=Decimal('0.6'),
-                northbound_flow_score=Decimal('0.5'),
                 main_force_flow_score=Decimal('0.55'),
                 margin_flow_score=Decimal('0.45'),
                 technical_reversal_score=Decimal('0.7'),

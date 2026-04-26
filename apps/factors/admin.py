@@ -14,7 +14,7 @@ class FundamentalFactorSnapshotAdmin(admin.ModelAdmin):
 @admin.register(CapitalFlowSnapshot)
 class CapitalFlowSnapshotAdmin(admin.ModelAdmin):
     list_display = (
-        'asset', 'date', 'northbound_net_5d', 'main_force_net_5d',
+        'asset', 'date', 'main_force_net_5d',
         'margin_balance_change_5d',
     )
     list_filter = ('date',)

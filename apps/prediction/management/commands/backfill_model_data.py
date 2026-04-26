@@ -27,6 +27,7 @@ class Command(BaseCommand):
         parser.add_argument('--skip-sentiment', action='store_true')
         parser.add_argument('--skip-rs-score', action='store_true')
         parser.add_argument('--skip-factor-scores', action='store_true')
+        parser.add_argument('--resume-factor-scores', action='store_true')
         parser.add_argument('--train-lightgbm', action='store_true')
 
     def handle(self, *args, **options):
@@ -63,7 +64,11 @@ class Command(BaseCommand):
             self._backfill_rs_scores(start_date, end_date, trading_dates)
 
         if not options['skip_factor_scores']:
-            self._backfill_factor_scores(trading_dates, options['sentiment_weight'])
+            self._backfill_factor_scores(
+                trading_dates,
+                options['sentiment_weight'],
+                resume=options['resume_factor_scores'],
+            )
 
         if options['train_lightgbm']:
             result = train_lightgbm_models(
@@ -196,9 +201,18 @@ class Command(BaseCommand):
             attempted += len(indicators)
         self.stdout.write(f'  rs_score: attempted {attempted} rows')
 
-    def _backfill_factor_scores(self, trading_dates, sentiment_weight):
+    def _backfill_factor_scores(self, trading_dates, sentiment_weight, resume=False):
         if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists() and float(sentiment_weight) == 0.0:
-            return self._backfill_factor_scores_fast(trading_dates)
+            return self._backfill_factor_scores_fast(trading_dates, resume=resume)
+
+        trading_dates = self._slice_factor_score_dates(
+            trading_dates,
+            resume=resume,
+            metadata_source='phase11_scoring_with_sentiment',
+        )
+        if not trading_dates:
+            self.stdout.write('  factor_scores: no remaining full-mode dates to process')
+            return
 
         self.stdout.write(self.style.NOTICE('Backfilling daily factor scores...'))
         for index, trading_date in enumerate(trading_dates, start=1):
@@ -209,7 +223,17 @@ class Command(BaseCommand):
             if index % 100 == 0 or index == len(trading_dates):
                 self.stdout.write(f'  factor_scores: {index}/{len(trading_dates)} dates complete')
 
-    def _backfill_factor_scores_fast(self, trading_dates):
+    def _backfill_factor_scores_fast(self, trading_dates, resume=False):
+        if resume:
+            trading_dates = self._slice_factor_score_dates(
+                trading_dates,
+                resume=True,
+                metadata_source='historical_ohlcv_fast_path',
+            )
+            if not trading_dates:
+                self.stdout.write('  factor_scores: no remaining fast-path dates to process')
+                return
+
         self.stdout.write(self.style.NOTICE('Backfilling daily factor scores with OHLCV-only fast path...'))
         start_date = trading_dates[0]
         end_date = trading_dates[-1]
@@ -277,7 +301,6 @@ class Command(BaseCommand):
                         pe_percentile_score=None,
                         pb_percentile_score=None,
                         roe_trend_score=None,
-                        northbound_flow_score=None,
                         main_force_flow_score=None,
                         margin_flow_score=None,
                         technical_reversal_score=technical_score,
@@ -307,3 +330,31 @@ class Command(BaseCommand):
             created += len(pending)
 
         self.stdout.write(f'  factor_scores: created {created} rows via fast path')
+
+    def _slice_factor_score_dates(self, trading_dates, resume, metadata_source):
+        if not resume or not trading_dates:
+            return trading_dates
+
+        latest_completed = (
+            FactorScore.objects.filter(
+                mode=FactorScore.FactorMode.COMPOSITE,
+                metadata__source=metadata_source,
+            )
+            .order_by('-date')
+            .values_list('date', flat=True)
+            .first()
+        )
+        if latest_completed is None:
+            self.stdout.write('  factor_scores: resume requested, but no prior completed date found; starting from requested range start')
+            return trading_dates
+
+        remaining_dates = [trading_date for trading_date in trading_dates if trading_date > latest_completed]
+        if remaining_dates:
+            self.stdout.write(
+                f'  factor_scores: resume requested, skipping through {latest_completed} and restarting at {remaining_dates[0]}'
+            )
+        else:
+            self.stdout.write(
+                f'  factor_scores: resume requested, latest completed date {latest_completed} already covers the requested range'
+            )
+        return remaining_dates
