@@ -7,6 +7,7 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ 
 const StockDetailPage = lazy(() => import('./pages/StockDetailPage').then((m) => ({ default: m.StockDetailPage })))
 const MacroContextPage = lazy(() => import('./pages/MacroContextPage').then((m) => ({ default: m.MacroContextPage })))
 const BacktestWorkbenchPage = lazy(() => import('./pages/BacktestWorkbenchPage').then((m) => ({ default: m.BacktestWorkbenchPage })))
+const IndicatorBoardPage = lazy(() => import('./pages/IndicatorBoardPage').then((m) => ({ default: m.IndicatorBoardPage })))
 const AlertCenterPage = lazy(() => import('./pages/AlertCenterPage').then((m) => ({ default: m.AlertCenterPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const ModelMonitoringPage = lazy(() => import('./pages/ModelMonitoringPage').then((m) => ({ default: m.ModelMonitoringPage })))
@@ -26,6 +27,7 @@ const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: withSuspense(<DashboardPage />) },
+      { path: 'indicator-board', element: withSuspense(<IndicatorBoardPage />) },
       { path: 'stock/:symbol', element: withSuspense(<StockDetailPage />) },
       { path: 'macro', element: withSuspense(<MacroContextPage />) },
       { path: 'models', element: withSuspense(<ModelMonitoringPage />) },

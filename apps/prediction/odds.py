@@ -13,6 +13,24 @@ def _to_decimal(value, default='0'):
         return Decimal(str(default))
 
 
+def _to_optional_decimal(value):
+    if value in (None, ''):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _normalize_policy_options(policy_options):
+    raw_options = policy_options or {}
+    return {
+        'include_near_round_target': bool(raw_options.get('include_near_round_target', True)),
+        'min_target_return_pct': _to_optional_decimal(raw_options.get('min_target_return_pct')),
+        'min_stop_distance_pct': _to_optional_decimal(raw_options.get('min_stop_distance_pct')),
+    }
+
+
 def _quantize_price(value):
     return value.quantize(Decimal('0.0001'))
 
@@ -35,7 +53,8 @@ def _round_price_ceiling(price):
     return ((price / step).to_integral_value(rounding=ROUND_CEILING)) * step
 
 
-def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predicted_label):
+def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predicted_label, policy_options=None):
+    policy = _normalize_policy_options(policy_options)
     latest_bar = latest_ohlcv(asset_id, as_of)
     if latest_bar is None:
         return {
@@ -75,13 +94,16 @@ def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predi
     lower_band = _to_decimal((bbands or {}).get('lower'), current_close)
     moving_average_support = _to_decimal(sma_60 or sma_50, current_close)
 
+    raw_resistance_candidates = [
+        max(highs_20, default=current_close),
+        max(highs_60, default=current_close),
+        upper_band,
+    ]
+    if policy['include_near_round_target']:
+        raw_resistance_candidates.append(_round_price_ceiling(current_close * Decimal('1.01')))
+
     resistance_candidates = [
-        value for value in [
-            max(highs_20, default=current_close),
-            max(highs_60, default=current_close),
-            upper_band,
-            _round_price_ceiling(current_close * Decimal('1.01')),
-        ] if value > current_close
+        value for value in raw_resistance_candidates if value > current_close
     ]
     support_candidates = [
         value for value in [
@@ -97,6 +119,16 @@ def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predi
 
     target_price = min(resistance_candidates) if resistance_candidates else current_close * (Decimal('1') + upside_fallback)
     stop_loss_price = max(support_candidates) if support_candidates else current_close * (Decimal('1') - downside_fallback)
+
+    min_target_return_pct = policy['min_target_return_pct']
+    if min_target_return_pct is not None:
+        target_floor = current_close * (Decimal('1') + min_target_return_pct)
+        target_price = max(target_price, target_floor)
+
+    min_stop_distance_pct = policy['min_stop_distance_pct']
+    if min_stop_distance_pct is not None:
+        stop_ceiling = current_close * (Decimal('1') - min_stop_distance_pct)
+        stop_loss_price = min(stop_loss_price, stop_ceiling)
 
     reward = max(target_price - current_close, current_close * Decimal('0.005'))
     risk = max(current_close - stop_loss_price, current_close * Decimal('0.005'))

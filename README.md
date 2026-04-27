@@ -49,16 +49,21 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 
 ### Data Metrics
 - **Technical Indicators**: 1,141,393 stored indicator rows across RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, and RS_SCORE
-- **Signal/Sentiment Tables**: 2,795 signal events, 40,066 news articles, 1,835,998 sentiment scores, and 80 concept heat rows
+- **Signal/Sentiment Tables**: 2,855 signal events, 44,468 news articles, 1,836,395 sentiment scores, and 88 concept heat rows
 - **Factor Tables**: 1,145,013 fundamental snapshots, 1,145,611 capital-flow snapshots, 990,029 raw moneyflow rows, 768,393 raw margin-detail rows, and 1,801,500 factor-score rows
-- **Prediction Tables**: 9,901 heuristic prediction rows and 444,980 LightGBM prediction rows, with target/stop/risk-reward/trade-score/suggested fields available on prediction outputs
-- **Model Monitoring Volume**: 8 LightGBM artifacts (3 active), 17 model-version rows, 304 feature-importance snapshots, and 3 ensemble-weight snapshots
-- **Backtest Release Export**: CSV reports for BacktestRun IDs 89-112 are stored under `reports/backtests_89_112_v0_1_9/`
+- **Prediction Tables**: 10,804 `PredictionResult` rows for heuristic/LSTM storage surfaces and 446,482 LightGBM prediction rows, with target/stop/risk-reward/trade-score/suggested fields available on prediction outputs
+- **Model Monitoring Volume**: 14 LightGBM artifacts (3 active), 23 model-version rows, 475 feature-importance snapshots, and 3 ensemble-weight snapshots
+- **Backtest Release Export**: validation and policy experiment CSV packs are stored under `reports/backtests_113_116_lightgbm_core80_v1/`, `reports/backtests_113_128_tpsl_rerun_20260427/`, `reports/backtests_117_128_grid12_tpsl_rerun_20260427/`, and `reports/tpsl_policy_experiment_123_118_20260427/`
 
 ### Models
 - **Heuristic**: rule-based multi-horizon baseline with trade-decision outputs
-- **LightGBM**: multi-class model with artifact registry, monitoring, and dashboard comparison
+- **LightGBM**: multi-class model with tagged retrains, active `core80-v1` 20-feature artifacts, snapshot-driven pruning, monitoring, and dashboard comparison
 - **LSTM (PyTorch)**: real retrain pipeline and live inference path (3/7/30 horizons)
+
+### Validation & Reporting
+- **Data Quality Validation**: `validate_data_quality` writes actionable CSV/JSON audit reports under `reports/` without mutating historical tables
+- **Focused Model Data Audit**: `audit_model_data_quality` inspects default/null buckets in factor, fundamental, capital-flow, and `RS_SCORE` history for debugging
+- **Backtest Experiment Packs**: current release artifacts track model lineage, macro context, TP/SL policy variants, and comparison deltas across runs 113-136
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
@@ -92,6 +97,8 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ### Latest Highlights
+- The current `v0.1.10` release candidate packages `97` changed files across backend, frontend, docs, tests, reports, and model artifacts.
+- 0.1.10: deterministic LightGBM `core80-v1` retrains, TP/SL trade-decision policy experiments, new validation/audit commands, Indicator Board UI, and refreshed validation report packs for runs 113-136
 - 0.1.9: full backfill refresh, runtime backtest validation, northbound field cleanup migration
 - 0.1.8: LSTM real retrain + inference, all-model backtest source selection, and backtest/stock page UX upgrades
 - 0.1.7: odds engine, LightGBM trade-decision parity, and dashboard consolidation
@@ -100,22 +107,24 @@ Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANG
 
 ## Future Phases & Roadmap
 
-a500
+###
+3. 什么是建议的入场时间，我目前暂时定在周二周四，是否合理？
+4. 我们是否要考虑加入历史分钟数据来确定我们的入场成本.
+5. 现阶段我们是否可以开始考虑将股票池从沪深300扩张到沪深300+a500
 
 ###
+current backfill_model_data takes hours to backfill data between 2000 and 2026. what are the bottlenecks and how can we optimize it for faster iteration?
 
 ###
-after this backfill, i have questions regarding to two sections:
+buy price currently depends on close price
 
-1. many technical scores are .00 or .50, which is looks like default value.
-1.1 is it true?
-1.2 what are the reasons for that? data issue, calculation issue, or just the nature of the score distribution?
-
-2. many roe and roe qaq fields are null
-2.1 ex. 	阿特斯 (688472.SH)	July 14, 2023
-2.2 what are the reasons for that? data issue or calculation issue?
-
-3. current backfill_model_data takes hours to backfill data between 2000 and 2026. what are the bottlenecks and how can we optimize it for faster iteration?
+###
+we need to add model version selection to our system so we can validate the latest LightGBM and LSTM models against the previous versions.
+1. add the selection to page http://localhost:5173/backtest
+2. sync the change to the dashboard http://localhost:5173/
+3. add the field to the backruns http://localhost:8000/admin/backtest/backtestrun/
+4. update exported reports if needed
+5. sync the change to our backend
 
 ###
 stored MACD, ADX, OBV, SMA/EMA, and RS score analytics do not currently feed into technical score
@@ -127,7 +136,7 @@ Broad Django app-label test discovery still hits the project’s namespace-packa
 2. Refresh the data-range table in TechnicalGuide.md again as the latest backfill finished.
 3. update the document so the guide matches the current implementation
 4. update readme.md and changelog.md for the 66 file changes, and i am ready to commit as version 0.1.9
-5. prepare me a sheet that includes all detailed backtest configuration and results for backtest 89-112
+5. update /reports for detailed backtest configuration and results for backtest 89-112
 
 ###
 invest in the next layers of trade-decision integration and dashboard consolidation.
@@ -144,19 +153,12 @@ do we need to add moneyflow_hsgt 北向资金（百万元）南向资金（百�
 | 样本内外Alpha差距 | ~44%      | <20%                 |
 
 
-add a column to Data Metrics Sheet in techinicalguide.md that explains what these metrics are used for, how they feed into models or trade decisions, and what the implications of missing data are.
-
-
 I did not switch prediction APIs, alerts, or the rest of the project to strict real-time mode. This implementation is scoped to backtests only, 
 
-现在值得做：
-1. 补充财务因子数据（PE/PB/ROE，现在全是空的）
-   → 让多因子模型真正跑起来
 
 2. 把heuristic从集成中替换掉
    → 用调好的多因子线性模型替代，作为LightGBM的互补
 
-将来值得做：
 3. 引入TFT替代LSTM
    → 真正有效的时序模型
 

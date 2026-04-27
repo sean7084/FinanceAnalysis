@@ -1,3 +1,5 @@
+import type { DashboardCandidateFilters } from './dashboardCandidateFilters'
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const AUTH_MODE_KEY = 'finance_auth_persistence'
 const JWT_KEY = 'finance_jwt'
@@ -67,6 +69,8 @@ export interface DashboardStockRowDto {
   asset_symbol: string
   asset_name: string
   date: string
+  candidate_rank?: number | null
+  candidate_rank_value?: number | null
   composite_score: number
   bottom_probability_score: number
   fundamental_score: number
@@ -103,6 +107,20 @@ export interface DashboardStockRowDto {
   lightgbm_stop_loss_price: number | null
   lightgbm_risk_reward_ratio: number | null
   lightgbm_suggested: boolean
+  lstm_label: string
+  lstm_up_probability: number | null
+  lstm_confidence: number | null
+  lstm_trade_score: number | null
+  lstm_target_price: number | null
+  lstm_stop_loss_price: number | null
+  lstm_risk_reward_ratio: number | null
+  lstm_suggested: boolean
+}
+
+export interface DashboardStocksQuery {
+  predictionHorizon?: number
+  pageSize?: number
+  candidateFilters?: DashboardCandidateFilters
 }
 
 export interface AssetDto {
@@ -198,10 +216,20 @@ export interface LightGBMPredictionDto {
   asset_symbol: string
   asset_name: string
   date: string
+  candidate_rank?: number | null
+  candidate_rank_value?: number | null
   horizon_days: number
   up_probability: number
   flat_probability: number
   down_probability: number
+  lstm_label: string
+  lstm_up_probability: number | null
+  lstm_confidence: number | null
+  lstm_trade_score: number | null
+  lstm_target_price: number | null
+  lstm_stop_loss_price: number | null
+  lstm_risk_reward_ratio: number | null
+  lstm_suggested: boolean
   predicted_label: string
   confidence: number
   model_artifact: number | null
@@ -652,9 +680,26 @@ export async function fetchScreenerRows(topN = 20, sortBy = 'bottom_probability_
   return payload.results
 }
 
-export async function fetchDashboardStocks(predictionHorizon = 7, pageSize = 120): Promise<DashboardStockRowDto[]> {
+export async function fetchDashboardStocks(query: DashboardStocksQuery = {}): Promise<DashboardStockRowDto[]> {
+  const params = new URLSearchParams()
+  params.set('prediction_horizon', String(query.predictionHorizon ?? 7))
+  params.set('page_size', String(query.pageSize ?? 120))
+
+  if (query.candidateFilters) {
+    params.set('prediction_source', query.candidateFilters.predictionSource)
+    params.set('horizon_days', String(query.candidateFilters.horizonDays))
+    params.set('candidate_mode', query.candidateFilters.candidateMode)
+    params.set('up_threshold', String(query.candidateFilters.upThreshold))
+    params.set('top_n', String(query.candidateFilters.topN))
+    params.set('top_n_metric', query.candidateFilters.topNMetric)
+    params.set('trade_score_scope', query.candidateFilters.tradeScoreScope)
+    params.set('trade_score_threshold', String(query.candidateFilters.tradeScoreThreshold))
+    params.set('max_positions', String(query.candidateFilters.maxPositions))
+    params.set('use_macro_context', query.candidateFilters.useMacroContext ? 'true' : 'false')
+  }
+
   const payload = await apiGet<Paginated<DashboardStockRowDto> | { count: number; results: DashboardStockRowDto[] }>(
-    `/dashboard/stocks/?prediction_horizon=${predictionHorizon}&page_size=${pageSize}`,
+    `/dashboard/stocks/?${params.toString()}`,
   )
   if (isPaginated<DashboardStockRowDto>(payload)) {
     return payload.results

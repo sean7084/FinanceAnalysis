@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import re
 from bisect import bisect_left
 from datetime import date, timedelta
 from decimal import Decimal
@@ -39,12 +40,30 @@ from .odds import estimate_trade_decision
 MODELS_DIR = os.path.join(settings.BASE_DIR, 'models', 'lightgbm')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
+PRUNING_RULE_LATEST_SNAPSHOT_CORE80 = 'latest_snapshot_cumulative_80_core20_25'
+PRUNING_TARGET_CUMULATIVE_IMPORTANCE = 0.80
+PRUNING_MIN_RETAINED_FEATURES = 20
+PRUNING_MAX_RETAINED_FEATURES = 25
+
 
 def _get_model_path(horizon_days, version):
     return os.path.join(MODELS_DIR, f'{horizon_days}d_{version}')
 
 
-def _save_model_artifacts(model_dict, horizon_days, version):
+def _normalize_version_tag(version_tag):
+    token = re.sub(r'[^A-Za-z0-9._-]+', '-', str(version_tag or '').strip())
+    return token.strip('-._')
+
+
+def _build_lightgbm_model_version(horizon_days, training_end, version_tag=''):
+    base_version = f'lgb-{horizon_days}d-{training_end.isoformat()}'
+    normalized_tag = _normalize_version_tag(version_tag)
+    if not normalized_tag:
+        return base_version
+    return f'{base_version}-{normalized_tag}'
+
+
+def _save_model_artifacts(model_dict, horizon_days, version, extra_metadata=None):
     """Save trained model, scaler, calibrator to disk."""
     path = _get_model_path(horizon_days, version)
     os.makedirs(path, exist_ok=True)
@@ -59,11 +78,15 @@ def _save_model_artifacts(model_dict, horizon_days, version):
         pickle.dump(model_dict['calibrator'], f)
 
     with open(os.path.join(path, 'metadata.json'), 'w') as f:
-        json.dump({
+        metadata = {
             'horizon_days': horizon_days,
+            'version': version,
             'feature_names': model_dict['feature_names'],
             'trained_at': timezone.now().isoformat(),
-        }, f, indent=2)
+        }
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        json.dump(metadata, f, indent=2)
 
 
 def _load_model_artifacts(horizon_days, version):
@@ -181,41 +204,143 @@ def _build_interaction_features(df, feature_names):
     return df, feature_names + created
 
 
-def _get_recent_feature_artifacts(horizon_days, lookback_runs=3):
-    artifacts = list(
-        LightGBMModelArtifact.objects.filter(status=LightGBMModelArtifact.Status.READY, horizon_days=horizon_days)
-        .order_by('-trained_at')[:lookback_runs]
+def _coverage_at_count(ranked_features, keep_count):
+    if not ranked_features:
+        return 0.0
+    index = min(max(keep_count, 1), len(ranked_features)) - 1
+    return ranked_features[index]['cumulative_importance']
+
+
+def _threshold_keep_count(ranked_features, target):
+    for index, row in enumerate(ranked_features, start=1):
+        if row['cumulative_importance'] >= target:
+            return index
+    return len(ranked_features)
+
+
+def _build_noop_feature_pruning_plan(horizon_days, feature_names):
+    return {
+        'kept_features': list(feature_names),
+        'pruned_features': [],
+        'audit': {
+            'rule': 'none',
+            'horizon_days': horizon_days,
+            'engineered_feature_count': len(feature_names),
+            'final_keep_count': len(feature_names),
+            'pruned_feature_count': 0,
+            'kept_features': list(feature_names),
+            'pruned_features': [],
+        },
+    }
+
+
+def _build_snapshot_feature_pruning_plan(horizon_days, feature_names):
+    source_artifact = (
+        LightGBMModelArtifact.objects.filter(
+            status=LightGBMModelArtifact.Status.READY,
+            horizon_days=horizon_days,
+            is_active=True,
+        )
+        .order_by('-trained_at', '-created_at')
+        .first()
     )
-    if len(artifacts) < 2:
-        return []
-    return artifacts
+    if source_artifact is None:
+        raise ValueError(f'No active LightGBM artifact available for {horizon_days}-day snapshot pruning.')
+
+    feature_name_set = set(feature_names)
+    snapshot_rows = list(
+        FeatureImportanceSnapshot.objects.filter(model_artifact=source_artifact)
+        .order_by('importance_rank', '-importance_score')
+        .values('feature_name', 'importance_score', 'importance_rank')
+    )
+    if not snapshot_rows:
+        raise ValueError(f'No feature importance snapshots available for artifact {source_artifact.version}.')
+
+    seen = set()
+    scored_rows = []
+    for row in snapshot_rows:
+        feature_name = row['feature_name']
+        if feature_name in seen or feature_name not in feature_name_set:
+            continue
+        importance_score = max(0.0, float(row['importance_score'] or 0.0))
+        scored_rows.append({
+            'feature_name': feature_name,
+            'importance_score': importance_score,
+            'source_rank': row['importance_rank'],
+        })
+        seen.add(feature_name)
+
+    if not scored_rows:
+        raise ValueError(f'No snapshot features from artifact {source_artifact.version} match the current feature schema.')
+
+    total_importance = sum(row['importance_score'] for row in scored_rows)
+    if total_importance <= 0:
+        raise ValueError(f'No positive feature importance available for artifact {source_artifact.version}.')
+
+    cumulative = 0.0
+    ranked_features = []
+    for row in scored_rows:
+        cumulative += row['importance_score']
+        ranked_features.append({
+            **row,
+            'cumulative_importance': cumulative / total_importance,
+        })
+
+    target_keep_count = _threshold_keep_count(ranked_features, PRUNING_TARGET_CUMULATIVE_IMPORTANCE)
+    if target_keep_count < PRUNING_MIN_RETAINED_FEATURES:
+        final_keep_count = min(PRUNING_MIN_RETAINED_FEATURES, len(ranked_features))
+    elif target_keep_count > PRUNING_MAX_RETAINED_FEATURES:
+        final_keep_count = min(PRUNING_MAX_RETAINED_FEATURES, len(ranked_features))
+    else:
+        final_keep_count = target_keep_count
+
+    ranked_kept_features = [row['feature_name'] for row in ranked_features[:final_keep_count]]
+    keep_set = set(ranked_kept_features)
+    kept_feature_names = [feature_name for feature_name in feature_names if feature_name in keep_set]
+    pruned_feature_names = [feature_name for feature_name in feature_names if feature_name not in keep_set]
+    missing_from_source = [feature_name for feature_name in feature_names if feature_name not in seen]
+
+    audit = {
+        'rule': PRUNING_RULE_LATEST_SNAPSHOT_CORE80,
+        'source_artifact_id': source_artifact.id,
+        'source_artifact_version': source_artifact.version,
+        'source_artifact_trained_at': source_artifact.trained_at.isoformat() if source_artifact.trained_at else None,
+        'target_cumulative_importance': PRUNING_TARGET_CUMULATIVE_IMPORTANCE,
+        'min_retained_features': PRUNING_MIN_RETAINED_FEATURES,
+        'max_retained_features': PRUNING_MAX_RETAINED_FEATURES,
+        'source_feature_count': len(ranked_features),
+        'engineered_feature_count': len(feature_names),
+        'target_keep_count': target_keep_count,
+        'final_keep_count': len(kept_feature_names),
+        'pruned_feature_count': len(pruned_feature_names),
+        'retained_cumulative_importance': _coverage_at_count(ranked_features, final_keep_count),
+        'top20_cumulative_importance': _coverage_at_count(ranked_features, PRUNING_MIN_RETAINED_FEATURES),
+        'top25_cumulative_importance': _coverage_at_count(ranked_features, PRUNING_MAX_RETAINED_FEATURES),
+        'threshold_keep_counts': {
+            '80': target_keep_count,
+            '85': _threshold_keep_count(ranked_features, 0.85),
+            '90': _threshold_keep_count(ranked_features, 0.90),
+        },
+        'kept_features': kept_feature_names,
+        'ranked_kept_features': ranked_kept_features,
+        'pruned_features': pruned_feature_names,
+        'missing_from_source_features': missing_from_source,
+    }
+    return {
+        'kept_features': kept_feature_names,
+        'pruned_features': pruned_feature_names,
+        'audit': audit,
+    }
+
+
+def _get_feature_pruning_plan(horizon_days, feature_names, use_snapshot_pruning=False):
+    if not use_snapshot_pruning:
+        return _build_noop_feature_pruning_plan(horizon_days, feature_names)
+    return _build_snapshot_feature_pruning_plan(horizon_days, feature_names)
 
 
 def _get_pruned_feature_names(horizon_days, feature_names):
-    artifacts = _get_recent_feature_artifacts(horizon_days)
-    if not artifacts:
-        return []
-
-    snapshots = FeatureImportanceSnapshot.objects.filter(model_artifact__in=artifacts)
-    if not snapshots.exists():
-        return []
-
-    grouped = {}
-    for snapshot in snapshots:
-        grouped.setdefault(snapshot.feature_name, []).append(snapshot.importance_score)
-
-    pruned = []
-    required_history = len(artifacts)
-    for feature_name in feature_names:
-        scores = grouped.get(feature_name, [])
-        if len(scores) < required_history:
-            continue
-        average_importance = sum(scores) / len(scores)
-        if average_importance <= 0.01:
-            pruned.append(feature_name)
-
-    max_pruned = max(1, len(feature_names) // 5)
-    return sorted(pruned)[:max_pruned]
+    return _get_feature_pruning_plan(horizon_days, feature_names, use_snapshot_pruning=True)['pruned_features']
 
 
 def _register_lightgbm_model_version(horizon_days, model_version, training_start, training_end, metrics, feature_names, metadata):
@@ -778,7 +903,7 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
 # ============================================================================
 
 @shared_task
-def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None):
+def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None, version_tag='', use_snapshot_pruning=False):
     """
     Train LightGBM models for 3, 7, 30-day horizons.
     Runs weekly via Celery Beat.
@@ -832,7 +957,11 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
         except ValueError:
             training_start = training_end - timedelta(days=365 * 5)
 
-    print(f'Training LightGBM models from {training_start} to {training_end}')
+    normalized_version_tag = _normalize_version_tag(version_tag)
+    if normalized_version_tag:
+        print(f'Training LightGBM models from {training_start} to {training_end} with version tag {normalized_version_tag}')
+    else:
+        print(f'Training LightGBM models from {training_start} to {training_end}')
 
     # Create feature and label matrices
     X_df = _create_feature_matrix(training_start, training_end)
@@ -852,8 +981,14 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
     for horizon in selected_horizons:
         print(f'Training model for {horizon}-day horizon...')
         try:
-            pruned_feature_names = _get_pruned_feature_names(horizon, feature_names)
-            selected_feature_names = [name for name in feature_names if name not in pruned_feature_names]
+            pruning_plan = _get_feature_pruning_plan(
+                horizon,
+                feature_names,
+                use_snapshot_pruning=use_snapshot_pruning,
+            )
+            selected_feature_names = pruning_plan['kept_features']
+            pruned_feature_names = pruning_plan['pruned_features']
+            pruning_audit = pruning_plan['audit']
 
             labels_dict = _create_labels_for_training(training_start, training_end, horizon)
             if labels_dict:
@@ -890,14 +1025,14 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
             lgb_params = {
                 'objective': 'multiclass',
                 'num_class': 3,
-                'num_leaves': 31,
+                'num_leaves': 15,
                 'learning_rate': 0.05,
-                'feature_fraction': 0.8,
+                'feature_fraction': 0.6,
                 'bagging_fraction': 0.8,
                 'bagging_freq': 5,
-                'lambda_l1': 0.1,
-                'lambda_l2': 0.1,
-                'min_data_in_leaf': 20,
+                'lambda_l1': 1.0,
+                'lambda_l2': 1.0,
+                'min_data_in_leaf': 50,
                 'random_state': 42,
                 'verbose': -1,
             }
@@ -924,14 +1059,35 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 reverse=True
             )[:10]
 
-            model_version = f'lgb-{horizon}d-{training_end.isoformat()}'
+            model_version = _build_lightgbm_model_version(horizon, training_end, normalized_version_tag)
+            artifact_metadata = {
+                'engineered_feature_version': 'v2',
+                'calibration_method': calibration_method,
+                'interaction_features': [name for name in selected_feature_names if '_x_' in name],
+                'pruned_features': pruned_feature_names,
+                'pruning': pruning_audit,
+                'feature_schema_size': len(selected_feature_names),
+                'version_tag': normalized_version_tag,
+                'lgb_params': dict(lgb_params),
+            }
             artifacts = {
                 'model': model,
                 'scaler': scaler,
                 'calibrator': calibrator,
                 'feature_names': selected_feature_names,
             }
-            _save_model_artifacts(artifacts, horizon, model_version)
+            _save_model_artifacts(
+                model_dict=artifacts,
+                horizon_days=horizon,
+                version=model_version,
+                extra_metadata={
+                    'training_window_start': training_start.isoformat(),
+                    'training_window_end': training_end.isoformat(),
+                    'version_tag': normalized_version_tag,
+                    'lgb_params': dict(lgb_params),
+                    'pruning': pruning_audit,
+                },
+            )
 
             LightGBMModelArtifact.objects.filter(
                 horizon_days=horizon,
@@ -952,13 +1108,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 'trained_at': timezone.now(),
                 'is_active': True,
                 'feature_importance': dict(top_features),
-                'metadata': {
-                    'engineered_feature_version': 'v2',
-                    'calibration_method': calibration_method,
-                    'interaction_features': [name for name in selected_feature_names if '_x_' in name],
-                    'pruned_features': pruned_feature_names,
-                    'feature_schema_size': len(selected_feature_names),
-                },
+                'metadata': artifact_metadata,
             }
             artifact, _ = LightGBMModelArtifact.objects.update_or_create(
                 horizon_days=horizon,
@@ -981,9 +1131,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 feature_names=selected_feature_names,
                 metadata={
                     'artifact_id': artifact.id,
-                    'engineered_feature_version': 'v2',
-                    'calibration_method': calibration_method,
-                    'pruned_features': pruned_feature_names,
+                    **artifact_metadata,
                     'top_features': dict(top_features),
                 },
             )

@@ -11,6 +11,7 @@ from rest_framework.test import APIClient
 from apps.factors.models import FactorScore
 from apps.markets.models import Asset, Market, OHLCV
 from apps.macro.models import MarketContext
+from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
 from .models import BacktestRun, BacktestTrade
@@ -230,6 +231,7 @@ class Phase15BacktestTests(TestCase):
         result = run_backtest(run.id)
         run.refresh_from_db()
         buy_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.BUY).first()
+        sell_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.SELL).first()
 
         self.assertIn('completed', result.lower())
         self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
@@ -237,6 +239,226 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(buy_trade.signal_payload['prediction_source'], 'lightgbm')
         self.assertEqual(buy_trade.signal_payload['model_artifact_id'], artifact.id)
         self.assertTrue(buy_trade.signal_payload['generated_on_demand'])
+        self.assertIsNotNone(buy_trade.signal_payload.get('trade_score'))
+        self.assertIsNotNone(buy_trade.signal_payload.get('target_price'))
+        self.assertIsNotNone(buy_trade.signal_payload.get('stop_loss_price'))
+        self.assertIsNotNone(sell_trade)
+        self.assertEqual(sell_trade.metadata['exit_reason'], 'SCHEDULED')
+
+    @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_lightgbm_top_n_stop_target_exit_uses_propagated_levels(self, mock_load_artifacts, _mock_extract_features):
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-bt-tpsl-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/tpsl-test',
+            feature_names=['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d'],
+            is_active=True,
+        )
+        mock_load_artifacts.return_value = {
+            'model': object(),
+            'scaler': IdentityScaler(),
+            'calibrator': StubCalibrator(),
+            'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d']},
+        }
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM TP SL Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'enable_stop_target_exit': True,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.BUY).first()
+        sell_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.SELL).first()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertIsNotNone(buy_trade)
+        self.assertIsNotNone(buy_trade.signal_payload.get('trade_score'))
+        self.assertIsNotNone(buy_trade.signal_payload.get('target_price'))
+        self.assertIsNotNone(buy_trade.signal_payload.get('stop_loss_price'))
+        self.assertIsNotNone(sell_trade)
+        self.assertEqual(sell_trade.metadata['exit_reason'], 'TARGET_PRICE')
+
+    def test_trade_decision_policy_adjusts_near_target_and_stop_distance(self):
+        policy_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600091',
+            ts_code='600091.SH',
+            name='Policy Asset',
+        )
+        OHLCV.objects.create(
+            asset=policy_asset,
+            date=self.d1,
+            open=Decimal('90.0000'),
+            high=Decimal('90.0000'),
+            low=Decimal('89.0000'),
+            close=Decimal('90.0000'),
+            adj_close=Decimal('90.0000'),
+            volume=100000,
+            amount=Decimal('9000000.0000'),
+        )
+
+        baseline = estimate_trade_decision(policy_asset.id, self.d1, 7, Decimal('0.70'), PredictionResult.Label.UP)
+        without_near_target = estimate_trade_decision(
+            policy_asset.id,
+            self.d1,
+            7,
+            Decimal('0.70'),
+            PredictionResult.Label.UP,
+            policy_options={'include_near_round_target': False},
+        )
+        with_target_floor = estimate_trade_decision(
+            policy_asset.id,
+            self.d1,
+            7,
+            Decimal('0.70'),
+            PredictionResult.Label.UP,
+            policy_options={'min_target_return_pct': Decimal('0.05')},
+        )
+        with_stop_floor = estimate_trade_decision(
+            policy_asset.id,
+            self.d1,
+            7,
+            Decimal('0.70'),
+            PredictionResult.Label.UP,
+            policy_options={'min_stop_distance_pct': Decimal('0.03')},
+        )
+
+        self.assertEqual(baseline['target_price'], Decimal('92.0000'))
+        self.assertEqual(without_near_target['target_price'], Decimal('95.4000'))
+        self.assertEqual(with_target_floor['target_price'], Decimal('94.5000'))
+        self.assertEqual(baseline['stop_loss_price'], Decimal('89.0000'))
+        self.assertEqual(with_stop_floor['stop_loss_price'], Decimal('87.3000'))
+
+    @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_lightgbm_top_n_applies_trade_decision_policy_to_payload(self, mock_load_artifacts, _mock_extract_features):
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-bt-policy-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/policy-test',
+            feature_names=['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d'],
+            is_active=True,
+        )
+        mock_load_artifacts.return_value = {
+            'model': object(),
+            'scaler': IdentityScaler(),
+            'calibrator': StubCalibrator(),
+            'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d']},
+        }
+        OHLCV.objects.filter(asset=self.asset, date=self.d1).update(
+            open=Decimal('90.0000'),
+            high=Decimal('90.0000'),
+            low=Decimal('89.0000'),
+            close=Decimal('90.0000'),
+            adj_close=Decimal('90.0000'),
+            amount=Decimal('9000000.0000'),
+        )
+        OHLCV.objects.filter(asset=self.asset, date=self.d2).update(
+            open=Decimal('95.0000'),
+            high=Decimal('96.0000'),
+            low=Decimal('94.0000'),
+            close=Decimal('95.0000'),
+            adj_close=Decimal('95.0000'),
+            amount=Decimal('9500000.0000'),
+        )
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Policy Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'enable_stop_target_exit': True,
+                'trade_decision_policy': {'min_target_return_pct': 0.05},
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.BUY).first()
+        sell_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.SELL).first()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertIsNotNone(buy_trade)
+        self.assertEqual(buy_trade.signal_payload['target_price'], 94.5)
+        self.assertEqual(buy_trade.signal_payload['trade_decision_policy'], {'min_target_return_pct': 0.05})
+        self.assertIsNotNone(sell_trade)
+        self.assertEqual(sell_trade.metadata['exit_reason'], 'TARGET_PRICE')
+
+    @patch('apps.backtest.tasks._pick_candidates')
+    def test_open_positions_backfills_missing_prediction_trade_decision_fields(self, mock_pick_candidates):
+        mock_pick_candidates.return_value = [
+            {
+                'asset_id': self.asset.id,
+                'rank_value': Decimal('0.700000'),
+                'signal_payload': {
+                    'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'prediction_source': 'lightgbm',
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': 'up_prob_7d',
+                    'horizon_days': 7,
+                    'up_probability': 0.7,
+                    'flat_probability': 0.2,
+                    'down_probability': 0.1,
+                    'confidence': 0.7,
+                    'predicted_label': 'UP',
+                    'generated_on_demand': True,
+                },
+            },
+        ]
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Missing TP SL Backfill Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'enable_stop_target_exit': True,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.BUY).first()
+        sell_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.SELL).first()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertIsNotNone(buy_trade)
+        self.assertIsNotNone(buy_trade.signal_payload.get('trade_score'))
+        self.assertIsNotNone(buy_trade.signal_payload.get('target_price'))
+        self.assertIsNotNone(buy_trade.signal_payload.get('stop_loss_price'))
+        self.assertIsNotNone(sell_trade)
+        self.assertEqual(sell_trade.metadata['exit_reason'], 'TARGET_PRICE')
 
     def test_run_backtest_fails_without_active_lightgbm_artifact(self):
         run = BacktestRun.objects.create(
@@ -405,6 +627,29 @@ class Phase15BacktestTests(TestCase):
             },
             format='json',
         )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_backtest_serializer_rejects_invalid_trade_decision_policy(self):
+        self._auth()
+        response = self.client.post(
+            '/api/v1/backtest/',
+            {
+                'name': 'P15 Invalid Trade Policy',
+                'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                'start_date': str(self.d1),
+                'end_date': str(self.d2),
+                'initial_capital': '100000.00',
+                'parameters': {
+                    'top_n': 1,
+                    'horizon_days': 7,
+                    'up_threshold': 0.55,
+                    'prediction_source': 'lightgbm',
+                    'trade_decision_policy': {'min_target_return_pct': 0.75},
+                },
+            },
+            format='json',
+        )
+
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     @patch('apps.backtest.views.run_backtest.delay')

@@ -46,6 +46,16 @@ class Command(BaseCommand):
             action='store_true',
             help='Pass through to backfill_model_data to skip sentiment recomputation.',
         )
+        parser.add_argument(
+            '--version-tag',
+            default='',
+            help='Optional suffix added to the LightGBM model version to preserve existing artifact families.',
+        )
+        parser.add_argument(
+            '--use-snapshot-pruning',
+            action='store_true',
+            help='Prune features from the latest active FeatureImportanceSnapshot before retraining.',
+        )
 
     def _parse_date(self, value, name):
         try:
@@ -90,14 +100,19 @@ class Command(BaseCommand):
                 backfill_kwargs['skip_sentiment'] = True
             call_command('backfill_model_data', **backfill_kwargs)
 
+        version_tag = str(options.get('version_tag') or '').strip()
+        tag_suffix = f' version_tag={version_tag}' if version_tag else ''
+        pruning_suffix = ' snapshot_pruning=on' if options['use_snapshot_pruning'] else ''
         self.stdout.write(
-            f'Retraining LightGBM horizons={horizons} for window {start_date.isoformat()} -> {end_date.isoformat()}...'
+            f'Retraining LightGBM horizons={horizons} for window {start_date.isoformat()} -> {end_date.isoformat()}...{tag_suffix}{pruning_suffix}'
         )
 
         results = train_lightgbm_models(
             training_start_date=start_date.isoformat(),
             training_end_date=end_date.isoformat(),
             horizons=horizons,
+            version_tag=version_tag,
+            use_snapshot_pruning=options['use_snapshot_pruning'],
         )
 
         self.stdout.write(json.dumps(results, ensure_ascii=True, indent=2, sort_keys=True))

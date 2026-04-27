@@ -257,6 +257,12 @@ class Phase17DashboardStockApiTests(TestCase):
             status=ModelVersion.Status.READY,
             is_active=True,
         )
+        self.lstm_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='dashboard-lstm-v1',
+            status=ModelVersion.Status.READY,
+            is_active=True,
+        )
         lightgbm_artifact = LightGBMModelArtifact.objects.create(
             horizon_days=7,
             version='dashboard-lgbm-v1',
@@ -291,6 +297,34 @@ class Phase17DashboardStockApiTests(TestCase):
             trade_score=Decimal('0.720000'),
             suggested=False,
             model_version=heuristic_version,
+        )
+        PredictionResult.objects.create(
+            asset=self.asset1,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.690000'),
+            flat_probability=Decimal('0.180000'),
+            down_probability=Decimal('0.130000'),
+            confidence=Decimal('0.690000'),
+            predicted_label=PredictionResult.Label.UP,
+            risk_reward_ratio=Decimal('3.050000'),
+            trade_score=Decimal('2.450000'),
+            suggested=True,
+            model_version=self.lstm_version,
+        )
+        PredictionResult.objects.create(
+            asset=self.asset2,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.330000'),
+            flat_probability=Decimal('0.420000'),
+            down_probability=Decimal('0.250000'),
+            confidence=Decimal('0.420000'),
+            predicted_label=PredictionResult.Label.FLAT,
+            risk_reward_ratio=Decimal('0.950000'),
+            trade_score=Decimal('0.380000'),
+            suggested=False,
+            model_version=self.lstm_version,
         )
         LightGBMPrediction.objects.create(
             asset=self.asset1,
@@ -335,6 +369,7 @@ class Phase17DashboardStockApiTests(TestCase):
         self.assertEqual(first['asset_symbol'], '600111')
         self.assertEqual(first['heuristic_label'], 'UP')
         self.assertEqual(first['lightgbm_label'], 'UP')
+        self.assertEqual(first['lstm_label'], 'UP')
         self.assertEqual(first['rsi'], '62.50000000')
         self.assertEqual(first['bb_upper'], '11.00000000')
 
@@ -345,6 +380,88 @@ class Phase17DashboardStockApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['count'], 1)
         self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
+
+    def test_dashboard_stocks_filters_lstm_without_mixing_heuristic_rows(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&model_family=lstm&suggested_only=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        result = response.data['results'][0]
+        self.assertEqual(result['asset_symbol'], '600111')
+        self.assertEqual(result['heuristic_label'], 'UP')
+        self.assertEqual(result['heuristic_up_probability'], '0.610000')
+        self.assertEqual(result['lstm_label'], 'UP')
+        self.assertEqual(result['lstm_up_probability'], '0.690000')
+
+    def test_dashboard_stocks_candidate_filter_honors_exact_small_page_size(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(
+            '/api/v1/dashboard/stocks/'
+            '?prediction_source=heuristic&candidate_mode=top_n&top_n=1&top_n_metric=up_prob_7d'
+            '&up_threshold=0&page_size=1'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['page_size'], 1)
+        result = response.data['results'][0]
+        self.assertEqual(result['candidate_rank'], 1)
+        self.assertIsNotNone(result['candidate_rank_value'])
+
+    @patch('apps.backtest.tasks._predict_with_lstm')
+    def test_dashboard_stocks_overlays_runtime_lstm_candidate_payload(self, mock_predict_with_lstm):
+        def fake_lstm_prediction(asset_id, target_date, horizon_days, cache):
+            if asset_id == self.asset1.id:
+                return {
+                    'up_probability': Decimal('0.770000'),
+                    'flat_probability': Decimal('0.140000'),
+                    'down_probability': Decimal('0.090000'),
+                    'confidence': Decimal('0.770000'),
+                    'predicted_label': PredictionResult.Label.UP,
+                    'trade_decision': {
+                        'trade_score': Decimal('2.900000'),
+                        'target_price': Decimal('13.2000'),
+                        'stop_loss_price': Decimal('9.8000'),
+                        'risk_reward_ratio': Decimal('3.100000'),
+                        'suggested': True,
+                    },
+                    'model_version': self.lstm_version,
+                }
+            return {
+                'up_probability': Decimal('0.410000'),
+                'flat_probability': Decimal('0.330000'),
+                'down_probability': Decimal('0.260000'),
+                'confidence': Decimal('0.410000'),
+                'predicted_label': PredictionResult.Label.FLAT,
+                'trade_decision': {
+                    'trade_score': Decimal('0.800000'),
+                    'target_price': Decimal('21.0000'),
+                    'stop_loss_price': Decimal('19.5000'),
+                    'risk_reward_ratio': Decimal('1.000000'),
+                    'suggested': False,
+                },
+                'model_version': self.lstm_version,
+            }
+
+        mock_predict_with_lstm.side_effect = fake_lstm_prediction
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(
+            '/api/v1/dashboard/stocks/'
+            '?prediction_source=lstm&candidate_mode=top_n&top_n=1&top_n_metric=up_prob_7d'
+            '&up_threshold=0&page_size=1'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        result = response.data['results'][0]
+        self.assertEqual(result['asset_symbol'], '600111')
+        self.assertEqual(result['candidate_rank'], 1)
+        self.assertEqual(result['candidate_rank_value'], '0.77000000')
+        self.assertEqual(result['lstm_up_probability'], '0.770000')
+        self.assertEqual(result['lstm_trade_score'], '2.900000')
+        self.assertEqual(result['lstm_target_price'], '13.2000')
+        self.assertEqual(result['lstm_risk_reward_ratio'], '3.100000')
 
 
 class Phase8IndicatorTests(TestCase):

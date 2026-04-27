@@ -102,7 +102,7 @@ def _write_csv(path, fieldnames, rows):
 
 
 class Command(BaseCommand):
-    help = 'Export detailed BacktestRun configuration and results to CSV files.'
+    help = 'Export BacktestRun configuration and results to CSV files. Defaults to light export; use --detail-export for full CSV output.'
 
     def add_arguments(self, parser):
         parser.add_argument('--start-id', type=int, default=89)
@@ -111,6 +111,25 @@ class Command(BaseCommand):
         parser.add_argument('--compare-start-id', type=int, default=101)
         parser.add_argument('--compare-end-id', type=int, default=106)
         parser.add_argument('--compare-offset', type=int, default=6)
+        export_mode = parser.add_mutually_exclusive_group()
+        export_mode.add_argument(
+            '--light-export',
+            dest='detail_export',
+            action='store_false',
+            help='Export only run_summary.csv, run_config_results.csv, and model_references.csv (default).',
+        )
+        export_mode.add_argument(
+            '--detail-export',
+            dest='detail_export',
+            action='store_true',
+            help='Also export trades.csv, macro_context_monthly.csv, and comparison CSVs.',
+        )
+        parser.set_defaults(detail_export=False)
+        parser.add_argument(
+            '--include-active-lightgbm-artifacts',
+            action='store_true',
+            help='Also export lightgbm_model_artifacts.csv for the current active LightGBM artifacts.',
+        )
 
     def handle(self, *args, **options):
         start_id = int(options['start_id'])
@@ -132,10 +151,15 @@ class Command(BaseCommand):
 
         self._export_run_summary(output_dir, runs, requested_ids)
         self._export_run_config_results(output_dir, runs, requested_ids)
-        self._export_trades(output_dir, runs)
-        self._export_macro_context(output_dir, runs)
         self._export_model_references(output_dir, runs)
-        self._export_comparison(output_dir, runs, options)
+
+        if options['include_active_lightgbm_artifacts']:
+            self._export_active_lightgbm_artifacts(output_dir)
+
+        if options['detail_export']:
+            self._export_trades(output_dir, runs)
+            self._export_macro_context(output_dir, runs)
+            self._export_comparison(output_dir, runs, options)
 
         self.stdout.write(self.style.SUCCESS(
             f'Exported {len(runs)} existing backtest runs from requested range {start_id}..{end_id} to {output_dir}'
@@ -361,6 +385,68 @@ class Command(BaseCommand):
                 'feature_count': len(artifact.feature_names or []),
             })
         _write_csv(output_dir / 'model_references.csv', fields, rows)
+
+    def _export_active_lightgbm_artifacts(self, output_dir):
+        fields = [
+            'artifact_id', 'horizon_days', 'version', 'status', 'is_active',
+            'artifact_path', 'trained_at', 'training_window_start', 'training_window_end',
+            'accuracy', 'training_samples', 'feature_count', 'version_tag',
+            'pruning_rule', 'source_artifact_id', 'source_artifact_version',
+            'target_cumulative_importance', 'min_retained_features', 'max_retained_features',
+            'source_feature_count', 'engineered_feature_count', 'target_keep_count',
+            'final_keep_count', 'pruned_feature_count', 'retained_cumulative_importance',
+            'top20_cumulative_importance', 'top25_cumulative_importance',
+            'threshold_keep_counts_json', 'kept_features_json', 'ranked_kept_features_json',
+            'pruned_features_json', 'missing_from_source_features_json',
+            'metrics_json', 'metadata_json',
+        ]
+        rows = []
+        artifacts = LightGBMModelArtifact.objects.filter(is_active=True).order_by('horizon_days', 'version')
+        for artifact in artifacts:
+            metrics = artifact.metrics_json or {}
+            metadata = artifact.metadata or {}
+            pruning = metadata.get('pruning') if isinstance(metadata, dict) else {}
+            if not isinstance(pruning, dict):
+                pruning = {}
+
+            rows.append({
+                'artifact_id': artifact.id,
+                'horizon_days': artifact.horizon_days,
+                'version': artifact.version,
+                'status': artifact.status,
+                'is_active': artifact.is_active,
+                'artifact_path': artifact.artifact_path,
+                'trained_at': artifact.trained_at,
+                'training_window_start': artifact.training_window_start,
+                'training_window_end': artifact.training_window_end,
+                'accuracy': metrics.get('accuracy'),
+                'training_samples': metrics.get('training_samples'),
+                'feature_count': metrics.get('feature_count', len(artifact.feature_names or [])),
+                'version_tag': metadata.get('version_tag'),
+                'pruning_rule': pruning.get('rule'),
+                'source_artifact_id': pruning.get('source_artifact_id'),
+                'source_artifact_version': pruning.get('source_artifact_version'),
+                'target_cumulative_importance': pruning.get('target_cumulative_importance'),
+                'min_retained_features': pruning.get('min_retained_features'),
+                'max_retained_features': pruning.get('max_retained_features'),
+                'source_feature_count': pruning.get('source_feature_count'),
+                'engineered_feature_count': pruning.get('engineered_feature_count'),
+                'target_keep_count': pruning.get('target_keep_count'),
+                'final_keep_count': pruning.get('final_keep_count'),
+                'pruned_feature_count': pruning.get('pruned_feature_count'),
+                'retained_cumulative_importance': pruning.get('retained_cumulative_importance'),
+                'top20_cumulative_importance': pruning.get('top20_cumulative_importance'),
+                'top25_cumulative_importance': pruning.get('top25_cumulative_importance'),
+                'threshold_keep_counts_json': _json_cell(pruning.get('threshold_keep_counts')),
+                'kept_features_json': _json_cell(pruning.get('kept_features')),
+                'ranked_kept_features_json': _json_cell(pruning.get('ranked_kept_features')),
+                'pruned_features_json': _json_cell(pruning.get('pruned_features')),
+                'missing_from_source_features_json': _json_cell(pruning.get('missing_from_source_features')),
+                'metrics_json': _json_cell(metrics),
+                'metadata_json': _json_cell(metadata),
+            })
+
+        _write_csv(output_dir / 'lightgbm_model_artifacts.csv', fields, rows)
 
     def _export_comparison(self, output_dir, runs, options):
         compare_start_id = int(options['compare_start_id'])

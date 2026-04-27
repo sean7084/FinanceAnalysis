@@ -141,6 +141,27 @@ class BacktestRunSerializer(serializers.ModelSerializer):
                 if boolean_key in parameters and not isinstance(parameters[boolean_key], bool):
                     raise serializers.ValidationError({'parameters': f'{boolean_key} must be a boolean.'})
 
+            if 'trade_decision_policy' in parameters:
+                policy = parameters['trade_decision_policy']
+                if not isinstance(policy, dict):
+                    raise serializers.ValidationError({'parameters': 'trade_decision_policy must be an object.'})
+
+                normalized_policy = dict(policy)
+                if 'include_near_round_target' in normalized_policy and not isinstance(normalized_policy['include_near_round_target'], bool):
+                    raise serializers.ValidationError({'parameters': 'trade_decision_policy.include_near_round_target must be a boolean.'})
+
+                for key in ['min_target_return_pct', 'min_stop_distance_pct']:
+                    if key not in normalized_policy:
+                        continue
+                    try:
+                        value = float(normalized_policy[key])
+                    except (TypeError, ValueError):
+                        raise serializers.ValidationError({'parameters': f'trade_decision_policy.{key} must be numeric.'})
+                    if not 0 <= value <= 0.5:
+                        raise serializers.ValidationError({'parameters': f'trade_decision_policy.{key} must be between 0 and 0.5.'})
+
+                parameters['trade_decision_policy'] = normalized_policy
+
             if 'entry_weekdays' in parameters:
                 raw_weekdays = parameters['entry_weekdays']
                 if isinstance(raw_weekdays, str):

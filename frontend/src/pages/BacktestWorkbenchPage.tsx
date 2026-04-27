@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   createBacktestRun,
   fetchBacktestRuns,
@@ -8,21 +9,49 @@ import {
   type BacktestRunDto,
   type BacktestTradeDto,
 } from '../lib/api'
+import {
+  buildDashboardFilterBundleFromRunnerConfig,
+  buildDashboardSearchParams,
+  isoWeekdayToLabel,
+  WEEKDAY_LABELS,
+  type PredictionSource,
+  type TopNMetric,
+} from '../lib/dashboardCandidateFilters'
 import { useI18n } from '../i18n'
 
-const WEEKDAY_LABELS = ['MON', 'TUE', 'WED', 'THU', 'FRI'] as const
-type PredictionSource = 'heuristic' | 'lightgbm' | 'lstm' | 'all'
-type TopNMetric = 'trade_score' | 'up_prob_3d' | 'up_prob_7d' | 'up_prob_30d'
+type WeekdayLabel = (typeof WEEKDAY_LABELS)[number]
 const RUN_HISTORY_PAGE_SIZE_DEFAULT = 5
 const TRADE_HISTORY_PAGE_SIZE = 10
 
-function isoWeekdayToLabel(day: number): 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | null {
-  if (day === 1) return 'MON'
-  if (day === 2) return 'TUE'
-  if (day === 3) return 'WED'
-  if (day === 4) return 'THU'
-  if (day === 5) return 'FRI'
+function storedWeekdayToLabel(value: unknown): WeekdayLabel | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toUpperCase()
+    if ((WEEKDAY_LABELS as readonly string[]).includes(normalized)) {
+      return normalized as WeekdayLabel
+    }
+    if (/^\d+$/.test(normalized)) {
+      return storedWeekdayToLabel(Number(normalized))
+    }
+    return null
+  }
+
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < WEEKDAY_LABELS.length) {
+    return WEEKDAY_LABELS[value]
+  }
+
   return null
+}
+
+function formatStoredWeekdays(values: unknown): string {
+  if (!Array.isArray(values)) {
+    return '--'
+  }
+
+  const labels = values
+    .map((value) => storedWeekdayToLabel(value))
+    .filter((value): value is WeekdayLabel => value !== null)
+
+  return labels.length ? labels.join(', ') : '--'
 }
 
 function addDays(isoDate: string, days: number): string {
@@ -56,6 +85,7 @@ function fmtMaybeNumber(value: unknown, digits = 2): string {
 
 export function BacktestWorkbenchPage() {
   const { t } = useI18n()
+  const navigate = useNavigate()
   const defaultEndDate = getLatestFridayIsoDate()
   const defaultStartDate = addDays(defaultEndDate, -364)
   const [runs, setRuns] = useState<BacktestRunDto[]>([])
@@ -77,9 +107,9 @@ export function BacktestWorkbenchPage() {
     startDate: defaultStartDate,
     endDate: defaultEndDate,
     horizonDays: 7 as 3 | 7 | 30,
-    topN: 5,
+    topN: 8,
     topNMetric: 'up_prob_7d' as TopNMetric,
-    upThreshold: 0.5,
+    upThreshold: 0.45,
     candidateMode: 'top_n' as 'top_n' | 'trade_score',
     tradeScoreScope: 'independent' as 'independent' | 'combined',
     tradeScoreThreshold: 1,
@@ -313,6 +343,7 @@ export function BacktestWorkbenchPage() {
   const reusableRuns = runs
     .filter((run) => run.strategy_type === 'PREDICTION_THRESHOLD')
     .sort((left, right) => right.id - left.id)
+  const reusedRun = reuseRunId ? reusableRuns.find((run) => run.id === Number(reuseRunId)) ?? null : null
   const totalRunPages = Math.max(1, Math.ceil(runs.length / runPageSize))
   const clampedRunPage = Math.min(runPage, totalRunPages)
   const runStartIndex = (clampedRunPage - 1) * runPageSize
@@ -327,9 +358,9 @@ export function BacktestWorkbenchPage() {
   const selectedParameters = (selectedRun?.parameters ?? {}) as Record<string, unknown>
   const benchmark = (selectedReport.benchmark ?? {}) as Record<string, unknown>
   const entryWeekdays = Array.isArray(selectedReport.entry_weekdays)
-    ? selectedReport.entry_weekdays.join(', ')
+    ? formatStoredWeekdays(selectedReport.entry_weekdays)
     : Array.isArray(selectedParameters.entry_weekdays)
-      ? (selectedParameters.entry_weekdays as unknown[]).join(', ')
+      ? formatStoredWeekdays(selectedParameters.entry_weekdays)
       : '--'
   const predictionSource = String(selectedReport.prediction_source ?? selectedParameters.prediction_source ?? '--')
   const candidateMode = String(selectedParameters.candidate_mode ?? selectedReport.candidate_mode ?? 'top_n')
@@ -348,6 +379,37 @@ export function BacktestWorkbenchPage() {
     : t('backtest.runnerTradeScoreScopeIndependent')
   const macroContextEnabled = selectedParameters.use_macro_context
   const stopTargetEnabled = selectedParameters.enable_stop_target_exit
+  const showHorizonSelector = runnerForm.candidateMode === 'trade_score' || runnerForm.topNMetric === 'trade_score'
+
+  const openDashboardWithCurrentConfig = () => {
+    const bundle = buildDashboardFilterBundleFromRunnerConfig(
+      {
+        predictionSource: runnerForm.predictionSource,
+        horizonDays: runnerForm.horizonDays,
+        upThreshold: runnerForm.upThreshold,
+        candidateMode: runnerForm.candidateMode,
+        topN: runnerForm.topN,
+        topNMetric: runnerForm.topNMetric,
+        tradeScoreScope: runnerForm.tradeScoreScope,
+        tradeScoreThreshold: runnerForm.tradeScoreThreshold,
+        maxPositions: runnerForm.maxPositions,
+        useMacroContext: runnerForm.useMacroContext,
+        holdingPeriodDays: runnerForm.holdingPeriodDays,
+        enableStopTargetExit: runnerForm.enableStopTargetExit,
+        capitalFractionPerEntry: runnerForm.capitalFractionPerEntry,
+        initialCapital: runnerForm.initialCapital,
+        entryWeekdays: runnerForm.entryWeekdays,
+      },
+      reusedRun ? { sourceRunId: reusedRun.id, sourceRunName: reusedRun.name } : {},
+    )
+
+    if (!bundle) {
+      setRunnerMessage(t('backtest.runnerDashboardNeedsSingleSource'))
+      return
+    }
+
+    navigate({ pathname: '/', search: `?${buildDashboardSearchParams(bundle).toString()}` })
+  }
 
   return (
     <section>
@@ -433,7 +495,7 @@ export function BacktestWorkbenchPage() {
               <button type="button" className="chip" onClick={() => applyQuickRange(182)}>{t('backtest.runnerPastHalfYear')}</button>
             </div>
           </div>
-          {runnerForm.candidateMode === 'trade_score' && (
+          {showHorizonSelector && (
             <label>
               {t('backtest.runnerHorizon')}
               <select
@@ -633,6 +695,9 @@ export function BacktestWorkbenchPage() {
           <button type="button" disabled={runnerBusy} onClick={loadRuns}>
             {t('backtest.runnerRefresh')}
           </button>
+          <button type="button" disabled={runnerBusy} onClick={openDashboardWithCurrentConfig}>
+            {t('backtest.runnerOpenDashboard')}
+          </button>
         </div>
         {runnerMessage ? <p className="status">{runnerMessage}</p> : null}
       </div>
@@ -800,18 +865,22 @@ export function BacktestWorkbenchPage() {
               <span>{t('backtest.runnerTopNMetric')}</span>
               <strong>{topNMetricLabel}</strong>
             </article>
-            <article className="metric-card">
-              <span>{t('backtest.runnerMaxPositions')}</span>
-              <strong>{String(selectedParameters.max_positions ?? '--')}</strong>
-            </article>
-            <article className="metric-card">
-              <span>{t('backtest.runnerTradeScoreScope')}</span>
-              <strong>{tradeScoreScopeLabel}</strong>
-            </article>
-            <article className="metric-card">
-              <span>{t('backtest.runnerTradeScoreThreshold')}</span>
-              <strong>{fmtMaybeNumber(selectedParameters.trade_score_threshold, 2)}</strong>
-            </article>
+            {candidateMode === 'trade_score' && (
+              <>
+                <article className="metric-card">
+                  <span>{t('backtest.runnerMaxPositions')}</span>
+                  <strong>{String(selectedParameters.max_positions ?? '--')}</strong>
+                </article>
+                <article className="metric-card">
+                  <span>{t('backtest.runnerTradeScoreScope')}</span>
+                  <strong>{tradeScoreScopeLabel}</strong>
+                </article>
+                <article className="metric-card">
+                  <span>{t('backtest.runnerTradeScoreThreshold')}</span>
+                  <strong>{fmtMaybeNumber(selectedParameters.trade_score_threshold, 2)}</strong>
+                </article>
+              </>
+            )}
             <article className="metric-card">
               <span>{t('backtest.runnerUseMacroContext')}</span>
               <strong>

@@ -27,6 +27,8 @@ class DashboardStockRowSerializer(serializers.Serializer):
     asset_symbol = serializers.CharField()
     asset_name = serializers.CharField()
     date = serializers.DateField()
+    candidate_rank = serializers.IntegerField(required=False, allow_null=True)
+    candidate_rank_value = serializers.DecimalField(max_digits=18, decimal_places=8, required=False, allow_null=True)
     composite_score = serializers.DecimalField(max_digits=7, decimal_places=6)
     bottom_probability_score = serializers.DecimalField(max_digits=7, decimal_places=6)
     fundamental_score = serializers.DecimalField(max_digits=7, decimal_places=6)
@@ -63,6 +65,14 @@ class DashboardStockRowSerializer(serializers.Serializer):
     lightgbm_stop_loss_price = serializers.DecimalField(max_digits=12, decimal_places=4, allow_null=True)
     lightgbm_risk_reward_ratio = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
     lightgbm_suggested = serializers.BooleanField()
+    lstm_label = serializers.CharField(allow_blank=True)
+    lstm_up_probability = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    lstm_confidence = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    lstm_trade_score = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
+    lstm_target_price = serializers.DecimalField(max_digits=12, decimal_places=4, allow_null=True)
+    lstm_stop_loss_price = serializers.DecimalField(max_digits=12, decimal_places=4, allow_null=True)
+    lstm_risk_reward_ratio = serializers.DecimalField(max_digits=12, decimal_places=6, allow_null=True)
+    lstm_suggested = serializers.BooleanField()
 
 
 class ScreenerTemplateSerializer(serializers.ModelSerializer):

@@ -14,7 +14,13 @@ from apps.markets.models import Asset, Market, OHLCV
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
-from .tasks_lightgbm import _create_feature_matrix, _extract_features_for_asset, train_lightgbm_models
+from .tasks_lightgbm import (
+    _build_lightgbm_model_version,
+    _build_snapshot_feature_pruning_plan,
+    _create_feature_matrix,
+    _extract_features_for_asset,
+    train_lightgbm_models,
+)
 
 
 class LightGBMPredictionTests(TestCase):
@@ -124,6 +130,65 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn('rsi_x_relative_volume_5d', feature_df.columns)
         self.assertIn('factor_composite_x_sentiment', feature_df.columns)
 
+    def test_build_lightgbm_model_version_appends_normalized_tag(self):
+        d = timezone.datetime(2024, 12, 31).date()
+
+        self.assertEqual(_build_lightgbm_model_version(7, d), 'lgb-7d-2024-12-31')
+        self.assertEqual(
+            _build_lightgbm_model_version(7, d, 'reg strong v1'),
+            'lgb-7d-2024-12-31-reg-strong-v1',
+        )
+
+    def _create_importance_source_artifact(self, horizon_days, feature_names, importance_scores):
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=horizon_days,
+            version=f'lgb-{horizon_days}d-source',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path=f'/models/lightgbm/{horizon_days}d-source/',
+            metrics_json={'accuracy': 0.5},
+            feature_names=feature_names,
+            training_window_start=timezone.now().date(),
+            training_window_end=timezone.now().date(),
+            trained_at=timezone.now(),
+            is_active=True,
+        )
+        FeatureImportanceSnapshot.objects.bulk_create([
+            FeatureImportanceSnapshot(
+                model_artifact=artifact,
+                horizon_days=horizon_days,
+                feature_name=feature_name,
+                importance_score=importance_score,
+                importance_rank=index + 1,
+            )
+            for index, (feature_name, importance_score) in enumerate(zip(feature_names, importance_scores))
+        ])
+        return artifact
+
+    def test_snapshot_pruning_extends_to_minimum_core_features(self):
+        feature_names = [f'feature_{index:02d}' for index in range(1, 31)]
+        self._create_importance_source_artifact(7, feature_names, [60, 25, 15] + [0.1] * 27)
+
+        plan = _build_snapshot_feature_pruning_plan(7, feature_names)
+
+        self.assertEqual(plan['audit']['target_keep_count'], 2)
+        self.assertEqual(plan['audit']['final_keep_count'], 20)
+        self.assertEqual(plan['kept_features'], feature_names[:20])
+        self.assertEqual(plan['pruned_features'], feature_names[20:])
+        self.assertGreater(plan['audit']['retained_cumulative_importance'], 0.8)
+
+    def test_snapshot_pruning_caps_large_cumulative_prefix(self):
+        feature_names = [f'feature_{index:02d}' for index in range(1, 41)]
+        self._create_importance_source_artifact(30, feature_names, [1] * 40)
+
+        plan = _build_snapshot_feature_pruning_plan(30, feature_names)
+
+        self.assertEqual(plan['audit']['target_keep_count'], 32)
+        self.assertEqual(plan['audit']['final_keep_count'], 25)
+        self.assertEqual(plan['kept_features'], feature_names[:25])
+        self.assertEqual(plan['pruned_features'], feature_names[25:])
+        self.assertEqual(plan['audit']['threshold_keep_counts']['80'], 32)
+        self.assertLess(plan['audit']['retained_cumulative_importance'], 0.8)
+
     @patch('apps.prediction.tasks_lightgbm._save_model_artifacts')
     @patch('apps.prediction.tasks_lightgbm.CalibratedClassifierCV')
     @patch('apps.prediction.tasks_lightgbm.lgb.train')
@@ -206,7 +271,11 @@ class LightGBMPredictionTests(TestCase):
         mock_train.return_value = StubModel()
         mock_calibrator_cls.return_value = StubCalibrator()
 
-        results = train_lightgbm_models(training_start_date=str(d - timezone.timedelta(days=10)), training_end_date=str(d))
+        results = train_lightgbm_models(
+            training_start_date=str(d - timezone.timedelta(days=10)),
+            training_end_date=str(d),
+            version_tag='regstrong-v1',
+        )
 
         self.assertIn(3, results)
         self.assertIn(7, results)
@@ -214,12 +283,37 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(results[3]['status'], 'success')
         self.assertEqual(results[7]['status'], 'success')
         self.assertEqual(results[30]['status'], 'insufficient_data')
+
+        expected_params = {
+            'num_leaves': 15,
+            'min_data_in_leaf': 50,
+            'lambda_l1': 1.0,
+            'lambda_l2': 1.0,
+            'feature_fraction': 0.6,
+        }
+        for train_call in mock_train.call_args_list:
+            params = train_call.args[0]
+            for key, value in expected_params.items():
+                self.assertEqual(params[key], value)
+
         artifact = LightGBMModelArtifact.objects.filter(horizon_days=3).latest('created_at')
+        self.assertEqual(artifact.version, f'lgb-3d-{d.isoformat()}-regstrong-v1')
         self.assertEqual(artifact.metadata['engineered_feature_version'], 'v2')
+        self.assertEqual(artifact.metadata['pruning']['rule'], 'none')
+        self.assertEqual(artifact.metadata['version_tag'], 'regstrong-v1')
+        self.assertEqual(artifact.metadata['lgb_params']['num_leaves'], 15)
+        self.assertEqual(artifact.metadata['lgb_params']['min_data_in_leaf'], 50)
+        self.assertEqual(artifact.metadata['lgb_params']['lambda_l1'], 1.0)
+        self.assertEqual(artifact.metadata['lgb_params']['lambda_l2'], 1.0)
+        self.assertEqual(artifact.metadata['lgb_params']['feature_fraction'], 0.6)
         self.assertTrue(any(name.endswith('_x_macro_phase') for name in artifact.feature_names))
         self.assertTrue(FeatureImportanceSnapshot.objects.filter(model_artifact=artifact).exists())
         self.assertTrue(ModelVersion.objects.filter(model_type=ModelVersion.ModelType.LIGHTGBM, version=artifact.version).exists())
         self.assertTrue(EnsembleWeightSnapshot.objects.filter(date=d).exists())
+        first_save_kwargs = mock_save_artifacts.call_args_list[0].kwargs
+        self.assertEqual(first_save_kwargs['version'], f'lgb-3d-{d.isoformat()}-regstrong-v1')
+        self.assertEqual(first_save_kwargs['extra_metadata']['version_tag'], 'regstrong-v1')
+        self.assertEqual(first_save_kwargs['extra_metadata']['lgb_params']['num_leaves'], 15)
 
     def test_lightgbm_endpoints_require_auth(self):
         """LightGBM endpoints should require authentication."""

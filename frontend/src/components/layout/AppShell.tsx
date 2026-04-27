@@ -3,6 +3,7 @@ import { useI18n } from '../../i18n'
 
 const navItems = [
   { to: '/', key: 'nav.dashboard' },
+  { to: '/indicator-board', key: 'nav.indicatorBoard' },
   { to: '/stock/600519', key: 'nav.stock' },
   { to: '/macro', key: 'nav.macro' },
   { to: '/models', key: 'nav.models' },
