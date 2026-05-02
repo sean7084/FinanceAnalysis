@@ -12,7 +12,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.analytics.models import SignalEvent, TechnicalIndicator
-from apps.markets.models import Market, Asset, OHLCV
+from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from apps.prediction.models import ModelVersion, PredictionResult
 from .models import (
     AssetMarginDetailSnapshot,
@@ -148,6 +148,25 @@ class Phase11FactorTests(TestCase):
         self.assertEqual(refreshed.technical_score, baseline.technical_score)
         self.assertEqual(refreshed.bottom_probability_score, baseline.bottom_probability_score)
 
+    def test_calculate_factor_scores_filters_to_point_in_time_union_when_membership_exists(self):
+        target_date = timezone.now().date()
+        IndexMembership.objects.create(
+            asset=self.asset1,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=target_date,
+            weight=Decimal('4.2'),
+        )
+
+        calculate_factor_scores_for_date(target_date=str(target_date))
+
+        self.assertTrue(
+            FactorScore.objects.filter(asset=self.asset1, date=target_date, mode=FactorScore.FactorMode.COMPOSITE).exists()
+        )
+        self.assertFalse(
+            FactorScore.objects.filter(asset=self.asset2, date=target_date, mode=FactorScore.FactorMode.COMPOSITE).exists()
+        )
+
     def test_bottom_candidates_requires_auth(self):
         response = self.client.get('/api/v1/screener/bottom-candidates/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -252,9 +271,9 @@ class FundamentalSnapshotBackfillCommandTests(TestCase):
         class StubPro:
             def daily_basic(self, **kwargs):
                 return pd.DataFrame([
-                    {'trade_date': '20240415', 'pe': 8.5, 'pb': 1.1},
-                    {'trade_date': '20240430', 'pe': 9.0, 'pb': 1.2},
-                    {'trade_date': '20240515', 'pe': 9.4, 'pb': 1.3},
+                    {'trade_date': '20240415', 'pe': 8.5, 'pb': 1.1, 'total_share': 100.0, 'float_share': 60.0, 'free_share': 55.0, 'total_mv': 1050.0, 'circ_mv': 577.5},
+                    {'trade_date': '20240430', 'pe': 9.0, 'pb': 1.2, 'total_share': 100.0, 'float_share': 62.0, 'free_share': 57.0, 'total_mv': 1100.0, 'circ_mv': 627.0},
+                    {'trade_date': '20240515', 'pe': 9.4, 'pb': 1.3, 'total_share': 100.0, 'float_share': 64.0, 'free_share': 58.0, 'total_mv': 1150.0, 'circ_mv': 667.0},
                 ])
 
             def fina_indicator(self, **kwargs):
@@ -281,6 +300,8 @@ class FundamentalSnapshotBackfillCommandTests(TestCase):
         self.assertEqual(rows[0].date.isoformat(), '2024-04-15')
         self.assertEqual(rows[0].pe, Decimal('8.5'))
         self.assertEqual(rows[0].pb, Decimal('1.1'))
+        self.assertEqual(rows[0].free_share, Decimal('55.0'))
+        self.assertEqual(rows[0].circ_mv, Decimal('577.5'))
         self.assertEqual(rows[0].roe, Decimal('0.1'))
         self.assertEqual(rows[0].roe_qoq, Decimal('0.02'))
         self.assertEqual(rows[0].metadata['fina_indicator_end_date'], '2023-12-31')
@@ -293,6 +314,8 @@ class FundamentalSnapshotBackfillCommandTests(TestCase):
         self.assertEqual(rows[2].date.isoformat(), '2024-05-15')
         self.assertEqual(rows[2].pe, Decimal('9.4'))
         self.assertEqual(rows[2].pb, Decimal('1.3'))
+        self.assertEqual(rows[2].free_share, Decimal('58.0'))
+        self.assertEqual(rows[2].circ_mv, Decimal('667.0'))
         self.assertEqual(rows[2].roe, Decimal('0.12'))
         self.assertEqual(rows[2].roe_qoq, Decimal('0.02'))
         self.assertIn('processed_assets=1', output.getvalue())
@@ -302,9 +325,9 @@ class FundamentalSnapshotBackfillCommandTests(TestCase):
         class StubPro:
             def daily_basic(self, **kwargs):
                 return pd.DataFrame([
-                    {'trade_date': '20240415', 'pe': 8.5, 'pb': 1.1},
-                    {'trade_date': '20240430', 'pe': 9.0, 'pb': 1.2},
-                    {'trade_date': '20240515', 'pe': 9.4, 'pb': 1.3},
+                    {'trade_date': '20240415', 'pe': 8.5, 'pb': 1.1, 'total_share': 100.0, 'float_share': 60.0, 'free_share': 55.0, 'total_mv': 1050.0, 'circ_mv': 577.5},
+                    {'trade_date': '20240430', 'pe': 9.0, 'pb': 1.2, 'total_share': 100.0, 'float_share': 62.0, 'free_share': 57.0, 'total_mv': 1100.0, 'circ_mv': 627.0},
+                    {'trade_date': '20240515', 'pe': 9.4, 'pb': 1.3, 'total_share': 100.0, 'float_share': 64.0, 'free_share': 58.0, 'total_mv': 1150.0, 'circ_mv': 667.0},
                 ])
 
             def fina_indicator(self, **kwargs):
@@ -481,6 +504,98 @@ class CapitalFlowSnapshotBackfillCommandTests(TestCase):
         self.assertEqual(rows[5].metadata['source'], 'tushare_moneyflow_margin_detail')
         self.assertIn('processed_assets=1', output.getvalue())
         self.assertIn('capital_rows=6', output.getvalue())
+
+
+class FundamentalSnapshotMarketCapBackfillCommandTests(TestCase):
+    def setUp(self):
+        self.market = Market.objects.create(code='FMC', name='Fundamental Market Cap')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='600333',
+            ts_code='600333.SH',
+            name='Fundamental Asset',
+        )
+        for trade_date in [
+            timezone.datetime(2024, 4, 15).date(),
+            timezone.datetime(2024, 4, 30).date(),
+            timezone.datetime(2024, 5, 15).date(),
+        ]:
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=trade_date,
+                open=Decimal('10'),
+                high=Decimal('11'),
+                low=Decimal('9'),
+                close=Decimal('10.5'),
+                adj_close=Decimal('10.5'),
+                volume=1000000,
+                amount=Decimal('10500000'),
+            )
+
+    @patch('apps.factors.management.commands.backfill_fundamental_snapshots.ts.pro_api')
+    def test_backfill_fundamental_snapshots_reprocesses_existing_rows_with_missing_market_cap_fields(self, mock_pro_api):
+        class StubPro:
+            def daily_basic(self, **kwargs):
+                return pd.DataFrame([
+                    {'trade_date': '20240415', 'pe': 8.5, 'pb': 1.1, 'total_share': 100.0, 'float_share': 60.0, 'free_share': 55.0, 'total_mv': 1050.0, 'circ_mv': 577.5},
+                    {'trade_date': '20240430', 'pe': 9.0, 'pb': 1.2, 'total_share': 100.0, 'float_share': 62.0, 'free_share': 57.0, 'total_mv': 1100.0, 'circ_mv': 627.0},
+                    {'trade_date': '20240515', 'pe': 9.4, 'pb': 1.3, 'total_share': 100.0, 'float_share': 64.0, 'free_share': 58.0, 'total_mv': 1150.0, 'circ_mv': 667.0},
+                ])
+
+            def fina_indicator(self, **kwargs):
+                return pd.DataFrame([
+                    {'ann_date': '20240320', 'end_date': '20231231', 'roe': 10.0},
+                ])
+
+        mock_pro_api.return_value = StubPro()
+
+        FundamentalFactorSnapshot.objects.bulk_create([
+            FundamentalFactorSnapshot(
+                asset=self.asset,
+                date=timezone.datetime(2024, 4, 15).date(),
+                pe=Decimal('8.5'),
+                pb=Decimal('1.1'),
+                roe=Decimal('0.1'),
+                roe_qoq=Decimal('0.0'),
+                free_share=None,
+                circ_mv=None,
+                metadata={'source': 'stale'},
+            ),
+            FundamentalFactorSnapshot(
+                asset=self.asset,
+                date=timezone.datetime(2024, 4, 30).date(),
+                pe=Decimal('9.0'),
+                pb=Decimal('1.2'),
+                roe=Decimal('0.1'),
+                roe_qoq=Decimal('0.0'),
+                free_share=None,
+                circ_mv=None,
+                metadata={'source': 'stale'},
+            ),
+            FundamentalFactorSnapshot(
+                asset=self.asset,
+                date=timezone.datetime(2024, 5, 15).date(),
+                pe=Decimal('9.4'),
+                pb=Decimal('1.3'),
+                roe=Decimal('0.1'),
+                roe_qoq=Decimal('0.0'),
+                free_share=None,
+                circ_mv=None,
+                metadata={'source': 'stale'},
+            ),
+        ])
+
+        call_command(
+            'backfill_fundamental_snapshots',
+            start_date='2024-04-01',
+            end_date='2024-05-31',
+            symbols='600333',
+        )
+
+        rows = list(FundamentalFactorSnapshot.objects.filter(asset=self.asset).order_by('date'))
+        self.assertEqual(rows[0].free_share, Decimal('55.0'))
+        self.assertEqual(rows[1].circ_mv, Decimal('627.0'))
+        self.assertEqual(rows[2].total_mv, Decimal('1150.0'))
 
 
 class CapitalFlowDailySyncTaskTests(TestCase):

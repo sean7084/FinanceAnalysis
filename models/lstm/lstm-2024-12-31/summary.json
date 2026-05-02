@@ -11,7 +11,7 @@
   "results": {
     "3": {
       "status": "success",
-      "accuracy": 0.5473333333333333,
+      "accuracy": 0.5365,
       "training_samples": 24000,
       "validation_samples": 6000,
       "artifact_path": "/app/models/lstm/lstm-2024-12-31/3d_model.pt",
@@ -20,7 +20,7 @@
     },
     "7": {
       "status": "success",
-      "accuracy": 0.428,
+      "accuracy": 0.4175,
       "training_samples": 24000,
       "validation_samples": 6000,
       "artifact_path": "/app/models/lstm/lstm-2024-12-31/7d_model.pt",
@@ -29,7 +29,7 @@
     },
     "30": {
       "status": "success",
-      "accuracy": 0.4205,
+      "accuracy": 0.42783333333333334,
       "training_samples": 24000,
       "validation_samples": 6000,
       "artifact_path": "/app/models/lstm/lstm-2024-12-31/30d_model.pt",
@@ -37,5 +37,5 @@
       "sequence_length": 20
     }
   },
-  "aggregate_accuracy": 0.46527777777777785
+  "aggregate_accuracy": 0.4606111111111111
 }

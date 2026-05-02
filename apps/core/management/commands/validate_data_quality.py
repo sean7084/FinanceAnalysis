@@ -13,13 +13,13 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.analytics.models import TechnicalIndicator
+from apps.core.date_floor import get_historical_data_floor
 from apps.factors.models import CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.markets.models import Asset, OHLCV
 from apps.sentiment.models import SentimentScore
 
 
-GLOBAL_FLOOR_DATE = date(2001, 1, 1)
 DEFAULT_TECHNICAL_INDICATORS = ('RS_SCORE',)
 FACTOR_SCORE_FIELDS = (
     'pe_percentile_score',
@@ -124,7 +124,7 @@ class Command(BaseCommand):
     help = 'Validate historical data quality and write actionable reports under reports/ without mutating model data.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--start-date', default=GLOBAL_FLOOR_DATE.isoformat())
+        parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
         parser.add_argument('--end-date', default=date.today().isoformat())
         parser.add_argument('--symbols', default='', help='Comma-separated symbols or TuShare ts_codes. Default validates active assets.')
         parser.add_argument('--include-delisted', action='store_true')
@@ -137,7 +137,8 @@ class Command(BaseCommand):
         parser.add_argument('--fail-on-critical', action='store_true')
 
     def handle(self, *args, **options):
-        start_date = max(self._parse_date(options['start_date'], 'start-date'), GLOBAL_FLOOR_DATE)
+        floor_date = get_historical_data_floor()
+        start_date = max(self._parse_date(options['start_date'], 'start-date'), floor_date)
         end_date = self._parse_date(options['end_date'], 'end-date')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
@@ -185,7 +186,7 @@ class Command(BaseCommand):
             )
 
             for asset in assets:
-                expected_start = max(start_date, asset.list_date or GLOBAL_FLOOR_DATE)
+                expected_start = max(start_date, asset.list_date or floor_date)
                 expected_dates = [trading_date for trading_date in trading_dates if expected_start <= trading_date <= end_date]
                 if not expected_dates:
                     continue
@@ -226,6 +227,7 @@ class Command(BaseCommand):
                 trading_dates,
                 start_date,
                 end_date,
+                floor_date,
                 technical_indicators,
                 options,
             )
@@ -588,7 +590,7 @@ class Command(BaseCommand):
     def _critical_count(self, counters):
         return sum(count for (_, severity), count in counters.items() if severity == 'critical')
 
-    def _write_summary_reports(self, writer, counters, table_counters, field_counters, reason_counters, assets, trading_dates, start_date, end_date, technical_indicators, options):
+    def _write_summary_reports(self, writer, counters, table_counters, field_counters, reason_counters, assets, trading_dates, start_date, end_date, floor_date, technical_indicators, options):
         summary_rows = [
             {'issue_type': issue_type, 'severity': severity, 'count': count}
             for (issue_type, severity), count in sorted(counters.items())
@@ -617,7 +619,7 @@ class Command(BaseCommand):
             'generated_at': timezone.now().isoformat(),
             'start_date': start_date,
             'end_date': end_date,
-            'global_floor_date': GLOBAL_FLOOR_DATE,
+            'global_floor_date': floor_date,
             'asset_count': len(assets),
             'trading_date_count': len(trading_dates),
             'technical_indicators': list(technical_indicators),

@@ -3,6 +3,7 @@ from datetime import date
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import Asset
 from apps.markets.tasks import sync_asset_history
 
@@ -11,7 +12,7 @@ class Command(BaseCommand):
     help = 'Backfill OHLCV history from the configured floor date using TuShare.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--start-date', default=getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'))
+        parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
         parser.add_argument('--symbols', default='')
         parser.add_argument('--limit-assets', type=int, default=0)
         parser.add_argument('--queue', action='store_true')
@@ -23,7 +24,7 @@ class Command(BaseCommand):
             raise CommandError(f'Invalid {name}: {value}. Expected YYYY-MM-DD.') from exc
 
     def handle(self, *args, **options):
-        floor_date = self._parse_date(getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'), 'HISTORICAL_DATA_FLOOR')
+        floor_date = get_historical_data_floor()
         requested_start = self._parse_date(options['start_date'], 'start-date')
         if requested_start < floor_date:
             raise CommandError(f'start-date cannot be earlier than HISTORICAL_DATA_FLOOR={floor_date}.')

@@ -6,6 +6,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.macro.models import MacroSnapshot
 from apps.macro.providers import (
     DXY_TUSHARE_CODES,
@@ -102,7 +103,7 @@ class Command(BaseCommand):
     help = 'Backfill MacroSnapshot monthly data from TuShare with AkShare fallback.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--start-date', default=getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'))
+        parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
         parser.add_argument('--end-date', default=date.today().isoformat())
         parser.add_argument('--disable-fallback', action='store_true')
         parser.add_argument('--resume-yields', action='store_true')
@@ -346,8 +347,7 @@ class Command(BaseCommand):
         return maps
 
     def handle(self, *args, **options):
-        floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-        floor_date = _parse_date(floor_raw, 'HISTORICAL_DATA_FLOOR')
+        floor_date = get_historical_data_floor()
         start_date = max(_parse_date(options['start_date'], 'start-date'), floor_date)
         end_date = _parse_date(options['end_date'], 'end-date')
         if end_date < start_date:

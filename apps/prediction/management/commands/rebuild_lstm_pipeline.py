@@ -6,6 +6,7 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.prediction.tasks_lstm import train_lstm_models
 
 
@@ -14,11 +15,7 @@ class Command(BaseCommand):
 
     @staticmethod
     def _default_start_date():
-        floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-        try:
-            return date.fromisoformat(str(floor_raw))
-        except ValueError:
-            return timezone.now().date() - timedelta(days=365 * 10)
+        return get_historical_data_floor()
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -93,6 +90,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         start_date = self._parse_date(options['start_date'], 'start-date')
         end_date = self._parse_date(options['end_date'], 'end-date')
+        floor_date = get_historical_data_floor()
+        if start_date < floor_date:
+            raise CommandError(f'start-date cannot be earlier than HISTORICAL_DATA_FLOOR={floor_date}.')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
 

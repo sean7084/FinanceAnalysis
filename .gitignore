@@ -5,3 +5,4 @@ compose/local/django/.env
 .vscode/git-safe.sh
 FinanceAnalysis.code-workspace
 FinanceAnalysis.code-workspace
+reports

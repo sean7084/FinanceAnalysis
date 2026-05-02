@@ -4,6 +4,8 @@ from time import sleep
 
 from django.conf import settings
 
+from apps.core.date_floor import get_historical_data_floor
+
 
 MACRO_FIELDS = [
     'dxy',
@@ -29,11 +31,7 @@ CRITICAL_MACRO_FIELDS = [
 
 
 def _project_floor_date():
-    floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-    try:
-        return date.fromisoformat(str(floor_raw))
-    except ValueError:
-        return date(2000, 1, 1)
+    return get_historical_data_floor()
 
 
 def _parse_decimal(value):

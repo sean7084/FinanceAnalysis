@@ -28,14 +28,14 @@ def _parse_csv_ints(value, name):
 
 
 class Command(BaseCommand):
-    help = 'Run systematic backtest validations over rolling windows for heuristic vs LightGBM.'
+    help = 'Run systematic backtest validations over rolling windows for heuristic, LightGBM, and LSTM sources.'
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', required=True, help='Validation start date (YYYY-MM-DD).')
         parser.add_argument('--end-date', required=True, help='Validation end date (YYYY-MM-DD).')
         parser.add_argument('--window-days', type=int, default=180, help='Days in each rolling validation window.')
         parser.add_argument('--step-days', type=int, default=30, help='Step size between window starts.')
-        parser.add_argument('--sources', default='heuristic,lightgbm', help='Comma-separated sources: heuristic,lightgbm.')
+        parser.add_argument('--sources', default='heuristic,lightgbm,lstm', help='Comma-separated sources: heuristic,lightgbm,lstm.')
         parser.add_argument('--top-n', type=int, default=3, help='Number of picks per entry cohort.')
         parser.add_argument('--horizon-days', type=int, default=7, help='Prediction horizon in days (3, 7, or 30).')
         parser.add_argument('--entry-weekdays', default='1,3', help='Comma-separated ISO weekdays (1=Mon .. 7=Sun).')
@@ -81,9 +81,9 @@ class Command(BaseCommand):
             raise CommandError('window-days and step-days must be positive integers.')
 
         sources = [token.strip().lower() for token in options['sources'].split(',') if token.strip()]
-        allowed_sources = {'heuristic', 'lightgbm'}
+        allowed_sources = {'heuristic', 'lightgbm', 'lstm'}
         if not sources or any(source not in allowed_sources for source in sources):
-            raise CommandError('sources must be a comma-separated subset of: heuristic,lightgbm')
+            raise CommandError('sources must be a comma-separated subset of: heuristic,lightgbm,lstm')
 
         entry_weekdays = _parse_csv_ints(options['entry_weekdays'], 'entry-weekdays')
         if not entry_weekdays:

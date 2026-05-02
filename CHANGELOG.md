@@ -1,5 +1,64 @@
 # Changelog
 
+### version 0.1.11
+
+**Objective**: package the current `80`-file release candidate into a commit-ready `v0.1.11` focused on dual-index benchmark operations, point-in-time benchmark infrastructure, benchmark-aware backtest comparison, historical data-floor hardening, and refreshed model artifacts.
+
+**Implemented Features**:
+
+- Expanded the runtime universe from a single CSI 300 path into a CSI 300 + CSI A500 operational workflow:
+  - added `membership_tags` on assets plus historical `IndexMembership`, official `BenchmarkIndexDaily`, and internal `PointInTimeBenchmarkDaily` storage
+  - added `sync_index_constituents`, `sync_benchmark_index_history`, `build_pit_union_benchmark`, `onboard_csi_a500_universe`, and `rollout_csi_a500_universe`
+  - rewired `sync_daily_a_shares` so it refreshes benchmark history, fans out OHLCV syncs, and then runs a post-sync universal refresh for PIT benchmark, capital flow, factor scores, and signals
+  - added a monthly membership refresh path so constituent changes can backfill only affected assets instead of replaying the full universe every time
+
+- Made model inputs and backtests respect the effective benchmark universe instead of the broad stored asset table:
+  - factor scoring, heuristic predictions, LightGBM/LSTM runtime inference, RS score generation, and model-data backfills now filter to active or point-in-time union assets when membership history exists
+  - LightGBM feature-matrix and label generation now apply PIT membership filters by trade date
+  - backtest candidate selection now routes through one eligible-asset helper so heuristic, LightGBM, LSTM, and bottom-candidate flows all exclude out-of-universe assets on historical dates
+  - unified `HIGH_RS_SCORE` persistence so historical backfills generate the same indicator and signal pattern as the daily RS score task
+
+- Added an end-to-end benchmark comparison workflow for backtests:
+  - new `comparison_curve` payloads now combine the selected run, stored compare target, extra overlay runs, and official CSI 300 / CSI A500 benchmark series
+  - serializer validation now enforces compatible `compare_backtest_run_id` targets before a rerun is created
+  - added `rerun_backtests_for_comparison` and `run_reference_benchmark_suite` to clone comparison reruns and export rolling benchmark bundles under `reports/`
+  - Backtest Workbench now renders comparison charts, keeps compare-target state derived from reused runs, and supports chart-only extra overlays without mutating the stored run config
+
+- Hardened historical data governance around one shared project floor:
+  - centralized `get_historical_data_floor()` with default `2010-01-01`
+  - backfill, rebuild, validation, and macro helpers now clamp or reject pre-floor windows consistently
+  - added `purge_pre_floor_historical_data` for dry-run or destructive cleanup of legacy rows before the floor date
+  - extended `FundamentalFactorSnapshot` with free-float and market-cap fields so PIT benchmark weighting and reprocessing no longer depend on stale partial snapshots
+
+- Refreshed tracked model artifacts and local reporting conventions:
+  - updated checked-in LightGBM `3d/7d/30d` artifacts with richer metadata, explicit version fields, and the current `2016-06-01..2024-12-31` training window
+  - refreshed LSTM `3d/7d/30d` metrics and summary outputs for the current `2024-12-31` artifact family
+  - `reports/` remains the local output root for benchmark suites and exports, and is now treated as generated workspace output instead of committed source
+
+**Current Notes**:
+
+- When PIT benchmark coverage is complete, backtests now use the precomputed `CSI300_CSIA500_PIT_UNION` equity curve; otherwise they fall back to the equal-weight daily-return benchmark.
+- The frontend comparison panel is chart-only for extra overlays: adding extra runs does not mutate the stored backtest configuration.
+- The default historical floor is now `2010-01-01`; older rows can be audited and purged, but new backfill and retrain windows will not expand below that floor without code changes.
+
+**Key Files**:
+- `apps/markets/tasks.py`
+- `apps/markets/benchmarking.py`
+- `apps/markets/management/commands/onboard_csi_a500_universe.py`
+- `apps/markets/management/commands/rollout_csi_a500_universe.py`
+- `apps/backtest/tasks.py`
+- `apps/backtest/comparison.py`
+- `apps/backtest/management/commands/run_reference_benchmark_suite.py`
+- `apps/backtest/management/commands/rerun_backtests_for_comparison.py`
+- `apps/prediction/tasks_lightgbm.py`
+- `apps/core/management/commands/purge_pre_floor_historical_data.py`
+- `frontend/src/pages/BacktestWorkbenchPage.tsx`
+- `frontend/src/components/charts/BacktestComparisonChart.tsx`
+
+**Focused Coverage Added**:
+- Added regressions across `apps.markets.tests`, `apps.backtest.tests`, `apps.prediction.tests`, `apps.analytics.tests`, `apps.factors.tests`, and `apps.core.tests` for index sync, PIT benchmark refresh, comparison payloads, PIT candidate filtering, RS-score backfill parity, fundamental market-cap backfills, and pre-floor purge behavior.
+
+
 ### version 0.1.10
 
 **Objective**: package the current `97`-file release candidate into a commit-ready `v0.1.10` with deterministic LightGBM retrains, trade-decision policy experiments, operator-facing dashboard improvements, data-quality validation tooling, and refreshed validation/report artifacts.

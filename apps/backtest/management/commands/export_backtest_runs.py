@@ -1,3 +1,4 @@
+# docker exec -i finance_analysis_django python manage.py export_backtest_runs --start-id  --end-id  --output-dir reports/dir
 import csv
 import json
 from decimal import Decimal
@@ -141,7 +142,6 @@ class Command(BaseCommand):
         runs = list(
             BacktestRun.objects.filter(id__gte=start_id, id__lte=end_id)
             .select_related('user')
-            .prefetch_related('trades__asset')
             .order_by('id')
         )
         if not runs:
@@ -251,7 +251,25 @@ class Command(BaseCommand):
         ]
         rows = []
         for run in runs:
-            for trade in run.trades.all().order_by('trade_date', 'id'):
+            trade_queryset = run.trades.select_related('asset').only(
+                'id',
+                'asset_id',
+                'trade_date',
+                'side',
+                'quantity',
+                'price',
+                'fee',
+                'slippage',
+                'amount',
+                'pnl',
+                'signal_payload',
+                'metadata',
+                'created_at',
+                'asset__symbol',
+                'asset__ts_code',
+                'asset__name',
+            ).order_by('trade_date', 'id')
+            for trade in trade_queryset:
                 signal_payload = trade.signal_payload or {}
                 metadata = trade.metadata or {}
                 row = {

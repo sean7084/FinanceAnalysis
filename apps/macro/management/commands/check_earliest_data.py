@@ -4,6 +4,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.macro.models import MacroSnapshot
 from apps.macro.providers import fetch_earliest_macro_availability
 from apps.markets.models import OHLCV
@@ -14,7 +15,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         report = {
-            'project_floor': getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'),
+            'project_floor': get_historical_data_floor().isoformat(),
             'source_macro': fetch_earliest_macro_availability(
                 primary=getattr(settings, 'MACRO_SYNC_PRIMARY_PROVIDER', 'tushare')
             ),

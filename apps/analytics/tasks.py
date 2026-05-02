@@ -14,6 +14,7 @@ import json
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
+from apps.markets.benchmarking import point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from .models import TechnicalIndicator, AlertRule, AlertEvent, SignalEvent
 
@@ -520,6 +521,113 @@ def _save_signal_event(asset, signal_type, timestamp, description, metadata):
     return obj, created
 
 
+def persist_ranked_rs_scores(ranked_scores, timestamp, update_existing=False):
+    """Persist RS_SCORE indicators and HIGH_RS_SCORE events from a descending ranking."""
+    total = len(ranked_scores)
+    if total == 0:
+        return {
+            'indicator_rows': 0,
+            'signal_rows': 0,
+            'top_cutoff': 0,
+            'total_ranked_assets': 0,
+        }
+
+    top_cutoff = max(1, int(total * 0.2))
+    asset_map = Asset.objects.in_bulk([int(asset_id) for asset_id, _ in ranked_scores])
+
+    if update_existing:
+        indicator_rows = 0
+        signal_rows = 0
+        for rank, (asset_id, momentum_20d) in enumerate(ranked_scores, start=1):
+            asset = asset_map.get(int(asset_id))
+            if asset is None:
+                continue
+
+            rs_score = Decimal(str(1.0 - ((rank - 1) / total)))
+            obj, created = TechnicalIndicator.objects.get_or_create(
+                asset=asset,
+                timestamp=timestamp,
+                indicator_type='RS_SCORE',
+                parameters={},
+                defaults={'value': rs_score},
+            )
+            if not created:
+                obj.value = rs_score
+                obj.save(update_fields=['value'])
+            indicator_rows += 1
+
+            if rank <= top_cutoff:
+                _, signal_created = _save_signal_event(
+                    asset,
+                    'HIGH_RS_SCORE',
+                    timestamp,
+                    f'Top 20% RS: rank #{rank}/{total}, 20d return={momentum_20d:.1%}, score={float(rs_score):.3f}',
+                    {
+                        'rank': rank,
+                        'total': total,
+                        'momentum_20d': momentum_20d,
+                        'rs_score': float(rs_score),
+                    },
+                )
+                signal_rows += int(signal_created)
+
+        return {
+            'indicator_rows': indicator_rows,
+            'signal_rows': signal_rows,
+            'top_cutoff': top_cutoff,
+            'total_ranked_assets': total,
+        }
+
+    indicators = []
+    signals = []
+    for rank, (asset_id, momentum_20d) in enumerate(ranked_scores, start=1):
+        asset_id = int(asset_id)
+        if asset_id not in asset_map:
+            continue
+
+        rs_score = Decimal(str(1.0 - ((rank - 1) / total)))
+        indicators.append(
+            TechnicalIndicator(
+                asset_id=asset_id,
+                timestamp=timestamp,
+                indicator_type='RS_SCORE',
+                value=rs_score,
+                parameters={},
+            )
+        )
+
+        if rank <= top_cutoff:
+            signals.append(
+                SignalEvent(
+                    asset_id=asset_id,
+                    signal_type='HIGH_RS_SCORE',
+                    timestamp=timestamp,
+                    description=(
+                        f'Top 20% RS: rank #{rank}/{total}, '
+                        f'20d return={momentum_20d:.1%}, score={float(rs_score):.3f}'
+                    ),
+                    metadata={
+                        'rank': rank,
+                        'total': total,
+                        'momentum_20d': momentum_20d,
+                        'rs_score': float(rs_score),
+                    },
+                )
+            )
+
+    if indicators:
+        TechnicalIndicator.objects.bulk_create(indicators, batch_size=5000, ignore_conflicts=True)
+    if signals:
+        SignalEvent.objects.bulk_create(signals, batch_size=5000, ignore_conflicts=True)
+
+    return {
+        'indicator_rows': len(indicators),
+        'signal_rows': len(signals),
+        'top_cutoff': top_cutoff,
+        'total_ranked_assets': total,
+    }
+
+
 @shared_task
 def calculate_ma_signals_for_asset(asset_id):
     """
@@ -814,12 +922,16 @@ def calculate_rs_scores_for_all_assets():
     """
     from django.utils import timezone as tz
 
-    asset_ids = list(Asset.objects.values_list('id', flat=True))
+    today = timezone.now().date()
+    union_asset_ids = point_in_time_union_asset_ids(today)
+    if union_asset_ids:
+        asset_ids = list(union_asset_ids)
+    else:
+        asset_ids = list(Asset.objects.values_list('id', flat=True))
     if not asset_ids:
         return
 
     scores = []
-    today = timezone.now().date()
 
     for asset_id in asset_ids:
         candles = list(OHLCV.objects.filter(asset_id=asset_id).order_by('-date')[:21])
@@ -836,32 +948,16 @@ def calculate_rs_scores_for_all_assets():
         return
 
     scores.sort(key=lambda x: x[1], reverse=True)
-    top_cutoff = max(1, int(len(scores) * 0.2))
     latest_timestamp = tz.make_aware(pd.Timestamp.combine(today, pd.Timestamp.min.time()))
+    result = persist_ranked_rs_scores(
+        [(asset_id, momentum_20d) for asset_id, momentum_20d, _close in scores],
+        latest_timestamp,
+        update_existing=True,
+    )
 
-    for rank, (asset_id, mom, close) in enumerate(scores, start=1):
-        asset = Asset.objects.get(id=asset_id)
-        rs_score = 1.0 - (rank - 1) / len(scores)
-
-        obj, created = TechnicalIndicator.objects.get_or_create(
-            asset=asset,
-            timestamp=latest_timestamp,
-            indicator_type='RS_SCORE',
-            parameters={},
-            defaults={'value': rs_score},
-        )
-        if not created:
-            obj.value = rs_score
-            obj.save()
-
-        if rank <= top_cutoff:
-            _save_signal_event(
-                asset, 'HIGH_RS_SCORE', latest_timestamp,
-                f'Top 20% RS: rank #{rank}/{len(scores)}, 20d return={mom:.1%}, score={rs_score:.3f}',
-                {'rank': rank, 'total': len(scores), 'momentum_20d': mom, 'rs_score': rs_score},
-            )
-
-    print(f"RS Scores: {top_cutoff} top assets flagged out of {len(scores)}")
+    print(
+        f"RS Scores: {result['top_cutoff']} top assets flagged out of {result['total_ranked_assets']}"
+    )
 
 
 @shared_task

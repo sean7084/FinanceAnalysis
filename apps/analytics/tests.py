@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 import datetime
-from apps.markets.models import Market, Asset, OHLCV
+from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
@@ -20,6 +20,7 @@ from .tasks import (
     calculate_fibonacci_retracement_for_asset,
     calculate_ma_signals_for_asset,
     calculate_bollinger_signals_for_asset,
+    calculate_rs_scores_for_all_assets,
     calculate_volume_signals_for_asset,
     calculate_momentum_signals_for_asset,
 )
@@ -639,6 +640,136 @@ class Phase10SignalTests(TestCase):
         calculate_momentum_signals_for_asset(self.asset.id)
         self.assertTrue(
             SignalEvent.objects.filter(asset=self.asset, signal_type='MOMENTUM_DOWN_5D').exists()
+        )
+
+    def test_calculate_rs_scores_for_all_assets_creates_high_rs_score_for_top_bucket(self):
+        assets = [self.asset]
+        for asset_index in range(1, 5):
+            assets.append(
+                Asset.objects.create(
+                    market=self.market,
+                    symbol=f'P11{asset_index:03d}',
+                    ts_code=f'P11{asset_index:03d}.SH',
+                    name=f'Phase10 RS Asset {asset_index}',
+                )
+            )
+
+        start_date = timezone.datetime(2024, 2, 1).date()
+        trade_dates = [start_date + datetime.timedelta(days=offset) for offset in range(21)]
+        for asset_index, asset in enumerate(assets, start=1):
+            for offset, trade_date in enumerate(trade_dates):
+                close_value = Decimal('10.0') + (Decimal(str(asset_index)) * Decimal('0.05') * Decimal(offset))
+                OHLCV.objects.create(
+                    asset=asset,
+                    date=trade_date,
+                    open=close_value,
+                    high=close_value + Decimal('0.1'),
+                    low=close_value - Decimal('0.1'),
+                    close=close_value,
+                    adj_close=close_value,
+                    volume=1000,
+                    amount=close_value * Decimal('1000'),
+                )
+
+        with patch('apps.analytics.tasks.timezone.now', return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0))):
+            calculate_rs_scores_for_all_assets()
+
+        self.assertEqual(
+            TechnicalIndicator.objects.filter(
+                timestamp__date=trade_dates[-1],
+                indicator_type='RS_SCORE',
+            ).count(),
+            5,
+        )
+        self.assertEqual(
+            SignalEvent.objects.filter(
+                timestamp__date=trade_dates[-1],
+                signal_type='HIGH_RS_SCORE',
+            ).count(),
+            1,
+        )
+        self.assertTrue(
+            SignalEvent.objects.filter(
+                asset=assets[-1],
+                timestamp__date=trade_dates[-1],
+                signal_type='HIGH_RS_SCORE',
+            ).exists()
+        )
+
+    def test_calculate_rs_scores_for_all_assets_filters_to_point_in_time_union_when_membership_exists(self):
+        assets = [self.asset]
+        for asset_index in range(1, 5):
+            assets.append(
+                Asset.objects.create(
+                    market=self.market,
+                    symbol=f'P12{asset_index:03d}',
+                    ts_code=f'P12{asset_index:03d}.SH',
+                    name=f'Phase10 PIT RS Asset {asset_index}',
+                )
+            )
+
+        start_date = timezone.datetime(2024, 2, 1).date()
+        trade_dates = [start_date + datetime.timedelta(days=offset) for offset in range(21)]
+        for asset_index, asset in enumerate(assets, start=1):
+            for offset, trade_date in enumerate(trade_dates):
+                close_value = Decimal('10.0') + (Decimal(str(asset_index)) * Decimal('0.05') * Decimal(offset))
+                OHLCV.objects.create(
+                    asset=asset,
+                    date=trade_date,
+                    open=close_value,
+                    high=close_value + Decimal('0.1'),
+                    low=close_value - Decimal('0.1'),
+                    close=close_value,
+                    adj_close=close_value,
+                    volume=1000,
+                    amount=close_value * Decimal('1000'),
+                )
+
+        IndexMembership.objects.create(
+            asset=assets[-1],
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=trade_dates[-1],
+            weight=Decimal('4.2'),
+        )
+        IndexMembership.objects.create(
+            asset=assets[-2],
+            index_code='000510.CSI',
+            index_name='CSI A500',
+            trade_date=trade_dates[-1],
+            weight=Decimal('2.1'),
+        )
+
+        with patch('apps.analytics.tasks.timezone.now', return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0))):
+            calculate_rs_scores_for_all_assets()
+
+        self.assertEqual(
+            TechnicalIndicator.objects.filter(
+                timestamp__date=trade_dates[-1],
+                indicator_type='RS_SCORE',
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            SignalEvent.objects.filter(
+                timestamp__date=trade_dates[-1],
+                signal_type='HIGH_RS_SCORE',
+            ).count(),
+            1,
+        )
+        self.assertTrue(
+            TechnicalIndicator.objects.filter(
+                asset=assets[-1],
+                timestamp__date=trade_dates[-1],
+                indicator_type='RS_SCORE',
+            ).exists()
+        )
+        self.assertFalse(
+            TechnicalIndicator.objects.filter(
+                asset=assets[0],
+                timestamp__date=trade_dates[-1],
+                indicator_type='RS_SCORE',
+            ).exists()
         )
 
     # ------------------------------------------------------------------

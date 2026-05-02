@@ -176,6 +176,37 @@ class BacktestRunSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({'parameters': f'unsupported entry_weekdays values: {", ".join(invalid)}'})
                 parameters['entry_weekdays'] = [value[:3] for value in weekday_values]
 
+            compare_backtest_run_id = parameters.get('compare_backtest_run_id')
+            if compare_backtest_run_id not in (None, ''):
+                try:
+                    compare_backtest_run_id = int(compare_backtest_run_id)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id must be an integer.'})
+
+                if compare_backtest_run_id <= 0:
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id must be greater than 0.'})
+
+                if getattr(self.instance, 'id', None) == compare_backtest_run_id:
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id cannot point to the same run.'})
+
+                compare_run = BacktestRun.objects.filter(id=compare_backtest_run_id).first()
+                if compare_run is None:
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id does not exist.'})
+                if compare_run.status != BacktestRun.Status.COMPLETED:
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id must reference a completed run.'})
+                if compare_run.strategy_type != strategy_type:
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id must reference the same strategy_type.'})
+
+                compare_source = str(
+                    (compare_run.report or {}).get('prediction_source')
+                    or (compare_run.parameters or {}).get('prediction_source')
+                    or ''
+                ).lower()
+                if compare_source and compare_source != prediction_source:
+                    raise serializers.ValidationError({'parameters': 'compare_backtest_run_id must use the same prediction_source.'})
+
+                parameters['compare_backtest_run_id'] = compare_backtest_run_id
+
             parameters['prediction_source'] = prediction_source
             attrs['parameters'] = parameters
 

@@ -8,6 +8,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.factors.models import FundamentalFactorSnapshot
 from apps.markets.models import Asset, OHLCV
 
@@ -54,7 +55,7 @@ class Command(BaseCommand):
     help = 'Backfill FundamentalFactorSnapshot from TuShare daily_basic and fina_indicator onto trading dates.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--start-date', default=getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'))
+        parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
         parser.add_argument('--end-date', default=date.today().isoformat())
         parser.add_argument('--symbols', default='')
         parser.add_argument('--limit-assets', type=int, default=0)
@@ -64,7 +65,7 @@ class Command(BaseCommand):
         if not token:
             raise CommandError('TUSHARE_TOKEN is not configured.')
 
-        floor_date = _parse_date(getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'), 'HISTORICAL_DATA_FLOOR')
+        floor_date = get_historical_data_floor()
         start_date = max(_parse_date(options['start_date'], 'start-date'), floor_date)
         end_date = _parse_date(options['end_date'], 'end-date')
         if end_date < start_date:
@@ -106,7 +107,9 @@ class Command(BaseCommand):
             ).filter(
                 Q(pe__isnull=True) |
                 Q(pb__isnull=True) |
-                Q(roe__isnull=True)
+                Q(roe__isnull=True) |
+                Q(free_share__isnull=True) |
+                Q(circ_mv__isnull=True)
             ).exists()
             if existing_count >= len(trading_dates) and not has_missing_core_fields:
                 processed += 1
@@ -174,6 +177,11 @@ class Command(BaseCommand):
                     date=snapshot_date,
                     pe=_safe_decimal(getattr(row, 'pe', None)),
                     pb=_safe_decimal(getattr(row, 'pb', None)),
+                    total_share=_safe_decimal(getattr(row, 'total_share', None)),
+                    float_share=_safe_decimal(getattr(row, 'float_share', None)),
+                    free_share=_safe_decimal(getattr(row, 'free_share', None)),
+                    total_mv=_safe_decimal(getattr(row, 'total_mv', None)),
+                    circ_mv=_safe_decimal(getattr(row, 'circ_mv', None)),
                     roe=_safe_decimal(getattr(row, 'roe', None)),
                     roe_qoq=_safe_decimal(getattr(row, 'roe_qoq', None)),
                     metadata=metadata,
@@ -188,12 +196,12 @@ class Command(BaseCommand):
             batch_size=2000,
             update_conflicts=True,
             unique_fields=['asset', 'date'],
-            update_fields=['pe', 'pb', 'roe', 'roe_qoq', 'metadata'],
+            update_fields=['pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq', 'metadata'],
         )
         return len(rows)
 
     def _fetch_daily_basic(self, pro, ts_code, start_date, end_date):
-        fields = 'trade_date,pe,pb'
+        fields = 'trade_date,pe,pb,total_share,float_share,free_share,total_mv,circ_mv'
         daily_df = self._call_tushare(
             lambda: pro.daily_basic(
                 ts_code=ts_code,
@@ -204,13 +212,13 @@ class Command(BaseCommand):
             f'daily_basic:{ts_code}:{start_date}:{end_date}',
         )
         if daily_df is None or daily_df.empty:
-            return pd.DataFrame(columns=['date', 'daily_basic_trade_date', 'pe', 'pb'])
+            return pd.DataFrame(columns=['date', 'daily_basic_trade_date', 'pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'])
 
         normalized = daily_df.copy()
         normalized['date'] = pd.to_datetime(normalized['trade_date'], format='%Y%m%d', errors='coerce')
         normalized['daily_basic_trade_date'] = normalized['date']
         normalized = normalized.dropna(subset=['date']).sort_values('date')
-        return normalized[['date', 'daily_basic_trade_date', 'pe', 'pb']]
+        return normalized[['date', 'daily_basic_trade_date', 'pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv']]
 
     def _fetch_fina_indicator(self, pro, ts_code, start_date, end_date):
         frames = []

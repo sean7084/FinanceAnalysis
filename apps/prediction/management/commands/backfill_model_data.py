@@ -7,9 +7,11 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Min
 from django.utils import timezone
 
-from apps.analytics.models import TechnicalIndicator
+from apps.core.date_floor import get_historical_data_floor
+from apps.analytics.tasks import persist_ranked_rs_scores
 from apps.factors.models import CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
 from apps.factors.tasks import calculate_factor_scores_for_date
+from apps.markets.benchmarking import point_in_time_union_asset_ids
 from apps.markets.models import Asset
 from apps.markets.models import OHLCV
 from apps.prediction.tasks_lightgbm import train_lightgbm_models
@@ -33,6 +35,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         start_date = self._parse_date(options['start_date'], 'start-date')
         end_date = self._parse_date(options['end_date'], 'end-date')
+        floor_date = get_historical_data_floor()
+        if start_date < floor_date:
+            raise CommandError(f'start-date cannot be earlier than HISTORICAL_DATA_FLOOR={floor_date}.')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
 
@@ -166,40 +171,29 @@ class Command(BaseCommand):
         pivot = frame.pivot(index='date', columns='asset_id', values='close').sort_index()
         returns_20d = pivot.pct_change(periods=20, fill_method=None)
 
-        indicators = []
-        attempted = 0
+        attempted_indicators = 0
+        attempted_signals = 0
         for index, trading_date in enumerate(trading_dates, start=1):
             if trading_date not in returns_20d.index:
                 continue
             series = returns_20d.loc[trading_date].dropna()
+            union_asset_ids = point_in_time_union_asset_ids(trading_date)
+            if union_asset_ids:
+                series = series[series.index.isin(union_asset_ids)]
             if series.empty:
                 continue
 
             descending = series.sort_values(ascending=False)
-            total = len(descending)
             timestamp = timezone.make_aware(datetime.combine(trading_date, datetime.min.time()))
-            for rank, (asset_id, _) in enumerate(descending.items(), start=1):
-                score = 1.0 - ((rank - 1) / total)
-                indicators.append(
-                    TechnicalIndicator(
-                        asset_id=int(asset_id),
-                        timestamp=timestamp,
-                        indicator_type='RS_SCORE',
-                        value=score,
-                        parameters={},
-                    )
-                )
-            if len(indicators) >= 5000:
-                TechnicalIndicator.objects.bulk_create(indicators, batch_size=5000, ignore_conflicts=True)
-                attempted += len(indicators)
-                indicators = []
+            result = persist_ranked_rs_scores(list(descending.items()), timestamp)
+            attempted_indicators += result['indicator_rows']
+            attempted_signals += result['signal_rows']
             if index % 100 == 0 or index == len(trading_dates):
                 self.stdout.write(f'  rs_score: processed {index}/{len(trading_dates)} dates')
 
-        if indicators:
-            TechnicalIndicator.objects.bulk_create(indicators, batch_size=5000, ignore_conflicts=True)
-            attempted += len(indicators)
-        self.stdout.write(f'  rs_score: attempted {attempted} rows')
+        self.stdout.write(
+            f'  rs_score: attempted {attempted_indicators} indicator rows and {attempted_signals} HIGH_RS_SCORE rows'
+        )
 
     def _backfill_factor_scores(self, trading_dates, sentiment_weight, resume=False):
         if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists() and float(sentiment_weight) == 0.0:

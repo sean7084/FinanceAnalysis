@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from apps.analytics.models import SignalEvent
+from apps.markets.benchmarking import point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from apps.prediction.historical_features import latest_bbands, latest_ohlcv, latest_rsi
 from apps.sentiment.models import SentimentScore
@@ -154,7 +155,11 @@ def calculate_factor_scores_for_date(
     tw /= total
     sw /= total
 
-    assets = list(Asset.objects.all())
+    union_asset_ids = point_in_time_union_asset_ids(as_of)
+    if union_asset_ids:
+        assets = list(Asset.objects.filter(id__in=union_asset_ids))
+    else:
+        assets = list(Asset.objects.all())
 
     latest_fundamentals = {}
     latest_flows = {}

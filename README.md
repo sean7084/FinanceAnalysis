@@ -4,9 +4,10 @@ A production-ready Django-based SaaS platform for analyzing Chinese financial ma
 
 ## 🚀 Project Overview
 
-This platform provides comprehensive financial data analysis for Chinese stock markets (CSI 300 index universe), featuring:
+This platform provides comprehensive financial data analysis for Chinese stock markets with benchmark-universe support for CSI 300 and CSI A500, featuring:
 
 - **Real-time Data Ingestion**: Automated synchronization and backfill workflows using AkShare + TuShare
+- **Benchmark-Aware Backtests**: point-in-time union benchmark support, official CSI 300 / CSI A500 comparison curves, and comparison rerun workflows
 - **Technical Analysis**: RSI, MACD, and extensible indicator calculations using TA-Lib
 - **RESTful API**: Secure, rate-limited API with JWT authentication
 - **Bilingual Support**: Full English/Chinese translation support
@@ -44,8 +45,8 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 
 ### Data Scope
 - **Markets**: 3 (SSE, SZSE, BSE)
-- **Assets**: 300 active listed CSI 300 constituents
-- **OHLCV Records**: 1,145,611 daily price points across 300 assets (`2001-07-24` to `2026-04-24`)
+- **Assets**: active benchmark constituents across the CSI 300 / CSI A500 union, with per-asset membership tags and historical index snapshots
+- **OHLCV Records**: 1,145,611 daily price points in the currently loaded benchmark universe (`2001-07-24` to `2026-04-24`); use the CSI A500 onboarding workflow to expand beyond the initial CSI 300 seed set
 
 ### Data Metrics
 - **Technical Indicators**: 1,141,393 stored indicator rows across RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, and RS_SCORE
@@ -53,17 +54,19 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **Factor Tables**: 1,145,013 fundamental snapshots, 1,145,611 capital-flow snapshots, 990,029 raw moneyflow rows, 768,393 raw margin-detail rows, and 1,801,500 factor-score rows
 - **Prediction Tables**: 10,804 `PredictionResult` rows for heuristic/LSTM storage surfaces and 446,482 LightGBM prediction rows, with target/stop/risk-reward/trade-score/suggested fields available on prediction outputs
 - **Model Monitoring Volume**: 14 LightGBM artifacts (3 active), 23 model-version rows, 475 feature-importance snapshots, and 3 ensemble-weight snapshots
-- **Backtest Release Export**: validation and policy experiment CSV packs are stored under `reports/backtests_113_116_lightgbm_core80_v1/`, `reports/backtests_113_128_tpsl_rerun_20260427/`, `reports/backtests_117_128_grid12_tpsl_rerun_20260427/`, and `reports/tpsl_policy_experiment_123_118_20260427/`
+- **Backtest Release Export**: benchmark suites and detailed run exports are generated locally under `reports/` through `run_reference_benchmark_suite` and `export_backtest_runs`, rather than treated as committed source files
 
 ### Models
 - **Heuristic**: rule-based multi-horizon baseline with trade-decision outputs
-- **LightGBM**: multi-class model with tagged retrains, active `core80-v1` 20-feature artifacts, snapshot-driven pruning, monitoring, and dashboard comparison
-- **LSTM (PyTorch)**: real retrain pipeline and live inference path (3/7/30 horizons)
+- **LightGBM**: multi-class model with PIT-aware training datasets, refreshed `2024-12-31` artifacts, richer artifact metadata, monitoring, and dashboard/backtest comparison surfaces
+- **LSTM (PyTorch)**: real retrain pipeline, live inference path, and refreshed `2024-12-31` artifact family (3/7/30 horizons)
 
 ### Validation & Reporting
 - **Data Quality Validation**: `validate_data_quality` writes actionable CSV/JSON audit reports under `reports/` without mutating historical tables
 - **Focused Model Data Audit**: `audit_model_data_quality` inspects default/null buckets in factor, fundamental, capital-flow, and `RS_SCORE` history for debugging
-- **Backtest Experiment Packs**: current release artifacts track model lineage, macro context, TP/SL policy variants, and comparison deltas across runs 113-136
+- **Reference Benchmark Suites**: `run_reference_benchmark_suite` and `export_backtest_runs` generate local run summaries, model references, comparison reruns, and benchmark manifests under `reports/`
+- **Historical Floor Controls**: a shared `2010-01-01` floor helper plus `purge_pre_floor_historical_data` keep future backfills and retrains from re-expanding stale pre-floor history
+- **Local Report Output**: `reports/` is now treated as generated local output and ignored by git rather than maintained as committed source
 
 ### API Endpoints
 - **Markets API**: 2 endpoints (list, detail)
@@ -80,7 +83,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **Prediction API (Heuristic Baseline)**: single-stock prediction, batch prediction, model-version registry, and trade-decision outputs
 - **Prediction API (LightGBM ML)**: single-stock predictions, batch predictions, model artifacts, ensemble weights tracking, and trade-decision outputs
 - **Prediction API (LSTM ML)**: single-stock predictions, batch predictions, retrain/recalculate actions, and trade-decision outputs
-- **Backtest API**: create/list/retrieve backtest runs, rerun action, and trade history endpoints
+- **Backtest API**: create/list/retrieve backtest runs, rerun action, comparison-curve payloads, and trade history endpoints
 - **Developer Portal API**: API key management, sandbox keys, key rotation, changelog
 - **Schema / Docs API**: OpenAPI 3.0 schema, Swagger UI, ReDoc
 - **Users API**: register, verify-email, password-reset, profile, subscriptions, usage stats
@@ -97,32 +100,39 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ### Latest Highlights
-- The current `v0.1.10` release candidate packages `97` changed files across backend, frontend, docs, tests, reports, and model artifacts.
+- The current `v0.1.11` release candidate packages `80` changed files across benchmark-universe orchestration, PIT benchmark infrastructure, backtest comparison UI/API, historical floor controls, tests, and refreshed model artifacts.
+- 0.1.11: CSI 300 + CSI A500 constituent sync and onboarding, PIT benchmark fallback plus official benchmark comparison curves, 2010 floor/purge tooling, PIT-aware model/backtest filters, and refreshed LightGBM/LSTM artifacts
 - 0.1.10: deterministic LightGBM `core80-v1` retrains, TP/SL trade-decision policy experiments, new validation/audit commands, Indicator Board UI, and refreshed validation report packs for runs 113-136
 - 0.1.9: full backfill refresh, runtime backtest validation, northbound field cleanup migration
 - 0.1.8: LSTM real retrain + inference, all-model backtest source selection, and backtest/stock page UX upgrades
-- 0.1.7: odds engine, LightGBM trade-decision parity, and dashboard consolidation
-- 0.1.6: Realtime auth and sentiment availability hardening
-- 0.1.5: Dashboard, stock, macro, and alerts UX fixes
 
 ## Future Phases & Roadmap
+
+14d
 
 ###
 3. 什么是建议的入场时间，我目前暂时定在周二周四，是否合理？
 4. 我们是否要考虑加入历史分钟数据来确定我们的入场成本.
-5. 现阶段我们是否可以开始考虑将股票池从沪深300扩张到沪深300+a500
 
-###
-current backfill_model_data takes hours to backfill data between 2000 and 2026. what are the bottlenecks and how can we optimize it for faster iteration?
+### performance optimization
+1. current backfill_model_data takes hours to backfill data between 2000 and 2026. what are the bottlenecks and how can we optimize it for faster iteration?
+2. are we using cpu or gpu for the backfill tasks and backrun tasks? for the sake of performance, should be use which one for which task?
 
 ###
 buy price currently depends on close price
+
+### a500 onboarding checklist:
+
+wire the scheduler/docs/config so the dual-index universe sync becomes the default operational path everywhere.
+
+###
+
 
 ###
 we need to add model version selection to our system so we can validate the latest LightGBM and LSTM models against the previous versions.
 1. add the selection to page http://localhost:5173/backtest
 2. sync the change to the dashboard http://localhost:5173/
-3. add the field to the backruns http://localhost:8000/admin/backtest/backtestrun/
+3. add the field to the backruns http://localhost:8000/admin/backtest/backtestrun/, default to the latest version automatically
 4. update exported reports if needed
 5. sync the change to our backend
 
@@ -332,12 +342,22 @@ These items improve model quality and signal usefulness, but they depend on the 
    docker-compose exec django python manage.py createsuperuser
    ```
 
-6. **Import CSI 300 data**:
+6. **Import benchmark constituents and dispatch market syncs**:
    ```bash
    docker-compose exec django python manage.py shell
    >>> from apps.markets.tasks import sync_daily_a_shares
-   >>> sync_daily_a_shares.delay()
+   >>> sync_daily_a_shares.delay()  # syncs the current CSI 300 + CSI A500 union
    >>> exit()
+   ```
+
+   Full CSI A500 rollout workflow:
+   ```bash
+   docker-compose exec django python manage.py onboard_csi_a500_universe --start-date 2010-01-01 --end-date 2026-04-26
+   ```
+
+   Rolling benchmark report bundles only:
+   ```bash
+   docker-compose exec django python manage.py run_reference_benchmark_suite --start-date 2024-01-01 --end-date 2026-04-26 --output-dir reports/reference_suite_latest
    ```
 
 7. **Calculate indicators**:

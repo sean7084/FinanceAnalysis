@@ -7,6 +7,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.factors.models import (
     AssetMarginDetailSnapshot,
     AssetMoneyFlowSnapshot,
@@ -48,7 +49,7 @@ class Command(BaseCommand):
     help = 'Backfill CapitalFlowSnapshot from TuShare moneyflow and margin_detail onto trading dates.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--start-date', default=getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'))
+        parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
         parser.add_argument('--end-date', default=date.today().isoformat())
         parser.add_argument('--symbols', default='')
         parser.add_argument('--limit-assets', type=int, default=0)
@@ -58,7 +59,7 @@ class Command(BaseCommand):
         if not token:
             raise CommandError('TUSHARE_TOKEN is not configured.')
 
-        floor_date = _parse_date(getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01'), 'HISTORICAL_DATA_FLOOR')
+        floor_date = get_historical_data_floor()
         start_date = max(_parse_date(options['start_date'], 'start-date'), floor_date)
         end_date = _parse_date(options['end_date'], 'end-date')
         if end_date < start_date:

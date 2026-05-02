@@ -5,9 +5,11 @@ Last refreshed: `2026-04-27` (from live DB snapshots after expanding the Data Me
 ## Data Metrics Sheet
 Date range format: `YYYY-MM-DD`.
 
+Universe operations now use `sync_index_constituents` for CSI 300 + CSI A500 membership history/tag sync, `run_reference_benchmark_suite` for exported rolling benchmark bundles, and `onboard_csi_a500_universe` for the end-to-end A500 onboarding/retrain workflow.
+
 | Metric Name | Source of Metric | Storage | Live Coverage | Current Usage | Missing Data Impact |
 | --- | --- | --- | --- | --- | --- |
-| Assets | TuShare CSI 300 universe sync | `markets_asset` | `300` active listed assets; list dates `1991-01-29` to `2025-07-16`; no null `list_date` | Universe for `Heuristic`, `LightGBM`, `LSTM`, backtests, and API/dashboard surfaces. | Missing `list_date` would weaken listing-age filters; current coverage is complete. |
+| Assets | TuShare CSI 300 + CSI A500 universe sync | `markets_asset`, `markets_indexmembership` | Active benchmark union after sync; current memberships live in `membership_tags`, historical snapshots live in `markets_indexmembership`, and overlapping constituents remain deduplicated at the asset row level. | Universe for `Heuristic`, `LightGBM`, `LSTM`, backtests, and API/dashboard surfaces. | Missing `list_date` weakens listing-age filters; missing membership tags/history breaks overlap-aware universe management and targeted onboarding. |
 | OHLCV | TuShare market sync + backfill | `markets_ohlcv` | `1,145,611` rows, `300` assets, `2001-07-24` to `2026-04-24` | Core source for `Heuristic`, `LightGBM`, `LSTM`, runtime TP/SL logic, backtest fills/exits, and chart APIs. | Missing rows reduce tradable dates, degrade runtime features, and can suppress backtest entry/exit pricing. |
 | PMI Manufacturing | TuShare `cn_pmi` field `PMI010000` | `macro_macrosnapshot.pmi_manufacturing` | `256` non-null rows, `2005-01-01` to `2026-04-01` | Used by `LightGBM`/`LSTM` macro features and `MarketContext` phase inference. | Missing values fall back to neutral PMI assumptions and weaken macro regime sensitivity. |
 | PMI Non-Manufacturing | TuShare `cn_pmi` field `PMI020100` | `macro_macrosnapshot.pmi_non_manufacturing` | `231` non-null rows, `2007-01-01` to `2026-03-01` | Used by `LightGBM`/`LSTM` macro features and `MarketContext` phase inference. | Missing values fall back to neutral PMI assumptions and weaken services-side macro context. |

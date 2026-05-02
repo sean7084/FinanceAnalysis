@@ -247,6 +247,89 @@ nav {
   margin: 0 0 0.9rem;
 }
 
+.comparison-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.comparison-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 180px;
+}
+
+.comparison-meta span,
+.comparison-series-card span {
+  color: #8ca7c2;
+  font-size: 0.9rem;
+}
+
+.comparison-series-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0;
+}
+
+.comparison-series-card {
+  padding: 0.9rem;
+  border-radius: 12px;
+  background: rgba(8, 20, 34, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.comparison-series-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.comparison-series-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.comparison-chart-block {
+  margin-top: 1rem;
+}
+
+.comparison-chart-block h4 {
+  margin: 0 0 0.75rem;
+}
+
+.comparison-chart-block-secondary {
+  margin-top: 0.5rem;
+}
+
+.comparison-controls {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.comparison-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: #a9bed3;
+  font-size: 0.9rem;
+}
+
+.comparison-selector select {
+  min-height: 7.75rem;
+}
+
+.comparison-selector option {
+  padding: 0.35rem 0.5rem;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;

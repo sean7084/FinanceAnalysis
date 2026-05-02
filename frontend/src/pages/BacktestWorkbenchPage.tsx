@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createBacktestRun,
+  fetchBacktestComparisonCurve,
   fetchBacktestRuns,
   fetchBacktestTrades,
   hasAnyAuthCredential,
+  type BacktestComparisonPayloadDto,
   type BacktestCreatePayload,
   type BacktestRunDto,
   type BacktestTradeDto,
 } from '../lib/api'
+import { BacktestComparisonChart } from '../components/charts/BacktestComparisonChart'
 import {
   buildDashboardFilterBundleFromRunnerConfig,
   buildDashboardSearchParams,
@@ -83,6 +86,27 @@ function fmtMaybeNumber(value: unknown, digits = 2): string {
   return '--'
 }
 
+function parsePositiveRunId(value: unknown): number | null {
+  const numericValue = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim() !== ''
+      ? Number(value)
+      : Number.NaN
+  return Number.isInteger(numericValue) && numericValue > 0 ? numericValue : null
+}
+
+function backtestRunPredictionSource(run: BacktestRunDto | null): Exclude<PredictionSource, 'all'> | null {
+  const source = String(run?.report?.prediction_source ?? run?.parameters?.prediction_source ?? '').toLowerCase()
+  if (source === 'heuristic' || source === 'lightgbm' || source === 'lstm') {
+    return source
+  }
+  return null
+}
+
+function formatBacktestRunLabel(run: BacktestRunDto): string {
+  return `#${run.id} ${run.name}`
+}
+
 export function BacktestWorkbenchPage() {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -91,6 +115,10 @@ export function BacktestWorkbenchPage() {
   const [runs, setRuns] = useState<BacktestRunDto[]>([])
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
   const [trades, setTrades] = useState<BacktestTradeDto[]>([])
+  const [comparisonPayload, setComparisonPayload] = useState<BacktestComparisonPayloadDto | null>(null)
+  const [extraComparisonRunIds, setExtraComparisonRunIds] = useState<number[]>([])
+  const [comparisonLoading, setComparisonLoading] = useState(false)
+  const [comparisonError, setComparisonError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tradeLoading, setTradeLoading] = useState(false)
@@ -231,6 +259,7 @@ export function BacktestWorkbenchPage() {
     startDate: string,
     endDate: string,
     predictionSource: Exclude<PredictionSource, 'all'>,
+    compareRunId?: number,
   ): BacktestCreatePayload => {
     const weekdayLabels = runnerForm.entryWeekdays
       .map((day) => isoWeekdayToLabel(day))
@@ -253,6 +282,7 @@ export function BacktestWorkbenchPage() {
         max_positions: runnerForm.maxPositions,
         use_macro_context: runnerForm.useMacroContext,
         enable_stop_target_exit: runnerForm.enableStopTargetExit,
+        ...(compareRunId ? { compare_backtest_run_id: compareRunId } : {}),
         entry_weekdays: weekdayLabels,
         holding_period_days: runnerForm.holdingPeriodDays,
         capital_fraction_per_entry: runnerForm.capitalFractionPerEntry,
@@ -263,7 +293,7 @@ export function BacktestWorkbenchPage() {
   const submitSingleRun = async () => {
     for (const source of selectedSources()) {
       const runName = `${runnerForm.namePrefix}-${source}-${runnerForm.startDate}-${runnerForm.endDate}`
-      await createBacktestRun(toRunPayload(runName, runnerForm.startDate, runnerForm.endDate, source))
+      await createBacktestRun(toRunPayload(runName, runnerForm.startDate, runnerForm.endDate, source, syncedCompareRun?.id))
     }
     await loadRuns()
     setRunnerMessage(t('backtest.runnerSingleSuccess'))
@@ -340,10 +370,76 @@ export function BacktestWorkbenchPage() {
   }, [selectedRunId])
 
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? null
+  const selectedRunCompareTargetId = parsePositiveRunId(selectedRun?.parameters?.compare_backtest_run_id)
+  const extraComparisonOptions = selectedRun
+    ? runs
+        .filter((run) => (
+          run.status === 'COMPLETED'
+          && run.strategy_type === selectedRun.strategy_type
+          && run.id !== selectedRun.id
+          && run.id !== selectedRunCompareTargetId
+        ))
+        .sort((left, right) => right.id - left.id)
+    : []
+
+  useEffect(() => {
+    setExtraComparisonRunIds((current) => {
+      if (!current.length) {
+        return current
+      }
+      const availableIds = new Set(extraComparisonOptions.map((run) => run.id))
+      const next = current.filter((runId) => availableIds.has(runId))
+      return next.length === current.length && next.every((runId, index) => runId === current[index]) ? current : next
+    })
+  }, [extraComparisonOptions])
+
+  useEffect(() => {
+    let alive = true
+    const run = selectedRun
+
+    if (!run || run.status !== 'COMPLETED') {
+      setComparisonPayload(null)
+      setComparisonError(null)
+      setComparisonLoading(false)
+      return
+    }
+
+    ;(async () => {
+      try {
+        setComparisonLoading(true)
+        const payload = await fetchBacktestComparisonCurve(run.id, extraComparisonRunIds)
+        if (alive) {
+          setComparisonPayload(payload)
+          setComparisonError(null)
+        }
+      } catch {
+        if (alive) {
+          setComparisonPayload(null)
+          setComparisonError(t('backtest.comparisonLoadError'))
+        }
+      } finally {
+        if (alive) {
+          setComparisonLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      alive = false
+    }
+  }, [extraComparisonRunIds, selectedRun, t])
+
   const reusableRuns = runs
     .filter((run) => run.strategy_type === 'PREDICTION_THRESHOLD')
     .sort((left, right) => right.id - left.id)
   const reusedRun = reuseRunId ? reusableRuns.find((run) => run.id === Number(reuseRunId)) ?? null : null
+  const reusedRunSource = backtestRunPredictionSource(reusedRun)
+  const syncedCompareRun = runnerForm.mode === 'single'
+    && runnerForm.predictionSource !== 'all'
+    && reusedRun?.status === 'COMPLETED'
+    && reusedRunSource === runnerForm.predictionSource
+      ? reusedRun
+      : null
   const totalRunPages = Math.max(1, Math.ceil(runs.length / runPageSize))
   const clampedRunPage = Math.min(runPage, totalRunPages)
   const runStartIndex = (clampedRunPage - 1) * runPageSize
@@ -380,6 +476,13 @@ export function BacktestWorkbenchPage() {
   const macroContextEnabled = selectedParameters.use_macro_context
   const stopTargetEnabled = selectedParameters.enable_stop_target_exit
   const showHorizonSelector = runnerForm.candidateMode === 'trade_score' || runnerForm.topNMetric === 'trade_score'
+
+  const onExtraComparisonSelectChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const nextIds = Array.from(event.target.selectedOptions)
+      .map((option) => parsePositiveRunId(option.value))
+      .filter((value): value is number => value !== null)
+    setExtraComparisonRunIds(nextIds)
+  }
 
   const openDashboardWithCurrentConfig = () => {
     const bundle = buildDashboardFilterBundleFromRunnerConfig(
@@ -464,7 +567,10 @@ export function BacktestWorkbenchPage() {
             {t('backtest.predictionSource')}
             <select
               value={runnerForm.predictionSource}
-              onChange={(event) => setRunnerForm((current) => ({ ...current, predictionSource: event.target.value as PredictionSource }))}
+              onChange={(event) => setRunnerForm((current) => ({
+                ...current,
+                predictionSource: event.target.value as PredictionSource,
+              }))}
             >
               <option value="heuristic">heuristic</option>
               <option value="lightgbm">lightgbm</option>
@@ -669,6 +775,7 @@ export function BacktestWorkbenchPage() {
             </>
           )}
         </div>
+        {syncedCompareRun ? <p className="subtitle">{t('backtest.compareTarget')}: #{syncedCompareRun.id} {syncedCompareRun.name}</p> : null}
         <div className="runner-weekdays">
           <span>{t('backtest.runnerWeekdays')}</span>
           <div className="runner-weekday-chips">
@@ -909,6 +1016,12 @@ export function BacktestWorkbenchPage() {
               <span>{t('backtest.runnerInitialCapital')}</span>
               <strong>{fmtMaybeNumber(selectedRun.initial_capital, 2)}</strong>
             </article>
+            {selectedParameters.compare_backtest_run_id ? (
+              <article className="metric-card">
+                <span>{t('backtest.compareTarget')}</span>
+                <strong>#{String(selectedParameters.compare_backtest_run_id)}</strong>
+              </article>
+            ) : null}
           </div>
           {tradeLoading && <p className="status">{t('common.loading')}</p>}
           {!tradeLoading && (
@@ -950,6 +1063,42 @@ export function BacktestWorkbenchPage() {
               </button>
             </div>
           )}
+          {selectedRun.status === 'COMPLETED' ? (
+            <div className="comparison-controls">
+              <label className="comparison-selector">
+                <span>{t('backtest.comparisonExtraRuns')}</span>
+                <select
+                  multiple
+                  size={Math.min(6, Math.max(3, extraComparisonOptions.length || 1))}
+                  value={extraComparisonRunIds.map(String)}
+                  onChange={onExtraComparisonSelectChange}
+                >
+                  {extraComparisonOptions.length ? (
+                    extraComparisonOptions.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {formatBacktestRunLabel(run)}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="" disabled>
+                      {t('backtest.comparisonExtraRunsUnavailable')}
+                    </option>
+                  )}
+                </select>
+              </label>
+              <p className="subtitle">
+                {extraComparisonOptions.length
+                  ? t('backtest.comparisonExtraRunsHelp')
+                  : t('backtest.comparisonExtraRunsUnavailable')}
+              </p>
+            </div>
+          ) : null}
+          <BacktestComparisonChart
+            payload={comparisonPayload}
+            loading={comparisonLoading}
+            error={comparisonError}
+            unavailableMessage={selectedRun.status !== 'COMPLETED' ? t('backtest.comparisonNeedsCompletedRun') : null}
+          />
         </div>
       )}
     </section>

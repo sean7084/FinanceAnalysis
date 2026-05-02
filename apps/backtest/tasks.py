@@ -9,7 +9,8 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from apps.factors.models import FactorScore
-from apps.markets.models import OHLCV
+from apps.markets.benchmarking import PIT_UNION_BENCHMARK_CODE, point_in_time_union_asset_ids
+from apps.markets.models import OHLCV, PointInTimeBenchmarkDaily
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
@@ -70,6 +71,22 @@ def _get_trading_dates(start_date, end_date):
 def _build_price_map(start_date, end_date):
     rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list('asset_id', 'date', 'close')
     return {(asset_id, dt): _d(close) for asset_id, dt, close in rows}
+
+
+def _eligible_backtest_asset_ids(dt, cache):
+    cache_key = ('eligible_backtest_asset_ids', dt.isoformat())
+    if cache_key in cache:
+        return cache[cache_key]
+
+    trading_asset_ids = list(OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True))
+    pit_asset_ids = set(point_in_time_union_asset_ids(dt))
+    if pit_asset_ids:
+        eligible_asset_ids = [asset_id for asset_id in trading_asset_ids if asset_id in pit_asset_ids]
+    else:
+        eligible_asset_ids = trading_asset_ids
+
+    cache[cache_key] = eligible_asset_ids
+    return eligible_asset_ids
 
 
 def _resolve_macro_context_for_date(dt, cache):
@@ -241,7 +258,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
         return cache[cache_key]
 
     mapping = {}
-    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
+    for asset_id in _eligible_backtest_asset_ids(dt, cache):
         mapping[asset_id] = _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
 
     cache[cache_key] = mapping
@@ -296,7 +313,7 @@ def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=No
         return cache[cache_key]
 
     mapping = {}
-    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
+    for asset_id in _eligible_backtest_asset_ids(dt, cache):
         mapping[asset_id] = _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
 
     cache[cache_key] = mapping
@@ -360,7 +377,7 @@ def _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy=None):
         return cache[cache_key]
 
     mapping = {}
-    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
+    for asset_id in _eligible_backtest_asset_ids(dt, cache):
         payload = _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
         if payload is not None:
             mapping[asset_id] = payload
@@ -592,7 +609,7 @@ def _resolve_exit_date(trading_dates, entry_date, holding_period_days):
     return trading_dates[position]
 
 
-def _build_benchmark_equity_curve(trading_dates, price_map, initial_capital):
+def _build_equal_weight_benchmark_equity_curve(trading_dates, price_map, initial_capital):
     benchmark_equity_curve = [_d(initial_capital)]
     benchmark_value = _d(initial_capital)
     for idx in range(1, len(trading_dates)):
@@ -611,6 +628,39 @@ def _build_benchmark_equity_curve(trading_dates, price_map, initial_capital):
             benchmark_value *= (DECIMAL_1 + average_return)
         benchmark_equity_curve.append(benchmark_value)
     return benchmark_equity_curve
+
+
+def _build_benchmark_equity_curve(trading_dates, price_map, initial_capital):
+    pit_rows = list(
+        PointInTimeBenchmarkDaily.objects.filter(
+            benchmark_code=PIT_UNION_BENCHMARK_CODE,
+            trade_date__in=trading_dates,
+        )
+        .order_by('trade_date')
+        .values('trade_date', 'nav', 'weighting_method', 'metadata')
+    )
+
+    pit_dates = [row['trade_date'] for row in pit_rows]
+    if pit_rows and pit_dates == list(trading_dates):
+        base_nav = _d(pit_rows[0]['nav']) if pit_rows[0]['nav'] is not None else DECIMAL_0
+        scale = (_d(initial_capital) / base_nav) if base_nav > 0 else DECIMAL_1
+        return [
+            _d(row['nav']) * scale
+            for row in pit_rows
+        ], {
+            'strategy': 'point_in_time_union_benchmark',
+            'benchmark_code': PIT_UNION_BENCHMARK_CODE,
+            'weighting_method': pit_rows[0]['weighting_method'] or 'free_float_market_cap',
+            'source': 'precomputed_point_in_time_benchmark',
+            'coverage_status': 'complete',
+            'trade_dates': [dt.isoformat() for dt in pit_dates],
+        }
+
+    return _build_equal_weight_benchmark_equity_curve(trading_dates, price_map, initial_capital), {
+        'strategy': 'equal_weight_universe_daily_return',
+        'source': 'runtime_fallback_equal_weight',
+        'coverage_status': 'missing_or_incomplete_point_in_time_benchmark',
+    }
 
 
 def _prediction_source(run):
@@ -699,8 +749,7 @@ def _build_heuristic_candidates(dt, horizon, up_threshold, top_n, cache, trade_d
 
 def _build_lightgbm_candidates(dt, horizon, up_threshold, top_n, cache, trade_decision_policy=None):
     rows = []
-    for asset_id in OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True):
-        payload = _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
+    for asset_id, payload in _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy).items():
         up_prob = _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0
         if up_prob < up_threshold:
             continue
@@ -738,8 +787,14 @@ def _pick_candidates(run, dt, cache):
 
     if run.strategy_type == BacktestRun.StrategyType.BOTTOM_CANDIDATE:
         threshold = _d(params.get('bottom_threshold', '0.60'))
+        eligible_asset_ids = _eligible_backtest_asset_ids(dt, cache)
         qs = (
-            FactorScore.objects.filter(date=dt, mode=FactorScore.FactorMode.COMPOSITE, bottom_probability_score__gte=threshold)
+            FactorScore.objects.filter(
+                asset_id__in=eligible_asset_ids,
+                date=dt,
+                mode=FactorScore.FactorMode.COMPOSITE,
+                bottom_probability_score__gte=threshold,
+            )
             .order_by('-bottom_probability_score')
             .values_list('asset_id', 'bottom_probability_score')
         )
@@ -1255,7 +1310,7 @@ def run_backtest(backtest_run_id):
             return f'Backtest chunk queued for run_id={run.id}: {chunk_end}/{len(trading_dates)} trading days processed'
 
         final_mark_to_market = equity_curve[-1] if equity_curve else cash
-        benchmark_equity_curve = _build_benchmark_equity_curve(trading_dates, price_map, run.initial_capital)
+        benchmark_equity_curve, benchmark_metadata = _build_benchmark_equity_curve(trading_dates, price_map, run.initial_capital)
 
         final_value = final_mark_to_market
         total_return = (final_value - _d(run.initial_capital)) / _d(run.initial_capital) if run.initial_capital else DECIMAL_0
@@ -1310,7 +1365,7 @@ def run_backtest(backtest_run_id):
                 for month, payload in sorted(macro_monthly_report.items())
             ],
             'benchmark': {
-                'strategy': 'equal_weight_universe_daily_return',
+                **benchmark_metadata,
                 'equity_curve': [float(v) for v in benchmark_equity_curve],
                 'total_return': float(benchmark_total_return),
             },

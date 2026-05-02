@@ -312,6 +312,47 @@ export interface BacktestTradeDto {
   signal_payload: Record<string, unknown>
 }
 
+export interface BacktestComparisonPointDto {
+  date: string
+  value: number
+  drawdown: number
+}
+
+export interface BacktestComparisonSeriesDto {
+  key: string
+  label: string
+  kind: 'backtest' | 'benchmark'
+  run_id?: number
+  index_code?: string
+  prediction_source?: string
+  points: BacktestComparisonPointDto[]
+  total_return: number | null
+  max_drawdown: number | null
+}
+
+export interface BacktestComparisonTargetDto {
+  id: number | string
+  name: string
+  status: string
+}
+
+export interface BacktestComparisonPayloadDto {
+  run: {
+    id: number
+    name: string
+    status: string
+    start_date: string
+    end_date: string
+    initial_capital: number
+    prediction_source: string
+    compare_backtest_run_id?: number | null
+  }
+  series: BacktestComparisonSeriesDto[]
+  compare_target: BacktestComparisonTargetDto | null
+  available_series_keys: string[]
+  message: string | null
+}
+
 export interface BacktestCreatePayload {
   name: string
   strategy_type: 'PREDICTION_THRESHOLD'
@@ -333,6 +374,7 @@ export interface BacktestCreatePayload {
     max_positions?: number
     use_macro_context?: boolean
     enable_stop_target_exit?: boolean
+    compare_backtest_run_id?: number
   }
 }
 
@@ -719,6 +761,20 @@ export async function fetchBacktestRuns(limit = 20): Promise<BacktestRunDto[]> {
 
 export async function fetchBacktestTrades(runId: number): Promise<BacktestTradeDto[]> {
   return await apiGet<BacktestTradeDto[]>(`/backtest/${runId}/trades/`)
+}
+
+export async function fetchBacktestComparisonCurve(
+  runId: number,
+  extraCompareRunIds: number[] = [],
+): Promise<BacktestComparisonPayloadDto> {
+  const params = new URLSearchParams()
+  for (const extraRunId of new Set(extraCompareRunIds)) {
+    if (Number.isInteger(extraRunId) && extraRunId > 0) {
+      params.append('extra_compare_run_id', String(extraRunId))
+    }
+  }
+  const query = params.toString()
+  return await apiGet<BacktestComparisonPayloadDto>(`/backtest/${runId}/comparison_curve/${query ? `?${query}` : ''}`)
 }
 
 export async function createBacktestRun(payload: BacktestCreatePayload): Promise<BacktestRunDto> {

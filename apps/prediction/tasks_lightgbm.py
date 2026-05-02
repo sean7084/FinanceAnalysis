@@ -14,6 +14,7 @@ from django.conf import settings
 from django.db.models import Avg
 from django.utils import timezone
 
+from apps.core.date_floor import get_historical_data_floor
 try:
     import lightgbm as lgb
     from sklearn.preprocessing import StandardScaler
@@ -23,6 +24,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
 
 from apps.factors.models import FactorScore
+from apps.markets.benchmarking import current_active_union_assets, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
@@ -630,10 +632,34 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
     """
     if asset_ids is None:
         asset_ids = list(Asset.objects.values_list('id', flat=True))
+    else:
+        asset_ids = [int(asset_id) for asset_id in asset_ids]
+
+    target_trade_dates = list(
+        OHLCV.objects.filter(asset_id__in=asset_ids, date__gte=start_date, date__lte=end_date)
+        .values_list('date', flat=True)
+        .distinct()
+        .order_by('date')
+    )
+    membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
+    use_pit_filter = any(membership_by_date.values())
+    if use_pit_filter:
+        eligible_asset_ids = sorted({
+            asset_id
+            for member_asset_ids in membership_by_date.values()
+            for asset_id in member_asset_ids
+            if asset_id in set(asset_ids)
+        })
+        if not eligible_asset_ids:
+            df = pd.DataFrame(columns=['date', 'asset_id'])
+            df.attrs['feature_names'] = []
+            return df
+    else:
+        eligible_asset_ids = asset_ids
 
     warmup_start = start_date - timedelta(days=40)
     ohlcv_rows = list(
-        OHLCV.objects.filter(asset_id__in=asset_ids, date__gte=warmup_start, date__lte=end_date)
+        OHLCV.objects.filter(asset_id__in=eligible_asset_ids, date__gte=warmup_start, date__lte=end_date)
         .values('asset_id', 'date', 'close', 'volume')
         .order_by('asset_id', 'date')
     )
@@ -649,7 +675,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
 
     factor_rows = list(
         FactorScore.objects.filter(
-            asset_id__in=asset_ids,
+            asset_id__in=eligible_asset_ids,
             mode=FactorScore.FactorMode.COMPOSITE,
             date__gte=warmup_start,
             date__lte=end_date,
@@ -680,7 +706,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
 
     sentiment_rows = list(
         SentimentScore.objects.filter(
-            asset_id__in=asset_ids,
+            asset_id__in=eligible_asset_ids,
             score_type=SentimentScore.ScoreType.ASSET_7D,
             date__gte=warmup_start,
             date__lte=end_date,
@@ -695,7 +721,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
 
     rs_rows = list(
         TechnicalIndicator.objects.filter(
-            asset_id__in=asset_ids,
+            asset_id__in=eligible_asset_ids,
             indicator_type='RS_SCORE',
             timestamp__date__gte=warmup_start,
             timestamp__date__lte=end_date,
@@ -816,6 +842,14 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         asset_df = asset_df[(asset_df['date'] >= target_start_ts) & (asset_df['date'] <= target_end_ts)].copy()
         if asset_df.empty:
             continue
+        if use_pit_filter:
+            asset_df['pit_in_universe'] = asset_df['date'].dt.date.map(
+                lambda current_date: int(asset_id) in membership_by_date.get(current_date, set())
+            )
+            asset_df = asset_df[asset_df['pit_in_universe']].copy()
+            asset_df = asset_df.drop(columns=['pit_in_universe'])
+            if asset_df.empty:
+                continue
         asset_df['asset_id'] = int(asset_id)
         asset_df['date'] = asset_df['date'].dt.date
 
@@ -855,8 +889,30 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
     """
     labels = {}
 
+    target_trade_dates = list(
+        OHLCV.objects.filter(date__gte=start_date, date__lte=end_date)
+        .values_list('date', flat=True)
+        .distinct()
+        .order_by('date')
+    )
+    membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
+    use_pit_filter = any(membership_by_date.values())
+    eligible_asset_ids = None
+    if use_pit_filter:
+        eligible_asset_ids = sorted({
+            asset_id
+            for member_asset_ids in membership_by_date.values()
+            for asset_id in member_asset_ids
+        })
+        if not eligible_asset_ids:
+            return labels
+
     rows = list(
-        OHLCV.objects.filter(date__gte=start_date, date__lte=end_date + timedelta(days=horizon_days + 7))
+        OHLCV.objects.filter(
+            date__gte=start_date,
+            date__lte=end_date + timedelta(days=horizon_days + 7),
+            **({'asset_id__in': eligible_asset_ids} if use_pit_filter else {}),
+        )
         .values('asset_id', 'date', 'close')
         .order_by('asset_id', 'date')
     )
@@ -874,6 +930,8 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
         closes = payload['closes']
         for index, target_date in enumerate(dates):
             if target_date < start_date or target_date > end_date:
+                continue
+            if use_pit_filter and int(asset_id) not in membership_by_date.get(target_date, set()):
                 continue
             future_threshold = target_date + timedelta(days=horizon_days)
             future_index = bisect_left(dates, future_threshold)
@@ -943,19 +1001,11 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
 
     if training_start_date:
         try:
-            training_start = date.fromisoformat(str(training_start_date))
+            training_start = max(date.fromisoformat(str(training_start_date)), get_historical_data_floor())
         except ValueError:
-            floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-            try:
-                training_start = date.fromisoformat(str(floor_raw))
-            except ValueError:
-                training_start = training_end - timedelta(days=365 * 5)
+            training_start = get_historical_data_floor()
     else:
-        floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-        try:
-            training_start = date.fromisoformat(str(floor_raw))
-        except ValueError:
-            training_start = training_end - timedelta(days=365 * 5)
+        training_start = get_historical_data_floor()
 
     normalized_version_tag = _normalize_version_tag(version_tag)
     if normalized_version_tag:
@@ -1236,7 +1286,7 @@ def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
     horizons = horizons or [3, 7, 30]
     processed = 0
 
-    for asset in Asset.objects.all():
+    for asset in current_active_union_assets():
         for horizon in horizons:
             pred = _predict_with_lightgbm(asset.id, as_of, horizon)
 

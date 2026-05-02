@@ -1,21 +1,27 @@
+import csv
+import json
+import tempfile
 from datetime import date, timedelta
 from decimal import Decimal
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.factors.models import FactorScore
-from apps.markets.models import Asset, Market, OHLCV
+from apps.markets.models import Asset, BenchmarkIndexDaily, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
 from .models import BacktestRun, BacktestTrade
-from .tasks import _resolve_macro_context_for_date, run_backtest
+from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backtest
 
 
 class IdentityScaler:
@@ -45,8 +51,8 @@ class Phase15BacktestTests(TestCase):
             name='Backtest Asset',
         )
         self.today = timezone.now().date()
-        self.d1 = self.today.replace(day=max(1, self.today.day - 2))
-        self.d2 = self.today.replace(day=max(1, self.today.day - 1))
+        self.d1 = self.today - timedelta(days=2)
+        self.d2 = self.today - timedelta(days=1)
 
         OHLCV.objects.create(
             asset=self.asset,
@@ -166,6 +172,164 @@ class Phase15BacktestTests(TestCase):
         self.assertGreater(run.final_value, Decimal('0'))
         self.assertEqual(run.total_trades, 1)
         self.assertEqual(BacktestTrade.objects.filter(backtest_run=run).count(), 2)
+
+    def test_run_backtest_uses_precomputed_point_in_time_benchmark_when_available(self):
+        PointInTimeBenchmarkDaily.objects.bulk_create([
+            PointInTimeBenchmarkDaily(
+                benchmark_code='CSI300_CSIA500_PIT_UNION',
+                benchmark_name='CSI300 + CSI A500 PIT Union',
+                trade_date=self.d1,
+                daily_return=Decimal('0'),
+                nav=Decimal('100000.00000000'),
+                constituent_count=1,
+                overlap_count=0,
+                metadata={'snapshot_dates': {'000300.SH': self.d1.isoformat()}},
+            ),
+            PointInTimeBenchmarkDaily(
+                benchmark_code='CSI300_CSIA500_PIT_UNION',
+                benchmark_name='CSI300 + CSI A500 PIT Union',
+                trade_date=self.d2,
+                daily_return=Decimal('0.02000000'),
+                nav=Decimal('102000.00000000'),
+                constituent_count=1,
+                overlap_count=0,
+                metadata={'snapshot_dates': {'000300.SH': self.d2.isoformat()}},
+            ),
+        ])
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 PIT Benchmark Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('200000.00'),
+            parameters={'top_n': 1, 'horizon_days': 7, 'up_threshold': 0.55},
+        )
+
+        run_backtest(run.id)
+        run.refresh_from_db()
+
+        self.assertEqual(run.report['benchmark']['strategy'], 'point_in_time_union_benchmark')
+        self.assertEqual(run.report['benchmark']['benchmark_code'], 'CSI300_CSIA500_PIT_UNION')
+        self.assertEqual(run.report['benchmark']['source'], 'precomputed_point_in_time_benchmark')
+        self.assertEqual(run.report['benchmark']['equity_curve'], [200000.0, 204000.0])
+        self.assertAlmostEqual(run.report['benchmark']['total_return'], 0.02, places=8)
+
+    def test_pick_candidates_filters_bottom_candidate_scores_to_point_in_time_union(self):
+        excluded_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600099',
+            ts_code='600099.SH',
+            name='Excluded Bottom Candidate Asset',
+        )
+        OHLCV.objects.create(
+            asset=excluded_asset,
+            date=self.d1,
+            open=Decimal('20.0000'),
+            high=Decimal('20.5000'),
+            low=Decimal('19.8000'),
+            close=Decimal('20.0000'),
+            adj_close=Decimal('20.0000'),
+            volume=100000,
+            amount=Decimal('2000000.0000'),
+        )
+        FactorScore.objects.create(
+            asset=excluded_asset,
+            date=self.d1,
+            mode=FactorScore.FactorMode.COMPOSITE,
+            composite_score=Decimal('0.850000'),
+            bottom_probability_score=Decimal('0.950000'),
+        )
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.d1,
+            weight=Decimal('4.200000'),
+        )
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 PIT Bottom Candidate Run',
+            strategy_type=BacktestRun.StrategyType.BOTTOM_CANDIDATE,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={'top_n': 2, 'bottom_threshold': 0.20},
+        )
+
+        rows = _pick_candidates(run, self.d1, {})
+
+        self.assertEqual([row['asset_id'] for row in rows], [self.asset.id])
+
+    @patch('apps.backtest.tasks._predict_lightgbm_for_asset')
+    def test_pick_candidates_filters_on_demand_lightgbm_candidates_to_point_in_time_union(self, mock_predict):
+        excluded_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600199',
+            ts_code='600199.SH',
+            name='Excluded LightGBM Candidate Asset',
+        )
+        OHLCV.objects.create(
+            asset=excluded_asset,
+            date=self.d1,
+            open=Decimal('30.0000'),
+            high=Decimal('31.0000'),
+            low=Decimal('29.5000'),
+            close=Decimal('30.0000'),
+            adj_close=Decimal('30.0000'),
+            volume=100000,
+            amount=Decimal('3000000.0000'),
+        )
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.d1,
+            weight=Decimal('4.200000'),
+        )
+
+        def _prediction_payload(asset_id, dt, horizon, cache, trade_decision_policy=None):
+            base_up = Decimal('0.70') if asset_id == self.asset.id else Decimal('0.95')
+            return {
+                'up_probability': base_up,
+                'flat_probability': Decimal('0.20'),
+                'down_probability': Decimal('0.10'),
+                'confidence': base_up,
+                'predicted_label': PredictionResult.Label.UP,
+                'trade_score': Decimal('1.50'),
+                'target_price': Decimal('12.00'),
+                'stop_loss_price': Decimal('9.50'),
+                'risk_reward_ratio': Decimal('2.00'),
+                'suggested': True,
+                'model_artifact_id': 1,
+                'model_version': 'lgb-pit-test',
+                'generated_on_demand': True,
+            }
+
+        mock_predict.side_effect = _prediction_payload
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 PIT LightGBM Candidate Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 2,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+            },
+        )
+
+        rows = _pick_candidates(run, self.d1, {})
+
+        self.assertEqual([row['asset_id'] for row in rows], [self.asset.id])
+        self.assertEqual(mock_predict.call_count, 1)
+        self.assertEqual(mock_predict.call_args.args[0], self.asset.id)
 
     def test_run_backtest_uses_on_demand_heuristic_candidates_without_stored_predictions(self):
         PredictionResult.objects.all().delete()
@@ -608,6 +772,253 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(response.data), 2)
 
+    def test_backtest_comparison_curve_returns_selected_and_benchmark_series(self):
+        self._auth()
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Comparison Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            report={
+                'equity_curve': [99950.0, 108500.0],
+                'prediction_source': 'lightgbm',
+            },
+            parameters={'prediction_source': 'lightgbm'},
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.d1,
+            close=Decimal('4000.0000'),
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.d2,
+            close=Decimal('4200.0000'),
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000510.CSI',
+            index_name='CSI A500',
+            trade_date=self.d1,
+            close=Decimal('5000.0000'),
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000510.CSI',
+            index_name='CSI A500',
+            trade_date=self.d2,
+            close=Decimal('4900.0000'),
+        )
+
+        response = self.client.get(f'/api/v1/backtest/{run.id}/comparison_curve/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['run']['id'], run.id)
+        self.assertEqual(response.data['available_series_keys'], ['selected_run', 'csi300', 'csia500'])
+        selected_series = next(series for series in response.data['series'] if series['key'] == 'selected_run')
+        csi300_series = next(series for series in response.data['series'] if series['key'] == 'csi300')
+        self.assertEqual(selected_series['points'][0]['date'], str(self.d1))
+        self.assertAlmostEqual(selected_series['points'][0]['value'], 99950.0)
+        self.assertAlmostEqual(csi300_series['points'][0]['value'], 99950.0)
+        self.assertAlmostEqual(csi300_series['points'][1]['value'], 104947.5)
+
+    def test_backtest_comparison_curve_includes_compare_run_when_explicit_target_exists(self):
+        self._auth()
+        compare_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Previous Version Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('120000.00'),
+            report={
+                'equity_curve': [120000.0, 126000.0],
+                'prediction_source': 'lightgbm',
+            },
+            parameters={'prediction_source': 'lightgbm'},
+        )
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Latest Version Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            report={
+                'equity_curve': [100000.0, 108000.0],
+                'prediction_source': 'lightgbm',
+            },
+            parameters={'prediction_source': 'lightgbm', 'compare_backtest_run_id': compare_run.id},
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.d1,
+            close=Decimal('4000.0000'),
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.d2,
+            close=Decimal('4100.0000'),
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000510.CSI',
+            index_name='CSI A500',
+            trade_date=self.d1,
+            close=Decimal('5000.0000'),
+        )
+        BenchmarkIndexDaily.objects.create(
+            index_code='000510.CSI',
+            index_name='CSI A500',
+            trade_date=self.d2,
+            close=Decimal('5100.0000'),
+        )
+
+        response = self.client.get(f'/api/v1/backtest/{run.id}/comparison_curve/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        compare_series = next(series for series in response.data['series'] if series['key'] == 'compare_run')
+        self.assertEqual(response.data['compare_target']['id'], compare_run.id)
+        self.assertAlmostEqual(compare_series['points'][0]['value'], 100000.0)
+        self.assertAlmostEqual(compare_series['points'][1]['value'], 105000.0)
+
+    def test_backtest_comparison_curve_includes_multiple_extra_compare_runs_from_query(self):
+        self._auth()
+        compare_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Stored Compare Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('120000.00'),
+            report={
+                'equity_curve': [120000.0, 126000.0],
+                'prediction_source': 'lightgbm',
+            },
+            parameters={'prediction_source': 'lightgbm'},
+        )
+        extra_run_one = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Extra Compare Run One',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('90000.00'),
+            report={
+                'equity_curve': [90000.0, 99000.0],
+                'prediction_source': 'heuristic',
+            },
+            parameters={'prediction_source': 'heuristic'},
+        )
+        extra_run_two = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Extra Compare Run Two',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('80000.00'),
+            report={
+                'equity_curve': [80000.0, 88000.0],
+                'prediction_source': 'lstm',
+            },
+            parameters={'prediction_source': 'lstm'},
+        )
+        BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Pending Extra Compare Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.PENDING,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('70000.00'),
+            report={
+                'equity_curve': [70000.0, 71000.0],
+                'prediction_source': 'lightgbm',
+            },
+            parameters={'prediction_source': 'lightgbm'},
+        )
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Latest Version Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            report={
+                'equity_curve': [100000.0, 108000.0],
+                'prediction_source': 'lightgbm',
+            },
+            parameters={'prediction_source': 'lightgbm', 'compare_backtest_run_id': compare_run.id},
+        )
+
+        response = self.client.get(
+            f'/api/v1/backtest/{run.id}/comparison_curve/',
+            {
+                'extra_compare_run_id': [compare_run.id, extra_run_one.id, extra_run_two.id, run.id, 'invalid'],
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['compare_target']['id'], compare_run.id)
+        series_keys = response.data['available_series_keys']
+        self.assertIn('compare_run', series_keys)
+        self.assertIn(f'extra_run_{extra_run_one.id}', series_keys)
+        self.assertIn(f'extra_run_{extra_run_two.id}', series_keys)
+        self.assertEqual(series_keys.count('compare_run'), 1)
+
+        extra_series_one = next(series for series in response.data['series'] if series['key'] == f'extra_run_{extra_run_one.id}')
+        extra_series_two = next(series for series in response.data['series'] if series['key'] == f'extra_run_{extra_run_two.id}')
+        self.assertEqual(extra_series_one['prediction_source'], 'heuristic')
+        self.assertEqual(extra_series_two['prediction_source'], 'lstm')
+        self.assertAlmostEqual(extra_series_one['points'][0]['value'], 100000.0)
+        self.assertAlmostEqual(extra_series_two['points'][1]['value'], 110000.0)
+
+    def test_backtest_serializer_rejects_incompatible_compare_target(self):
+        self._auth()
+        compare_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Heuristic Compare Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            report={'prediction_source': 'heuristic'},
+            parameters={'prediction_source': 'heuristic'},
+        )
+
+        response = self.client.post(
+            '/api/v1/backtest/',
+            {
+                'name': 'P15 Invalid Compare Target',
+                'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                'start_date': str(self.d1),
+                'end_date': str(self.d2),
+                'initial_capital': '100000.00',
+                'parameters': {
+                    'top_n': 1,
+                    'horizon_days': 7,
+                    'up_threshold': 0.55,
+                    'prediction_source': 'lightgbm',
+                    'compare_backtest_run_id': compare_run.id,
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('compare_backtest_run_id', str(response.data))
+
     def test_backtest_serializer_rejects_invalid_prediction_source(self):
         self._auth()
         response = self.client.post(
@@ -934,3 +1345,129 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(trades[0].signal_payload['model_artifact_id'], artifact.id)
         self.assertTrue(trades[0].signal_payload['generated_on_demand'])
         self.assertIn('benchmark', run.report)
+
+
+class BacktestManagementCommandTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_superuser(
+            username='backtest_admin',
+            email='backtest_admin@example.com',
+            password='Passw0rd!123',
+        )
+
+    @patch('apps.backtest.management.commands.run_validation_backtests.run_backtest')
+    def test_run_validation_backtests_accepts_lstm_source(self, mock_run_backtest):
+        output = StringIO()
+
+        call_command(
+            'run_validation_backtests',
+            start_date='2026-01-01',
+            end_date='2026-01-05',
+            window_days=5,
+            step_days=10,
+            sources='heuristic,lstm',
+            name_prefix='cmdtest',
+            stdout=output,
+        )
+
+        runs = list(BacktestRun.objects.order_by('id'))
+        self.assertEqual(len(runs), 2)
+        self.assertCountEqual(
+            [run.parameters.get('prediction_source') for run in runs],
+            ['heuristic', 'lstm'],
+        )
+        self.assertEqual(mock_run_backtest.call_count, 2)
+        self.assertIn('Created 2 validation runs.', output.getvalue())
+
+    @patch('apps.backtest.management.commands.run_validation_backtests.run_backtest')
+    def test_run_reference_benchmark_suite_exports_csv_bundle(self, mock_run_backtest):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / 'reference_suite'
+            output = StringIO()
+
+            call_command(
+                'run_reference_benchmark_suite',
+                start_date='2026-01-01',
+                end_date='2026-01-05',
+                window_days=5,
+                step_days=10,
+                sources='heuristic,lstm',
+                name_prefix='suitecmd',
+                output_dir=str(output_dir),
+                stdout=output,
+            )
+
+            self.assertEqual(mock_run_backtest.call_count, 2)
+            self.assertTrue((output_dir / 'run_summary.csv').exists())
+            self.assertTrue((output_dir / 'run_config_results.csv').exists())
+            self.assertTrue((output_dir / 'model_references.csv').exists())
+            self.assertTrue((output_dir / 'suite_manifest.json').exists())
+
+            manifest = json.loads((output_dir / 'suite_manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(sorted(manifest['run_ids']), sorted(BacktestRun.objects.values_list('id', flat=True)))
+
+            with (output_dir / 'run_config_results.csv').open(newline='', encoding='utf-8') as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual(len(rows), 2)
+            self.assertCountEqual(
+                [row['prediction_source'] for row in rows],
+                ['heuristic', 'lstm'],
+            )
+            self.assertIn('Reference benchmark suite exported to', output.getvalue())
+
+    @patch('apps.backtest.management.commands.rerun_backtests_for_comparison.run_backtest')
+    def test_rerun_backtests_for_comparison_clones_runs_with_compare_target(self, mock_run_backtest):
+        source_run_one = BacktestRun.objects.create(
+            user=self.user,
+            name='Source Run 525',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 31),
+            initial_capital=Decimal('100000.00'),
+            status=BacktestRun.Status.COMPLETED,
+            cash=Decimal('101000.00'),
+            final_value=Decimal('101000.00'),
+            total_return=Decimal('0.010000'),
+            annualized_return=Decimal('0.120000'),
+            max_drawdown=Decimal('0.030000'),
+            sharpe_ratio=Decimal('1.100000'),
+            win_rate=Decimal('0.550000'),
+            total_trades=4,
+            winning_trades=2,
+            parameters={'top_n': 1, 'horizon_days': 7, 'up_threshold': 0.55, 'prediction_source': 'lightgbm'},
+            report={'equity_curve': [100000.0, 101000.0]},
+        )
+        source_run_two = BacktestRun.objects.create(
+            user=self.user,
+            name='Source Run 526',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=date(2025, 2, 1),
+            end_date=date(2025, 2, 28),
+            initial_capital=Decimal('120000.00'),
+            status=BacktestRun.Status.COMPLETED,
+            parameters={'top_n': 2, 'horizon_days': 30, 'up_threshold': 0.60, 'prediction_source': 'lstm'},
+            report={'equity_curve': [120000.0, 121500.0]},
+        )
+
+        output = StringIO()
+        call_command(
+            'rerun_backtests_for_comparison',
+            run_ids=f'{source_run_one.id}-{source_run_two.id}',
+            name_suffix='pit-2016-2024',
+            stdout=output,
+        )
+
+        cloned_runs = list(BacktestRun.objects.filter(id__gt=source_run_two.id).order_by('id'))
+        self.assertEqual(len(cloned_runs), 2)
+        self.assertEqual(cloned_runs[0].parameters['compare_backtest_run_id'], source_run_one.id)
+        self.assertEqual(cloned_runs[1].parameters['compare_backtest_run_id'], source_run_two.id)
+        self.assertEqual(cloned_runs[0].name, 'Source Run 525 [pit-2016-2024]')
+        self.assertEqual(cloned_runs[1].name, 'Source Run 526 [pit-2016-2024]')
+        self.assertEqual(cloned_runs[0].status, BacktestRun.Status.PENDING)
+        self.assertEqual(cloned_runs[0].report, {})
+        self.assertEqual(cloned_runs[0].cash, source_run_one.initial_capital)
+        self.assertEqual(cloned_runs[1].cash, source_run_two.initial_capital)
+        self.assertEqual(mock_run_backtest.call_count, 2)
+        self.assertIn(f'{source_run_one.id} -> {cloned_runs[0].id}', output.getvalue())
+        self.assertIn(f'{source_run_two.id} -> {cloned_runs[1].id}', output.getvalue())

@@ -12,6 +12,8 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from apps.core.date_floor import get_historical_data_floor
+from apps.markets.benchmarking import current_active_union_assets
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import LightGBMModelArtifact
 from apps.markets.models import Asset
@@ -57,19 +59,11 @@ def _parse_training_window(training_start_date=None, training_end_date=None):
 
     if training_start_date:
         try:
-            training_start = date.fromisoformat(str(training_start_date))
+            training_start = max(date.fromisoformat(str(training_start_date)), get_historical_data_floor())
         except ValueError:
-            floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-            try:
-                training_start = date.fromisoformat(str(floor_raw))
-            except ValueError:
-                training_start = training_end - timedelta(days=365 * 5)
+            training_start = get_historical_data_floor()
     else:
-        floor_raw = getattr(settings, 'HISTORICAL_DATA_FLOOR', '2000-01-01')
-        try:
-            training_start = date.fromisoformat(str(floor_raw))
-        except ValueError:
-            training_start = training_end - timedelta(days=365 * 5)
+        training_start = get_historical_data_floor()
 
     return training_start, training_end
 
@@ -664,7 +658,7 @@ def generate_lstm_predictions_for_date(target_date=None, horizons=None):
     runtime_cache = {}
     processed = 0
 
-    for asset in Asset.objects.all():
+    for asset in current_active_union_assets():
         for horizon in selected_horizons:
             prediction = _predict_with_lstm(
                 asset_id=asset.id,

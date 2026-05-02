@@ -180,7 +180,7 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_TASK_SOFT_TIME_LIMIT = 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
-HISTORICAL_DATA_FLOOR = env('HISTORICAL_DATA_FLOOR', default='2000-01-01')
+HISTORICAL_DATA_FLOOR = env('HISTORICAL_DATA_FLOOR', default='2010-01-01')
 MACRO_SYNC_PRIMARY_PROVIDER = env('MACRO_SYNC_PRIMARY_PROVIDER', default='tushare')
 MACRO_SYNC_FALLBACK_PROVIDER = env('MACRO_SYNC_FALLBACK_PROVIDER', default='akshare')
 MACRO_SYNC_PROVIDER_SLEEP_SECONDS = env.float('MACRO_SYNC_PROVIDER_SLEEP_SECONDS', default=0.2)
@@ -199,17 +199,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
         'schedule': crontab(hour='16', minute='10'),
     },
-    'sync-capital-flow-daily': {
-        'task': 'apps.factors.tasks.sync_daily_capital_flow_snapshots',
-        'schedule': crontab(hour='16', minute='20'),
+    'sync-index-memberships-monthly': {
+        'task': 'apps.markets.tasks.sync_monthly_index_memberships',
+        'schedule': crontab(day_of_month='1', hour='2', minute='15'),
     },
     'check-alert-rules-every-5-min': {
         'task': 'apps.analytics.tasks.check_alert_rules',
         'schedule': crontab(minute='*/5'),
-    },
-    'calculate-signals-daily': {
-        'task': 'apps.analytics.tasks.calculate_signals_for_all_assets',
-        'schedule': crontab(hour='16', minute='0'),  # Daily at 16:00 UTC (after A-share close at 15:00 CST)
     },
     'sync-macro-data-monthly': {
         'task': 'apps.macro.tasks.sync_macro_data_monthly',

@@ -4,10 +4,10 @@
   "sequence_length": 20,
   "training_samples": 24000,
   "validation_samples": 6000,
-  "accuracy": 0.4205,
+  "accuracy": 0.42783333333333334,
   "epochs": 8,
   "hidden_size": 64,
   "num_layers": 2,
   "dropout": 0.2,
-  "trained_at": "2026-04-25T15:47:28.213558+00:00"
+  "trained_at": "2026-05-02T01:00:45.309189+00:00"
 }
