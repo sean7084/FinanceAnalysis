@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 import time
 
 import pandas as pd
@@ -16,6 +16,9 @@ from apps.factors.fundamental_materialization import (
 )
 from apps.factors.models import FundamentalFactorSnapshot
 from apps.markets.models import Asset, OHLCV
+
+
+FINA_INDICATOR_LOOKBACK_DAYS = 400
 
 
 def _parse_date(value, name):
@@ -160,7 +163,8 @@ class Command(BaseCommand):
 
     def _fetch_fina_indicator(self, pro, ts_code, start_date, end_date):
         frames = []
-        for window_start, window_end in iter_date_windows(start_date, end_date):
+        fetch_start = start_date - timedelta(days=FINA_INDICATOR_LOOKBACK_DAYS)
+        for window_start, window_end in iter_date_windows(fetch_start, end_date):
             frame = self._call_tushare(
                 lambda ws=window_start, we=window_end: pro.fina_indicator(
                     ts_code=ts_code,

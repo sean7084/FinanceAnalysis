@@ -111,7 +111,10 @@ def normalize_fina_indicator_frame(fina_df):
         previous_roe = value
     normalized['roe_qoq'] = roe_qoq_values
     normalized['available_date'] = normalized['ann_date']
-    return normalized[['available_date', 'ann_date', 'report_end_date', 'roe', 'roe_qoq']].sort_values('available_date')
+    return normalized[['available_date', 'ann_date', 'report_end_date', 'roe', 'roe_qoq']].sort_values(
+        ['available_date', 'report_end_date'],
+        kind='mergesort',
+    )
 
 
 def materialize_fundamental_snapshot_frame(trading_dates, daily_df, fina_df):

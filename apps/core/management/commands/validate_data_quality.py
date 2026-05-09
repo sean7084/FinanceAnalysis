@@ -3,7 +3,7 @@ import json
 import random
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -158,6 +158,7 @@ FACTOR_NEUTRAL_DEFAULT_FIELDS = (
 FUNDAMENTAL_FIELDS = ('pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq')
 FUNDAMENTAL_CONTINUITY_FIELDS = ('pe', 'pb', 'roe', 'roe_qoq')
 CAPITAL_FLOW_FIELDS = ('main_force_net_5d', 'margin_balance_change_5d')
+FUNDAMENTAL_RECONCILIATION_FINA_LOOKBACK_DAYS = 400
 SNAPSHOT_ROW_FIELD = 'snapshot_row'
 MACRO_FIELDS = (
     'dxy',
@@ -1897,7 +1898,8 @@ class Command(BaseCommand):
 
     def _fetch_fundamental_reconciliation_fina_indicator(self, pro, ts_code, start_date, end_date):
         frames = []
-        for window_start, window_end in iter_date_windows(start_date, end_date):
+        fetch_start = start_date - timedelta(days=FUNDAMENTAL_RECONCILIATION_FINA_LOOKBACK_DAYS)
+        for window_start, window_end in iter_date_windows(fetch_start, end_date):
             frame = self._call_reconciliation_tushare(
                 lambda ws=window_start, we=window_end: pro.fina_indicator(
                     ts_code=ts_code,
@@ -1910,8 +1912,8 @@ class Command(BaseCommand):
             if frame is not None and not frame.empty:
                 frames.append(frame)
         if not frames:
-            return normalize_fina_indicator_frame(None)
-        return normalize_fina_indicator_frame(pd.concat(frames, ignore_index=True))
+            return None
+        return pd.concat(frames, ignore_index=True)
 
     def _call_reconciliation_tushare(self, fn, label):
         attempts = 0

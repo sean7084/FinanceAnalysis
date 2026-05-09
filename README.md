@@ -100,8 +100,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ### Latest Highlights
-- The current `v0.1.12` release candidate packages lifecycle-aware historical data governance, strict point-in-time effective-universe enforcement, expanded data-quality audits, richer macro term-structure coverage, and Linux-native local-stack tooling.
-- 0.1.12: official trading calendar and suspension ingestion, OHLCV repair/warm-up flows, fail-fast PIT membership coverage, expanded `validate_data_quality` reporting, macro `6M/1Y/3Y/5Y/7Y/10Y/30Y` yields, checkpointed model-data backfills, and native `.venv`/localhost scripts
+- The current `v0.1.11` release candidate packages `80` changed files across benchmark-universe orchestration, PIT benchmark infrastructure, backtest comparison UI/API, historical floor controls, tests, and refreshed model artifacts.
 - 0.1.11: CSI 300 + CSI A500 constituent sync and onboarding, PIT benchmark fallback plus official benchmark comparison curves, 2010 floor/purge tooling, PIT-aware model/backtest filters, and refreshed LightGBM/LSTM artifacts
 - 0.1.10: deterministic LightGBM `core80-v1` retrains, TP/SL trade-decision policy experiments, new validation/audit commands, Indicator Board UI, and refreshed validation report packs for runs 113-136
 - 0.1.9: full backfill refresh, runtime backtest validation, northbound field cleanup migration
@@ -144,8 +143,8 @@ B. 因子/特征原始源
 3. switch runtime yield_curve to cn10y_yield - cn3y_yield
 4. stick to curve type = 曲线类型：0-到期
 5. rescheduled the syncing to the second day of each month at 0:10 am
-6. maps the Yahoo monthly open onto month-start MacroSnapshot.cny_usd rows for 2010-01 through 2012-02
-• [x] market context validation and backfill
+6. maps the Yahoo monthly open onto month-start MacroSnapshot.cny_usd rows for 2010-01 through 2012-02 
+• [x] market context validation and backfill 
 • [ ] Capital Flow Snapshots validation and backfill
 • [x] technical indicator validation and backfill
 
@@ -948,7 +947,7 @@ Key fixes from the older block:
 
 4. Validation, audits, and benchmark checks:
    ```bash
-   python manage.py validate_data_quality --start-date 2010-01-04 --end-date 2026-04-30 --effective-universe-only --include-delisted --output-dir reports/
+   python manage.py validate_data_quality --start-date 2010-01-04 --end-date 2026-04-30 --effective-universe-only --fundamental-reconciliation-sample-size 100 --include-delisted --output-dir 
    python manage.py audit_model_data_quality --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py run_validation_backtests --start-date 2024-01-01 --end-date 2026-04-30 --sources heuristic,lightgbm,lstm
    python manage.py run_reference_benchmark_suite --start-date 2024-01-01 --end-date 2026-04-30 --output-dir reports/reference_suite_latest
