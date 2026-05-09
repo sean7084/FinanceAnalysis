@@ -1,12 +1,13 @@
 from datetime import date, timedelta
 from decimal import Decimal
 from io import StringIO
+import tempfile
 from unittest.mock import patch
 
 import pandas as pd
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -15,7 +16,7 @@ from apps.factors.models import FactorScore
 from apps.markets.models import Market, Asset
 from . import providers
 from .models import MacroSnapshot, MarketContext, EventImpactStat
-from .tasks import refresh_current_market_context, sync_market_context_for_snapshot
+from .tasks import refresh_current_market_context, sync_macro_data_monthly, sync_market_context_for_snapshot
 
 
 class Phase12MacroTests(TestCase):
@@ -53,7 +54,7 @@ class Phase12MacroTests(TestCase):
             pmi_manufacturing=Decimal('48.2'),
             pmi_non_manufacturing=Decimal('49.0'),
             cn10y_yield=Decimal('2.10'),
-            cn2y_yield=Decimal('2.35'),
+            cn3y_yield=Decimal('2.35'),
             cpi_yoy=Decimal('1.1'),
         )
         refresh_current_market_context(snapshot_id=snap.id, event_tag='trade_war')
@@ -68,7 +69,7 @@ class Phase12MacroTests(TestCase):
             pmi_manufacturing=Decimal('48.2'),
             pmi_non_manufacturing=Decimal('49.0'),
             cn10y_yield=Decimal('2.10'),
-            cn2y_yield=Decimal('2.35'),
+            cn3y_yield=Decimal('2.35'),
             cpi_yoy=Decimal('1.1'),
         )
         february = MacroSnapshot.objects.create(
@@ -76,7 +77,7 @@ class Phase12MacroTests(TestCase):
             pmi_manufacturing=Decimal('52.4'),
             pmi_non_manufacturing=Decimal('53.1'),
             cn10y_yield=Decimal('2.40'),
-            cn2y_yield=Decimal('2.10'),
+            cn3y_yield=Decimal('2.10'),
             cpi_yoy=Decimal('1.0'),
         )
 
@@ -101,7 +102,7 @@ class Phase12MacroTests(TestCase):
             pmi_manufacturing=Decimal('48.2'),
             pmi_non_manufacturing=Decimal('49.0'),
             cn10y_yield=Decimal('2.10'),
-            cn2y_yield=Decimal('2.35'),
+            cn3y_yield=Decimal('2.35'),
             cpi_yoy=Decimal('1.1'),
         )
         active_context = MarketContext.objects.create(
@@ -140,6 +141,39 @@ class Phase12MacroTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['macro_phase'], MarketContext.MacroPhase.RECOVERY)
 
+    @patch('apps.macro.tasks.refresh_current_market_context.delay')
+    def test_sync_macro_data_monthly_writes_month_start_row_from_asof_payload(self, mock_refresh_delay):
+        result = sync_macro_data_monthly(payload={
+            'date': '2026-05-05',
+            'dxy': Decimal('101.0'),
+            'cny_usd': Decimal('0.1400'),
+            'cn6m_yield': Decimal('2.10'),
+            'cn1y_yield': Decimal('2.20'),
+            'cn3y_yield': Decimal('2.30'),
+            'cn5y_yield': Decimal('2.40'),
+            'cn7y_yield': Decimal('2.50'),
+            'cn10y_yield': Decimal('2.80'),
+            'cn30y_yield': Decimal('3.40'),
+            'pmi_manufacturing': Decimal('50.2'),
+            'pmi_non_manufacturing': Decimal('51.0'),
+            'cpi_yoy': Decimal('0.9'),
+            'ppi_yoy': Decimal('-0.4'),
+            'metadata': {'source': 'tushare'},
+        })
+
+        snapshot = MacroSnapshot.objects.get(date=date(2026, 5, 1))
+        self.assertEqual(snapshot.cn6m_yield, Decimal('2.10'))
+        self.assertEqual(snapshot.cn1y_yield, Decimal('2.20'))
+        self.assertEqual(snapshot.cn3y_yield, Decimal('2.30'))
+        self.assertEqual(snapshot.cn5y_yield, Decimal('2.40'))
+        self.assertEqual(snapshot.cn7y_yield, Decimal('2.50'))
+        self.assertEqual(snapshot.cn10y_yield, Decimal('2.80'))
+        self.assertEqual(snapshot.cn3y_yield, Decimal('2.30'))
+        self.assertEqual(snapshot.cn30y_yield, Decimal('3.40'))
+        mock_refresh_delay.assert_called_once_with(snapshot.id)
+        self.assertEqual(result, 'Macro snapshot synced for 2026-05-01')
+
+    @override_settings(HISTORICAL_DATA_FLOOR='2004-12-01')
     def test_backfill_market_context_builds_history_from_macro_snapshots(self):
         MacroSnapshot.objects.create(
             date=date(2004, 12, 1),
@@ -150,7 +184,7 @@ class Phase12MacroTests(TestCase):
             pmi_manufacturing=Decimal('54.7'),
             pmi_non_manufacturing=Decimal('54.0'),
             cn10y_yield=Decimal('2.40'),
-            cn2y_yield=Decimal('2.10'),
+            cn3y_yield=Decimal('2.10'),
             cpi_yoy=Decimal('1.0'),
         )
         MacroSnapshot.objects.create(
@@ -164,7 +198,7 @@ class Phase12MacroTests(TestCase):
             pmi_manufacturing=Decimal('48.0'),
             pmi_non_manufacturing=Decimal('49.0'),
             cn10y_yield=Decimal('2.10'),
-            cn2y_yield=Decimal('2.30'),
+            cn3y_yield=Decimal('2.30'),
             cpi_yoy=Decimal('1.5'),
         )
         MacroSnapshot.objects.create(
@@ -355,8 +389,11 @@ class MacroProviderAndBackfillTests(TestCase):
 
     @patch('apps.macro.providers._sleep_if_needed')
     @patch('apps.macro.providers._safe_tushare_client')
-    def test_fetch_macro_snapshot_from_tushare_prefers_primary_curve_type_for_yields(self, mock_client, _mock_sleep):
+    def test_fetch_macro_snapshot_from_tushare_uses_curve_type_zero_and_first_trade_date_in_month(self, mock_client, _mock_sleep):
         class StubClient:
+            def __init__(self):
+                self.yc_cb_calls = []
+
             def cn_cpi(self, **kwargs):
                 return pd.DataFrame([
                     {'month': '202604', 'nt_yoy': 0.8},
@@ -373,15 +410,19 @@ class MacroProviderAndBackfillTests(TestCase):
                 ])
 
             def yc_cb(self, curve_term, **kwargs):
+                self.yc_cb_calls.append((curve_term, kwargs.get('curve_type'), kwargs.get('start_date'), kwargs.get('end_date')))
                 if curve_term == 10:
                     return pd.DataFrame([
-                        {'trade_date': '20260423', 'curve_type': '1', 'yield': 2.7},
-                        {'trade_date': '20260423', 'curve_type': '0', 'yield': 2.5},
+                        {'trade_date': '20260402', 'curve_type': '0', 'yield': 2.7},
+                        {'trade_date': '20260401', 'curve_type': '1', 'yield': 2.8},
+                        {'trade_date': '20260401', 'curve_type': '0', 'yield': 2.5},
                     ])
-                return pd.DataFrame([
-                    {'trade_date': '20260423', 'curve_type': '1', 'yield': 2.2},
-                    {'trade_date': '20260423', 'curve_type': '0', 'yield': 2.1},
-                ])
+                if curve_term == 3:
+                    return pd.DataFrame([
+                        {'trade_date': '20260402', 'curve_type': '0', 'yield': 2.3},
+                        {'trade_date': '20260401', 'curve_type': '0', 'yield': 2.1},
+                    ])
+                return pd.DataFrame([])
 
             def fx_daily(self, ts_code, **kwargs):
                 if ts_code == 'USDOLLAR.FXCM':
@@ -396,13 +437,19 @@ class MacroProviderAndBackfillTests(TestCase):
                     ])
                 raise AssertionError(f'unexpected ts_code: {ts_code}')
 
-        mock_client.return_value = StubClient()
+        stub_client = StubClient()
+        mock_client.return_value = stub_client
 
         payload = providers.fetch_macro_snapshot_from_tushare(snapshot_date=timezone.datetime(2026, 4, 1).date())
 
         self.assertEqual(payload['cn10y_yield'], Decimal('2.5'))
-        self.assertEqual(payload['cn2y_yield'], Decimal('2.1'))
+        self.assertEqual(payload['cn3y_yield'], Decimal('2.1'))
+        self.assertNotIn('cn2y_yield', payload)
+        self.assertEqual([call[0] for call in stub_client.yc_cb_calls], [0.5, 1, 3, 5, 7, 10, 30])
         self.assertEqual(payload['metadata']['yield_sources']['cn10y_yield']['curve_type'], '0')
+        self.assertEqual(payload['metadata']['yield_sources']['cn10y_yield']['trade_date'], '20260401')
+        self.assertEqual(payload['metadata']['yield_sources']['cn3y_yield']['trade_date'], '20260401')
+        self.assertTrue(all(call[1] == '0' for call in stub_client.yc_cb_calls))
 
     @patch('apps.macro.providers._sleep_if_needed')
     @patch('apps.macro.providers._safe_tushare_client')
@@ -454,7 +501,6 @@ class MacroProviderAndBackfillTests(TestCase):
             'dxy': None,
             'cny_usd': None,
             'cn10y_yield': Decimal('2.30'),
-            'cn2y_yield': Decimal('2.10'),
             'pmi_manufacturing': Decimal('50.2'),
             'pmi_non_manufacturing': Decimal('51.3'),
             'cpi_yoy': Decimal('0.8'),
@@ -466,7 +512,6 @@ class MacroProviderAndBackfillTests(TestCase):
             'dxy': Decimal('104.2'),
             'cny_usd': Decimal('0.1389'),
             'cn10y_yield': None,
-            'cn2y_yield': None,
             'pmi_manufacturing': None,
             'pmi_non_manufacturing': None,
             'cpi_yoy': None,
@@ -517,7 +562,6 @@ class MacroProviderAndBackfillTests(TestCase):
             'dxy': None,
             'cny_usd': None,
             'cn10y_yield': None,
-            'cn2y_yield': None,
             'pmi_manufacturing': None,
             'pmi_non_manufacturing': None,
             'cpi_yoy': None,
@@ -605,7 +649,12 @@ class MacroProviderAndBackfillTests(TestCase):
             'dxy': Decimal('104.2'),
             'cny_usd': Decimal('0.1389'),
             'cn10y_yield': None,
-            'cn2y_yield': None,
+            'cn6m_yield': None,
+            'cn1y_yield': None,
+            'cn3y_yield': None,
+            'cn5y_yield': None,
+            'cn7y_yield': None,
+            'cn30y_yield': None,
             'pmi_manufacturing': None,
             'pmi_non_manufacturing': None,
             'cpi_yoy': None,
@@ -623,7 +672,7 @@ class MacroProviderAndBackfillTests(TestCase):
 
         snapshot = MacroSnapshot.objects.get(date='2024-01-01')
         self.assertEqual(snapshot.cn10y_yield, Decimal('2.5'))
-        self.assertEqual(snapshot.cn2y_yield, Decimal('2.1'))
+        self.assertEqual(snapshot.cn3y_yield, Decimal('2.1'))
         self.assertEqual(snapshot.dxy, Decimal('104.2400'))
         self.assertEqual(snapshot.cny_usd, Decimal('0.1389'))
         self.assertEqual(snapshot.metadata['retries']['yield_10y'], 1)
@@ -692,8 +741,13 @@ class MacroProviderAndBackfillTests(TestCase):
 
         MacroSnapshot.objects.create(
             date='2024-01-01',
+            cn6m_yield=Decimal('1.8'),
+            cn1y_yield=Decimal('1.9'),
+            cn3y_yield=Decimal('2.1'),
+            cn5y_yield=Decimal('2.2'),
+            cn7y_yield=Decimal('2.3'),
             cn10y_yield=Decimal('2.4'),
-            cn2y_yield=Decimal('2.0'),
+            cn30y_yield=Decimal('2.8'),
             metadata={'yield_sources': {'cn10y_yield': {'curve_type': '0'}}},
         )
 
@@ -704,7 +758,12 @@ class MacroProviderAndBackfillTests(TestCase):
             'dxy': None,
             'cny_usd': None,
             'cn10y_yield': None,
-            'cn2y_yield': None,
+            'cn6m_yield': None,
+            'cn1y_yield': None,
+            'cn3y_yield': None,
+            'cn5y_yield': None,
+            'cn7y_yield': None,
+            'cn30y_yield': None,
             'pmi_manufacturing': None,
             'pmi_non_manufacturing': None,
             'cpi_yoy': None,
@@ -721,9 +780,221 @@ class MacroProviderAndBackfillTests(TestCase):
 
         feb_snapshot = MacroSnapshot.objects.get(date='2024-02-01')
         self.assertEqual(feb_snapshot.cn10y_yield, Decimal('2.5'))
-        self.assertEqual(feb_snapshot.cn2y_yield, Decimal('2.1'))
+        self.assertEqual(feb_snapshot.cn3y_yield, Decimal('2.1'))
         self.assertEqual(stub_pro.yc_cb_calls, [
+            (0.5, '20240201', '20240229'),
+            (1, '20240201', '20240229'),
+            (3, '20240201', '20240229'),
+            (5, '20240201', '20240229'),
+            (7, '20240201', '20240229'),
             (10, '20240201', '20240229'),
-            (2, '20240201', '20240229'),
+            (30, '20240201', '20240229'),
         ])
+        mock_refresh.assert_called_once()
+
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.refresh_current_market_context')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.ts.pro_api')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.fetch_macro_snapshot_from_akshare')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots._sleep_if_needed')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots._yield_sleep_if_needed')
+    @patch('apps.macro.providers.sleep')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.settings.TUSHARE_TOKEN', 'test-token')
+    def test_backfill_macro_snapshots_uses_yahoo_cny_usd_before_tushare_start(
+        self,
+        mock_provider_sleep,
+        mock_yield_sleep,
+        mock_command_sleep,
+        mock_fallback,
+        mock_pro_api,
+        mock_refresh,
+    ):
+        class StubPro:
+            def cn_cpi(self, **kwargs):
+                return pd.DataFrame([])
+
+            def cn_ppi(self, **kwargs):
+                return pd.DataFrame([])
+
+            def cn_pmi(self, **kwargs):
+                return pd.DataFrame([])
+
+            def yc_cb(self, curve_term, **kwargs):
+                return pd.DataFrame([])
+
+            def fx_daily(self, ts_code, **kwargs):
+                if ts_code == 'USDOLLAR.FXCM':
+                    return pd.DataFrame([])
+                if ts_code == 'USDOLLAR':
+                    return pd.DataFrame([])
+                if ts_code == 'USDCNH.FXCM':
+                    return pd.DataFrame([
+                        {'trade_date': '20120229', 'bid_close': 6.0000, 'ask_close': 6.0000},
+                        {'trade_date': '20120301', 'bid_close': 6.2500, 'ask_close': 6.2500},
+                    ])
+                raise AssertionError(f'unexpected ts_code: {ts_code}')
+
+        mock_pro_api.return_value = StubPro()
+        mock_fallback.return_value = {
+            'date': timezone.now().date().replace(day=1),
+            'dxy': None,
+            'cny_usd': None,
+            'cn6m_yield': None,
+            'cn1y_yield': None,
+            'cn3y_yield': None,
+            'cn5y_yield': None,
+            'cn7y_yield': None,
+            'cn10y_yield': None,
+            'cn30y_yield': None,
+            'pmi_manufacturing': None,
+            'pmi_non_manufacturing': None,
+            'cpi_yoy': None,
+            'ppi_yoy': None,
+            'metadata': {'source': 'akshare', 'source_used': 'akshare'},
+        }
+
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as handle:
+            handle.write(
+                'month,open, high,low ,close\n'
+                '2012-1,0.1585,0.1591,0.1592,0.1584\n'
+                '2012-2,0.1584,0.1591,0.1583,0.1588\n'
+            )
+            csv_path = handle.name
+
+        with override_settings(MACRO_CNYUSD_CSV_PATH=csv_path):
+            call_command(
+                'backfill_macro_snapshots',
+                start_date='2012-01-01',
+                end_date='2012-03-31',
+            )
+
+        january_snapshot = MacroSnapshot.objects.get(date='2012-01-01')
+        february_snapshot = MacroSnapshot.objects.get(date='2012-02-01')
+        march_snapshot = MacroSnapshot.objects.get(date='2012-03-01')
+
+        self.assertEqual(january_snapshot.cny_usd, Decimal('0.1585'))
+        self.assertEqual(february_snapshot.cny_usd, Decimal('0.1584'))
+        self.assertEqual(march_snapshot.cny_usd, Decimal('0.1600'))
+        self.assertEqual(february_snapshot.metadata['field_sources']['cny_usd'], 'yahoo_cnyusd_monthly_csv')
+        self.assertEqual(february_snapshot.metadata['fx_sources']['cny_usd']['quote_field'], 'open')
+        self.assertEqual(march_snapshot.metadata['field_sources']['cny_usd'], 'tushare_fx_daily')
+        self.assertEqual(march_snapshot.metadata['fx_sources']['cny_usd']['trade_date'], '20120301')
+        mock_refresh.assert_called_once()
+
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.refresh_current_market_context')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.ts.pro_api')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.fetch_macro_snapshot_from_akshare')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots._sleep_if_needed')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots._yield_sleep_if_needed')
+    @patch('apps.macro.providers.sleep')
+    @patch('apps.macro.management.commands.backfill_macro_snapshots.settings.TUSHARE_TOKEN', 'test-token')
+    def test_backfill_macro_snapshots_uses_csv_before_tushare_yield_start(
+        self,
+        mock_provider_sleep,
+        mock_yield_sleep,
+        mock_command_sleep,
+        mock_fallback,
+        mock_pro_api,
+        mock_refresh,
+    ):
+        class StubPro:
+            def cn_cpi(self, **kwargs):
+                return pd.DataFrame([])
+
+            def cn_ppi(self, **kwargs):
+                return pd.DataFrame([])
+
+            def cn_pmi(self, **kwargs):
+                return pd.DataFrame([])
+
+            def yc_cb(self, curve_term, **kwargs):
+                if curve_term == 10:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 2.7768},
+                        {'trade_date': '20160701', 'curve_type': '1', 'yield': 2.8348},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 2.8038},
+                    ])
+                if curve_term == 3:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 2.4802},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 2.5293},
+                    ])
+                if curve_term == 0.5:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 2.1951},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 2.2692},
+                    ])
+                if curve_term == 1:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 2.2394},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 2.3611},
+                    ])
+                if curve_term == 5:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 2.5827},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 2.6556},
+                    ])
+                if curve_term == 7:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 2.7752},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 2.8102},
+                    ])
+                if curve_term == 30:
+                    return pd.DataFrame([
+                        {'trade_date': '20160729', 'curve_type': '0', 'yield': 3.3486},
+                        {'trade_date': '20160701', 'curve_type': '0', 'yield': 3.5248},
+                    ])
+                raise AssertionError(f'unexpected curve_term: {curve_term}')
+
+            def fx_daily(self, ts_code, **kwargs):
+                return pd.DataFrame([])
+
+        mock_pro_api.return_value = StubPro()
+        mock_fallback.return_value = {
+            'date': timezone.now().date().replace(day=1),
+            'dxy': None,
+            'cny_usd': None,
+            'cn6m_yield': None,
+            'cn1y_yield': None,
+            'cn3y_yield': None,
+            'cn5y_yield': None,
+            'cn7y_yield': None,
+            'cn10y_yield': None,
+            'cn30y_yield': None,
+            'pmi_manufacturing': None,
+            'pmi_non_manufacturing': None,
+            'cpi_yoy': None,
+            'ppi_yoy': None,
+            'metadata': {'source': 'akshare', 'source_used': 'akshare'},
+        }
+
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as handle:
+            handle.write(
+                'Yield Curve Name,Date,3M,6M,1Y,3Y,5Y,7Y,10Y,30Y\n'
+                'ChinaBond Government Bond Yield Curve,2016/6/30,2.1978,2.2718,2.3901,2.5484,2.6865,2.85,2.8411,3.5348\n'
+                'ChinaBond Government Bond Yield Curve,2016/6/1,2.2,2.25,2.35,2.45,2.55,2.65,2.75,3.55\n'
+            )
+            csv_path = handle.name
+
+        with override_settings(MACRO_YIELD_CSV_PATH=csv_path):
+            call_command(
+                'backfill_macro_snapshots',
+                start_date='2016-06-01',
+                end_date='2016-07-31',
+            )
+
+        june_snapshot = MacroSnapshot.objects.get(date='2016-06-01')
+        july_snapshot = MacroSnapshot.objects.get(date='2016-07-01')
+
+        self.assertEqual(june_snapshot.cn10y_yield, Decimal('2.75'))
+        self.assertEqual(june_snapshot.cn3y_yield, Decimal('2.45'))
+        self.assertEqual(june_snapshot.cn6m_yield, Decimal('2.25'))
+        self.assertEqual(june_snapshot.metadata['yield_sources']['cn10y_yield']['source'], 'chinabond_gov_yield_csv')
+        self.assertEqual(june_snapshot.metadata['yield_sources']['cn10y_yield']['trade_date'], '20160601')
+
+        self.assertEqual(july_snapshot.cn10y_yield, Decimal('2.8038'))
+        self.assertEqual(july_snapshot.cn3y_yield, Decimal('2.5293'))
+        self.assertEqual(july_snapshot.cn6m_yield, Decimal('2.2692'))
+        self.assertEqual(july_snapshot.metadata['yield_sources']['cn10y_yield']['source'], 'tushare_yc_cb')
+        self.assertEqual(july_snapshot.metadata['yield_sources']['cn10y_yield']['trade_date'], '20160701')
+        self.assertEqual(july_snapshot.metadata['yield_sources']['cn10y_yield']['curve_type'], '0')
         mock_refresh.assert_called_once()

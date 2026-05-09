@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_native_env.sh"
+
 PROVIDER="${PROVIDER:-tushare_major}"
 CHUNK_DAYS="${CHUNK_DAYS:-31}"
 BACKFILL_FLOOR="${BACKFILL_FLOOR:-2021-04-15 00:00:00}"
@@ -8,7 +11,7 @@ RUN_PIPELINE="${RUN_PIPELINE:-1}"
 LIMIT_PER_PROVIDER="${LIMIT_PER_PROVIDER:-0}"
 MAX_RETRIES="${MAX_RETRIES:-0}"
 
-current_min=$(docker compose exec django python manage.py shell -c "from apps.sentiment.models import NewsArticle; from django.db.models import Min; value=NewsArticle.objects.aggregate(v=Min('published_at'))['v']; print(value.isoformat() if value else '')" | tail -n 1)
+current_min=$(cd "$PROJECT_ROOT" && "$PYTHON_BIN" manage.py shell -c "from apps.sentiment.models import NewsArticle; from django.db.models import Min; value=NewsArticle.objects.aggregate(v=Min('published_at'))['v']; print(value.isoformat() if value else '')" | tail -n 1)
 
 if [[ -z "$current_min" ]]; then
   echo "No NewsArticle rows exist yet. Seed current news first, then rerun this helper." >&2
@@ -65,7 +68,7 @@ end_at="${window##*|}"
 echo "Running ${PROVIDER} staged backfill for ${start_at} -> ${end_at}"
 
 command=(
-  docker compose exec django python manage.py backfill_news
+  "$PYTHON_BIN" manage.py backfill_news
   "--providers=${PROVIDER}"
   "--start-at=${start_at}"
   "--end-at=${end_at}"
@@ -80,7 +83,7 @@ if [[ "$RUN_PIPELINE" == "1" ]]; then
 fi
 
 set +e
-output=$("${command[@]}" 2>&1)
+output=$(cd "$PROJECT_ROOT" && "${command[@]}" 2>&1)
 status=$?
 set -e
 
@@ -94,4 +97,5 @@ if [[ $status -ne 0 ]]; then
   exit "$status"
 fi
 
-docker compose exec django python manage.py shell -c "from apps.sentiment.models import NewsArticle; from django.db.models import Min, Count; agg=NewsArticle.objects.aggregate(min=Min('published_at'), count=Count('id')); print(f'Earliest article: {agg[\"min\"].isoformat() if agg[\"min\"] else None}'); print(f'Total articles: {agg[\"count\"]}')"
+cd "$PROJECT_ROOT"
+"$PYTHON_BIN" manage.py shell -c "from apps.sentiment.models import NewsArticle; from django.db.models import Min, Count; agg=NewsArticle.objects.aggregate(min=Min('published_at'), count=Count('id')); print(f'Earliest article: {agg[\"min\"].isoformat() if agg[\"min\"] else None}'); print(f'Total articles: {agg[\"count\"]}')"

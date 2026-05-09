@@ -59,6 +59,47 @@ class Phase13SentimentTests(TestCase):
             SentimentScore.objects.filter(asset=self.asset, score_type=SentimentScore.ScoreType.ARTICLE).exists()
         )
 
+    def test_daily_sentiment_falls_back_for_historically_listed_delisted_asset(self):
+        delisted_asset = Asset.objects.create(
+            market=self.market,
+            symbol='603002',
+            ts_code='603002.SH',
+            name='Delisted Sentiment Asset',
+            list_date=timezone.datetime(2024, 1, 1).date(),
+            delist_date=timezone.datetime(2024, 1, 15).date(),
+            listing_status=Asset.ListingStatus.DELISTED,
+        )
+
+        in_window_date = timezone.datetime(2024, 1, 10).date()
+        before_list_date = timezone.datetime(2023, 12, 31).date()
+        on_delist_date = timezone.datetime(2024, 1, 15).date()
+
+        calculate_daily_sentiment(target_date=str(in_window_date))
+        calculate_daily_sentiment(target_date=str(before_list_date))
+        calculate_daily_sentiment(target_date=str(on_delist_date))
+
+        self.assertTrue(
+            SentimentScore.objects.filter(
+                asset=delisted_asset,
+                date=in_window_date,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+            ).exists()
+        )
+        self.assertFalse(
+            SentimentScore.objects.filter(
+                asset=delisted_asset,
+                date=before_list_date,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+            ).exists()
+        )
+        self.assertFalse(
+            SentimentScore.objects.filter(
+                asset=delisted_asset,
+                date=on_delist_date,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+            ).exists()
+        )
+
     @patch('apps.sentiment.views.run_daily_sentiment_pipeline.delay')
     def test_recalculate_endpoint_queues_pipeline(self, mock_delay):
         self._auth()

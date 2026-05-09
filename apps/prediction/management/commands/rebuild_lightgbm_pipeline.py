@@ -7,6 +7,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
+from apps.markets.benchmarking import PITMembershipCoverageError, ensure_pit_membership_coverage
+from apps.markets.models import OHLCV
 from apps.prediction.tasks_lightgbm import train_lightgbm_models
 
 
@@ -87,6 +89,21 @@ class Command(BaseCommand):
             raise CommandError(f'start-date cannot be earlier than HISTORICAL_DATA_FLOOR={floor_date}.')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
+
+        trading_dates = list(
+            OHLCV.objects.filter(date__gte=start_date, date__lte=end_date)
+            .values_list('date', flat=True)
+            .distinct()
+            .order_by('date')
+        )
+        if trading_dates:
+            try:
+                ensure_pit_membership_coverage(
+                    trading_dates,
+                    context=f'LightGBM rebuild window {start_date}..{end_date}',
+                )
+            except PITMembershipCoverageError as exc:
+                raise CommandError(str(exc)) from exc
 
         horizons = self._parse_horizons(options['horizons'])
 

@@ -114,6 +114,30 @@ def _asset_aliases(asset):
     return {alias for alias in aliases if alias}
 
 
+def listed_asset_ids_for_date(target_date, asset_windows=None):
+    if asset_windows is None:
+        return list(
+            Asset.objects.filter(
+                list_date__isnull=False,
+                list_date__lte=target_date,
+            )
+            .exclude(
+                delist_date__isnull=False,
+                delist_date__lte=target_date,
+            )
+            .values_list('id', flat=True)
+        )
+
+    listed_asset_ids = []
+    for asset_id, list_date, delist_date in asset_windows:
+        if list_date is None or list_date > target_date:
+            continue
+        if delist_date is not None and delist_date <= target_date:
+            continue
+        listed_asset_ids.append(asset_id)
+    return listed_asset_ids
+
+
 def _build_asset_match_index():
     assets = Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE).only('id', 'symbol', 'ts_code', 'name')
     entries = []
@@ -408,13 +432,13 @@ def calculate_daily_sentiment(target_date=None):
             },
         )
 
-    # Ensure each active asset has a 7d sentiment row to avoid N/A UI states.
-    for asset in Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE):
-        if asset.id in aggregated_asset_ids:
+    # Ensure each historically listed asset has a 7d sentiment row for the target date.
+    for asset_id in listed_asset_ids_for_date(d):
+        if asset_id in aggregated_asset_ids:
             continue
         SentimentScore.objects.update_or_create(
             article=None,
-            asset=asset,
+            asset_id=asset_id,
             date=d,
             score_type=SentimentScore.ScoreType.ASSET_7D,
             defaults={

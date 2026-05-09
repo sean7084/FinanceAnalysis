@@ -12,6 +12,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.analytics.models import SignalEvent, TechnicalIndicator
+from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from apps.prediction.models import ModelVersion, PredictionResult
 from .models import (
@@ -118,8 +119,26 @@ class Phase11FactorTests(TestCase):
             metadata={},
         )
 
+    def _seed_required_pit_membership(self, target_date, asset1_codes=('000300.SH',), asset2_codes=('000510.CSI',)):
+        index_names = {
+            '000300.SH': 'CSI 300',
+            '000510.CSI': 'CSI A500',
+        }
+        for asset, index_codes in ((self.asset1, asset1_codes), (self.asset2, asset2_codes)):
+            for index_code in index_codes:
+                IndexMembership.objects.create(
+                    asset=asset,
+                    index_code=index_code,
+                    index_name=index_names[index_code],
+                    trade_date=target_date,
+                    weight=Decimal('4.2'),
+                )
+
     def test_calculate_factor_scores_creates_composite_scores(self):
-        calculate_factor_scores_for_date(target_date=str(timezone.now().date()))
+        target_date = timezone.now().date()
+        self._seed_required_pit_membership(target_date)
+
+        calculate_factor_scores_for_date(target_date=str(target_date))
         self.assertEqual(FactorScore.objects.count(), 2)
         top = FactorScore.objects.order_by('-bottom_probability_score').first()
         self.assertEqual(top.asset, self.asset1)
@@ -127,6 +146,7 @@ class Phase11FactorTests(TestCase):
 
     def test_calculate_factor_scores_ignores_future_ohlcv_rows(self):
         target_date = timezone.now().date()
+        self._seed_required_pit_membership(target_date)
         calculate_factor_scores_for_date(target_date=str(target_date))
         baseline = FactorScore.objects.get(asset=self.asset1, date=target_date, mode=FactorScore.FactorMode.COMPOSITE)
 
@@ -148,15 +168,27 @@ class Phase11FactorTests(TestCase):
         self.assertEqual(refreshed.technical_score, baseline.technical_score)
         self.assertEqual(refreshed.bottom_probability_score, baseline.bottom_probability_score)
 
+    def test_calculate_factor_scores_refreshes_existing_rows_without_duplicates(self):
+        target_date = timezone.now().date()
+        self._seed_required_pit_membership(target_date)
+
+        calculate_factor_scores_for_date(target_date=str(target_date))
+        self.assertEqual(FactorScore.objects.count(), 2)
+
+        flow = CapitalFlowSnapshot.objects.get(asset=self.asset1, date=target_date)
+        flow.main_force_net_5d = Decimal('-900000')
+        flow.margin_balance_change_5d = Decimal('-400000')
+        flow.save(update_fields=['main_force_net_5d', 'margin_balance_change_5d'])
+
+        calculate_factor_scores_for_date(target_date=str(target_date))
+
+        refreshed = FactorScore.objects.get(asset=self.asset1, date=target_date, mode=FactorScore.FactorMode.COMPOSITE)
+        self.assertEqual(FactorScore.objects.count(), 2)
+        self.assertEqual(refreshed.capital_flow_score, Decimal('0.5'))
+
     def test_calculate_factor_scores_filters_to_point_in_time_union_when_membership_exists(self):
         target_date = timezone.now().date()
-        IndexMembership.objects.create(
-            asset=self.asset1,
-            index_code='000300.SH',
-            index_name='CSI 300',
-            trade_date=target_date,
-            weight=Decimal('4.2'),
-        )
+        self._seed_required_pit_membership(target_date, asset1_codes=('000300.SH', '000510.CSI'), asset2_codes=())
 
         calculate_factor_scores_for_date(target_date=str(target_date))
 
@@ -172,7 +204,9 @@ class Phase11FactorTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_bottom_candidates_returns_ranked_results(self):
-        calculate_factor_scores_for_date(target_date=str(timezone.now().date()))
+        target_date = timezone.now().date()
+        self._seed_required_pit_membership(target_date)
+        calculate_factor_scores_for_date(target_date=str(target_date))
         self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/v1/screener/bottom-candidates/?top_n=1')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -181,6 +215,7 @@ class Phase11FactorTests(TestCase):
 
     def test_bottom_candidates_can_sort_by_trade_score(self):
         current_date = timezone.now().date()
+        self._seed_required_pit_membership(current_date)
         calculate_factor_scores_for_date(target_date=str(current_date))
         version = ModelVersion.objects.create(
             model_type=ModelVersion.ModelType.ENSEMBLE,
@@ -226,6 +261,15 @@ class Phase11FactorTests(TestCase):
         self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
         self.assertEqual(response.data['results'][0]['suggested'], True)
         self.assertEqual(response.data['results'][0]['trade_score'], 1.8)
+
+    def test_calculate_factor_scores_raises_when_required_pit_membership_is_missing(self):
+        target_date = timezone.now().date()
+
+        with self.assertRaisesMessage(
+            PITMembershipCoverageError,
+            'missing point-in-time membership coverage',
+        ):
+            calculate_factor_scores_for_date(target_date=str(target_date))
 
     @patch('apps.factors.views.calculate_factor_scores_for_date.delay')
     def test_recalculate_endpoint_queues_task(self, mock_delay):
@@ -504,6 +548,94 @@ class CapitalFlowSnapshotBackfillCommandTests(TestCase):
         self.assertEqual(rows[5].metadata['source'], 'tushare_moneyflow_margin_detail')
         self.assertIn('processed_assets=1', output.getvalue())
         self.assertIn('capital_rows=6', output.getvalue())
+
+    @patch('apps.factors.management.commands.backfill_capital_flow_snapshots.ts.pro_api')
+    def test_backfill_capital_flow_snapshots_uses_existing_raw_lookback_for_single_day_reruns(self, mock_pro_api):
+        historical_moneyflow = [
+            ('20240401', Decimal('100.0')),
+            ('20240402', Decimal('50.0')),
+            ('20240403', Decimal('-20.0')),
+            ('20240404', Decimal('80.0')),
+            ('20240405', Decimal('-10.0')),
+        ]
+        historical_margin = [
+            ('20240401', Decimal('1000.0')),
+            ('20240402', Decimal('1100.0')),
+            ('20240403', Decimal('1080.0')),
+            ('20240404', Decimal('1200.0')),
+            ('20240405', Decimal('1190.0')),
+        ]
+
+        for trade_date, main_force_daily in historical_moneyflow:
+            buy_lg = main_force_daily if main_force_daily > 0 else Decimal('0')
+            sell_lg = -main_force_daily if main_force_daily < 0 else Decimal('0')
+            AssetMoneyFlowSnapshot.objects.create(
+                asset=self.asset,
+                date=timezone.datetime.strptime(trade_date, '%Y%m%d').date(),
+                buy_sm_amount=Decimal('0'),
+                sell_sm_amount=Decimal('0'),
+                buy_md_amount=Decimal('0'),
+                sell_md_amount=Decimal('0'),
+                buy_lg_amount=buy_lg,
+                sell_lg_amount=sell_lg,
+                buy_elg_amount=Decimal('0'),
+                sell_elg_amount=Decimal('0'),
+                net_mf_amount=main_force_daily,
+                metadata={'source': 'seed'},
+            )
+
+        for trade_date, rzrqye in historical_margin:
+            AssetMarginDetailSnapshot.objects.create(
+                asset=self.asset,
+                date=timezone.datetime.strptime(trade_date, '%Y%m%d').date(),
+                rzye=rzrqye,
+                rqye=Decimal('0'),
+                rzmre=Decimal('0'),
+                rzche=Decimal('0'),
+                rqyl=Decimal('0'),
+                rqchl=Decimal('0'),
+                rqmcl=Decimal('0'),
+                rzrqye=rzrqye,
+                metadata={'source': 'seed'},
+            )
+
+        class StubPro:
+            def moneyflow(self, **kwargs):
+                return pd.DataFrame([
+                    {
+                        'trade_date': '20240408', 'buy_sm_amount': 0.0, 'sell_sm_amount': 0.0,
+                        'buy_md_amount': 0.0, 'sell_md_amount': 0.0,
+                        'buy_lg_amount': 60.0, 'sell_lg_amount': 0.0,
+                        'buy_elg_amount': 0.0, 'sell_elg_amount': 0.0,
+                        'net_mf_amount': 60.0,
+                    },
+                ])
+
+            def margin_detail(self, **kwargs):
+                return pd.DataFrame([
+                    {
+                        'trade_date': '20240408', 'rzye': 1300.0, 'rqye': 0.0, 'rzmre': 0.0,
+                        'rzche': 0.0, 'rqyl': 0.0, 'rqchl': 0.0, 'rqmcl': 0.0, 'rzrqye': 1300.0,
+                    },
+                ])
+
+        mock_pro_api.return_value = StubPro()
+
+        output = StringIO()
+        with patch('apps.factors.management.commands.backfill_capital_flow_snapshots.settings.TUSHARE_TOKEN', 'test-token'):
+            call_command(
+                'backfill_capital_flow_snapshots',
+                start_date='2024-04-08',
+                end_date='2024-04-08',
+                symbols='600555',
+                stdout=output,
+            )
+
+        row = CapitalFlowSnapshot.objects.get(asset=self.asset, date=timezone.datetime(2024, 4, 8).date())
+        self.assertEqual(row.main_force_net_5d, Decimal('160.0'))
+        self.assertEqual(row.margin_balance_change_5d, Decimal('300.0'))
+        self.assertEqual(AssetMarginDetailSnapshot.objects.filter(asset=self.asset).count(), 6)
+        self.assertIn('capital_rows=1', output.getvalue())
 
 
 class FundamentalSnapshotMarketCapBackfillCommandTests(TestCase):

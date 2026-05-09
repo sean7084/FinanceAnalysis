@@ -15,8 +15,8 @@ class AssetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Asset
         fields = [
-            'id', 'symbol', 'ts_code', 'name', 
-            'market_name', 'market_code', 'listing_status'
+            'id', 'symbol', 'ts_code', 'name',
+            'market_name', 'market_code', 'listing_status', 'list_date', 'delist_date'
         ]
 
 
@@ -26,7 +26,7 @@ class AssetListSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Asset
-        fields = ['id', 'symbol', 'ts_code', 'name', 'market_code']
+        fields = ['id', 'symbol', 'ts_code', 'name', 'market_code', 'listing_status', 'list_date', 'delist_date']
 
 
 class OHLCVSerializer(serializers.ModelSerializer):

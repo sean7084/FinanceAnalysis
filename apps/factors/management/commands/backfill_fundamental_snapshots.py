@@ -1,5 +1,4 @@
-from datetime import date, timedelta
-from decimal import Decimal
+from datetime import date
 import time
 
 import pandas as pd
@@ -9,6 +8,12 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
 from apps.core.date_floor import get_historical_data_floor
+from apps.factors.fundamental_materialization import (
+    iter_date_windows,
+    materialize_fundamental_snapshot_rows,
+    normalize_daily_basic_frame,
+    normalize_fina_indicator_frame,
+)
 from apps.factors.models import FundamentalFactorSnapshot
 from apps.markets.models import Asset, OHLCV
 
@@ -18,37 +23,6 @@ def _parse_date(value, name):
         return date.fromisoformat(str(value))
     except ValueError as exc:
         raise CommandError(f'Invalid {name}: {value}. Expected YYYY-MM-DD.') from exc
-
-
-def _safe_decimal(value):
-    if value in (None, '', 'nan'):
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return None
-
-
-def _normalize_rate(value):
-    parsed = _safe_decimal(value)
-    if parsed is None:
-        return None
-    if abs(parsed) > Decimal('1'):
-        return parsed / Decimal('100')
-    return parsed
-
-
-def _iter_date_windows(start_date, end_date, window_days=365 * 5):
-    cursor = start_date
-    while cursor <= end_date:
-        window_end = min(end_date, cursor + timedelta(days=window_days - 1))
-        yield cursor, window_end
-        cursor = window_end + timedelta(days=1)
 
 
 class Command(BaseCommand):
@@ -134,56 +108,27 @@ class Command(BaseCommand):
         daily_df = self._fetch_daily_basic(pro, asset.ts_code, trade_start, trade_end)
         fina_df = self._fetch_fina_indicator(pro, asset.ts_code, trade_start, trade_end)
 
-        trading_df = pd.DataFrame({'date': pd.to_datetime(trading_dates)})
-        merged = trading_df.sort_values('date')
-
-        if not daily_df.empty:
-            merged = pd.merge_asof(merged, daily_df, on='date', direction='backward')
-        else:
-            merged['daily_basic_trade_date'] = pd.NaT
-            merged['pe'] = None
-            merged['pb'] = None
-
-        if not fina_df.empty:
-            merged = pd.merge_asof(
-                merged,
-                fina_df,
-                left_on='date',
-                right_on='available_date',
-                direction='backward',
-            )
-        else:
-            merged['available_date'] = pd.NaT
-            merged['ann_date'] = pd.NaT
-            merged['report_end_date'] = pd.NaT
-            merged['roe'] = None
-            merged['roe_qoq'] = None
-
         rows = []
-        for row in merged.itertuples(index=False):
-            snapshot_date = pd.Timestamp(row.date).date()
-            daily_trade_date = getattr(row, 'daily_basic_trade_date', None)
-            ann_date = getattr(row, 'ann_date', None)
-            report_end_date = getattr(row, 'report_end_date', None)
+        for payload in materialize_fundamental_snapshot_rows(trading_dates, daily_df, fina_df):
             metadata = {
                 'source': 'tushare_daily_basic_fina_indicator',
-                'daily_basic_trade_date': daily_trade_date.date().isoformat() if pd.notna(daily_trade_date) else None,
-                'fina_indicator_ann_date': ann_date.date().isoformat() if pd.notna(ann_date) else None,
-                'fina_indicator_end_date': report_end_date.date().isoformat() if pd.notna(report_end_date) else None,
+                'daily_basic_trade_date': payload['daily_basic_trade_date'].isoformat() if payload['daily_basic_trade_date'] else None,
+                'fina_indicator_ann_date': payload['fina_indicator_ann_date'].isoformat() if payload['fina_indicator_ann_date'] else None,
+                'fina_indicator_end_date': payload['fina_indicator_end_date'].isoformat() if payload['fina_indicator_end_date'] else None,
             }
             rows.append(
                 FundamentalFactorSnapshot(
                     asset=asset,
-                    date=snapshot_date,
-                    pe=_safe_decimal(getattr(row, 'pe', None)),
-                    pb=_safe_decimal(getattr(row, 'pb', None)),
-                    total_share=_safe_decimal(getattr(row, 'total_share', None)),
-                    float_share=_safe_decimal(getattr(row, 'float_share', None)),
-                    free_share=_safe_decimal(getattr(row, 'free_share', None)),
-                    total_mv=_safe_decimal(getattr(row, 'total_mv', None)),
-                    circ_mv=_safe_decimal(getattr(row, 'circ_mv', None)),
-                    roe=_safe_decimal(getattr(row, 'roe', None)),
-                    roe_qoq=_safe_decimal(getattr(row, 'roe_qoq', None)),
+                    date=payload['date'],
+                    pe=payload['pe'],
+                    pb=payload['pb'],
+                    total_share=payload['total_share'],
+                    float_share=payload['float_share'],
+                    free_share=payload['free_share'],
+                    total_mv=payload['total_mv'],
+                    circ_mv=payload['circ_mv'],
+                    roe=payload['roe'],
+                    roe_qoq=payload['roe_qoq'],
                     metadata=metadata,
                 )
             )
@@ -211,18 +156,11 @@ class Command(BaseCommand):
             ),
             f'daily_basic:{ts_code}:{start_date}:{end_date}',
         )
-        if daily_df is None or daily_df.empty:
-            return pd.DataFrame(columns=['date', 'daily_basic_trade_date', 'pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'])
-
-        normalized = daily_df.copy()
-        normalized['date'] = pd.to_datetime(normalized['trade_date'], format='%Y%m%d', errors='coerce')
-        normalized['daily_basic_trade_date'] = normalized['date']
-        normalized = normalized.dropna(subset=['date']).sort_values('date')
-        return normalized[['date', 'daily_basic_trade_date', 'pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv']]
+        return normalize_daily_basic_frame(daily_df)
 
     def _fetch_fina_indicator(self, pro, ts_code, start_date, end_date):
         frames = []
-        for window_start, window_end in _iter_date_windows(start_date, end_date):
+        for window_start, window_end in iter_date_windows(start_date, end_date):
             frame = self._call_tushare(
                 lambda ws=window_start, we=window_end: pro.fina_indicator(
                     ts_code=ts_code,
@@ -236,19 +174,9 @@ class Command(BaseCommand):
                 frames.append(frame)
 
         if not frames:
-            return pd.DataFrame(columns=['available_date', 'ann_date', 'report_end_date', 'roe', 'roe_qoq'])
+            return normalize_fina_indicator_frame(None)
 
-        fina_df = pd.concat(frames, ignore_index=True)
-        fina_df['ann_date'] = pd.to_datetime(fina_df['ann_date'], format='%Y%m%d', errors='coerce')
-        fina_df['report_end_date'] = pd.to_datetime(fina_df['end_date'], format='%Y%m%d', errors='coerce')
-        fina_df = fina_df.dropna(subset=['ann_date', 'report_end_date']).sort_values(['report_end_date', 'ann_date'])
-        fina_df = fina_df.drop_duplicates(subset=['report_end_date'], keep='last').copy()
-        normalized_roe = fina_df['roe'].map(_normalize_rate)
-        fina_df['roe'] = normalized_roe
-        fina_df['roe_qoq'] = normalized_roe.apply(lambda value: float(value) if value is not None else None).diff()
-        fina_df['roe_qoq'] = fina_df['roe_qoq'].map(_safe_decimal)
-        fina_df['available_date'] = fina_df['ann_date']
-        return fina_df[['available_date', 'ann_date', 'report_end_date', 'roe', 'roe_qoq']].sort_values('available_date')
+        return normalize_fina_indicator_frame(pd.concat(frames, ignore_index=True))
 
     def _call_tushare(self, fn, label):
         attempts = 0

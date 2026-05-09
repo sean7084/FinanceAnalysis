@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 
 from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
+from apps.macro.models import MacroSnapshot
 from apps.markets.models import Asset, Market, OHLCV
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion
@@ -121,6 +122,20 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn('relative_volume_5d', features)
         self.assertIn('sentiment_7d_avg_20d', features)
         self.assertEqual(features['northbound_flow'], 0.5)
+
+    def test_extract_features_for_asset_uses_10y_minus_3y_yield_curve(self):
+        d = self._seed_features()
+        MacroSnapshot.objects.create(
+            date=d,
+            pmi_manufacturing=Decimal('50.2'),
+            pmi_non_manufacturing=Decimal('51.0'),
+            cn10y_yield=Decimal('2.80'),
+            cn3y_yield=Decimal('2.30'),
+        )
+
+        features = _extract_features_for_asset(self.asset.id, d)
+
+        self.assertAlmostEqual(features['yield_curve'], 0.5)
 
     def test_create_feature_matrix_adds_interaction_columns(self):
         d = self._seed_features()

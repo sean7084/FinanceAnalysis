@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -f "$PROJECT_ROOT/.envs/.local" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/.envs/.local"
+  set +a
+fi
+
 API_BASE="${API_BASE:-http://localhost:8000/api/v1}"
 SMOKE_USERNAME="${SMOKE_USERNAME:-}"
 SMOKE_PASSWORD="${SMOKE_PASSWORD:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+# Tolerate CRLF-formatted .env files by stripping trailing carriage returns.
+SMOKE_USERNAME="${SMOKE_USERNAME//$'\r'/}"
+SMOKE_PASSWORD="${SMOKE_PASSWORD//$'\r'/}"
 
 if [[ -z "$SMOKE_USERNAME" || -z "$SMOKE_PASSWORD" ]]; then
   echo "SMOKE_USERNAME and SMOKE_PASSWORD are required." >&2
@@ -32,9 +45,11 @@ else:
 ' "$key"
 }
 
+auth_request_body=$("$PYTHON_BIN" -c 'import json, sys; print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))' "$SMOKE_USERNAME" "$SMOKE_PASSWORD")
+
 auth_payload=$(curl -fsS -X POST "$API_BASE/auth/token/" \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"$SMOKE_USERNAME\",\"password\":\"$SMOKE_PASSWORD\"}")
+  -d "$auth_request_body")
 token=$(printf '%s' "$auth_payload" | json_get access)
 
 auth_header=( -H "Authorization: Bearer $token" )

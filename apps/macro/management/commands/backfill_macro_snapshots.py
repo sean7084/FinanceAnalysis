@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 from time import sleep
 
 import pandas as pd
@@ -11,6 +12,8 @@ from apps.macro.models import MacroSnapshot
 from apps.macro.providers import (
     DXY_TUSHARE_CODES,
     MACRO_FIELDS,
+    TUSHARE_YIELD_CURVE_TYPE,
+    YIELD_TENOR_SPECS,
     _sleep_if_needed,
     build_monthly_yield_points,
     call_tushare_with_retries,
@@ -21,6 +24,22 @@ from apps.macro.providers import (
     normalize_cny_usd_from_usd_quote,
 )
 from apps.macro.tasks import refresh_current_market_context
+
+
+CSV_YIELD_MONTH_END = date(2016, 6, 1)
+TUSHARE_YIELD_MONTH_START = date(2016, 7, 1)
+CSV_YIELD_SOURCE = 'chinabond_gov_yield_csv'
+CSV_CNY_USD_MONTH_END = date(2012, 2, 1)
+CSV_CNY_USD_SOURCE = 'yahoo_cnyusd_monthly_csv'
+CSV_YIELD_COLUMN_SPECS = (
+    ('6M', 0.5, 'cn6m_yield', 'yield_6m'),
+    ('1Y', 1, 'cn1y_yield', 'yield_1y'),
+    ('3Y', 3, 'cn3y_yield', 'yield_3y'),
+    ('5Y', 5, 'cn5y_yield', 'yield_5y'),
+    ('7Y', 7, 'cn7y_yield', 'yield_7y'),
+    ('10Y', 10, 'cn10y_yield', 'yield_10y'),
+    ('30Y', 30, 'cn30y_yield', 'yield_30y'),
+)
 
 
 def _parse_date(value, name):
@@ -100,7 +119,7 @@ def _yield_sleep_if_needed(delay_seconds):
 
 
 class Command(BaseCommand):
-    help = 'Backfill MacroSnapshot monthly data from TuShare with AkShare fallback.'
+    help = 'Backfill MacroSnapshot monthly data from TuShare plus historical ChinaBond yield CSV, with AkShare fallback.'
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
@@ -119,6 +138,18 @@ class Command(BaseCommand):
 
     def _yield_call_sleep_seconds(self):
         return float(getattr(settings, 'MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS', 31.0) or 0)
+
+    def _csv_yield_history_path(self):
+        configured_path = getattr(settings, 'MACRO_YIELD_CSV_PATH', None)
+        if configured_path:
+            return Path(configured_path)
+        return Path(settings.BASE_DIR) / 'source_data' / 'CGBYieldCurve_2010to2016.csv'
+
+    def _csv_cny_usd_history_path(self):
+        configured_path = getattr(settings, 'MACRO_CNYUSD_CSV_PATH', None)
+        if configured_path:
+            return Path(configured_path)
+        return Path(settings.BASE_DIR) / 'source_data' / 'cnyusd_yahoo_201001to201202.csv'
 
     def _yield_resume_start(self, field_name, start_date, end_date, resume_yields):
         start_month = start_date.replace(day=1)
@@ -141,7 +172,7 @@ class Command(BaseCommand):
             return None
         return max(next_month, start_month)
 
-    def _persist_yield_points(self, field_name, retry_key, curve_term, points, retry_metadata):
+    def _persist_yield_points(self, field_name, retry_key, curve_term, points, retry_metadata, *, source='tushare_yc_cb'):
         updated = 0
         retry_count = int((retry_metadata.get('retries') or {}).get(retry_key, 0) or 0)
         retry_messages = list((retry_metadata.get('retry_errors') or {}).get(retry_key, []))
@@ -155,7 +186,7 @@ class Command(BaseCommand):
             metadata = dict(snapshot.metadata or {})
             yield_sources = dict(metadata.get('yield_sources') or {})
             yield_sources[field_name] = {
-                'source': 'tushare_yc_cb',
+                'source': source,
                 'curve_term': curve_term,
                 'trade_date': point.get('trade_date'),
             }
@@ -190,20 +221,111 @@ class Command(BaseCommand):
 
         return updated
 
+    def _backfill_csv_yields(self, start_date, end_date, resume_yields=False):
+        csv_end = min(end_date.replace(day=1), CSV_YIELD_MONTH_END)
+        if start_date.replace(day=1) > csv_end:
+            return 0
+
+        csv_path = self._csv_yield_history_path()
+        if not csv_path.exists():
+            raise CommandError(f'Historical yield CSV not found: {csv_path}')
+
+        yield_df = pd.read_csv(csv_path)
+        if yield_df is None or yield_df.empty:
+            return 0
+
+        working = yield_df.copy()
+        working['trade_date'] = pd.to_datetime(working.get('Date'), format='%Y/%m/%d', errors='coerce')
+        working = working.dropna(subset=['trade_date']).sort_values('trade_date')
+        updated = 0
+
+        for column_name, curve_term, field_name, retry_key in CSV_YIELD_COLUMN_SPECS:
+            term_start = self._yield_resume_start(field_name, start_date, csv_end, resume_yields)
+            if term_start is None:
+                continue
+            if column_name not in working.columns:
+                continue
+
+            points_df = working[['trade_date', column_name]].rename(columns={column_name: 'yield'}).copy()
+            points_df['trade_date'] = points_df['trade_date'].dt.strftime('%Y%m%d')
+            monthly_points = build_monthly_yield_points(points_df)
+            filtered_points = {
+                month: point
+                for month, point in monthly_points.items()
+                if term_start.strftime('%Y%m') <= month <= csv_end.strftime('%Y%m')
+            }
+            updated += self._persist_yield_points(
+                field_name,
+                retry_key,
+                curve_term,
+                filtered_points,
+                {},
+                source=CSV_YIELD_SOURCE,
+            )
+
+        return updated
+
+    def _load_csv_cny_usd_monthly_map(self, start_date, end_date):
+        csv_end = min(end_date.replace(day=1), CSV_CNY_USD_MONTH_END)
+        if start_date.replace(day=1) > csv_end:
+            return {}, {}
+
+        csv_path = self._csv_cny_usd_history_path()
+        if not csv_path.exists():
+            raise CommandError(f'Historical CNY/USD CSV not found: {csv_path}')
+
+        cny_df = pd.read_csv(csv_path)
+        if cny_df is None or cny_df.empty:
+            return {}, {}
+
+        working = cny_df.copy()
+        working.columns = [str(column).strip() for column in working.columns]
+        working['month_date'] = pd.to_datetime(working['month'].astype(str) + '-01', format='%Y-%m-%d', errors='coerce')
+        working = working.dropna(subset=['month_date']).sort_values('month_date')
+
+        monthly_values = {}
+        monthly_sources = {}
+        start_month = start_date.strftime('%Y%m')
+        end_month = csv_end.strftime('%Y%m')
+
+        for row in working.to_dict(orient='records'):
+            month_date = row.get('month_date')
+            if month_date is None:
+                continue
+
+            month = month_date.strftime('%Y%m')
+            if not (start_month <= month <= end_month):
+                continue
+
+            month_open = _to_decimal(row.get('open'))
+            if month_open is None:
+                continue
+
+            monthly_values[month] = month_open
+            monthly_sources[month] = {
+                'source': CSV_CNY_USD_SOURCE,
+                'quote_field': 'open',
+                'trade_month': month,
+            }
+
+        return monthly_values, monthly_sources
+
     def _backfill_tushare_yields(self, start_date, end_date, resume_yields=False):
         token = getattr(settings, 'TUSHARE_TOKEN', None)
         if not token:
             raise CommandError('TUSHARE_TOKEN is not configured.')
 
+        if end_date.replace(day=1) < TUSHARE_YIELD_MONTH_START:
+            return 0, 0
+
         pro = ts.pro_api(token)
         updated = 0
         windows_completed = 0
 
-        for curve_term, field_name, retry_key in [
-            (10, 'cn10y_yield', 'yield_10y'),
-            (2, 'cn2y_yield', 'yield_2y'),
-        ]:
-            term_start = self._yield_resume_start(field_name, start_date, end_date, resume_yields)
+        tushare_start_date = max(start_date.replace(day=1), TUSHARE_YIELD_MONTH_START)
+
+        for curve_term, field_name, retry_key in YIELD_TENOR_SPECS:
+            term_start = self._yield_resume_start(field_name, tushare_start_date, end_date, resume_yields)
             if term_start is None:
                 continue
 
@@ -216,6 +338,7 @@ class Command(BaseCommand):
                 yield_df = call_tushare_with_retries(
                     lambda curve_term=curve_term, window_start=window_start, window_end=window_end: pro.yc_cb(
                         curve_term=curve_term,
+                        curve_type=TUSHARE_YIELD_CURVE_TYPE,
                         start_date=window_start.strftime('%Y%m%d'),
                         end_date=window_end.strftime('%Y%m%d'),
                         limit=2000,
@@ -227,7 +350,7 @@ class Command(BaseCommand):
                 )
                 _yield_sleep_if_needed(self._yield_call_sleep_seconds())
 
-                monthly_points = build_monthly_yield_points(yield_df)
+                monthly_points = build_monthly_yield_points(yield_df, required_curve_type=TUSHARE_YIELD_CURVE_TYPE)
                 filtered_points = {
                     month: point
                     for month, point in monthly_points.items()
@@ -251,14 +374,20 @@ class Command(BaseCommand):
             'cpi': {},
             'ppi': {},
             'pmi': {},
-            'yield_2y': {},
-            'yield_10y': {},
             'dxy': {},
             'cny_usd': {},
+            'fx_sources': {
+                'dxy': {},
+                'cny_usd': {},
+            },
             'errors': {},
             'retries': {},
             'retry_errors': {},
         }
+
+        csv_cny_usd_values, csv_cny_usd_sources = self._load_csv_cny_usd_monthly_map(start_date, end_date)
+        maps['cny_usd'].update(csv_cny_usd_values)
+        maps['fx_sources']['cny_usd'].update(csv_cny_usd_sources)
 
         try:
             cpi_df = call_tushare_with_retries(
@@ -313,6 +442,7 @@ class Command(BaseCommand):
             ('dxy', DXY_TUSHARE_CODES, normalize_dxy_quote),
             ('cny_usd', ['USDCNH.FXCM'], normalize_cny_usd_from_usd_quote),
         ]
+        csv_cny_usd_month_end = CSV_CNY_USD_MONTH_END.strftime('%Y%m')
         for key, ts_codes, normalizer in fx_specs:
             field_errors = []
             for ts_code in ts_codes:
@@ -334,10 +464,18 @@ class Command(BaseCommand):
                             for row in fx_sorted.to_dict(orient='records'):
                                 month = str(row.get('trade_date') or '')[:6]
                                 if start_month <= month <= end_month:
+                                    if key == 'cny_usd' and month <= csv_cny_usd_month_end and maps[key].get(month) is not None:
+                                        continue
+
                                     close_value = extract_fx_quote(row)
                                     normalized_value = normalizer(close_value)
                                     if normalized_value is not None:
                                         maps[key][month] = _to_decimal(normalized_value)
+                                        maps['fx_sources'][key][month] = {
+                                            'source': 'tushare_fx_daily',
+                                            'ts_code': ts_code,
+                                            'trade_date': str(row.get('trade_date') or ''),
+                                        }
                 except Exception as exc:
                     field_errors.append(f'{ts_code}: {exc}')
 
@@ -358,6 +496,7 @@ class Command(BaseCommand):
         created_count = 0
         updated_count = 0
         fallback_count = 0
+        csv_yield_updated_count = 0
         yield_updated_count = 0
         yield_window_count = 0
         latest_requested_month = end_date.replace(day=1)
@@ -383,6 +522,25 @@ class Command(BaseCommand):
             metadata['source'] = 'tushare'
             metadata['month'] = month
             metadata['errors'] = maps['errors']
+            field_sources = dict(metadata.get('field_sources') or {})
+            fx_sources = dict(metadata.get('fx_sources') or {})
+            for fx_field in ('dxy', 'cny_usd'):
+                source_metadata = ((maps.get('fx_sources') or {}).get(fx_field) or {}).get(month)
+                if source_metadata is None:
+                    field_sources.pop(fx_field, None)
+                    fx_sources.pop(fx_field, None)
+                    continue
+
+                field_sources[fx_field] = source_metadata.get('source') or 'unknown'
+                fx_sources[fx_field] = source_metadata
+            if field_sources:
+                metadata['field_sources'] = field_sources
+            else:
+                metadata.pop('field_sources', None)
+            if fx_sources:
+                metadata['fx_sources'] = fx_sources
+            else:
+                metadata.pop('fx_sources', None)
             retries = dict(preserved_retries)
             retries.update(maps['retries'])
             metadata['retries'] = retries
@@ -423,6 +581,11 @@ class Command(BaseCommand):
                 existing.save()
                 updated_count += 1
 
+        csv_yield_updated_count = self._backfill_csv_yields(
+            start_date,
+            end_date,
+            resume_yields=options['resume_yields'],
+        )
         yield_updated_count, yield_window_count = self._backfill_tushare_yields(
             start_date,
             end_date,
@@ -435,5 +598,5 @@ class Command(BaseCommand):
             refresh_current_market_context(snapshot_id=latest_id)
 
         self.stdout.write(self.style.SUCCESS(
-            f'MacroSnapshot backfill completed: created={created_count}, updated={updated_count}, yield_updates={yield_updated_count}, yield_windows={yield_window_count}, fallback_used={fallback_count}, range={start_date}..{end_date}'
+            f'MacroSnapshot backfill completed: created={created_count}, updated={updated_count}, csv_yield_updates={csv_yield_updated_count}, yield_updates={yield_updated_count}, yield_windows={yield_window_count}, fallback_used={fallback_count}, range={start_date}..{end_date}'
         ))

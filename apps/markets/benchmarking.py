@@ -1,7 +1,22 @@
+"""Canonical point-in-time effective universe contract.
+
+`effective_universe(date)` is the single gate for benchmark-universe membership:
+
+- `2010-01-04 <= date < 2024-09-23` -> CSI300 only
+- `date >= 2024-09-23` -> CSI300 union CSI A500
+
+All cross-sectional ranking, training sample filtering, backtest candidate selection,
+benchmark construction, and daily prediction should resolve membership through this
+module. Normal workflows must not widen silently to all assets when required PIT
+coverage is missing; they should fail fast after recording coverage in explicit
+audit/report surfaces instead.
+"""
+
 from bisect import bisect_right
 from datetime import date
 from decimal import Decimal
 
+from apps.core.date_floor import get_historical_data_floor
 from apps.factors.models import FundamentalFactorSnapshot
 
 from .models import Asset, IndexMembership, OHLCV, PointInTimeBenchmarkDaily
@@ -14,14 +29,125 @@ PIT_UNION_BENCHMARK_CODE = 'CSI300_CSIA500_PIT_UNION'
 PIT_UNION_BENCHMARK_NAME = 'CSI300 + CSI A500 PIT Union'
 PIT_UNION_WEIGHTING_METHOD = 'free_float_market_cap'
 ACTIVE_UNION_TAGS = {'CSI300', 'CSIA500'}
+PIT_UNIVERSE_START_DATE = date(2010, 1, 4)
+# On this launch date the required effective universe expands from CSI300-only
+# to the deduplicated union of CSI300 and CSI A500.
+CSIA500_LAUNCH_DATE = date(2024, 9, 23)
+
+
+class PITMembershipCoverageError(ValueError):
+    pass
 
 
 def _to_decimal(value):
     return Decimal(str(value))
 
 
+def _normalize_index_codes(index_codes):
+    if index_codes is None:
+        return tuple(DEFAULT_PIT_INDEX_CODES)
+    if isinstance(index_codes, str):
+        index_codes = [code.strip() for code in index_codes.split(',') if code.strip()]
+    return tuple(dict.fromkeys(index_codes))
+
+
+def _normalize_trade_dates(trade_dates):
+    normalized_dates = []
+    for trade_date in trade_dates or []:
+        if isinstance(trade_date, str):
+            trade_date = date.fromisoformat(trade_date)
+        if trade_date not in normalized_dates:
+            normalized_dates.append(trade_date)
+    normalized_dates.sort()
+    return normalized_dates
+
+
+def _load_membership_snapshots_by_index(trade_dates, index_codes=None):
+    normalized_dates = _normalize_trade_dates(trade_dates)
+    resolved_index_codes = _normalize_index_codes(index_codes)
+    if not normalized_dates:
+        return normalized_dates, {index_code: {} for index_code in resolved_index_codes}, {
+            index_code: [] for index_code in resolved_index_codes
+        }
+
+    rows = list(
+        IndexMembership.objects.filter(
+            index_code__in=resolved_index_codes,
+            trade_date__lte=normalized_dates[-1],
+        )
+        .values('asset_id', 'index_code', 'trade_date')
+        .order_by('index_code', 'trade_date', 'asset_id')
+    )
+
+    snapshots_by_index = {index_code: {} for index_code in resolved_index_codes}
+    for row in rows:
+        snapshots_by_index.setdefault(row['index_code'], {}).setdefault(row['trade_date'], set()).add(row['asset_id'])
+
+    snapshot_dates_by_index = {
+        index_code: sorted(snapshot_map.keys())
+        for index_code, snapshot_map in snapshots_by_index.items()
+    }
+    return normalized_dates, snapshots_by_index, snapshot_dates_by_index
+
+
+def required_pit_index_codes_for_date(trade_date):
+    """Return the required index codes for the canonical effective universe.
+
+    The contract is inclusive on `2010-01-04`: CSI300 is required from that date
+    onward, and CSI A500 becomes additionally required on `2024-09-23`.
+    """
+    if isinstance(trade_date, str):
+        trade_date = date.fromisoformat(trade_date)
+
+    required_codes = []
+    if trade_date >= PIT_UNIVERSE_START_DATE:
+        required_codes.append('000300.SH')
+    if trade_date >= CSIA500_LAUNCH_DATE:
+        required_codes.append('000510.CSI')
+    return tuple(required_codes)
+
+
+def pit_membership_coverage_gaps(trade_dates, index_codes=None):
+    normalized_dates, _snapshots_by_index, snapshot_dates_by_index = _load_membership_snapshots_by_index(
+        trade_dates,
+        index_codes=index_codes,
+    )
+    if not normalized_dates:
+        return {}
+
+    explicit_index_codes = _normalize_index_codes(index_codes) if index_codes is not None else None
+    missing_by_date = {}
+    for target_date in normalized_dates:
+        required_codes = explicit_index_codes or required_pit_index_codes_for_date(target_date)
+        missing_codes = []
+        for index_code in required_codes:
+            snapshot_dates = snapshot_dates_by_index.get(index_code) or []
+            snapshot_index = bisect_right(snapshot_dates, target_date) - 1
+            if snapshot_index < 0:
+                missing_codes.append(index_code)
+        if missing_codes:
+            missing_by_date[target_date] = tuple(missing_codes)
+    return missing_by_date
+
+
+def ensure_pit_membership_coverage(trade_dates, index_codes=None, context='Point-in-time universe'):
+    """Fail fast when the required effective-universe history is not available."""
+    missing_by_date = pit_membership_coverage_gaps(trade_dates, index_codes=index_codes)
+    if not missing_by_date:
+        return
+
+    first_missing_date, missing_codes = next(iter(missing_by_date.items()))
+    missing_codes_text = ', '.join(missing_codes)
+    missing_dates_count = len(missing_by_date)
+    raise PITMembershipCoverageError(
+        f'{context}: missing point-in-time membership coverage for {missing_codes_text} '
+        f'on {first_missing_date.isoformat()} ({missing_dates_count} affected trading dates). '
+        'Backfill IndexMembership before continuing.'
+    )
+
+
 def resolve_effective_index_snapshot_dates(trade_date, index_codes=None):
-    resolved_index_codes = tuple(index_codes or DEFAULT_PIT_INDEX_CODES)
+    resolved_index_codes = _normalize_index_codes(index_codes)
     snapshot_dates = {}
     for index_code in resolved_index_codes:
         snapshot_dates[index_code] = IndexMembership.objects.filter(
@@ -32,7 +158,7 @@ def resolve_effective_index_snapshot_dates(trade_date, index_codes=None):
 
 
 def resolve_point_in_time_union_membership(trade_date, index_codes=None):
-    resolved_index_codes = tuple(index_codes or DEFAULT_PIT_INDEX_CODES)
+    resolved_index_codes = _normalize_index_codes(index_codes)
     snapshot_dates = resolve_effective_index_snapshot_dates(trade_date, index_codes=resolved_index_codes)
 
     members_by_asset_id = {}
@@ -87,34 +213,14 @@ def point_in_time_union_asset_ids(trade_date, index_codes=None):
 
 
 def point_in_time_union_asset_ids_by_dates(trade_dates, index_codes=None):
-    normalized_dates = []
-    for trade_date in trade_dates or []:
-        if isinstance(trade_date, str):
-            trade_date = date.fromisoformat(trade_date)
-        if trade_date not in normalized_dates:
-            normalized_dates.append(trade_date)
-    normalized_dates.sort()
+    normalized_dates, snapshots_by_index, snapshot_dates_by_index = _load_membership_snapshots_by_index(
+        trade_dates,
+        index_codes=index_codes,
+    )
     if not normalized_dates:
         return {}
 
-    resolved_index_codes = tuple(index_codes or DEFAULT_PIT_INDEX_CODES)
-    rows = list(
-        IndexMembership.objects.filter(
-            index_code__in=resolved_index_codes,
-            trade_date__lte=normalized_dates[-1],
-        )
-        .values('asset_id', 'index_code', 'trade_date')
-        .order_by('index_code', 'trade_date', 'asset_id')
-    )
-
-    snapshots_by_index = {index_code: {} for index_code in resolved_index_codes}
-    for row in rows:
-        snapshots_by_index.setdefault(row['index_code'], {}).setdefault(row['trade_date'], set()).add(row['asset_id'])
-
-    snapshot_dates_by_index = {
-        index_code: sorted(snapshot_map.keys())
-        for index_code, snapshot_map in snapshots_by_index.items()
-    }
+    resolved_index_codes = _normalize_index_codes(index_codes)
 
     memberships_by_date = {}
     for target_date in normalized_dates:
@@ -131,14 +237,25 @@ def point_in_time_union_asset_ids_by_dates(trade_dates, index_codes=None):
     return memberships_by_date
 
 
+def effective_universe_asset_ids(trade_date, index_codes=None, context='Effective universe'):
+    """Resolve the canonical `effective_universe(date)` asset ids.
+
+    This helper enforces the shared date-aware universe contract and must not
+    silently widen to all assets when PIT membership coverage is missing.
+    """
+    ensure_pit_membership_coverage([trade_date], index_codes=index_codes, context=context)
+    return point_in_time_union_asset_ids(trade_date, index_codes=index_codes)
+
+
+def effective_universe_assets(trade_date, index_codes=None, context='Effective universe'):
+    asset_ids = effective_universe_asset_ids(trade_date, index_codes=index_codes, context=context)
+    if not asset_ids:
+        return []
+    return list(Asset.objects.filter(id__in=asset_ids).order_by('id'))
+
+
 def current_active_union_assets():
-    active_assets = list(Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE).order_by('id'))
-    tagged_assets = [
-        asset
-        for asset in active_assets
-        if ACTIVE_UNION_TAGS.intersection(set(asset.membership_tags or []))
-    ]
-    return tagged_assets or active_assets
+    return effective_universe_assets(date.today(), context='Current effective universe')
 
 
 def _latest_fundamental_rows(asset_ids, trade_date):

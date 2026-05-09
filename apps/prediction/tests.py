@@ -1,5 +1,8 @@
+import json
 import tempfile
 from decimal import Decimal
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -14,6 +17,8 @@ from rest_framework.test import APIClient
 
 from apps.factors.models import FundamentalFactorSnapshot
 from apps.factors.models import FactorScore
+from apps.analytics.indicator_warmup import MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS
+from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Asset, IndexMembership, Market, OHLCV
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.sentiment.models import SentimentScore
@@ -45,6 +50,7 @@ class Phase14PredictionTests(TestCase):
 
     def _seed_features(self):
         d = timezone.now().date()
+        self._seed_required_pit_membership(self.asset, d)
         FactorScore.objects.create(
             asset=self.asset,
             date=d,
@@ -95,8 +101,24 @@ class Phase14PredictionTests(TestCase):
         )
         return d
 
-    def _seed_features_for_asset(self, asset):
+    def _seed_required_pit_membership(self, asset, trade_date, index_codes=('000300.SH', '000510.CSI')):
+        for index_code, index_name in (
+            ('000300.SH', 'CSI 300'),
+            ('000510.CSI', 'CSI A500'),
+        ):
+            if index_code not in index_codes:
+                continue
+            IndexMembership.objects.create(
+                asset=asset,
+                index_code=index_code,
+                index_name=index_name,
+                trade_date=trade_date,
+                weight=Decimal('1.000000'),
+            )
+
+    def _seed_features_for_asset(self, asset, index_codes=('000300.SH', '000510.CSI')):
         d = timezone.now().date()
+        self._seed_required_pit_membership(asset, d, index_codes=index_codes)
         FactorScore.objects.create(
             asset=asset,
             date=d,
@@ -164,25 +186,42 @@ class Phase14PredictionTests(TestCase):
         self.assertIsNotNone(prediction.risk_reward_ratio)
         self.assertIsNotNone(prediction.trade_score)
 
-    def test_generate_predictions_task_filters_to_active_union_membership_tags_when_available(self):
+    def test_generate_predictions_task_filters_to_point_in_time_effective_universe(self):
         included_asset = self.asset
-        Asset.objects.filter(pk=included_asset.pk).update(membership_tags=['CSI300'])
-        included_asset.refresh_from_db()
         excluded_asset = Asset.objects.create(
             market=self.market,
             symbol='605002',
             ts_code='605002.SH',
             name='Excluded Prediction Asset',
-            membership_tags=[],
         )
 
         d = self._seed_features_for_asset(included_asset)
-        self._seed_features_for_asset(excluded_asset)
+        self._seed_features_for_asset(excluded_asset, index_codes=())
 
         generate_predictions_for_date(target_date=str(d), horizons=[7])
 
         self.assertTrue(PredictionResult.objects.filter(asset=included_asset, date=d, horizon_days=7).exists())
         self.assertFalse(PredictionResult.objects.filter(asset=excluded_asset, date=d, horizon_days=7).exists())
+
+    def test_generate_predictions_task_raises_when_required_pit_membership_is_missing(self):
+        d = timezone.now().date()
+
+        FactorScore.objects.create(
+            asset=self.asset,
+            date=d,
+            mode=FactorScore.FactorMode.COMPOSITE,
+            fundamental_score=Decimal('0.62'),
+            capital_flow_score=Decimal('0.58'),
+            technical_score=Decimal('0.51'),
+            composite_score=Decimal('0.57'),
+            bottom_probability_score=Decimal('0.57'),
+        )
+
+        with self.assertRaisesMessage(
+            PITMembershipCoverageError,
+            'missing point-in-time membership coverage',
+        ):
+            generate_predictions_for_date(target_date=str(d), horizons=[7])
 
     def test_generate_predictions_ignores_future_ohlcv_rows(self):
         d = self._seed_features()
@@ -309,21 +348,34 @@ class BackfillModelDataCommandTests(TestCase):
         )
 
     @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
-    def test_backfill_model_data_resume_factor_scores_skips_completed_dates(self, mock_calculate):
+    def test_backfill_model_data_recomputes_factor_scores_for_full_requested_range(self, mock_calculate):
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date='2024-01-02',
+            weight=Decimal('4.2'),
+        )
+
         call_command(
             'backfill_model_data',
             start_date='2024-01-02',
             end_date='2024-01-04',
             skip_sentiment=True,
-            skip_rs_score=True,
-            resume_factor_scores=True,
         )
 
-        self.assertEqual(mock_calculate.call_count, 2)
+        self.assertEqual(mock_calculate.call_count, 3)
         self.assertEqual(
             [call.kwargs['target_date'] for call in mock_calculate.call_args_list],
-            ['2024-01-03', '2024-01-04'],
+            ['2024-01-02', '2024-01-03', '2024-01-04'],
         )
+
+    def test_backfill_model_data_requires_explicit_start_and_end_dates(self):
+        with self.assertRaisesMessage(CommandError, 'start-date and end-date are required.'):
+            call_command(
+                'backfill_model_data',
+                skip_sentiment=True,
+            )
 
     def test_backfill_model_data_creates_high_rs_score_signals(self):
         assets = []
@@ -354,12 +406,22 @@ class BackfillModelDataCommandTests(TestCase):
 
         expected_top_asset = assets[-1]
 
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=trade_dates[0],
+                weight=Decimal('4.2'),
+            )
+            for asset in assets
+        ])
+
         call_command(
             'backfill_model_data',
             start_date=trade_dates[0].isoformat(),
             end_date=trade_dates[-1].isoformat(),
             skip_sentiment=True,
-            skip_factor_scores=True,
         )
 
         target_timestamp = timezone.make_aware(
@@ -379,6 +441,68 @@ class BackfillModelDataCommandTests(TestCase):
             ).count(),
             1,
         )
+
+    @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
+    def test_backfill_model_data_prefills_sparse_rs_input_history_beyond_40_calendar_days(self, mock_calculate):
+        asset = Asset.objects.create(
+            market=self.market,
+            symbol='600299',
+            ts_code='600299.SH',
+            name='Sparse RS Warmup Asset',
+        )
+        target_date = timezone.datetime(2024, 3, 1).date()
+        sparse_dates = [
+            target_date - timezone.timedelta(days=100 - (offset * 5))
+            for offset in range(20)
+        ] + [target_date]
+
+        for offset, trade_date in enumerate(sparse_dates):
+            close_value = Decimal('10.0') + (Decimal(offset) / Decimal('10'))
+            OHLCV.objects.create(
+                asset=asset,
+                date=trade_date,
+                open=close_value,
+                high=close_value + Decimal('0.1'),
+                low=close_value - Decimal('0.1'),
+                close=close_value,
+                adj_close=close_value,
+                volume=100000,
+                amount=close_value * Decimal('100000'),
+            )
+
+        for index_code, index_name, weight in (
+            ('000300.SH', 'CSI 300', Decimal('4.2')),
+            ('000510.CSI', 'CSI A500', Decimal('2.1')),
+        ):
+            IndexMembership.objects.create(
+                asset=asset,
+                index_code=index_code,
+                index_name=index_name,
+                trade_date=target_date,
+                weight=weight,
+            )
+
+        output = StringIO()
+        call_command(
+            'backfill_model_data',
+            start_date=target_date.isoformat(),
+            end_date=target_date.isoformat(),
+            skip_sentiment=True,
+            stdout=output,
+        )
+
+        target_timestamp = timezone.make_aware(
+            timezone.datetime.combine(target_date, timezone.datetime.min.time())
+        )
+        self.assertTrue(
+            TechnicalIndicator.objects.filter(
+                asset=asset,
+                timestamp=target_timestamp,
+                indicator_type='RS_SCORE',
+            ).exists()
+        )
+        self.assertIn(f'calendar_prefill_days={MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS}', output.getvalue())
+        self.assertIn('rs_score_prefill_start=', output.getvalue())
 
     def test_backfill_model_data_filters_rs_scores_to_point_in_time_union_membership(self):
         assets = []
@@ -411,14 +535,14 @@ class BackfillModelDataCommandTests(TestCase):
             asset=assets[-1],
             index_code='000300.SH',
             index_name='CSI 300',
-            trade_date=trade_dates[-2],
+            trade_date=trade_dates[0],
             weight=Decimal('4.2'),
         )
         IndexMembership.objects.create(
             asset=assets[-2],
             index_code='000510.CSI',
             index_name='CSI A500',
-            trade_date=trade_dates[-2],
+            trade_date=trade_dates[0],
             weight=Decimal('2.1'),
         )
 
@@ -427,7 +551,6 @@ class BackfillModelDataCommandTests(TestCase):
             start_date=trade_dates[0].isoformat(),
             end_date=trade_dates[-1].isoformat(),
             skip_sentiment=True,
-            skip_factor_scores=True,
         )
 
         target_timestamp = timezone.make_aware(
@@ -474,7 +597,6 @@ class BackfillModelDataCommandTests(TestCase):
             start_date=trade_dates[0].isoformat(),
             end_date=trade_dates[-1].isoformat(),
             skip_sentiment=True,
-            skip_factor_scores=True,
         )
 
         self.assertEqual(
@@ -496,9 +618,173 @@ class BackfillModelDataCommandTests(TestCase):
                 start_date='2009-12-31',
                 end_date='2010-01-04',
                 skip_sentiment=True,
-                skip_rs_score=True,
-                skip_factor_scores=True,
             )
+
+    def test_backfill_model_data_rejects_missing_required_pit_membership_coverage(self):
+        start_date = timezone.datetime(2024, 9, 23).date()
+        end_date = start_date + timezone.timedelta(days=20)
+
+        for offset in range(21):
+            trade_date = start_date + timezone.timedelta(days=offset)
+            close_value = Decimal('10.0') + Decimal(offset) / Decimal('10')
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=trade_date,
+                open=close_value,
+                high=close_value + Decimal('0.1'),
+                low=close_value - Decimal('0.1'),
+                close=close_value,
+                adj_close=close_value,
+                volume=100000,
+                amount=close_value * Decimal('100000'),
+            )
+
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=start_date,
+            weight=Decimal('4.2'),
+        )
+
+        with self.assertRaisesMessage(
+            CommandError,
+            'missing point-in-time membership coverage for 000510.CSI on 2024-09-23',
+        ):
+            call_command(
+                'backfill_model_data',
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                skip_sentiment=True,
+            )
+
+    @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
+    def test_backfill_model_data_fills_pre_news_sentiment_for_historically_listed_delisted_asset(self, mock_calculate):
+        start_date = timezone.datetime(2024, 1, 2).date()
+        trade_dates = [start_date + timezone.timedelta(days=offset) for offset in range(3)]
+
+        delisted_asset = Asset.objects.create(
+            market=self.market,
+            symbol='605099',
+            ts_code='605099.SH',
+            name='Historical Sentiment Asset',
+            list_date=trade_dates[0],
+            delist_date=trade_dates[2],
+            listing_status=Asset.ListingStatus.DELISTED,
+        )
+
+        for offset, trade_date in enumerate(trade_dates):
+            close_value = Decimal('10.0') + Decimal(offset) / Decimal('10')
+            OHLCV.objects.create(
+                asset=delisted_asset,
+                date=trade_date,
+                open=close_value,
+                high=close_value + Decimal('0.1'),
+                low=close_value - Decimal('0.1'),
+                close=close_value,
+                adj_close=close_value,
+                volume=100000,
+                amount=close_value * Decimal('100000'),
+            )
+
+        IndexMembership.objects.create(
+            asset=delisted_asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=trade_dates[0],
+            weight=Decimal('4.2'),
+        )
+
+        call_command(
+            'backfill_model_data',
+            start_date=trade_dates[0].isoformat(),
+            end_date=trade_dates[-1].isoformat(),
+        )
+
+        self.assertEqual(
+            list(
+                SentimentScore.objects.filter(
+                    asset=delisted_asset,
+                    score_type=SentimentScore.ScoreType.ASSET_7D,
+                )
+                .order_by('date')
+                .values_list('date', flat=True)
+            ),
+            trade_dates[:2],
+        )
+
+    @patch('apps.prediction.management.commands.backfill_model_data.persist_ranked_rs_scores')
+    @patch('apps.prediction.management.commands.backfill_model_data.calculate_daily_sentiment')
+    @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
+    def test_backfill_model_data_resume_from_checkpoint_skips_completed_stages(self, mock_calculate, mock_sentiment, mock_rs):
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date='2024-01-02',
+            weight=Decimal('4.2'),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / 'backfill_checkpoint.json'
+            checkpoint_path.write_text(json.dumps({
+                'command': 'backfill_model_data',
+                'version': 1,
+                'window': {
+                    'start_date': '2024-01-02',
+                    'end_date': '2024-01-04',
+                    'trading_dates_count': 3,
+                },
+                'stages': {
+                    'sentiment': {'status': 'completed'},
+                    'rs_score': {'status': 'completed'},
+                    'factor_scores': {
+                        'status': 'running',
+                        'last_completed_date': '2024-01-02',
+                    },
+                },
+            }), encoding='utf-8')
+
+            call_command(
+                'backfill_model_data',
+                start_date='2024-01-02',
+                end_date='2024-01-04',
+                checkpoint_file=str(checkpoint_path),
+                resume_from_checkpoint=True,
+            )
+
+            self.assertFalse(mock_sentiment.called)
+            self.assertFalse(mock_rs.called)
+            self.assertEqual(
+                [call.kwargs['target_date'] for call in mock_calculate.call_args_list],
+                ['2024-01-03', '2024-01-04'],
+            )
+
+    @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
+    def test_backfill_model_data_writes_checkpoint_and_stage_timings(self, mock_calculate):
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date='2024-01-02',
+            weight=Decimal('4.2'),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / 'backfill_checkpoint.json'
+
+            call_command(
+                'backfill_model_data',
+                start_date='2024-01-02',
+                end_date='2024-01-04',
+                skip_sentiment=True,
+                checkpoint_file=str(checkpoint_path),
+            )
+
+            checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+            self.assertEqual(checkpoint['stages']['factor_scores']['status'], 'completed')
+            self.assertEqual(checkpoint['stages']['factor_scores']['last_completed_date'], '2024-01-04')
+            self.assertIn('last_run_seconds', checkpoint['stages']['factor_scores'])
 
 
 class PointInTimeTrainingDatasetTests(TestCase):
@@ -581,6 +867,32 @@ class PointInTimeTrainingDatasetTests(TestCase):
                 (self.trade_dates[2].isoformat(), self.asset2.id),
             },
         )
+
+    def test_create_feature_matrix_raises_when_required_pit_membership_is_missing(self):
+        IndexMembership.objects.all().delete()
+
+        with self.assertRaisesMessage(
+            PITMembershipCoverageError,
+            'missing point-in-time membership coverage for 000300.SH on 2024-01-02',
+        ):
+            _create_feature_matrix(
+                start_date=self.trade_dates[0],
+                end_date=self.trade_dates[2],
+                asset_ids=[self.asset1.id, self.asset2.id],
+            )
+
+    def test_create_labels_for_training_raises_when_required_pit_membership_is_missing(self):
+        IndexMembership.objects.all().delete()
+
+        with self.assertRaisesMessage(
+            PITMembershipCoverageError,
+            'missing point-in-time membership coverage for 000300.SH on 2024-01-02',
+        ):
+            _create_labels_for_training(
+                start_date=self.trade_dates[0],
+                end_date=self.trade_dates[2],
+                horizon_days=3,
+            )
 
 
 class LstmTrainingRegistryTests(TestCase):

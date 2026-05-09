@@ -5,7 +5,7 @@ Last refreshed: `2026-04-27` (from live DB snapshots after expanding the Data Me
 ## Data Metrics Sheet
 Date range format: `YYYY-MM-DD`.
 
-Universe operations now use `sync_index_constituents` for CSI 300 + CSI A500 membership history/tag sync, `run_reference_benchmark_suite` for exported rolling benchmark bundles, and `onboard_csi_a500_universe` for the end-to-end A500 onboarding/retrain workflow.
+Universe operations now use `sync_index_constituents` for CSI 300 + CSI A500 membership history/tag sync, `run_reference_benchmark_suite` for exported rolling benchmark bundles, and `onboard_csi_a500_universe` for the end-to-end A500 onboarding/retrain workflow. The canonical `effective_universe(date)` rule is `2010-01-04 <= date < 2024-09-23 -> CSI300 only` and `date >= 2024-09-23 -> CSI300 ∪ A500`; normal workflows fail instead of widening to all assets when required PIT coverage is missing.
 
 | Metric Name | Source of Metric | Storage | Live Coverage | Current Usage | Missing Data Impact |
 | --- | --- | --- | --- | --- | --- |
@@ -13,8 +13,7 @@ Universe operations now use `sync_index_constituents` for CSI 300 + CSI A500 mem
 | OHLCV | TuShare market sync + backfill | `markets_ohlcv` | `1,145,611` rows, `300` assets, `2001-07-24` to `2026-04-24` | Core source for `Heuristic`, `LightGBM`, `LSTM`, runtime TP/SL logic, backtest fills/exits, and chart APIs. | Missing rows reduce tradable dates, degrade runtime features, and can suppress backtest entry/exit pricing. |
 | PMI Manufacturing | TuShare `cn_pmi` field `PMI010000` | `macro_macrosnapshot.pmi_manufacturing` | `256` non-null rows, `2005-01-01` to `2026-04-01` | Used by `LightGBM`/`LSTM` macro features and `MarketContext` phase inference. | Missing values fall back to neutral PMI assumptions and weaken macro regime sensitivity. |
 | PMI Non-Manufacturing | TuShare `cn_pmi` field `PMI020100` | `macro_macrosnapshot.pmi_non_manufacturing` | `231` non-null rows, `2007-01-01` to `2026-03-01` | Used by `LightGBM`/`LSTM` macro features and `MarketContext` phase inference. | Missing values fall back to neutral PMI assumptions and weaken services-side macro context. |
-| China 10Y Yield | TuShare `yc_cb` (`curve_term=10`) | `macro_macrosnapshot.cn10y_yield` | `119` non-null rows, `2016-06-01` to `2026-04-01` | Used with 2Y yield for `LightGBM`/`LSTM` yield-curve features and `MarketContext` phase inference. | Missing pair coverage collapses yield-curve features toward neutral defaults. |
-| China 2Y Yield | TuShare `yc_cb` (`curve_term=2`) | `macro_macrosnapshot.cn2y_yield` | `119` non-null rows, `2016-06-01` to `2026-04-01` | Used with 10Y yield for `LightGBM`/`LSTM` yield-curve features and `MarketContext` phase inference. | Missing pair coverage collapses yield-curve features toward neutral defaults. |
+| China Yield Surface (6M/1Y/3Y/5Y/7Y/10Y/30Y) | ChinaBond government-yield CSV through `2016-06-01`, then TuShare `yc_cb` with `curve_term in [0.5, 1, 3, 5, 7, 10, 30]` and `curve_type=0` | `macro_macrosnapshot.cn6m_yield` through `macro_macrosnapshot.cn30y_yield` | Monthly first-trade-date rows after running the CSV + TuShare yield backfill | `10Y - 3Y` drives `LightGBM`/`LSTM` yield-curve features and `MarketContext`; the full tenor surface is stored for inspection and future features. | Missing yields reduce term-structure coverage and push the runtime yield-curve feature toward neutral defaults. |
 | CPI YoY | TuShare `cn_cpi` | `macro_macrosnapshot.cpi_yoy` | `315` non-null rows, `2000-01-01` to `2026-03-01` | Used by `MarketContext` phase inference and macro APIs/admin. | Missing values can distort macro phase inference and push context toward fallback behavior. |
 | PPI YoY | TuShare `cn_ppi` | `macro_macrosnapshot.ppi_yoy` | `315` non-null rows, `2000-01-01` to `2026-03-01` | API/admin only; not consumed by `Heuristic`, `LightGBM`, `LSTM`, or backtest runtime today. | No direct model/backtest effect today; reduces macro inspection completeness only. |
 | DXY | TuShare `fx_daily` | `macro_macrosnapshot.dxy` | `184` non-null rows, `2011-01-01` to `2026-04-01` | API/admin only; not consumed by `Heuristic`, `LightGBM`, `LSTM`, or backtest runtime today. | No direct model/backtest effect today; reduces FX inspection completeness only. |
@@ -90,8 +89,7 @@ Implication:
 | --- | --- | --- | --- | --- |
 | `dxy` | TuShare `fx_daily` using `USDOLLAR.FXCM` then `USDOLLAR` | Monthly first-of-month normalization of DXY close | `2011-01-01` to `2026-04-01` (`184` rows) | Stored for API/admin; not currently consumed by model or backtest logic |
 | `cny_usd` | TuShare `fx_daily` using `USDCNH.FXCM` | Stored as inverted `CNY/USD` from offshore `USD/CNH` quote | `2012-02-01` to `2026-04-01` (`171` rows) | Stored for API/admin; not currently consumed by model or backtest logic |
-| `cn10y_yield` | TuShare `yc_cb` with `curve_term=10`, deterministic `curve_type` preference | Monthly first-of-month normalization of China 10Y yield | `2016-06-01` to `2026-04-01` (`119` rows) | Used directly in yield-curve features and MarketContext phase inference |
-| `cn2y_yield` | TuShare `yc_cb` with `curve_term=2`, deterministic `curve_type` preference | Monthly first-of-month normalization of China 2Y yield | `2016-06-01` to `2026-04-01` (`119` rows) | Used directly in yield-curve features and MarketContext phase inference |
+| `cn6m_yield` ... `cn30y_yield` | ChinaBond CSV through `2016-06-01`, then TuShare `yc_cb` with `curve_term in [0.5, 1, 3, 5, 7, 10, 30]` and `curve_type=0` | Monthly month-start rows populated from the first available trade date in each month | Historical CSV-backed months through `2016-06-01`, TuShare-backed months from `2016-07-01` onward after backfill | `cn10y_yield - cn3y_yield` is used directly in yield-curve features and MarketContext phase inference |
 | `pmi_manufacturing` | TuShare `cn_pmi` field `PMI010000` | Manufacturing PMI | `2005-01-01` to `2026-04-01` (`256` rows) | Used directly in MarketContext phase inference and LightGBM macro features |
 | `pmi_non_manufacturing` | TuShare `cn_pmi` field `PMI020100` | Non-manufacturing business activity PMI | `2007-01-01` to `2026-03-01` (`231` rows) | Used directly in MarketContext phase inference and LightGBM macro features |
 | `cpi_yoy` | TuShare `cn_cpi` | CPI year-over-year growth | `2000-01-01` to `2026-03-01` (`315` rows) | Used in MarketContext phase inference |
@@ -101,7 +99,7 @@ Important notes:
 - `pmi_non_manufacturing` now maps to `PMI020100`. It previously and incorrectly followed the composite PMI field `PMI030000`.
 - TuShare `cn_pmi` currently returns `MONTH` uppercase by default. The ingestion path now reads `MONTH`/`month` first and only falls back to `CREATE_TIME` if needed.
 - Historical `MarketContext` is now backfilled from `MacroSnapshot` and remains queryable by date. Active historical rows currently span `2005-01-01` to `2026-04-01` (`263` rows).
-- Training windows that depend on yield-curve or MarketContext features should start no earlier than `2016-06-01` if you want macro-driven features to be based on real yield data rather than fallback defaults.
+- Training windows that depend on yield-curve or MarketContext features can use the historical yield surface once the CSV + TuShare backfill has been rerun; the runtime spread now uses `cn10y_yield - cn3y_yield`.
 
 ## Current Models and Formulas
 

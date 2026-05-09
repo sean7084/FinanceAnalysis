@@ -14,7 +14,7 @@ import json
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
-from apps.markets.benchmarking import point_in_time_union_asset_ids
+from apps.markets.benchmarking import ensure_pit_membership_coverage, point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from .models import TechnicalIndicator, AlertRule, AlertEvent, SignalEvent
 
@@ -923,11 +923,9 @@ def calculate_rs_scores_for_all_assets():
     from django.utils import timezone as tz
 
     today = timezone.now().date()
+    ensure_pit_membership_coverage([today], context=f'Daily RS refresh for {today}')
     union_asset_ids = point_in_time_union_asset_ids(today)
-    if union_asset_ids:
-        asset_ids = list(union_asset_ids)
-    else:
-        asset_ids = list(Asset.objects.values_list('id', flat=True))
+    asset_ids = list(union_asset_ids)
     if not asset_ids:
         return
 

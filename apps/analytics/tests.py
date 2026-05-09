@@ -1,7 +1,9 @@
 from decimal import Decimal
 from datetime import timedelta
+from io import StringIO
 from unittest.mock import patch
 
+from django.core.management import call_command, CommandError
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
@@ -9,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 import datetime
+from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
 from apps.factors.models import FactorScore
@@ -671,6 +674,17 @@ class Phase10SignalTests(TestCase):
                     amount=close_value * Decimal('1000'),
                 )
 
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=trade_dates[-1],
+                weight=Decimal('4.2'),
+            )
+            for asset in assets
+        ])
+
         with patch('apps.analytics.tasks.timezone.now', return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0))):
             calculate_rs_scores_for_all_assets()
 
@@ -772,6 +786,29 @@ class Phase10SignalTests(TestCase):
             ).exists()
         )
 
+    def test_calculate_rs_scores_for_all_assets_raises_when_required_pit_membership_is_missing(self):
+        trade_date = timezone.datetime(2024, 2, 21).date()
+        for offset in range(21):
+            current_date = trade_date - datetime.timedelta(days=20 - offset)
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=current_date,
+                open=Decimal('10.0'),
+                high=Decimal('10.1'),
+                low=Decimal('9.9'),
+                close=Decimal('10.0'),
+                adj_close=Decimal('10.0'),
+                volume=1000,
+                amount=Decimal('10000'),
+            )
+
+        with patch('apps.analytics.tasks.timezone.now', return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0))):
+            with self.assertRaisesMessage(
+                PITMembershipCoverageError,
+                'missing point-in-time membership coverage for 000300.SH on 2024-02-21',
+            ):
+                calculate_rs_scores_for_all_assets()
+
     # ------------------------------------------------------------------
     # API endpoint tests
     # ------------------------------------------------------------------
@@ -829,3 +866,141 @@ class Phase10SignalTests(TestCase):
         response = self.client.post('/api/v1/signals/recalculate/')
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_delay.assert_called_once()
+
+
+class TechnicalIndicatorBackfillCommandTests(TestCase):
+    def setUp(self):
+        self.market = Market.objects.create(code='BTI', name='Backfill Test Market')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='600123',
+            ts_code='600123.SH',
+            name='Backfill Test Asset',
+        )
+        self.base_date = timezone.datetime(2024, 4, 30).date()
+        prices = [10.0 + (index * 0.1) for index in range(80)]
+        _make_ohlcv_sequence(self.asset, prices, base_date=self.base_date, volume=100000)
+        self.start_date = self.base_date - datetime.timedelta(days=4)
+        self.end_date = self.base_date
+
+    def test_backfill_technical_indicators_persists_default_non_rs_history(self):
+        output = StringIO()
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=self.end_date.isoformat(),
+            symbols=self.asset.symbol,
+            stdout=output,
+        )
+
+        self.assertIn('processed_assets=1', output.getvalue())
+        self.assertFalse(
+            TechnicalIndicator.objects.filter(
+                asset=self.asset,
+                timestamp__date__gte=self.start_date,
+                timestamp__date__lte=self.end_date,
+                indicator_type='RS_SCORE',
+            ).exists()
+        )
+
+        expected_indicator_types = {
+            'ADX', 'BBANDS', 'EMA', 'FIB_RET', 'MACD', 'MOM_10D',
+            'MOM_20D', 'MOM_5D', 'OBV', 'RSI', 'SMA', 'STOCH',
+        }
+        self.assertEqual(
+            set(
+                TechnicalIndicator.objects.filter(
+                    asset=self.asset,
+                    timestamp__date__gte=self.start_date,
+                    timestamp__date__lte=self.end_date,
+                ).values_list('indicator_type', flat=True)
+            ),
+            expected_indicator_types,
+        )
+        self.assertEqual(
+            set(
+                TechnicalIndicator.objects.filter(
+                    asset=self.asset,
+                    indicator_type='RSI',
+                    timestamp__date__gte=self.start_date,
+                    timestamp__date__lte=self.end_date,
+                ).values_list('timestamp__date', flat=True)
+            ),
+            {self.start_date + datetime.timedelta(days=offset) for offset in range(5)},
+        )
+        self.assertEqual(
+            set(
+                TechnicalIndicator.objects.filter(
+                    asset=self.asset,
+                    indicator_type='FIB_RET',
+                    timestamp__date__gte=self.start_date,
+                    timestamp__date__lte=self.end_date,
+                ).values_list('timestamp__date', flat=True)
+            ),
+            {self.start_date + datetime.timedelta(days=offset) for offset in range(5)},
+        )
+
+    def test_backfill_technical_indicators_supports_large_obv_values(self):
+        large_volume_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600456',
+            ts_code='600456.SH',
+            name='Large Volume Asset',
+        )
+        prices = [10.0 + (index * 0.1) for index in range(80)]
+        _make_ohlcv_sequence(large_volume_asset, prices, base_date=self.base_date, volume=1_000_000_000)
+
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=self.end_date.isoformat(),
+            symbols=large_volume_asset.symbol,
+        )
+
+        obv_values = list(
+            TechnicalIndicator.objects.filter(
+                asset=large_volume_asset,
+                indicator_type='OBV',
+                timestamp__date__gte=self.start_date,
+                timestamp__date__lte=self.end_date,
+            ).values_list('value', flat=True)
+        )
+        self.assertTrue(obv_values)
+        self.assertGreater(max(abs(value) for value in obv_values), Decimal('10000000000'))
+
+    def test_backfill_technical_indicators_is_idempotent_for_same_slice(self):
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=self.end_date.isoformat(),
+            symbols=self.asset.symbol,
+        )
+        first_count = TechnicalIndicator.objects.filter(
+            asset=self.asset,
+            timestamp__date__gte=self.start_date,
+            timestamp__date__lte=self.end_date,
+        ).count()
+
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=self.end_date.isoformat(),
+            symbols=self.asset.symbol,
+        )
+        second_count = TechnicalIndicator.objects.filter(
+            asset=self.asset,
+            timestamp__date__gte=self.start_date,
+            timestamp__date__lte=self.end_date,
+        ).count()
+
+        self.assertEqual(first_count, second_count)
+
+    def test_backfill_technical_indicators_rejects_rs_score(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                'backfill_technical_indicators',
+                start_date=self.start_date.isoformat(),
+                end_date=self.end_date.isoformat(),
+                symbols=self.asset.symbol,
+                technical_indicators='RS_SCORE',
+            )

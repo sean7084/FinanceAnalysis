@@ -1,5 +1,75 @@
 # Changelog
 
+### version 0.1.12
+
+**Objective**: package the current release candidate around lifecycle-aware historical data governance, strict point-in-time universe enforcement, expanded data-quality audits, richer macro term-structure coverage, and Linux-native local operations.
+
+**Implemented Features**:
+
+- Added lifecycle-aware market data surfaces and repair tooling:
+  - extended `Asset` with `delist_date`; added official `ExchangeTradingCalendar` and `AssetSuspension` models, admin surfaces, and API exposure
+  - added `backfill_trading_calendar`, `backfill_asset_suspensions`, and `reconcile_suspension_ohlcv_overlaps`
+  - updated `sync_daily_a_shares` and `sync_asset_history` to sync official trading calendars, suspension days, explicit repair windows, and asset lifecycle metadata
+  - expanded `backfill_ohlcv_history` to support report-driven repair windows, technical-indicator warm-up prefills, and effective-universe-entry warm-up backfills
+
+- Enforced one canonical point-in-time universe contract across scoring, training, prediction, and backtests:
+  - documented and codified `effective_universe(date)` as `CSI300` from `2010-01-04` through `2024-09-22`, then `CSI300 ∪ CSI A500` from `2024-09-23` onward
+  - added `ensure_pit_membership_coverage`, required-index resolution, and explicit PIT coverage gap helpers in `apps/markets/benchmarking.py`
+  - removed silent fallback-to-all-assets behavior from daily RS score refresh, factor scoring, runtime prediction, backtest asset selection, model-data backfill, and LightGBM/LSTM training windows
+  - routed daily prediction through date-aware `effective_universe_assets(...)` instead of current tag-based asset selection
+
+- Expanded data-quality validation from simple gap scans into lifecycle and dependency audits:
+  - rewrote `validate_data_quality` around official exchange calendars instead of inferring trading dates from OHLCV
+  - added reports for index-membership history gaps, monthly blank membership windows, benchmark and PIT benchmark gaps, OHLCV excused gaps, price anomalies, lifecycle issues, feature dependency gaps, feature-source as-of issues, effective-universe daily coverage, cross-sectional participant audits, and optional report scoping
+  - added sampled upstream fundamental reconciliation against shared TuShare `daily_basic` / `fina_indicator` materialization logic
+  - distinguished expected vs suspicious capital-flow nulls and labeled continuity gap reasons for moneyflow- and margin-derived features
+
+- Refined feature backfills and technical-indicator persistence:
+  - extracted shared fundamental materialization helpers so backfill and audit paths recompute the same as-of rows
+  - made capital-flow backfills reuse existing raw lookback windows for single-day reruns instead of losing derived 5-day calculations
+  - added `backfill_technical_indicators` for non-`RS_SCORE` indicator history and widened `TechnicalIndicator.value` precision so large `OBV` rows persist without overflow
+  - added indicator warm-up helpers, RS-score prefill logic, and checkpoint/resume support with stage timing summaries for long-running `backfill_model_data` runs
+
+- Expanded macro history and runtime macro semantics:
+  - replaced the old `10Y - 2Y` slope with a fuller China yield surface (`6M/1Y/3Y/5Y/7Y/10Y/30Y`) and runtime `10Y - 3Y` spread
+  - backfilled pre-`2016-07` monthly government yields from ChinaBond CSV, and pre-`2012-03` `CNY/USD` month-start rows from Yahoo CSV before TuShare takes over
+  - constrained TuShare yield ingestion to `curve_type=0`, persisted per-field source metadata, and normalized monthly macro rows onto month-start dates
+  - updated admin, serializer, runtime phase inference, and regression tests to match the new yield fields
+
+- Improved native local-dev and ops workflows outside Docker:
+  - moved Django settings and env loading onto `.envs/.local` plus `.venv` defaults, including `TUSHARE_TOKEN` and localhost Redis broker/cache defaults
+  - added native helper scripts for backend, Celery worker, Celery beat, environment bootstrapping, and local stack verification
+  - updated Vite/API/WebSocket defaults to use relative `/api` and `/ws` paths with local proxying
+  - rewired smoke and staged-news-backfill shell helpers to run against the native virtualenv stack instead of `docker compose exec`
+
+- Refreshed operator documentation:
+  - updated `README.md` for the Linux-native local stack, benchmark-aware system status, and validated command inventory for backfill, validation, and training flows
+  - updated `TechnicalGuide.md` to reflect the canonical effective-universe rules and the expanded macro yield surface
+
+**Current Notes**:
+
+- `validate_data_quality` now treats `ExchangeTradingCalendar` as the official source of opening days; OHLCV continuity excludes pre-listing dates, on/after-delist dates, and suspension-covered dates instead of inferring expectations from stored bars.
+- Normal PIT-aware workflows now fail fast when required `IndexMembership` history is missing rather than silently widening to the full asset table.
+- Historical warm-up repairs may intentionally reach before the shared floor only when the command is explicitly running a bounded repair or feature warm-up window.
+
+**Key Files**:
+- `apps/markets/benchmarking.py`
+- `apps/markets/tasks.py`
+- `apps/markets/models.py`
+- `apps/markets/management/commands/backfill_ohlcv_history.py`
+- `apps/core/management/commands/validate_data_quality.py`
+- `apps/analytics/management/commands/backfill_technical_indicators.py`
+- `apps/factors/fundamental_materialization.py`
+- `apps/macro/management/commands/backfill_macro_snapshots.py`
+- `apps/prediction/management/commands/backfill_model_data.py`
+- `scripts/_native_env.sh`
+- `README.md`
+- `TechnicalGuide.md`
+
+**Focused Coverage Added**:
+- Added or expanded regression coverage across `apps.core.tests`, `apps.markets.tests`, `apps.analytics.tests`, `apps.factors.tests`, `apps.macro.tests`, `apps.prediction.tests`, `apps.prediction.tests_lightgbm`, `apps.backtest.tests`, and `apps.sentiment.tests` for lifecycle-aware validation, PIT coverage enforcement, macro backfills, technical-indicator backfills, capital-flow warmups, checkpointed model-data backfills, and native runtime behavior.
+
+
 ### version 0.1.11
 
 **Objective**: package the current `80`-file release candidate into a commit-ready `v0.1.11` focused on dual-index benchmark operations, point-in-time benchmark infrastructure, benchmark-aware backtest comparison, historical data-floor hardening, and refreshed model artifacts.

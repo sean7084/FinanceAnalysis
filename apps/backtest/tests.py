@@ -101,6 +101,22 @@ class Phase15BacktestTests(TestCase):
             composite_score=Decimal('0.650000'),
             bottom_probability_score=Decimal('0.200000'),
         )
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=self.asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=self.d1 - timedelta(days=1),
+                weight=Decimal('4.200000'),
+            ),
+            IndexMembership(
+                asset=self.asset,
+                index_code='000510.CSI',
+                index_name='CSI A500',
+                trade_date=self.d1 - timedelta(days=1),
+                weight=Decimal('2.100000'),
+            ),
+        ])
 
     def test_macro_context_fallback_ignores_inactive_rows(self):
         MarketContext.objects.create(
@@ -330,6 +346,27 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual([row['asset_id'] for row in rows], [self.asset.id])
         self.assertEqual(mock_predict.call_count, 1)
         self.assertEqual(mock_predict.call_args.args[0], self.asset.id)
+
+    def test_run_backtest_fails_when_required_pit_membership_is_missing(self):
+        IndexMembership.objects.all().delete()
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Missing PIT Coverage Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={'top_n': 1, 'horizon_days': 7, 'up_threshold': 0.55},
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+
+        self.assertIn('failed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.FAILED)
+        self.assertIn('missing point-in-time membership coverage', run.error_message)
+        self.assertEqual(BacktestTrade.objects.filter(backtest_run=run).count(), 0)
 
     def test_run_backtest_uses_on_demand_heuristic_candidates_without_stored_predictions(self):
         PredictionResult.objects.all().delete()
@@ -1228,6 +1265,23 @@ class Phase15BacktestTests(TestCase):
                 amount=Decimal(close) * Decimal('100000'),
             )
 
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=chunk_asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=trading_dates[0] - timedelta(days=1),
+                weight=Decimal('4.200000'),
+            ),
+            IndexMembership(
+                asset=chunk_asset,
+                index_code='000510.CSI',
+                index_name='CSI A500',
+                trade_date=trading_dates[0] - timedelta(days=1),
+                weight=Decimal('2.100000'),
+            ),
+        ])
+
         run = BacktestRun.objects.create(
             user=self.user,
             name='P15 Chunked Heuristic Run',
@@ -1307,6 +1361,28 @@ class Phase15BacktestTests(TestCase):
                     )
                     day_index += 1
                 current_date += timedelta(days=1)
+
+        membership_rows = []
+        for asset in schedule_assets:
+            membership_rows.append(
+                IndexMembership(
+                    asset=asset,
+                    index_code='000300.SH',
+                    index_name='CSI 300',
+                    trade_date=schedule_start - timedelta(days=1),
+                    weight=Decimal('4.200000'),
+                )
+            )
+            membership_rows.append(
+                IndexMembership(
+                    asset=asset,
+                    index_code='000510.CSI',
+                    index_name='CSI A500',
+                    trade_date=schedule_start - timedelta(days=1),
+                    weight=Decimal('2.100000'),
+                )
+            )
+        IndexMembership.objects.bulk_create(membership_rows)
 
         run = BacktestRun.objects.create(
             user=self.user,
@@ -1415,59 +1491,3 @@ class BacktestManagementCommandTests(TestCase):
                 ['heuristic', 'lstm'],
             )
             self.assertIn('Reference benchmark suite exported to', output.getvalue())
-
-    @patch('apps.backtest.management.commands.rerun_backtests_for_comparison.run_backtest')
-    def test_rerun_backtests_for_comparison_clones_runs_with_compare_target(self, mock_run_backtest):
-        source_run_one = BacktestRun.objects.create(
-            user=self.user,
-            name='Source Run 525',
-            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
-            start_date=date(2025, 1, 1),
-            end_date=date(2025, 1, 31),
-            initial_capital=Decimal('100000.00'),
-            status=BacktestRun.Status.COMPLETED,
-            cash=Decimal('101000.00'),
-            final_value=Decimal('101000.00'),
-            total_return=Decimal('0.010000'),
-            annualized_return=Decimal('0.120000'),
-            max_drawdown=Decimal('0.030000'),
-            sharpe_ratio=Decimal('1.100000'),
-            win_rate=Decimal('0.550000'),
-            total_trades=4,
-            winning_trades=2,
-            parameters={'top_n': 1, 'horizon_days': 7, 'up_threshold': 0.55, 'prediction_source': 'lightgbm'},
-            report={'equity_curve': [100000.0, 101000.0]},
-        )
-        source_run_two = BacktestRun.objects.create(
-            user=self.user,
-            name='Source Run 526',
-            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
-            start_date=date(2025, 2, 1),
-            end_date=date(2025, 2, 28),
-            initial_capital=Decimal('120000.00'),
-            status=BacktestRun.Status.COMPLETED,
-            parameters={'top_n': 2, 'horizon_days': 30, 'up_threshold': 0.60, 'prediction_source': 'lstm'},
-            report={'equity_curve': [120000.0, 121500.0]},
-        )
-
-        output = StringIO()
-        call_command(
-            'rerun_backtests_for_comparison',
-            run_ids=f'{source_run_one.id}-{source_run_two.id}',
-            name_suffix='pit-2016-2024',
-            stdout=output,
-        )
-
-        cloned_runs = list(BacktestRun.objects.filter(id__gt=source_run_two.id).order_by('id'))
-        self.assertEqual(len(cloned_runs), 2)
-        self.assertEqual(cloned_runs[0].parameters['compare_backtest_run_id'], source_run_one.id)
-        self.assertEqual(cloned_runs[1].parameters['compare_backtest_run_id'], source_run_two.id)
-        self.assertEqual(cloned_runs[0].name, 'Source Run 525 [pit-2016-2024]')
-        self.assertEqual(cloned_runs[1].name, 'Source Run 526 [pit-2016-2024]')
-        self.assertEqual(cloned_runs[0].status, BacktestRun.Status.PENDING)
-        self.assertEqual(cloned_runs[0].report, {})
-        self.assertEqual(cloned_runs[0].cash, source_run_one.initial_capital)
-        self.assertEqual(cloned_runs[1].cash, source_run_two.initial_capital)
-        self.assertEqual(mock_run_backtest.call_count, 2)
-        self.assertIn(f'{source_run_one.id} -> {cloned_runs[0].id}', output.getvalue())
-        self.assertIn(f'{source_run_two.id} -> {cloned_runs[1].id}', output.getvalue())

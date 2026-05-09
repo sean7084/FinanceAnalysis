@@ -10,8 +10,13 @@ from apps.core.date_floor import get_historical_data_floor
 MACRO_FIELDS = [
     'dxy',
     'cny_usd',
+    'cn6m_yield',
+    'cn1y_yield',
+    'cn3y_yield',
+    'cn5y_yield',
+    'cn7y_yield',
     'cn10y_yield',
-    'cn2y_yield',
+    'cn30y_yield',
     'pmi_manufacturing',
     'pmi_non_manufacturing',
     'cpi_yoy',
@@ -19,13 +24,22 @@ MACRO_FIELDS = [
 ]
 
 DXY_TUSHARE_CODES = ['USDOLLAR.FXCM', 'USDOLLAR']
-YIELD_CURVE_TYPE_PREFERENCE = ['0', '1']
+TUSHARE_YIELD_CURVE_TYPE = '0'
+YIELD_TENOR_SPECS = (
+    (0.5, 'cn6m_yield', 'yield_6m'),
+    (1, 'cn1y_yield', 'yield_1y'),
+    (3, 'cn3y_yield', 'yield_3y'),
+    (5, 'cn5y_yield', 'yield_5y'),
+    (7, 'cn7y_yield', 'yield_7y'),
+    (10, 'cn10y_yield', 'yield_10y'),
+    (30, 'cn30y_yield', 'yield_30y'),
+)
 
 CRITICAL_MACRO_FIELDS = [
     'pmi_manufacturing',
     'pmi_non_manufacturing',
     'cn10y_yield',
-    'cn2y_yield',
+    'cn3y_yield',
     'cpi_yoy',
 ]
 
@@ -159,12 +173,10 @@ def _normalize_curve_type(value):
 
 def _curve_type_rank(value):
     token = _normalize_curve_type(value)
-    if token in YIELD_CURVE_TYPE_PREFERENCE:
-        return YIELD_CURVE_TYPE_PREFERENCE.index(token)
-    return len(YIELD_CURVE_TYPE_PREFERENCE)
+    return 0 if token == TUSHARE_YIELD_CURVE_TYPE else 1
 
 
-def select_preferred_yield_rows(yield_df):
+def select_preferred_yield_rows(yield_df, *, required_curve_type=None):
     if yield_df is None or yield_df.empty:
         return yield_df
 
@@ -174,13 +186,22 @@ def select_preferred_yield_rows(yield_df):
         working['curve_type_token'] = working['curve_type'].map(_normalize_curve_type)
     else:
         working['curve_type_token'] = ''
+
+    if required_curve_type is not None:
+        required_token = _normalize_curve_type(required_curve_type)
+        if 'curve_type' not in working.columns:
+            return working.iloc[0:0]
+        working = working[working['curve_type_token'] == required_token]
+        if working.empty:
+            return working
+
     working['curve_type_rank'] = working['curve_type_token'].map(_curve_type_rank)
-    working = working.sort_values(['trade_date_token', 'curve_type_rank'], ascending=[False, True])
+    working = working.sort_values(['trade_date_token', 'curve_type_rank'], ascending=[True, True])
     return working.drop_duplicates(subset=['trade_date_token'], keep='first')
 
 
-def build_monthly_yield_points(yield_df):
-    preferred_rows = select_preferred_yield_rows(yield_df)
+def build_monthly_yield_points(yield_df, *, required_curve_type=None):
+    preferred_rows = select_preferred_yield_rows(yield_df, required_curve_type=required_curve_type)
     if preferred_rows is None or preferred_rows.empty:
         return {}
 
@@ -212,8 +233,13 @@ def _empty_payload(snapshot_date, source):
         'date': snapshot_date,
         'dxy': None,
         'cny_usd': None,
+        'cn6m_yield': None,
+        'cn1y_yield': None,
+        'cn3y_yield': None,
+        'cn5y_yield': None,
+        'cn7y_yield': None,
         'cn10y_yield': None,
-        'cn2y_yield': None,
+        'cn30y_yield': None,
         'pmi_manufacturing': None,
         'pmi_non_manufacturing': None,
         'cpi_yoy': None,
@@ -389,29 +415,36 @@ def fetch_macro_snapshot_from_tushare(snapshot_date=None):
 
     start_date = as_of.replace(day=1).strftime('%Y%m01')
     end_date = as_of.strftime('%Y%m%d')
-    for term, field in [(10, 'cn10y_yield'), (2, 'cn2y_yield')]:
+    current_month = _yyyymm(as_of)
+    for term, field, error_key in YIELD_TENOR_SPECS:
         try:
             y_df = call_tushare_with_retries(
-                lambda term=term: client.yc_cb(curve_term=term, start_date=start_date, end_date=end_date, limit=50),
+                lambda term=term: client.yc_cb(
+                    curve_term=term,
+                    curve_type=TUSHARE_YIELD_CURVE_TYPE,
+                    start_date=start_date,
+                    end_date=end_date,
+                    limit=50,
+                ),
                 metadata=payload['metadata'],
-                error_key=f'yield_{term}y',
+                error_key=error_key,
             )
             _sleep_if_needed()
             if y_df is not None and not y_df.empty:
-                preferred_rows = select_preferred_yield_rows(y_df)
-                if preferred_rows is not None and not preferred_rows.empty:
-                    row = preferred_rows.iloc[0].to_dict()
-                    payload[field] = _parse_decimal(row.get('yield'))
+                monthly_points = build_monthly_yield_points(y_df, required_curve_type=TUSHARE_YIELD_CURVE_TYPE)
+                point = monthly_points.get(current_month)
+                if point is not None:
+                    payload[field] = point['yield']
                     payload['metadata'].setdefault('yield_sources', {})[field] = {
                         'source': 'tushare_yc_cb',
                         'curve_term': term,
-                        'trade_date': str(row.get('trade_date') or ''),
+                        'trade_date': point.get('trade_date') or '',
                     }
-                    curve_type = _normalize_curve_type(row.get('curve_type'))
+                    curve_type = _normalize_curve_type(point.get('curve_type'))
                     if curve_type:
                         payload['metadata']['yield_sources'][field]['curve_type'] = curve_type
         except Exception as exc:
-            payload['metadata'][f'yield_{term}y_error'] = str(exc)
+            payload['metadata'][f'{error_key}_error'] = str(exc)
 
     fx_specs = [
         ('dxy', DXY_TUSHARE_CODES, normalize_dxy_quote),

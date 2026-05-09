@@ -8,7 +8,16 @@ export interface AlertMessage {
   time: string
 }
 
-const SOCKET_URL = import.meta.env.VITE_ALERTS_WS_URL ?? 'ws://localhost:8000/ws/alerts/'
+function defaultSocketUrl(): string {
+  if (typeof window === 'undefined') {
+    return 'ws://127.0.0.1:5173/ws/alerts/'
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/ws/alerts/`
+}
+
+const SOCKET_URL = import.meta.env.VITE_ALERTS_WS_URL ?? defaultSocketUrl()
 const MAX_RECONNECT_ATTEMPTS = 5
 
 export function useAlertsSocket() {

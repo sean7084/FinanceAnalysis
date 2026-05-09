@@ -38,7 +38,19 @@
 				"matchCommandLine": true
 			},
 			"docker restart": true,
-			"npm test": true
+			"npm test": true,
+			"/^source \\.venv/bin/activate && export DJANGO_SETTINGS_MODULE=config\\.settings\\.local && export DJANGO_READ_DOT_ENV_FILE=True && python manage\\.py check$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^source \\.venv/bin/activate && python manage\\.py check$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^source \\.venv/bin/activate && python manage\\.py shell -c \"from django\\.conf import settings; print\\(settings\\.CELERY_BROKER_URL\\); print\\(settings\\.CACHES\\['default'\\]\\['LOCATION'\\]\\); print\\(settings\\.CHANNEL_LAYERS\\['default'\\]\\['CONFIG'\\]\\['hosts'\\]\\[0\\]\\)\"$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
 		}
 	}
 }

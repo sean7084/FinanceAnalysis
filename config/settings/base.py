@@ -15,8 +15,6 @@ import environ
 from pathlib import Path
 from celery.schedules import crontab
 
-TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN")
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 APPS_DIR = BASE_DIR / "apps"
@@ -27,6 +25,8 @@ READ_DOT_ENV_FILE = env.bool("DJANGO_READ_DOT_ENV_FILE", default=False)
 if READ_DOT_ENV_FILE:
     # OS environment variables take precedence over variables from .env
     env.read_env(str(BASE_DIR / ".envs" / ".local"))
+
+TUSHARE_TOKEN = env("TUSHARE_TOKEN", default=None)
 
 
 
@@ -172,7 +172,7 @@ USE_TZ = True
 
 # CELERY
 # ------------------------------------------------------------------------------
-CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
@@ -209,7 +209,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     'sync-macro-data-monthly': {
         'task': 'apps.macro.tasks.sync_macro_data_monthly',
-        'schedule': crontab(day_of_month='1', hour='2', minute='0'),
+        'schedule': crontab(day_of_month='2-8', hour='0', minute='10'),
     },
     'fetch-latest-market-news-daily': {
         'task': 'apps.sentiment.tasks.fetch_latest_market_news',
@@ -311,7 +311,7 @@ SIMPLE_JWT = {
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": env("REDIS_URL", default="redis://redis:6379/1"),
+        "LOCATION": env("REDIS_URL", default="redis://localhost:6379/1"),
     }
 }
 
@@ -319,7 +319,7 @@ CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [env('REDIS_URL', default='redis://redis:6379/1')],
+            'hosts': [env('REDIS_URL', default='redis://localhost:6379/1')],
         },
     },
 }

@@ -24,7 +24,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
 
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import current_active_union_assets, point_in_time_union_asset_ids_by_dates
+from apps.markets.benchmarking import effective_universe_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
@@ -553,7 +553,7 @@ def _extract_features_for_asset(asset_id, as_of):
     features['pmi_non_manufacturing'] = _safe_float(getattr(macro_snap, 'pmi_non_manufacturing', 50), 50.0) if macro_snap else 50.0
     features['yield_curve'] = (
         _safe_float(getattr(macro_snap, 'cn10y_yield', 2.0), 2.0) -
-        _safe_float(getattr(macro_snap, 'cn2y_yield', 2.0), 2.0)
+        _safe_float(getattr(macro_snap, 'cn3y_yield', 2.0), 2.0)
     ) if macro_snap else 0.0
 
     # Phase 13: Sentiment
@@ -588,7 +588,7 @@ def _compute_rsi_series(close_series, period=14):
 def _prepare_macro_dataframe(end_date):
     macro_rows = list(
         MacroSnapshot.objects.filter(date__lte=end_date)
-        .values('date', 'pmi_manufacturing', 'pmi_non_manufacturing', 'cn10y_yield', 'cn2y_yield')
+        .values('date', 'pmi_manufacturing', 'pmi_non_manufacturing', 'cn10y_yield', 'cn3y_yield')
         .order_by('date')
     )
     macro_df = pd.DataFrame.from_records(macro_rows)
@@ -598,7 +598,7 @@ def _prepare_macro_dataframe(end_date):
         macro_df['date'] = pd.to_datetime(macro_df['date'])
         macro_df['yield_curve'] = (
             macro_df['cn10y_yield'].astype(float).fillna(2.0) -
-            macro_df['cn2y_yield'].astype(float).fillna(2.0)
+            macro_df['cn3y_yield'].astype(float).fillna(2.0)
         )
         macro_df['pmi_manufacturing'] = macro_df['pmi_manufacturing'].astype(float).fillna(50.0)
         macro_df['pmi_non_manufacturing'] = macro_df['pmi_non_manufacturing'].astype(float).fillna(50.0)
@@ -641,21 +641,28 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         .distinct()
         .order_by('date')
     )
+    if not target_trade_dates:
+        df = pd.DataFrame(columns=['date', 'asset_id'])
+        df.attrs['feature_names'] = []
+        return df
+
+    ensure_pit_membership_coverage(
+        target_trade_dates,
+        context=f'Training feature matrix for {start_date}..{end_date}',
+    )
+
     membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
-    use_pit_filter = any(membership_by_date.values())
-    if use_pit_filter:
-        eligible_asset_ids = sorted({
-            asset_id
-            for member_asset_ids in membership_by_date.values()
-            for asset_id in member_asset_ids
-            if asset_id in set(asset_ids)
-        })
-        if not eligible_asset_ids:
-            df = pd.DataFrame(columns=['date', 'asset_id'])
-            df.attrs['feature_names'] = []
-            return df
-    else:
-        eligible_asset_ids = asset_ids
+    asset_id_set = set(asset_ids)
+    eligible_asset_ids = sorted({
+        asset_id
+        for member_asset_ids in membership_by_date.values()
+        for asset_id in member_asset_ids
+        if asset_id in asset_id_set
+    })
+    if not eligible_asset_ids:
+        df = pd.DataFrame(columns=['date', 'asset_id'])
+        df.attrs['feature_names'] = []
+        return df
 
     warmup_start = start_date - timedelta(days=40)
     ohlcv_rows = list(
@@ -842,14 +849,13 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         asset_df = asset_df[(asset_df['date'] >= target_start_ts) & (asset_df['date'] <= target_end_ts)].copy()
         if asset_df.empty:
             continue
-        if use_pit_filter:
-            asset_df['pit_in_universe'] = asset_df['date'].dt.date.map(
-                lambda current_date: int(asset_id) in membership_by_date.get(current_date, set())
-            )
-            asset_df = asset_df[asset_df['pit_in_universe']].copy()
-            asset_df = asset_df.drop(columns=['pit_in_universe'])
-            if asset_df.empty:
-                continue
+        asset_df['pit_in_universe'] = asset_df['date'].dt.date.map(
+            lambda current_date: int(asset_id) in membership_by_date.get(current_date, set())
+        )
+        asset_df = asset_df[asset_df['pit_in_universe']].copy()
+        asset_df = asset_df.drop(columns=['pit_in_universe'])
+        if asset_df.empty:
+            continue
         asset_df['asset_id'] = int(asset_id)
         asset_df['date'] = asset_df['date'].dt.date
 
@@ -895,23 +901,28 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
         .distinct()
         .order_by('date')
     )
+    if not target_trade_dates:
+        return labels
+
+    ensure_pit_membership_coverage(
+        target_trade_dates,
+        context=f'Training labels for {start_date}..{end_date}',
+    )
+
     membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
-    use_pit_filter = any(membership_by_date.values())
-    eligible_asset_ids = None
-    if use_pit_filter:
-        eligible_asset_ids = sorted({
-            asset_id
-            for member_asset_ids in membership_by_date.values()
-            for asset_id in member_asset_ids
-        })
-        if not eligible_asset_ids:
-            return labels
+    eligible_asset_ids = sorted({
+        asset_id
+        for member_asset_ids in membership_by_date.values()
+        for asset_id in member_asset_ids
+    })
+    if not eligible_asset_ids:
+        return labels
 
     rows = list(
         OHLCV.objects.filter(
             date__gte=start_date,
             date__lte=end_date + timedelta(days=horizon_days + 7),
-            **({'asset_id__in': eligible_asset_ids} if use_pit_filter else {}),
+            asset_id__in=eligible_asset_ids,
         )
         .values('asset_id', 'date', 'close')
         .order_by('asset_id', 'date')
@@ -931,7 +942,7 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
         for index, target_date in enumerate(dates):
             if target_date < start_date or target_date > end_date:
                 continue
-            if use_pit_filter and int(asset_id) not in membership_by_date.get(target_date, set()):
+            if int(asset_id) not in membership_by_date.get(target_date, set()):
                 continue
             future_threshold = target_date + timedelta(days=horizon_days)
             future_index = bisect_left(dates, future_threshold)
@@ -1286,7 +1297,7 @@ def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
     horizons = horizons or [3, 7, 30]
     processed = 0
 
-    for asset in current_active_union_assets():
+    for asset in effective_universe_assets(as_of, context=f'LightGBM daily prediction for {as_of}'):
         for horizon in horizons:
             pred = _predict_with_lightgbm(asset.id, as_of, horizon)
 

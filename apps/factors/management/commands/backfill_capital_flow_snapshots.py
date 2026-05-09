@@ -16,6 +16,15 @@ from apps.factors.models import (
 from apps.markets.models import Asset, OHLCV
 
 
+MONEYFLOW_FIELDS = [
+    'buy_sm_amount', 'sell_sm_amount', 'buy_md_amount', 'sell_md_amount',
+    'buy_lg_amount', 'sell_lg_amount', 'buy_elg_amount', 'sell_elg_amount', 'net_mf_amount',
+]
+MARGIN_FIELDS = ['rzye', 'rqye', 'rzmre', 'rzche', 'rqyl', 'rqchl', 'rqmcl', 'rzrqye']
+MAIN_FORCE_LOOKBACK_ROWS = 4
+MARGIN_DIFF_LOOKBACK_ROWS = 5
+
+
 def _parse_date(value, name):
     try:
         return date.fromisoformat(str(value))
@@ -117,12 +126,66 @@ class Command(BaseCommand):
 
         moneyflow_rows = self._upsert_moneyflow_rows(asset, moneyflow_df)
         margin_rows = self._upsert_margin_rows(asset, margin_df)
-        capital_rows = self._upsert_capital_flow_rows(asset, trading_dates, moneyflow_df, margin_df)
+        moneyflow_history_df = self._load_existing_raw_lookback(
+            AssetMoneyFlowSnapshot,
+            asset,
+            trade_start,
+            MAIN_FORCE_LOOKBACK_ROWS,
+            MONEYFLOW_FIELDS,
+        )
+        margin_history_df = self._load_existing_raw_lookback(
+            AssetMarginDetailSnapshot,
+            asset,
+            trade_start,
+            MARGIN_DIFF_LOOKBACK_ROWS,
+            MARGIN_FIELDS,
+        )
+        capital_rows = self._upsert_capital_flow_rows(
+            asset,
+            trading_dates,
+            self._merge_history_with_current(moneyflow_history_df, moneyflow_df, MONEYFLOW_FIELDS),
+            self._merge_history_with_current(margin_history_df, margin_df, MARGIN_FIELDS),
+        )
         return {
             'moneyflow_rows': moneyflow_rows,
             'margin_rows': margin_rows,
             'capital_rows': capital_rows,
         }
+
+    def _load_existing_raw_lookback(self, model, asset, trade_start, lookback_rows, fields):
+        columns = ['date', *fields]
+        if lookback_rows <= 0:
+            return pd.DataFrame(columns=columns)
+
+        rows = list(
+            model.objects.filter(asset=asset, date__lt=trade_start)
+            .order_by('-date')
+            .values('date', *fields)[:lookback_rows]
+        )
+        if not rows:
+            return pd.DataFrame(columns=columns)
+
+        history_df = pd.DataFrame(rows)
+        history_df['date'] = pd.to_datetime(history_df['date'])
+        history_df = history_df.sort_values('date').copy()
+        return history_df[columns]
+
+    def _merge_history_with_current(self, history_df, current_df, fields):
+        columns = ['date', *fields]
+        frames = []
+        if history_df is not None and not history_df.empty:
+            frames.append(history_df[columns])
+        if current_df is not None and not current_df.empty:
+            frames.append(current_df[columns])
+
+        if not frames:
+            return pd.DataFrame(columns=columns)
+
+        merged = pd.concat(frames, ignore_index=True)
+        merged['date'] = pd.to_datetime(merged['date'])
+        merged = merged.sort_values('date')
+        merged = merged.drop_duplicates(subset=['date'], keep='last').copy()
+        return merged[columns]
 
     def _fetch_moneyflow(self, pro, ts_code, start_date, end_date):
         frames = []
@@ -141,28 +204,17 @@ class Command(BaseCommand):
 
         if not frames:
             return pd.DataFrame(
-                columns=[
-                    'date', 'buy_sm_amount', 'sell_sm_amount', 'buy_md_amount', 'sell_md_amount',
-                    'buy_lg_amount', 'sell_lg_amount', 'buy_elg_amount', 'sell_elg_amount', 'net_mf_amount',
-                ]
+                columns=['date', *MONEYFLOW_FIELDS]
             )
 
         moneyflow_df = pd.concat(frames, ignore_index=True)
         moneyflow_df['date'] = pd.to_datetime(moneyflow_df['trade_date'], format='%Y%m%d', errors='coerce')
         moneyflow_df = moneyflow_df.dropna(subset=['date']).sort_values('date')
         moneyflow_df = moneyflow_df.drop_duplicates(subset=['date'], keep='last').copy()
-        for column in [
-            'buy_sm_amount', 'sell_sm_amount', 'buy_md_amount', 'sell_md_amount',
-            'buy_lg_amount', 'sell_lg_amount', 'buy_elg_amount', 'sell_elg_amount', 'net_mf_amount',
-        ]:
+        for column in MONEYFLOW_FIELDS:
             if column not in moneyflow_df.columns:
                 moneyflow_df[column] = None
-        return moneyflow_df[
-            [
-                'date', 'buy_sm_amount', 'sell_sm_amount', 'buy_md_amount', 'sell_md_amount',
-                'buy_lg_amount', 'sell_lg_amount', 'buy_elg_amount', 'sell_elg_amount', 'net_mf_amount',
-            ]
-        ]
+        return moneyflow_df[['date', *MONEYFLOW_FIELDS]]
 
     def _fetch_margin_detail(self, pro, ts_code, start_date, end_date):
         frames = []
@@ -179,18 +231,16 @@ class Command(BaseCommand):
                 frames.append(frame)
 
         if not frames:
-            return pd.DataFrame(
-                columns=['date', 'rzye', 'rqye', 'rzmre', 'rzche', 'rqyl', 'rqchl', 'rqmcl', 'rzrqye']
-            )
+            return pd.DataFrame(columns=['date', *MARGIN_FIELDS])
 
         margin_df = pd.concat(frames, ignore_index=True)
         margin_df['date'] = pd.to_datetime(margin_df['trade_date'], format='%Y%m%d', errors='coerce')
         margin_df = margin_df.dropna(subset=['date']).sort_values('date')
         margin_df = margin_df.drop_duplicates(subset=['date'], keep='last').copy()
-        for column in ['rzye', 'rqye', 'rzmre', 'rzche', 'rqyl', 'rqchl', 'rqmcl', 'rzrqye']:
+        for column in MARGIN_FIELDS:
             if column not in margin_df.columns:
                 margin_df[column] = None
-        return margin_df[['date', 'rzye', 'rqye', 'rzmre', 'rzche', 'rqyl', 'rqchl', 'rqmcl', 'rzrqye']]
+        return margin_df[['date', *MARGIN_FIELDS]]
 
     def _upsert_moneyflow_rows(self, asset, moneyflow_df):
         rows = []
@@ -264,6 +314,8 @@ class Command(BaseCommand):
 
         if not moneyflow_df.empty:
             moneyflow_derived = moneyflow_df.copy()
+            for column in ['buy_lg_amount', 'buy_elg_amount', 'sell_lg_amount', 'sell_elg_amount']:
+                moneyflow_derived[column] = pd.to_numeric(moneyflow_derived[column], errors='coerce')
             moneyflow_derived['main_force_daily'] = (
                 moneyflow_derived['buy_lg_amount'].fillna(0) +
                 moneyflow_derived['buy_elg_amount'].fillna(0) -
@@ -281,6 +333,7 @@ class Command(BaseCommand):
 
         if not margin_df.empty:
             margin_derived = margin_df.copy()
+            margin_derived['rzrqye'] = pd.to_numeric(margin_derived['rzrqye'], errors='coerce')
             margin_derived['margin_balance_change_5d'] = margin_derived['rzrqye'].diff(periods=5)
             merged = merged.merge(
                 margin_derived[['date', 'margin_balance_change_5d']],

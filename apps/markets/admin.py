@@ -1,6 +1,6 @@
 from django.contrib import admin
 from modeltranslation.admin import TranslationAdmin
-from .models import Asset, IndexMembership, Market, OHLCV
+from .models import Asset, AssetSuspension, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 
 @admin.register(Market)
 class MarketAdmin(admin.ModelAdmin):
@@ -9,8 +9,8 @@ class MarketAdmin(admin.ModelAdmin):
 
 @admin.register(Asset)
 class AssetAdmin(TranslationAdmin):
-    list_display = ('ts_code', 'name', 'market', 'listing_status', 'list_date', 'membership_tags_display')
-    list_filter = ('market', 'listing_status', 'list_date')
+    list_display = ('ts_code', 'name', 'market', 'listing_status', 'list_date', 'delist_date', 'membership_tags_display')
+    list_filter = ('market', 'listing_status', 'list_date', 'delist_date')
     search_fields = ('ts_code', 'name', 'symbol')
 
     def membership_tags_display(self, obj):
@@ -32,5 +32,21 @@ class IndexMembershipAdmin(admin.ModelAdmin):
     list_display = ('asset', 'index_code', 'index_name', 'trade_date', 'weight', 'source')
     list_filter = ('index_code', 'trade_date', 'source')
     search_fields = ('asset__ts_code', 'asset__name', 'index_code', 'index_name')
+    date_hierarchy = 'trade_date'
+
+
+@admin.register(ExchangeTradingCalendar)
+class ExchangeTradingCalendarAdmin(admin.ModelAdmin):
+    list_display = ('exchange_code', 'trade_date', 'previous_trade_date', 'source')
+    list_filter = ('exchange_code', 'source')
+    search_fields = ('exchange_code',)
+    date_hierarchy = 'trade_date'
+
+
+@admin.register(AssetSuspension)
+class AssetSuspensionAdmin(admin.ModelAdmin):
+    list_display = ('asset', 'trade_date', 'suspend_type', 'suspend_timing', 'is_full_day', 'source')
+    list_filter = ('suspend_type', 'is_full_day', 'source')
+    search_fields = ('asset__ts_code', 'asset__name')
     date_hierarchy = 'trade_date'
 

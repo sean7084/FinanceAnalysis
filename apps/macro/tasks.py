@@ -5,25 +5,25 @@ from django.conf import settings
 from django.utils import timezone
 
 from .models import MacroSnapshot, MarketContext
-from .providers import fetch_macro_snapshot_with_fallback
+from .providers import YIELD_TENOR_SPECS, fetch_macro_snapshot_with_fallback
 
 
 def _infer_phase(snapshot):
     pmi = snapshot.pmi_manufacturing
     pmi_non = snapshot.pmi_non_manufacturing
     y10 = snapshot.cn10y_yield
-    y2 = snapshot.cn2y_yield
+    y3 = snapshot.cn3y_yield
     cpi = snapshot.cpi_yoy
 
     pmi_val = float(pmi) if pmi is not None else None
     pmi_non_val = float(pmi_non) if pmi_non is not None else None
     y10_val = float(y10) if y10 is not None else None
-    y2_val = float(y2) if y2 is not None else None
+    y3_val = float(y3) if y3 is not None else None
     cpi_val = float(cpi) if cpi is not None else None
 
     slope = None
-    if y10_val is not None and y2_val is not None:
-        slope = y10_val - y2_val
+    if y10_val is not None and y3_val is not None:
+        slope = y10_val - y3_val
 
     if pmi_val is not None and pmi_val < 50 and slope is not None and slope < 0:
         return MarketContext.MacroPhase.RECESSION
@@ -95,36 +95,40 @@ def sync_macro_data_monthly(payload=None):
     snapshot_date = payload.get('date')
     if snapshot_date:
         try:
-            d = date.fromisoformat(str(snapshot_date))
+            requested_date = date.fromisoformat(str(snapshot_date))
         except ValueError:
-            d = timezone.now().date()
+            requested_date = timezone.now().date()
     else:
-        d = timezone.now().date().replace(day=1)
+        requested_date = timezone.now().date()
+
+    snapshot_month = requested_date.replace(day=1)
 
     if not payload:
         payload = fetch_macro_snapshot_with_fallback(
-            snapshot_date=d,
+            snapshot_date=requested_date,
             primary=getattr(settings, 'MACRO_SYNC_PRIMARY_PROVIDER', 'tushare'),
             fallback=getattr(settings, 'MACRO_SYNC_FALLBACK_PROVIDER', 'akshare'),
         )
 
+    defaults = {
+        'dxy': payload.get('dxy'),
+        'cny_usd': payload.get('cny_usd'),
+        'pmi_manufacturing': payload.get('pmi_manufacturing'),
+        'pmi_non_manufacturing': payload.get('pmi_non_manufacturing'),
+        'cpi_yoy': payload.get('cpi_yoy'),
+        'ppi_yoy': payload.get('ppi_yoy'),
+        'metadata': payload.get('metadata', {}),
+    }
+    for _curve_term, field_name, _retry_key in YIELD_TENOR_SPECS:
+        defaults[field_name] = payload.get(field_name)
+
     snapshot, _ = MacroSnapshot.objects.update_or_create(
-        date=payload.get('date') or d,
-        defaults={
-            'dxy': payload.get('dxy'),
-            'cny_usd': payload.get('cny_usd'),
-            'cn10y_yield': payload.get('cn10y_yield'),
-            'cn2y_yield': payload.get('cn2y_yield'),
-            'pmi_manufacturing': payload.get('pmi_manufacturing'),
-            'pmi_non_manufacturing': payload.get('pmi_non_manufacturing'),
-            'cpi_yoy': payload.get('cpi_yoy'),
-            'ppi_yoy': payload.get('ppi_yoy'),
-            'metadata': payload.get('metadata', {}),
-        },
+        date=snapshot_month,
+        defaults=defaults,
     )
 
     refresh_current_market_context.delay(snapshot.id)
-    return f'Macro snapshot synced for {d}'
+    return f'Macro snapshot synced for {snapshot_month}'
 
 
 @shared_task

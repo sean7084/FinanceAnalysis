@@ -40,6 +40,12 @@ class Asset(models.Model):
         blank=True,
         help_text=_("IPO/listing date from TuShare stock_basic")
     )
+    delist_date = models.DateField(
+        _("Delist Date"),
+        null=True,
+        blank=True,
+        help_text=_("Delisting date from TuShare stock_basic")
+    )
     membership_tags = models.JSONField(
         _("Membership Tags"),
         default=list,
@@ -54,6 +60,58 @@ class Asset(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.ts_code})"
+
+
+class ExchangeTradingCalendar(models.Model):
+    """
+    Stores official exchange trading days sourced from TuShare trade_cal.
+    """
+    exchange_code = models.CharField(_("Exchange Code"), max_length=10, db_index=True)
+    trade_date = models.DateField(_("Trade Date"), db_index=True)
+    previous_trade_date = models.DateField(_("Previous Trade Date"), null=True, blank=True)
+    source = models.CharField(_("Source"), max_length=50, default='tushare_trade_cal')
+
+    class Meta:
+        verbose_name = _("Exchange Trading Calendar")
+        verbose_name_plural = _("Exchange Trading Calendars")
+        ordering = ['exchange_code', '-trade_date']
+        indexes = [
+            models.Index(fields=['exchange_code', 'trade_date']),
+        ]
+        unique_together = ('exchange_code', 'trade_date')
+
+    def __str__(self):
+        return f"{self.exchange_code} on {self.trade_date}"
+
+
+class AssetSuspension(models.Model):
+    """
+    Stores daily suspension data sourced from TuShare suspend_d.
+    """
+    asset = models.ForeignKey(
+        Asset,
+        on_delete=models.CASCADE,
+        related_name='suspension_days',
+        verbose_name=_("Asset"),
+    )
+    trade_date = models.DateField(_("Trade Date"), db_index=True)
+    suspend_type = models.CharField(_("Suspend Type"), max_length=1, default='S')
+    suspend_timing = models.CharField(_("Suspend Timing"), max_length=40, null=True, blank=True)
+    is_full_day = models.BooleanField(_("Is Full Day Suspension"), default=False, db_index=True)
+    source = models.CharField(_("Source"), max_length=50, default='tushare_suspend_d')
+
+    class Meta:
+        verbose_name = _("Asset Suspension")
+        verbose_name_plural = _("Asset Suspensions")
+        ordering = ['-trade_date', 'asset_id']
+        indexes = [
+            models.Index(fields=['asset', 'trade_date']),
+            models.Index(fields=['trade_date', 'is_full_day']),
+        ]
+        unique_together = ('asset', 'trade_date')
+
+    def __str__(self):
+        return f"{self.asset.ts_code} suspension on {self.trade_date}"
 
 
 class IndexMembership(models.Model):

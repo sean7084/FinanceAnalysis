@@ -1,5 +1,8 @@
+import json
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 import talib
@@ -9,32 +12,246 @@ from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.analytics.tasks import persist_ranked_rs_scores
+from apps.analytics.indicator_warmup import (
+    MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS,
+    minimum_history_prefill_start_date,
+)
 from apps.factors.models import CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
 from apps.factors.tasks import calculate_factor_scores_for_date
-from apps.markets.benchmarking import point_in_time_union_asset_ids
+from apps.markets.benchmarking import (
+    PITMembershipCoverageError,
+    ensure_pit_membership_coverage,
+    point_in_time_union_asset_ids_by_dates,
+)
 from apps.markets.models import Asset
 from apps.markets.models import OHLCV
-from apps.prediction.tasks_lightgbm import train_lightgbm_models
 from apps.sentiment.models import NewsArticle, SentimentScore
-from apps.sentiment.tasks import calculate_daily_sentiment
+from apps.sentiment.tasks import calculate_daily_sentiment, listed_asset_ids_for_date
 
 
 class Command(BaseCommand):
     help = 'Backfill model input data over a historical date range for heuristic and LightGBM pipelines.'
+    CHECKPOINT_VERSION = 1
 
     def add_arguments(self, parser):
-        parser.add_argument('--start-date', required=True, help='Inclusive start date in YYYY-MM-DD format.')
-        parser.add_argument('--end-date', required=True, help='Inclusive end date in YYYY-MM-DD format.')
+        parser.add_argument('--start-date', help='Inclusive start date in YYYY-MM-DD format.')
+        parser.add_argument('--end-date', help='Inclusive end date in YYYY-MM-DD format.')
         parser.add_argument('--sentiment-weight', type=float, default=0.0)
         parser.add_argument('--skip-sentiment', action='store_true')
-        parser.add_argument('--skip-rs-score', action='store_true')
-        parser.add_argument('--skip-factor-scores', action='store_true')
-        parser.add_argument('--resume-factor-scores', action='store_true')
-        parser.add_argument('--train-lightgbm', action='store_true')
+        parser.add_argument('--checkpoint-file', default='')
+        parser.add_argument('--resume-from-checkpoint', action='store_true')
 
     def handle(self, *args, **options):
-        start_date = self._parse_date(options['start_date'], 'start-date')
-        end_date = self._parse_date(options['end_date'], 'end-date')
+        start_date, end_date, trading_dates, context_label = self._resolve_backfill_dates(options)
+        self._configure_checkpoint(options, start_date, end_date, trading_dates)
+        self._rs_prefill_start_date = minimum_history_prefill_start_date(start_date)
+
+        self.stdout.write(
+            self.style.NOTICE(
+                'Applying model-data warm-up prefill: '
+                f'calendar_prefill_days={MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS} '
+                f'requested_start={start_date} '
+                f'rs_score_prefill_start={self._rs_prefill_start_date}'
+            )
+        )
+
+        try:
+            ensure_pit_membership_coverage(
+                trading_dates,
+                context=context_label,
+            )
+        except PITMembershipCoverageError as exc:
+            raise CommandError(str(exc)) from exc
+
+        self.stdout.write(
+            self.style.NOTICE(
+                f'Backfilling model inputs for {len(trading_dates)} trading dates from {trading_dates[0]} to {trading_dates[-1]}.'
+            )
+        )
+
+        historical_asset_windows = list(
+            Asset.objects.filter(list_date__isnull=False).values_list('id', 'list_date', 'delist_date')
+        )
+        earliest_article_date = NewsArticle.objects.aggregate(value=Min('published_at'))['value']
+        earliest_article_date = earliest_article_date.date() if earliest_article_date else None
+
+        if not options['skip_sentiment']:
+            self._run_stage(
+                'sentiment',
+                lambda: self._backfill_sentiment(trading_dates, historical_asset_windows, earliest_article_date),
+            )
+
+        self._run_stage(
+            'rs_score',
+            lambda: self._backfill_rs_scores(start_date, end_date, trading_dates),
+        )
+
+        self._run_stage(
+            'factor_scores',
+            lambda: self._backfill_factor_scores(
+                trading_dates,
+                options['sentiment_weight'],
+            ),
+        )
+
+        self._write_timing_summary()
+        self.stdout.write(self.style.SUCCESS('Historical model data backfill complete.'))
+
+    def _checkpoint_metadata(self, options, start_date, end_date, trading_dates):
+        return {
+            'version': self.CHECKPOINT_VERSION,
+            'command': 'backfill_model_data',
+            'window': {
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat(),
+                'trading_dates_count': len(trading_dates),
+            },
+            'options': {
+                'skip_sentiment': bool(options.get('skip_sentiment')),
+                'sentiment_weight': float(options.get('sentiment_weight') or 0.0),
+            },
+            'stages': {},
+        }
+
+    def _configure_checkpoint(self, options, start_date, end_date, trading_dates):
+        self._stage_timings = {}
+        self._resume_from_checkpoint = bool(options.get('resume_from_checkpoint'))
+        checkpoint_file = str(options.get('checkpoint_file') or '').strip()
+        self._checkpoint_path = Path(checkpoint_file).expanduser() if checkpoint_file else None
+        self._checkpoint = self._checkpoint_metadata(options, start_date, end_date, trading_dates)
+        if not self._checkpoint_path:
+            return
+
+        if self._checkpoint_path.exists():
+            if not self._resume_from_checkpoint:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f'Checkpoint file exists at {self._checkpoint_path}; pass --resume-from-checkpoint to reuse it.'
+                    )
+                )
+            else:
+                existing = json.loads(self._checkpoint_path.read_text(encoding='utf-8'))
+                expected_window = self._checkpoint['window']
+                actual_window = existing.get('window', {})
+                if (
+                    existing.get('command') != 'backfill_model_data' or
+                    actual_window.get('start_date') != expected_window['start_date'] or
+                    actual_window.get('end_date') != expected_window['end_date']
+                ):
+                    raise CommandError(
+                        f'Checkpoint file {self._checkpoint_path} does not match the requested backfill window.'
+                    )
+                self._checkpoint = existing
+
+        self._write_checkpoint()
+
+    def _write_checkpoint(self):
+        if not self._checkpoint_path:
+            return
+        self._checkpoint['updated_at'] = timezone.now().isoformat()
+        self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_path.write_text(
+            json.dumps(self._checkpoint, ensure_ascii=True, indent=2, sort_keys=True),
+            encoding='utf-8',
+        )
+
+    def _stage_state(self, stage_name):
+        stages = self._checkpoint.setdefault('stages', {})
+        return stages.setdefault(stage_name, {'status': 'pending'})
+
+    def _stage_is_complete(self, stage_name):
+        return self._resume_from_checkpoint and self._stage_state(stage_name).get('status') == 'completed'
+
+    def _mark_stage_progress(self, stage_name, *, last_completed_date=None, details=None, status=None):
+        stage_state = self._stage_state(stage_name)
+        if last_completed_date is not None:
+            stage_state['last_completed_date'] = last_completed_date.isoformat()
+        if details:
+            stage_state.setdefault('details', {}).update(details)
+        if status is not None:
+            stage_state['status'] = status
+        self._write_checkpoint()
+
+    def _resume_from_date(self, trading_dates, stage_name):
+        if not self._resume_from_checkpoint:
+            return list(trading_dates)
+
+        last_completed = self._stage_state(stage_name).get('last_completed_date')
+        if not last_completed:
+            return list(trading_dates)
+
+        last_completed_date = date.fromisoformat(last_completed)
+        remaining_dates = [trading_date for trading_date in trading_dates if trading_date > last_completed_date]
+        if remaining_dates:
+            self.stdout.write(
+                f'  {stage_name}: checkpoint resume skips through {last_completed_date} and restarts at {remaining_dates[0]}'
+            )
+        else:
+            self.stdout.write(
+                f'  {stage_name}: checkpoint already covers the requested range through {last_completed_date}'
+            )
+        return remaining_dates
+
+    def _run_stage(self, stage_name, callback):
+        if self._stage_is_complete(stage_name):
+            self.stdout.write(f'  {stage_name}: checkpoint already completed, skipping')
+            self._stage_timings[stage_name] = {
+                'elapsed_seconds': 0.0,
+                'status': 'skipped',
+            }
+            return None
+
+        stage_state = self._stage_state(stage_name)
+        stage_state['status'] = 'running'
+        stage_state.setdefault('started_at', timezone.now().isoformat())
+        self._write_checkpoint()
+
+        started = time.perf_counter()
+        try:
+            result = callback()
+        except Exception:
+            elapsed = time.perf_counter() - started
+            stage_state['last_run_seconds'] = round(elapsed, 3)
+            stage_state['status'] = 'failed'
+            self._write_checkpoint()
+            raise
+
+        elapsed = time.perf_counter() - started
+        stage_state['status'] = 'completed'
+        stage_state['completed_at'] = timezone.now().isoformat()
+        stage_state['last_run_seconds'] = round(elapsed, 3)
+        stage_state['total_elapsed_seconds'] = round(float(stage_state.get('total_elapsed_seconds', 0.0)) + elapsed, 3)
+        self._write_checkpoint()
+        self._stage_timings[stage_name] = {
+            'elapsed_seconds': elapsed,
+            'status': 'completed',
+        }
+        return result
+
+    def _write_timing_summary(self):
+        if not self._stage_timings:
+            return
+        self.stdout.write(self.style.NOTICE('Stage timing summary:'))
+        for stage_name, payload in self._stage_timings.items():
+            elapsed = float(payload.get('elapsed_seconds', 0.0))
+            status = payload.get('status', 'completed')
+            self.stdout.write(f'  {stage_name}: {elapsed:.3f}s ({status})')
+
+    def _parse_date(self, value, label):
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise CommandError(f'Invalid {label}: {value}') from exc
+
+    def _resolve_backfill_dates(self, options):
+        start_value = options.get('start_date')
+        end_value = options.get('end_date')
+
+        if not start_value or not end_value:
+            raise CommandError('start-date and end-date are required.')
+
+        start_date = self._parse_date(start_value, 'start-date')
+        end_date = self._parse_date(end_value, 'end-date')
         floor_date = get_historical_data_floor()
         if start_date < floor_date:
             raise CommandError(f'start-date cannot be earlier than HISTORICAL_DATA_FLOOR={floor_date}.')
@@ -49,49 +266,17 @@ class Command(BaseCommand):
         )
         if not trading_dates:
             raise CommandError('No OHLCV trading dates found in the requested range.')
-
-        self.stdout.write(
-            self.style.NOTICE(
-                f'Backfilling model inputs for {len(trading_dates)} trading dates from {trading_dates[0]} to {trading_dates[-1]}.'
-            )
+        return (
+            start_date,
+            end_date,
+            trading_dates,
+            f'Historical model data backfill for {start_date}..{end_date}',
         )
 
-        active_asset_ids = list(
-            Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE).values_list('id', flat=True)
-        )
-        earliest_article_date = NewsArticle.objects.aggregate(value=Min('published_at'))['value']
-        earliest_article_date = earliest_article_date.date() if earliest_article_date else None
-
-        if not options['skip_sentiment']:
-            self._backfill_sentiment(trading_dates, active_asset_ids, earliest_article_date)
-
-        if not options['skip_rs_score']:
-            self._backfill_rs_scores(start_date, end_date, trading_dates)
-
-        if not options['skip_factor_scores']:
-            self._backfill_factor_scores(
-                trading_dates,
-                options['sentiment_weight'],
-                resume=options['resume_factor_scores'],
-            )
-
-        if options['train_lightgbm']:
-            result = train_lightgbm_models(
-                training_start_date=str(start_date),
-                training_end_date=str(end_date),
-            )
-            self.stdout.write(self.style.SUCCESS(f'LightGBM training result: {result}'))
-
-        self.stdout.write(self.style.SUCCESS('Historical model data backfill complete.'))
-
-    def _parse_date(self, value, label):
-        try:
-            return date.fromisoformat(str(value))
-        except ValueError as exc:
-            raise CommandError(f'Invalid {label}: {value}') from exc
-
-    def _backfill_sentiment(self, trading_dates, active_asset_ids, earliest_article_date):
+    def _backfill_sentiment(self, trading_dates, historical_asset_windows, earliest_article_date):
         self.stdout.write(self.style.NOTICE('Backfilling daily sentiment coverage...'))
+        stage_name = 'sentiment'
+        stage_state = self._stage_state(stage_name)
         neutral_dates = [
             trading_date for trading_date in trading_dates
             if earliest_article_date is None or trading_date < earliest_article_date
@@ -101,7 +286,8 @@ class Command(BaseCommand):
             if earliest_article_date is not None and trading_date >= earliest_article_date
         ]
 
-        if neutral_dates:
+        neutral_completed = bool(stage_state.get('details', {}).get('neutral_completed'))
+        if neutral_dates and not neutral_completed:
             self.stdout.write(
                 f'  sentiment: bulk-filling neutral coverage for {len(neutral_dates)} pre-news trading dates'
             )
@@ -113,7 +299,7 @@ class Command(BaseCommand):
 
             buffer = []
             for trading_date in neutral_dates:
-                for asset_id in active_asset_ids:
+                for asset_id in listed_asset_ids_for_date(trading_date, asset_windows=historical_asset_windows):
                     buffer.append(
                         SentimentScore(
                             article=None,
@@ -149,16 +335,50 @@ class Command(BaseCommand):
             if buffer:
                 SentimentScore.objects.bulk_create(buffer, batch_size=5000)
 
+            self._mark_stage_progress(stage_name, details={'neutral_completed': True})
+
+        dynamic_dates = self._resume_from_date(dynamic_dates, stage_name)
+        if not dynamic_dates:
+            return
+
+        stage_started = time.perf_counter()
+        total_dynamic_dates = len(dynamic_dates)
+
         for index, trading_date in enumerate(dynamic_dates, start=1):
             calculate_daily_sentiment(target_date=str(trading_date))
+            self._mark_stage_progress(stage_name, last_completed_date=trading_date)
             if index % 25 == 0 or index == len(dynamic_dates):
-                self.stdout.write(f'  sentiment: {index}/{len(dynamic_dates)} news-era dates complete')
+                elapsed = time.perf_counter() - stage_started
+                self.stdout.write(
+                    f'  sentiment: {index}/{total_dynamic_dates} news-era dates complete '
+                    f'({elapsed:.1f}s elapsed, {elapsed / index:.3f}s/date)'
+                )
 
     def _backfill_rs_scores(self, start_date, end_date, trading_dates):
         self.stdout.write(self.style.NOTICE('Backfilling historical RS_SCORE indicators...'))
-        query_start = start_date - timedelta(days=40)
+        stage_name = 'rs_score'
+        trading_dates = self._resume_from_date(trading_dates, stage_name)
+        if not trading_dates:
+            self.stdout.write('  rs_score: no remaining dates to process after checkpoint resume')
+            return
+
+        membership_by_date = point_in_time_union_asset_ids_by_dates(trading_dates)
+        ever_union_asset_ids = sorted({
+            asset_id
+            for asset_ids in membership_by_date.values()
+            for asset_id in asset_ids
+        })
+        if not ever_union_asset_ids:
+            self.stdout.write('  rs_score: no PIT-union assets found, skipping')
+            return
+
+        query_start = min(start_date - timedelta(days=40), self._rs_prefill_start_date)
         rows = list(
-            OHLCV.objects.filter(date__gte=query_start, date__lte=end_date)
+            OHLCV.objects.filter(
+                asset_id__in=ever_union_asset_ids,
+                date__gte=query_start,
+                date__lte=end_date,
+            )
             .values('asset_id', 'date', 'close')
             .order_by('date', 'asset_id')
         )
@@ -173,14 +393,16 @@ class Command(BaseCommand):
 
         attempted_indicators = 0
         attempted_signals = 0
+        stage_started = time.perf_counter()
         for index, trading_date in enumerate(trading_dates, start=1):
             if trading_date not in returns_20d.index:
+                self._mark_stage_progress(stage_name, last_completed_date=trading_date)
                 continue
             series = returns_20d.loc[trading_date].dropna()
-            union_asset_ids = point_in_time_union_asset_ids(trading_date)
-            if union_asset_ids:
-                series = series[series.index.isin(union_asset_ids)]
+            union_asset_ids = membership_by_date.get(trading_date) or set()
+            series = series[series.index.isin(union_asset_ids)]
             if series.empty:
+                self._mark_stage_progress(stage_name, last_completed_date=trading_date)
                 continue
 
             descending = series.sort_values(ascending=False)
@@ -188,46 +410,43 @@ class Command(BaseCommand):
             result = persist_ranked_rs_scores(list(descending.items()), timestamp)
             attempted_indicators += result['indicator_rows']
             attempted_signals += result['signal_rows']
+            self._mark_stage_progress(stage_name, last_completed_date=trading_date)
             if index % 100 == 0 or index == len(trading_dates):
-                self.stdout.write(f'  rs_score: processed {index}/{len(trading_dates)} dates')
+                elapsed = time.perf_counter() - stage_started
+                self.stdout.write(
+                    f'  rs_score: processed {index}/{len(trading_dates)} dates '
+                    f'({elapsed:.1f}s elapsed, {elapsed / index:.3f}s/date)'
+                )
 
         self.stdout.write(
             f'  rs_score: attempted {attempted_indicators} indicator rows and {attempted_signals} HIGH_RS_SCORE rows'
         )
 
-    def _backfill_factor_scores(self, trading_dates, sentiment_weight, resume=False):
-        if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists() and float(sentiment_weight) == 0.0:
-            return self._backfill_factor_scores_fast(trading_dates, resume=resume)
-
-        trading_dates = self._slice_factor_score_dates(
-            trading_dates,
-            resume=resume,
-            metadata_source='phase11_scoring_with_sentiment',
-        )
+    def _backfill_factor_scores(self, trading_dates, sentiment_weight):
+        stage_name = 'factor_scores'
+        trading_dates = self._resume_from_date(trading_dates, stage_name)
         if not trading_dates:
-            self.stdout.write('  factor_scores: no remaining full-mode dates to process')
+            self.stdout.write('  factor_scores: no remaining dates to process after checkpoint resume')
             return
+        if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists() and float(sentiment_weight) == 0.0:
+            return self._backfill_factor_scores_fast(trading_dates)
 
         self.stdout.write(self.style.NOTICE('Backfilling daily factor scores...'))
+        stage_started = time.perf_counter()
         for index, trading_date in enumerate(trading_dates, start=1):
             calculate_factor_scores_for_date(
                 target_date=str(trading_date),
                 sentiment_weight=sentiment_weight,
             )
+            self._mark_stage_progress(stage_name, last_completed_date=trading_date)
             if index % 100 == 0 or index == len(trading_dates):
-                self.stdout.write(f'  factor_scores: {index}/{len(trading_dates)} dates complete')
+                elapsed = time.perf_counter() - stage_started
+                self.stdout.write(
+                    f'  factor_scores: {index}/{len(trading_dates)} dates complete '
+                    f'({elapsed:.1f}s elapsed, {elapsed / index:.3f}s/date)'
+                )
 
-    def _backfill_factor_scores_fast(self, trading_dates, resume=False):
-        if resume:
-            trading_dates = self._slice_factor_score_dates(
-                trading_dates,
-                resume=True,
-                metadata_source='historical_ohlcv_fast_path',
-            )
-            if not trading_dates:
-                self.stdout.write('  factor_scores: no remaining fast-path dates to process')
-                return
-
+    def _backfill_factor_scores_fast(self, trading_dates):
         self.stdout.write(self.style.NOTICE('Backfilling daily factor scores with OHLCV-only fast path...'))
         start_date = trading_dates[0]
         end_date = trading_dates[-1]
@@ -324,31 +543,3 @@ class Command(BaseCommand):
             created += len(pending)
 
         self.stdout.write(f'  factor_scores: created {created} rows via fast path')
-
-    def _slice_factor_score_dates(self, trading_dates, resume, metadata_source):
-        if not resume or not trading_dates:
-            return trading_dates
-
-        latest_completed = (
-            FactorScore.objects.filter(
-                mode=FactorScore.FactorMode.COMPOSITE,
-                metadata__source=metadata_source,
-            )
-            .order_by('-date')
-            .values_list('date', flat=True)
-            .first()
-        )
-        if latest_completed is None:
-            self.stdout.write('  factor_scores: resume requested, but no prior completed date found; starting from requested range start')
-            return trading_dates
-
-        remaining_dates = [trading_date for trading_date in trading_dates if trading_date > latest_completed]
-        if remaining_dates:
-            self.stdout.write(
-                f'  factor_scores: resume requested, skipping through {latest_completed} and restarting at {remaining_dates[0]}'
-            )
-        else:
-            self.stdout.write(
-                f'  factor_scores: resume requested, latest completed date {latest_completed} already covers the requested range'
-            )
-        return remaining_dates

@@ -7,7 +7,8 @@ class MacroSnapshotSerializer(serializers.ModelSerializer):
     class Meta:
         model = MacroSnapshot
         fields = [
-            'id', 'date', 'dxy', 'cny_usd', 'cn10y_yield', 'cn2y_yield',
+            'id', 'date', 'dxy', 'cny_usd', 'cn6m_yield', 'cn1y_yield', 'cn3y_yield',
+            'cn5y_yield', 'cn7y_yield', 'cn10y_yield', 'cn30y_yield',
             'pmi_manufacturing', 'pmi_non_manufacturing', 'cpi_yoy', 'ppi_yoy',
             'metadata', 'created_at', 'updated_at',
         ]

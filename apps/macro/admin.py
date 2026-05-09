@@ -6,7 +6,8 @@ from .models import MacroSnapshot, MarketContext, EventImpactStat
 @admin.register(MacroSnapshot)
 class MacroSnapshotAdmin(admin.ModelAdmin):
     list_display = (
-        'date', 'dxy', 'cny_usd', 'cn10y_yield', 'cn2y_yield',
+        'date', 'dxy', 'cny_usd', 'cn6m_yield', 'cn1y_yield', 'cn3y_yield',
+        'cn5y_yield', 'cn7y_yield', 'cn10y_yield', 'cn30y_yield',
         'pmi_manufacturing', 'pmi_non_manufacturing', 'cpi_yoy',
     )
     search_fields = ('date',)

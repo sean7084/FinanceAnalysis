@@ -23,7 +23,7 @@ class TechnicalIndicator(models.Model):
     )
     value = models.DecimalField(
         _('Value'),
-        max_digits=18,
+        max_digits=24,
         decimal_places=8
     )
     parameters = models.JSONField(
