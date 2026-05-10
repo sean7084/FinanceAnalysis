@@ -145,10 +145,13 @@ B. 因子/特征原始源
 5. rescheduled the syncing to the second day of each month at 0:10 am
 6. maps the Yahoo monthly open onto month-start MacroSnapshot.cny_usd rows for 2010-01 through 2012-02 
 • [x] market context validation and backfill 
-• [ ] Capital Flow Snapshots validation and backfill
+• [x] Capital Flow Snapshots validation and backfill: 1311 gap periods due to upstream data source blackouts. otherwise the coverage should be complete since 2010-01-04 for CSI300 constituents, and since 2024-09-23 for A500 constituents.
 • [x] technical indicator validation and backfill
+• [ ] fundamental snapshot validation and backfill
 
-for macrosnapshot US Dollar Index (DXY): rename it to Dow Jones FXCM Dollar Index Basket (USDOLLAR) since that is the index we are currently syncing
+for fundemental snapshot, using api daily_basic, we should add pe_ttm data to our database. we may keep the pe data, but we should swich to use pe_ttm for factor score computation, model training and prediction, etc.
+
+
 
 要抽查
 
@@ -578,6 +581,7 @@ extras:
 1. close 实际上已经是 qfq 值，而 adj_close 现在也是同一个值，没有保留未复权原始 close。把 OHLCV 的复权语义明确下来：新增 raw_close，避免 close 和 adj_close 现在这种“值一样但名字不同”的状态
 2. 没有 limit_up / limit_down 规则. 没有按昨收去判断 10% / 20% / ST 涨跌停板. 没有按交易所制度去区分主板、创业板、科创板、北交所的不同涨跌幅限制. 也没有“超大日收益跳变”这类 return-based price anomaly 规则. 涨跌停是否被标记：否.
 3. macro snapshot yeild curve is using the first day data for each month. cny/usd is using monthly open. we should switch to use the previous monthly ohlcv data instead.macro snapshot and market context sync and backfill按发布日期/可得日期对齐，不是按统计期硬贴
+4. for macrosnapshot US Dollar Index (DXY): rename it to Dow Jones FXCM Dollar Index Basket (USDOLLAR) since that is the index we are currently syncing
 
 
 ###
@@ -977,7 +981,7 @@ Key fixes from the older block:
 
 | Command | Purpose | Handles |
 | --- | --- | --- |
-| `backfill_fundamental_snapshots` | Backfill PE/PB/share-count/market-cap/ROE snapshots from TuShare | `--start-date`, `--end-date`, `--symbols`, `--limit-assets` |
+| `backfill_fundamental_snapshots` | Backfill PE/PB/share-count/market-cap/ROE snapshots from TuShare | `--start-date`, `--end-date`, `--symbols`, `--limit-assets`, `--repair-same-announcement-roe` |
 | `backfill_capital_flow_snapshots` | Backfill Main Force Net 5D, Margin Balance Change 5D | `--start-date`, `--end-date`, `--symbols`, `--limit-assets` |
 | `backfill_macro_snapshots` | Backfill monthly US Dollar Index (DXY), CNY/USD, China 6M/1Y/3Y/5Y/7Y/10Y/30Y yields, PMI Manufacturing, PMI Non-Manufacturing, and CPI YoY | `--start-date`, `--end-date`, `--disable-fallback`, `--resume-yields` |
 | `backfill_market_context` | Recompute `MarketContext` from `MacroSnapshot` history | `--start-date`, `--end-date` |

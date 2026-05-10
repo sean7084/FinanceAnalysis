@@ -1504,6 +1504,87 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             self.assertEqual(Decimal(row['recomputed_roe']), Decimal('0.021017'))
             self.assertEqual(Decimal(row['recomputed_roe_qoq']), Decimal('-0.068667'))
 
+    @patch('apps.core.management.commands.validate_data_quality.ts.pro_api')
+    def test_fundamental_reconciliation_rounds_recomputed_values_to_storage_precision(self, mock_pro_api):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600299',
+            ts_code='600299.SH',
+            name='Rounded Audit Asset',
+            list_date=timezone.datetime(2004, 1, 1).date(),
+        )
+        trade_date = timezone.datetime(2015, 11, 13).date()
+        self._create_calendar('SSE', [trade_date])
+        self._create_ohlcv(asset, trade_date)
+
+        FundamentalFactorSnapshot.objects.create(
+            asset=asset,
+            date=trade_date,
+            pe=Decimal('222.3770'),
+            pb=Decimal('2.9196'),
+            total_share=Decimal('268190.1273'),
+            float_share=Decimal('52270.7560'),
+            free_share=Decimal('24066.2262'),
+            total_mv=Decimal('5414758.6702'),
+            circ_mv=Decimal('1055346.5636'),
+            roe=Decimal('0.239210'),
+            roe_qoq=Decimal('0.250852'),
+            metadata={
+                'daily_basic_trade_date': '2015-11-13',
+                'fina_indicator_ann_date': '2015-10-24',
+                'fina_indicator_end_date': '2015-09-30',
+            },
+        )
+
+        class StubPro:
+            def daily_basic(self, **kwargs):
+                frame = pd.DataFrame([
+                    {
+                        'trade_date': '20151113', 'pe': 222.3770, 'pb': 2.9196,
+                        'total_share': 268190.1273, 'float_share': 52270.7560, 'free_share': 24066.2262,
+                        'total_mv': 5414758.6702, 'circ_mv': 1055346.5636,
+                    },
+                ])
+                return frame[
+                    (frame['trade_date'] >= kwargs['start_date']) &
+                    (frame['trade_date'] <= kwargs['end_date'])
+                ].reset_index(drop=True)
+
+            def fina_indicator(self, **kwargs):
+                frame = pd.DataFrame([
+                    {'ann_date': '20150827', 'end_date': '20150630', 'roe': -116.4214},
+                    {'ann_date': '20151024', 'end_date': '20150930', 'roe': 23.9210},
+                ])
+                return frame[
+                    (frame['end_date'] >= kwargs['start_date']) &
+                    (frame['end_date'] <= kwargs['end_date'])
+                ].reset_index(drop=True)
+
+        mock_pro_api.return_value = StubPro()
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            'apps.core.management.commands.validate_data_quality.settings.TUSHARE_TOKEN',
+            'test-token',
+        ):
+            call_command(
+                'validate_data_quality',
+                start_date='2015-11-13',
+                end_date='2015-11-13',
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                only_report='fundamental_reconciliation_audit.csv',
+                fundamental_reconciliation_sample_size=10,
+                fundamental_reconciliation_seed=1,
+            )
+
+            audit_rows = read_csv(Path(temp_dir) / 'fundamental_reconciliation_audit.csv')
+            self.assertEqual(len(audit_rows), 1)
+            row = audit_rows[0]
+            self.assertEqual(row['audit_status'], 'matched')
+            self.assertEqual(Decimal(row['recomputed_roe']), Decimal('0.239210'))
+            self.assertEqual(Decimal(row['recomputed_roe_qoq']), Decimal('0.250852'))
+
 
 class PurgePreFloorHistoricalDataCommandTests(TestCase):
     def setUp(self):

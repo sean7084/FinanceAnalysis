@@ -34,6 +34,8 @@ def normalize_rate(value):
     parsed = safe_decimal(value)
     if parsed is None:
         return None
+    if abs(parsed) > Decimal('100'):
+        return parsed / Decimal('10000')
     if abs(parsed) > Decimal('1'):
         return parsed / Decimal('100')
     return parsed

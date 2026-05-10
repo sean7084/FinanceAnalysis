@@ -15,6 +15,7 @@ from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from apps.prediction.models import ModelVersion, PredictionResult
+from .fundamental_materialization import materialize_fundamental_snapshot_rows
 from .models import (
     AssetMarginDetailSnapshot,
     AssetMoneyFlowSnapshot,
@@ -470,6 +471,139 @@ class FundamentalSnapshotBackfillCommandTests(TestCase):
         self.assertEqual(rows[0].roe_qoq, Decimal('0.02'))
         self.assertEqual(rows[0].metadata['fina_indicator_end_date'], '2023-12-31')
         self.assertLess(call_log[0]['start_date'], '20240320')
+
+    def test_materialize_fundamental_snapshot_rows_normalizes_basis_point_style_roe(self):
+        payload = materialize_fundamental_snapshot_rows(
+            [timezone.datetime(2010, 11, 17).date()],
+            None,
+            pd.DataFrame([
+                {'ann_date': '20100812', 'end_date': '20100630', 'roe': 352.0922},
+                {'ann_date': '20101027', 'end_date': '20100930', 'roe': 344.5581},
+            ]),
+        )[0]
+
+        self.assertEqual(payload['fina_indicator_ann_date'].isoformat(), '2010-10-27')
+        self.assertEqual(payload['fina_indicator_end_date'].isoformat(), '2010-09-30')
+        self.assertEqual(payload['roe'], Decimal('0.03445581'))
+        self.assertEqual(payload['roe_qoq'], Decimal('-0.00075341'))
+
+    def test_materialize_fundamental_snapshot_rows_uses_basis_point_prior_roe_for_qoq(self):
+        payload = materialize_fundamental_snapshot_rows(
+            [timezone.datetime(2015, 11, 13).date()],
+            None,
+            pd.DataFrame([
+                {'ann_date': '20150827', 'end_date': '20150630', 'roe': -116.4214},
+                {'ann_date': '20151024', 'end_date': '20150930', 'roe': 23.9210},
+            ]),
+        )[0]
+
+        self.assertEqual(payload['fina_indicator_ann_date'].isoformat(), '2015-10-24')
+        self.assertEqual(payload['fina_indicator_end_date'].isoformat(), '2015-09-30')
+        self.assertEqual(payload['roe'], Decimal('0.23921'))
+        self.assertEqual(payload['roe_qoq'], Decimal('0.25085214'))
+
+    @patch('apps.factors.management.commands.backfill_fundamental_snapshots.ts.pro_api')
+    def test_backfill_fundamental_snapshots_repairs_same_announcement_date_roe_rows(self, mock_pro_api):
+        class StubPro:
+            def daily_basic(self, **kwargs):
+                return pd.DataFrame([
+                    {'trade_date': '20240415', 'pe': 8.5, 'pb': 1.1, 'total_share': 100.0, 'float_share': 60.0, 'free_share': 55.0, 'total_mv': 1050.0, 'circ_mv': 577.5},
+                    {'trade_date': '20240430', 'pe': 9.0, 'pb': 1.2, 'total_share': 100.0, 'float_share': 62.0, 'free_share': 57.0, 'total_mv': 1100.0, 'circ_mv': 627.0},
+                    {'trade_date': '20240515', 'pe': 9.4, 'pb': 1.3, 'total_share': 100.0, 'float_share': 64.0, 'free_share': 58.0, 'total_mv': 1150.0, 'circ_mv': 667.0},
+                ])
+
+            def fina_indicator(self, **kwargs):
+                return pd.DataFrame([
+                    {'ann_date': '20231030', 'end_date': '20230930', 'roe': 9.0},
+                    {'ann_date': '20240320', 'end_date': '20231231', 'roe': 11.0},
+                    {'ann_date': '20240430', 'end_date': '20231231', 'roe': 11.0},
+                    {'ann_date': '20240430', 'end_date': '20240331', 'roe': 12.0},
+                ])
+
+        mock_pro_api.return_value = StubPro()
+
+        FundamentalFactorSnapshot.objects.bulk_create([
+            FundamentalFactorSnapshot(
+                asset=self.asset,
+                date=timezone.datetime(2024, 4, 15).date(),
+                pe=Decimal('8.5'),
+                pb=Decimal('1.1'),
+                total_share=Decimal('100.0'),
+                float_share=Decimal('60.0'),
+                free_share=Decimal('55.0'),
+                total_mv=Decimal('1050.0'),
+                circ_mv=Decimal('577.5'),
+                roe=Decimal('0.09'),
+                roe_qoq=None,
+                metadata={
+                    'source': 'stale',
+                    'daily_basic_trade_date': '2024-04-15',
+                    'fina_indicator_ann_date': '2023-10-30',
+                    'fina_indicator_end_date': '2023-09-30',
+                },
+            ),
+            FundamentalFactorSnapshot(
+                asset=self.asset,
+                date=timezone.datetime(2024, 4, 30).date(),
+                pe=Decimal('9.0'),
+                pb=Decimal('1.2'),
+                total_share=Decimal('100.0'),
+                float_share=Decimal('62.0'),
+                free_share=Decimal('57.0'),
+                total_mv=Decimal('1100.0'),
+                circ_mv=Decimal('627.0'),
+                roe=Decimal('0.11'),
+                roe_qoq=Decimal('0.02'),
+                metadata={
+                    'source': 'stale',
+                    'daily_basic_trade_date': '2024-04-30',
+                    'fina_indicator_ann_date': '2024-04-30',
+                    'fina_indicator_end_date': '2023-12-31',
+                },
+            ),
+            FundamentalFactorSnapshot(
+                asset=self.asset,
+                date=timezone.datetime(2024, 5, 15).date(),
+                pe=Decimal('9.4'),
+                pb=Decimal('1.3'),
+                total_share=Decimal('100.0'),
+                float_share=Decimal('64.0'),
+                free_share=Decimal('58.0'),
+                total_mv=Decimal('1150.0'),
+                circ_mv=Decimal('667.0'),
+                roe=Decimal('0.11'),
+                roe_qoq=Decimal('0.02'),
+                metadata={
+                    'source': 'stale',
+                    'daily_basic_trade_date': '2024-05-15',
+                    'fina_indicator_ann_date': '2024-04-30',
+                    'fina_indicator_end_date': '2023-12-31',
+                },
+            ),
+        ])
+
+        output = StringIO()
+        call_command(
+            'backfill_fundamental_snapshots',
+            start_date='2024-04-01',
+            end_date='2024-05-31',
+            symbols='600333',
+            repair_same_announcement_roe=True,
+            stdout=output,
+        )
+
+        rows = list(FundamentalFactorSnapshot.objects.filter(asset=self.asset).order_by('date'))
+        self.assertEqual(rows[0].metadata['fina_indicator_end_date'], '2023-09-30')
+        self.assertEqual(rows[0].roe, Decimal('0.09'))
+        self.assertIsNone(rows[0].roe_qoq)
+        self.assertEqual(rows[1].metadata['fina_indicator_end_date'], '2024-03-31')
+        self.assertEqual(rows[2].metadata['fina_indicator_end_date'], '2024-03-31')
+        self.assertEqual(rows[1].roe, Decimal('0.12'))
+        self.assertEqual(rows[1].roe_qoq, Decimal('0.01'))
+        self.assertEqual(rows[2].roe, Decimal('0.12'))
+        self.assertEqual(rows[2].roe_qoq, Decimal('0.01'))
+        self.assertIn('stale same-announcement roe rows detected, reprocessing', output.getvalue())
+        self.assertNotIn('already complete, skipped', output.getvalue())
 
 
 class CapitalFlowSnapshotBackfillCommandTests(TestCase):

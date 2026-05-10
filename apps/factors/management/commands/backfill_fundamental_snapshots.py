@@ -28,6 +28,15 @@ def _parse_date(value, name):
         raise CommandError(f'Invalid {name}: {value}. Expected YYYY-MM-DD.') from exc
 
 
+def _parse_optional_iso_date(value):
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
 class Command(BaseCommand):
     help = 'Backfill FundamentalFactorSnapshot from TuShare daily_basic and fina_indicator onto trading dates.'
 
@@ -36,6 +45,11 @@ class Command(BaseCommand):
         parser.add_argument('--end-date', default=date.today().isoformat())
         parser.add_argument('--symbols', default='')
         parser.add_argument('--limit-assets', type=int, default=0)
+        parser.add_argument(
+            '--repair-same-announcement-roe',
+            action='store_true',
+            help='Reprocess assets whose stored roe rows point at an older report_end_date for the same fina_indicator announcement date.',
+        )
 
     def handle(self, *args, **options):
         token = getattr(settings, 'TUSHARE_TOKEN', None)
@@ -60,6 +74,7 @@ class Command(BaseCommand):
         pro = ts.pro_api(token)
         self.request_sleep_seconds = float(getattr(settings, 'FUNDAMENTAL_BACKFILL_REQUEST_SLEEP_SECONDS', 0.35))
         self.retry_sleep_seconds = float(getattr(settings, 'FUNDAMENTAL_BACKFILL_RETRY_SLEEP_SECONDS', 65.0))
+        self.repair_same_announcement_roe = bool(options['repair_same_announcement_roe'])
 
         processed = 0
         inserted_or_updated = 0
@@ -89,9 +104,14 @@ class Command(BaseCommand):
                 Q(circ_mv__isnull=True)
             ).exists()
             if existing_count >= len(trading_dates) and not has_missing_core_fields:
-                processed += 1
-                self.stdout.write(f'[{processed}] {asset.ts_code}: already complete, skipped')
-                continue
+                if self.repair_same_announcement_roe and self._has_stale_same_announcement_roe_rows(pro, asset, trading_dates):
+                    self.stdout.write(
+                        f'[{processed + 1}] {asset.ts_code}: stale same-announcement roe rows detected, reprocessing'
+                    )
+                else:
+                    processed += 1
+                    self.stdout.write(f'[{processed}] {asset.ts_code}: already complete, skipped')
+                    continue
 
             asset_count = self._backfill_asset(pro, asset, trading_dates)
             processed += 1
@@ -147,6 +167,46 @@ class Command(BaseCommand):
             update_fields=['pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq', 'metadata'],
         )
         return len(rows)
+
+    def _has_stale_same_announcement_roe_rows(self, pro, asset, trading_dates):
+        stored_latest_end_by_ann_date = {}
+        for metadata in FundamentalFactorSnapshot.objects.filter(
+            asset=asset,
+            date__gte=trading_dates[0],
+            date__lte=trading_dates[-1],
+        ).values_list('metadata', flat=True):
+            metadata = metadata or {}
+            ann_date = _parse_optional_iso_date(metadata.get('fina_indicator_ann_date'))
+            end_date = _parse_optional_iso_date(metadata.get('fina_indicator_end_date'))
+            if ann_date is None or end_date is None:
+                continue
+
+            existing_end_date = stored_latest_end_by_ann_date.get(ann_date)
+            if existing_end_date is None or end_date > existing_end_date:
+                stored_latest_end_by_ann_date[ann_date] = end_date
+
+        if not stored_latest_end_by_ann_date:
+            return False
+
+        fina_df = self._fetch_fina_indicator(pro, asset.ts_code, trading_dates[0], trading_dates[-1])
+        if fina_df.empty:
+            return False
+
+        latest_upstream_end_by_ann_date = {}
+        for ann_date, report_end_date in fina_df[['ann_date', 'report_end_date']].itertuples(index=False, name=None):
+            if pd.isna(ann_date) or pd.isna(report_end_date):
+                continue
+
+            ann_date = ann_date.date()
+            report_end_date = report_end_date.date()
+            latest_report_end_date = latest_upstream_end_by_ann_date.get(ann_date)
+            if latest_report_end_date is None or report_end_date > latest_report_end_date:
+                latest_upstream_end_by_ann_date[ann_date] = report_end_date
+
+        return any(
+            stored_end_date < latest_upstream_end_by_ann_date.get(ann_date, stored_end_date)
+            for ann_date, stored_end_date in stored_latest_end_by_ann_date.items()
+        )
 
     def _fetch_daily_basic(self, pro, ts_code, start_date, end_date):
         fields = 'trade_date,pe,pb,total_share,float_share,free_share,total_mv,circ_mv'

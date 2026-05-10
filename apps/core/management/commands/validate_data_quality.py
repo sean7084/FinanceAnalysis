@@ -1772,7 +1772,7 @@ class Command(BaseCommand):
             for row in sampled_asset_rows:
                 stored_metadata = row.metadata or {}
                 stored_values = {field: getattr(row, field) for field in FUNDAMENTAL_FIELDS}
-                expected_payload = expected_rows_by_date.get(row.date)
+                expected_payload = self._normalize_fundamental_audit_payload(expected_rows_by_date.get(row.date))
                 mismatch_fields = []
                 audit_status = 'matched'
                 details = 'All audited fundamental fields match the upstream recomputation.'
@@ -1870,6 +1870,26 @@ class Command(BaseCommand):
                 })
 
         writer.write_csv('fundamental_reconciliation_audit', FUNDAMENTAL_RECONCILIATION_FIELDNAMES, audit_rows)
+
+    def _normalize_fundamental_audit_payload(self, payload):
+        if payload is None:
+            return None
+
+        normalized_payload = dict(payload)
+        for field in FUNDAMENTAL_FIELDS:
+            normalized_payload[field] = self._round_fundamental_audit_value(field, normalized_payload.get(field))
+        return normalized_payload
+
+    def _round_fundamental_audit_value(self, field, value):
+        if value is None:
+            return None
+
+        decimal_places = getattr(FundamentalFactorSnapshot._meta.get_field(field), 'decimal_places', None)
+        if decimal_places is None:
+            return value
+
+        quantizer = Decimal('1').scaleb(-decimal_places)
+        return Decimal(str(value)).quantize(quantizer)
 
     def _reservoir_sample_queryset_ids(self, queryset, sample_size, sample_seed):
         sample = []
