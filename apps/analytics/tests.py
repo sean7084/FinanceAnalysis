@@ -23,6 +23,7 @@ from .tasks import (
     calculate_fibonacci_retracement_for_asset,
     calculate_ma_signals_for_asset,
     calculate_bollinger_signals_for_asset,
+    calculate_rsi_for_asset,
     calculate_rs_scores_for_all_assets,
     calculate_volume_signals_for_asset,
     calculate_momentum_signals_for_asset,
@@ -575,6 +576,38 @@ class Phase10SignalTests(TestCase):
     def _auth(self):
         self.client.force_authenticate(user=self.user)
 
+    def test_calculate_rsi_for_asset_ignores_future_dated_ohlcv_rows(self):
+        as_of = datetime.date(2024, 4, 30)
+        prices = [10.0 + (index * 0.1) for index in range(30)]
+        _make_ohlcv_sequence(self.asset, prices, base_date=as_of)
+        OHLCV.objects.create(
+            asset=self.asset,
+            date=as_of + datetime.timedelta(days=1),
+            open=Decimal('99.0'),
+            high=Decimal('101.0'),
+            low=Decimal('98.0'),
+            close=Decimal('100.0'),
+            adj_close=Decimal('100.0'),
+            volume=1000000,
+            amount=Decimal('100000000.0'),
+        )
+
+        with patch(
+            'apps.analytics.tasks.timezone.now',
+            return_value=timezone.make_aware(datetime.datetime(2024, 4, 30, 16, 0, 0)),
+        ):
+            calculate_rsi_for_asset(self.asset.id)
+
+        indicator = TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RSI')
+        self.assertEqual(indicator.timestamp.date(), as_of)
+        self.assertFalse(
+            TechnicalIndicator.objects.filter(
+                asset=self.asset,
+                indicator_type='RSI',
+                timestamp__date=as_of + datetime.timedelta(days=1),
+            ).exists()
+        )
+
     # ------------------------------------------------------------------
     # MA signals
     # ------------------------------------------------------------------
@@ -718,10 +751,80 @@ class Phase10SignalTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_calculate_rs_scores_for_all_assets_ignores_future_dated_ohlcv_rows(self):
+        peer_asset = Asset.objects.create(
+            market=self.market,
+            symbol='P10200',
+            ts_code='P10200.SH',
+            name='Phase10 Peer Asset',
+        )
+
+        as_of = datetime.date(2024, 2, 21)
+        trade_dates = [as_of - datetime.timedelta(days=offset) for offset in range(20, -1, -1)]
+        for offset, trade_date in enumerate(trade_dates):
+            self_close = Decimal('10.0') + (Decimal('0.01') * Decimal(offset))
+            peer_close = Decimal('10.0') + (Decimal('0.10') * Decimal(offset))
+            for asset, close_value in ((self.asset, self_close), (peer_asset, peer_close)):
+                OHLCV.objects.create(
+                    asset=asset,
+                    date=trade_date,
+                    open=close_value,
+                    high=close_value + Decimal('0.1'),
+                    low=close_value - Decimal('0.1'),
+                    close=close_value,
+                    adj_close=close_value,
+                    volume=1000,
+                    amount=close_value * Decimal('1000'),
+                )
+
+        OHLCV.objects.create(
+            asset=self.asset,
+            date=as_of + datetime.timedelta(days=1),
+            open=Decimal('49.5'),
+            high=Decimal('50.5'),
+            low=Decimal('49.0'),
+            close=Decimal('50.0'),
+            adj_close=Decimal('50.0'),
+            volume=1000,
+            amount=Decimal('50000.0'),
+        )
+
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=self.asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=as_of,
+                weight=Decimal('4.2'),
+            ),
+            IndexMembership(
+                asset=peer_asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=as_of,
+                weight=Decimal('4.2'),
+            ),
+        ])
+
+        with patch(
+            'apps.analytics.tasks.timezone.now',
+            return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0)),
+        ):
+            calculate_rs_scores_for_all_assets()
+
+        ranked_rows = list(
+            TechnicalIndicator.objects.filter(
+                timestamp__date=as_of,
+                indicator_type='RS_SCORE',
+            ).select_related('asset').order_by('-value', 'asset__ts_code')
+        )
+        self.assertEqual(len(ranked_rows), 2)
+        self.assertEqual(ranked_rows[0].asset, peer_asset)
         self.assertTrue(
             SignalEvent.objects.filter(
-                asset=assets[-1],
-                timestamp__date=trade_dates[-1],
+                asset=peer_asset,
+                timestamp__date=as_of,
                 signal_type='HIGH_RS_SCORE',
             ).exists()
         )

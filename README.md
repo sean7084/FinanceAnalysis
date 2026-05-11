@@ -128,14 +128,16 @@ effective_universe(date)
 
 ───
 
+3. the current validator cannot fully prove “technical indicators never use future data” from stored history alone.split the technical indicator validation into two parts: 
+3.1 a snapshot continuous gap report for historical data audit that checks for nulls and anomalies in the stored indic
+3.2 a random recomputation test that seeds OHLCV rows and proves the indicator tasks are correct
 
-[680] 600845.SH: already complete, skipped 
 
 B. 因子/特征原始源
 
 • [x] backfill pre-warmup ohlcv data for pre 2010-1-4 and pre index listing for calculation of ohlcv-derived data
 1. backfill the pre 20100104 and pre index-listing data for 18 months for technical data calculation and rs_score calculation
-• [ ] fina_indicator 类季度财务指标是否正确 as-of 对齐，不用未来财报
+• [x] fina_indicator 类季度财务指标是否正确 as-of 对齐，不用未来财报
 • [ ] 技术指标是否只用到当日及过去数据
 • [x] macro snapshot validation and backfill: DXY, CNY/USD, China 6M/1Y/3Y/5Y/7Y/10Y/30Y Yield, PMI Manufacturing, PMI Non-Manufacturing, and CPI YoY
 1. backfill the pre 201607 data from manually downloaded csv from gov site
@@ -147,15 +149,15 @@ B. 因子/特征原始源
 • [x] market context validation and backfill 
 • [x] Capital Flow Snapshots validation and backfill: 1311 gap periods due to upstream data source blackouts. otherwise the coverage should be complete since 2010-01-04 for CSI300 constituents, and since 2024-09-23 for A500 constituents.
 • [x] technical indicator validation and backfill
-• [ ] fundamental snapshot validation and backfill
+• [x] fundamental snapshot validation and backfill
 1. switched pe to pe_ttm
+2. 55 assets have null pe_ttm rows due to TuShare upstream data source blackouts
 
 
 
 要抽查
 
-• [ ] PE/PB/ROE 在 2010-2026 是否不是大面积空值
-• [ ] macro-aware 训练起点是否与你之前的安全窗口一致
+• [x] PE/PB/ROE 在 2010-2026 是否不是大面积空值
 • [ ] 任取一个日期，检查该日 snapshot 是否引用了未来季度财报或未来宏观值
 
 

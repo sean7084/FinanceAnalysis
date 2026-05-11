@@ -27,7 +27,8 @@ def get_ohlcv_df(asset_id, days_history=200):
     
     ohlcv_qs = OHLCV.objects.filter(
         asset_id=asset_id,
-        date__gte=start_date
+        date__gte=start_date,
+        date__lte=end_date,
     ).order_by('date').values('date', 'open', 'high', 'low', 'close', 'volume')
     
     if not ohlcv_qs.exists():
@@ -932,7 +933,7 @@ def calculate_rs_scores_for_all_assets():
     scores = []
 
     for asset_id in asset_ids:
-        candles = list(OHLCV.objects.filter(asset_id=asset_id).order_by('-date')[:21])
+        candles = list(OHLCV.objects.filter(asset_id=asset_id, date__lte=today).order_by('-date')[:21])
         if len(candles) < 21:
             continue
         close_today = float(candles[0].close)
