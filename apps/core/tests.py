@@ -887,6 +887,69 @@ class DataQualityValidationCommandTests(TestCase):
                 for row in gap_rows
             ))
 
+    def test_technical_indicator_continuity_warnings_appear_in_summary_and_metadata(self):
+        asset = Asset.objects.create(
+            market=self.market_sse,
+            symbol='600588',
+            ts_code='600588.SH',
+            name='Technical Summary Asset',
+            list_date=self.d2,
+        )
+
+        for trade_date, close in zip((self.d2, self.d3, self.d4), ('10', '10.1', '10.2')):
+            self._ohlcv(asset, trade_date, close)
+            self._complete_related_rows(asset, trade_date)
+
+        TechnicalIndicator.objects.filter(
+            asset=asset,
+            timestamp__date=self.d3,
+            indicator_type='RSI',
+        ).delete()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=self.d2.isoformat(),
+                end_date=self.d4.isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RSI',
+            )
+
+            output_dir = Path(temp_dir)
+            summary_rows = read_csv(output_dir / 'summary.csv')
+            missing_by_table_rows = read_csv(output_dir / 'missing_by_table.csv')
+            missing_field_rows = read_csv(output_dir / 'missing_fields.csv')
+
+            self.assertTrue(any(
+                row['issue_type'] == 'technical_indicator_continuity_gap'
+                and row['severity'] == 'warning'
+                and row['count'] == '1'
+                for row in summary_rows
+            ))
+            self.assertTrue(any(
+                row['table'] == 'technical_indicator'
+                and row['severity'] == 'warning'
+                and row['issue_type'] == 'technical_indicator_continuity_gap'
+                and row['count'] == '1'
+                for row in missing_by_table_rows
+            ))
+            self.assertTrue(any(
+                row['table'] == 'technical_indicator'
+                and row['field'] == 'RSI[timeperiod=14]'
+                and row['issue_type'] == 'technical_indicator_continuity_gap'
+                and row['severity'] == 'warning'
+                and row['count'] == '1'
+                for row in missing_field_rows
+            ))
+
+            with (output_dir / 'metadata.json').open(encoding='utf-8') as handle:
+                metadata = json.load(handle)
+
+            expected_warning_count = sum(int(row['count']) for row in summary_rows if row['severity'] == 'warning')
+            self.assertEqual(metadata['warning_issues'], expected_warning_count)
+            self.assertGreaterEqual(metadata['warning_issues'], 1)
+
     @override_settings(TUSHARE_TOKEN='test-token')
     @patch('apps.core.management.commands.validate_data_quality.ts.pro_api')
     def test_validate_data_quality_can_sample_reconcile_fundamental_snapshots(self, mock_pro_api):

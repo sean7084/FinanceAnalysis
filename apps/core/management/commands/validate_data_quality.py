@@ -1546,6 +1546,10 @@ class Command(BaseCommand):
             bounded_range = TECHNICAL_INDICATOR_BOUNDED_RANGES.get(indicator_type)
 
             if missing_dates:
+                issue_type = 'technical_indicator_continuity_gap'
+                self._increment(counters, issue_type, 'warning', len(missing_dates))
+                table_counters[('technical_indicator', 'warning', issue_type)] += len(missing_dates)
+                field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += len(missing_dates)
                 expected_count = len(expected_dates)
                 actual_count = len(non_null_dates)
                 missing_pct = (len(missing_dates) / expected_count) if expected_count else 0
@@ -3071,8 +3075,11 @@ class Command(BaseCommand):
     def _increment(self, counters, issue_type, severity, count):
         counters[(issue_type, severity)] += count
 
+    def _severity_count(self, counters, severity):
+        return sum(count for (_issue_type, current_severity), count in counters.items() if current_severity == severity)
+
     def _critical_count(self, counters):
-        return sum(count for (_, severity), count in counters.items() if severity == 'critical')
+        return self._severity_count(counters, 'critical')
 
     def _write_summary_reports(self, writer, counters, table_counters, field_counters, reason_counters, assets, trading_dates, start_date, end_date, floor_date, technical_indicators, options, run_started_at, run_started_perf):
         calendar_max_gap_days = 0
@@ -3135,6 +3142,7 @@ class Command(BaseCommand):
             'detail_rows_written': writer.detail_rows_written,
             'detail_rows_dropped': writer.detail_rows_dropped,
             'critical_issues': self._critical_count(counters),
+            'warning_issues': self._severity_count(counters, 'warning'),
             'cross_section_audit_dates': self._resolve_cross_section_audit_dates(options.get('cross_section_audit_dates'), start_date, end_date),
             'section_one_limitations': list(SECTION_ONE_LIMITATIONS),
             'report_descriptions': {
