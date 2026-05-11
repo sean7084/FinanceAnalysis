@@ -26,4 +26,7 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+
+# Runtime PID files
+*.pid
 .env

@@ -16,6 +16,7 @@ __pycache__/
 venv/
 env/
 *.egg-info
+*.pid
 
 # VSCode
 .vscode/
