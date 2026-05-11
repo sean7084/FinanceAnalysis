@@ -13,6 +13,7 @@ from django.core.management import call_command, CommandError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from apps.analytics.management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.backtest.models import BacktestRun, BacktestTrade
 from apps.factors.models import AssetMarginDetailSnapshot, AssetMoneyFlowSnapshot, CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
@@ -1592,6 +1593,215 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             self.assertEqual(row['audit_status'], 'matched')
             self.assertEqual(Decimal(row['recomputed_roe']), Decimal('0.239210'))
             self.assertEqual(Decimal(row['recomputed_roe_qoq']), Decimal('0.250852'))
+
+
+class TechnicalIndicatorValidationRegressionTests(TestCase):
+    def _create_calendar(self, market_code, trade_dates):
+        previous_trade_date = None
+        for trade_date in trade_dates:
+            ExchangeTradingCalendar.objects.create(
+                exchange_code=market_code,
+                trade_date=trade_date,
+                previous_trade_date=previous_trade_date,
+            )
+            previous_trade_date = trade_date
+
+    def _create_ohlcv_series(self, asset, trade_dates, start_close='10'):
+        base_close = Decimal(start_close)
+        for index, trade_date in enumerate(trade_dates):
+            close_value = base_close + (Decimal(index) * Decimal('0.2'))
+            OHLCV.objects.create(
+                asset=asset,
+                date=trade_date,
+                open=close_value,
+                high=close_value + Decimal('0.5'),
+                low=close_value - Decimal('0.5'),
+                close=close_value,
+                adj_close=close_value,
+                volume=1000000 + index,
+                amount=close_value * Decimal('1000000'),
+            )
+
+    def _timestamp(self, trade_date):
+        return timezone.make_aware(timezone.datetime.combine(trade_date, timezone.datetime.min.time()))
+
+    def _build_indicator_rows(self, asset, start_date, end_date, indicator_types):
+        command = TechnicalIndicatorBackfillCommand()
+        df = command._load_ohlcv_df(asset.id, end_date)
+        return command._build_rows(asset, df, start_date, end_date, indicator_types)
+
+    def test_technical_indicator_continuity_report_flags_missing_rsi_rows(self):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600188',
+            ts_code='600188.SH',
+            name='Technical Continuity Asset',
+            list_date=timezone.datetime(2024, 1, 2).date(),
+        )
+        trade_dates = [timezone.datetime(2024, 1, day).date() for day in (2, 3, 4)]
+        self._create_calendar('SSE', trade_dates)
+        self._create_ohlcv_series(asset, trade_dates)
+
+        for trade_date in (trade_dates[0], trade_dates[2]):
+            TechnicalIndicator.objects.create(
+                asset=asset,
+                timestamp=self._timestamp(trade_date),
+                indicator_type='RSI',
+                value=Decimal('55.00000000'),
+                parameters={'timeperiod': 14},
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=trade_dates[0].isoformat(),
+                end_date=trade_dates[-1].isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RSI',
+                only_report='technical_indicator_snapshot_continuity_gaps.csv',
+            )
+
+            rows = read_csv(Path(temp_dir) / 'technical_indicator_snapshot_continuity_gaps.csv')
+            continuity_rows = [row for row in rows if row['issue_type'] == 'continuity_gap']
+            self.assertEqual(len(continuity_rows), 1)
+            row = continuity_rows[0]
+            self.assertEqual(row['field'], 'RSI[timeperiod=14]')
+            self.assertEqual(row['gap_start'], trade_dates[1].isoformat())
+            self.assertEqual(row['gap_end'], trade_dates[1].isoformat())
+            self.assertEqual(row['gap_missing_count'], '1')
+            self.assertEqual(row['missing_count'], '1')
+            self.assertEqual(row['snapshot_row_count'], '2')
+
+    def test_technical_indicator_continuity_report_flags_out_of_range_rsi(self):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        trade_date = timezone.datetime(2024, 2, 5).date()
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600199',
+            ts_code='600199.SH',
+            name='Technical Anomaly Asset',
+            list_date=trade_date,
+        )
+        self._create_calendar('SSE', [trade_date])
+        self._create_ohlcv_series(asset, [trade_date])
+        TechnicalIndicator.objects.create(
+            asset=asset,
+            timestamp=self._timestamp(trade_date),
+            indicator_type='RSI',
+            value=Decimal('120.00000000'),
+            parameters={'timeperiod': 14},
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=trade_date.isoformat(),
+                end_date=trade_date.isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RSI',
+                only_report='technical_indicator_snapshot_continuity_gaps.csv',
+            )
+
+            rows = read_csv(Path(temp_dir) / 'technical_indicator_snapshot_continuity_gaps.csv')
+            anomaly_rows = [row for row in rows if row['issue_type'] == 'value_out_of_range']
+            self.assertEqual(len(anomaly_rows), 1)
+            row = anomaly_rows[0]
+            self.assertEqual(row['field'], 'RSI[timeperiod=14]')
+            self.assertEqual(row['date'], trade_date.isoformat())
+            self.assertEqual(Decimal(row['value']), Decimal('120.00000000'))
+            self.assertEqual(Decimal(row['expected_min_value']), Decimal('0'))
+            self.assertEqual(Decimal(row['expected_max_value']), Decimal('100'))
+
+    def test_technical_indicator_reconciliation_matches_recomputed_rsi(self):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600211',
+            ts_code='600211.SH',
+            name='Technical Match Asset',
+            list_date=timezone.datetime(2024, 1, 2).date(),
+        )
+        trade_dates = [timezone.datetime(2024, 1, 2).date() + datetime.timedelta(days=index) for index in range(30)]
+        self._create_calendar('SSE', trade_dates)
+        self._create_ohlcv_series(asset, trade_dates)
+
+        rsi_rows = self._build_indicator_rows(asset, trade_dates[0], trade_dates[-1], ('RSI',))
+        stored_row = next(row for row in reversed(rsi_rows) if row.timestamp.date() == trade_dates[-1])
+        TechnicalIndicator.objects.create(
+            asset=asset,
+            timestamp=stored_row.timestamp,
+            indicator_type=stored_row.indicator_type,
+            value=stored_row.value,
+            parameters=stored_row.parameters,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=trade_dates[-1].isoformat(),
+                end_date=trade_dates[-1].isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RSI',
+                only_report='technical_indicator_reconciliation_audit.csv',
+                technical_indicator_reconciliation_sample_size=10,
+                technical_indicator_reconciliation_seed=1,
+            )
+
+            rows = read_csv(Path(temp_dir) / 'technical_indicator_reconciliation_audit.csv')
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row['audit_status'], 'matched')
+            self.assertEqual(row['indicator_type'], 'RSI')
+            self.assertEqual(Decimal(row['stored_value']), stored_row.value)
+            self.assertEqual(Decimal(row['recomputed_value']), stored_row.value)
+
+    def test_technical_indicator_reconciliation_reports_rsi_mismatch(self):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600233',
+            ts_code='600233.SH',
+            name='Technical Mismatch Asset',
+            list_date=timezone.datetime(2024, 1, 2).date(),
+        )
+        trade_dates = [timezone.datetime(2024, 1, 2).date() + datetime.timedelta(days=index) for index in range(30)]
+        self._create_calendar('SSE', trade_dates)
+        self._create_ohlcv_series(asset, trade_dates)
+
+        rsi_rows = self._build_indicator_rows(asset, trade_dates[0], trade_dates[-1], ('RSI',))
+        stored_row = next(row for row in reversed(rsi_rows) if row.timestamp.date() == trade_dates[-1])
+        TechnicalIndicator.objects.create(
+            asset=asset,
+            timestamp=stored_row.timestamp,
+            indicator_type=stored_row.indicator_type,
+            value=stored_row.value + Decimal('1.00000000'),
+            parameters=stored_row.parameters,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=trade_dates[-1].isoformat(),
+                end_date=trade_dates[-1].isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RSI',
+                only_report='technical_indicator_reconciliation_audit.csv',
+                technical_indicator_reconciliation_sample_size=10,
+                technical_indicator_reconciliation_seed=1,
+            )
+
+            rows = read_csv(Path(temp_dir) / 'technical_indicator_reconciliation_audit.csv')
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row['audit_status'], 'mismatch')
+            self.assertEqual(row['indicator_type'], 'RSI')
+            self.assertEqual(Decimal(row['recomputed_value']), stored_row.value)
+            self.assertNotEqual(Decimal(row['stored_value']), Decimal(row['recomputed_value']))
 
 
 class PurgePreFloorHistoricalDataCommandTests(TestCase):

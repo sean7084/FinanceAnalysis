@@ -17,6 +17,11 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.analytics.management.commands.backfill_technical_indicators import (
+    Command as TechnicalIndicatorBackfillCommand,
+    EMA_PERIODS as BACKFILL_TECHNICAL_EMA_PERIODS,
+    SMA_PERIODS as BACKFILL_TECHNICAL_SMA_PERIODS,
+)
 from apps.analytics.models import TechnicalIndicator
 from apps.core.date_floor import get_historical_data_floor
 from apps.factors.fundamental_materialization import (
@@ -102,7 +107,7 @@ SECTION_ONE_LIMITATIONS = (
     'MacroSnapshot does not yet store per-field release/available dates, so macro as-of validation is still a recency check rather than a publication-date audit.',
     'Any suspend_d-covered date is excluded from OHLCV continuity expectations; only full-day suspension overlaps with OHLCV are surfaced as dedicated lifecycle warnings.',
     'No dedicated stored z-score/quantile cross-sectional feature surface exists yet, so section-one cross-sectional audits cover RS_SCORE and stored factor/composite ranks only.',
-    'TechnicalIndicator rows do not expose their full upstream lookback inputs, so validation checks timestamp/date consistency and stored historical completeness for configured indicator types rather than replaying each formula from source inputs.',
+    'TechnicalIndicator rows do not expose full intermediate state, so the default validator checks stored historical completeness for configured indicator variants and uses an optional sampled OHLCV replay audit for direct formula reconciliation.',
 )
 REPORT_DESCRIPTIONS = {
     'affected_asset_dates.csv': 'Asset-date issue ledger across all validation families with explicit metric labels.',
@@ -114,11 +119,13 @@ REPORT_DESCRIPTIONS = {
     'ohlcv_continuity_gaps.csv': 'Missing OHLCV on official exchange open days after listing and before delisting, excluding suspend_d-covered dates.',
     'fundamental_snapshot_continuity_gaps.csv': 'Missing or NULL PE/PE_TTM/PB/ROE/ROE_QOQ windows relative to OHLCV-backed baseline dates.',
     'capital_flow_snapshot_continuity_gaps.csv': 'Missing or NULL Main Force Net 5D / Margin Balance Change 5D windows relative to OHLCV-backed baseline dates, including source-derived gap_reason labels.',
+    'technical_indicator_snapshot_continuity_gaps.csv': 'Missing configured TechnicalIndicator variants on OHLCV-backed dates plus stored bounded-value anomalies for indicators like RSI, STOCH, ADX, and RS_SCORE.',
     'ohlcv_excused_gaps.csv': 'Missing OHLCV dates excluded from continuity expectations because they fall before list_date, on or after delist_date, or on suspend_d-covered dates.',
     'ohlcv_price_anomalies.csv': 'Per-row OHLCV price and volume anomaly checks.',
     'asset_lifecycle_issues.csv': 'Asset lifecycle checks for list_date, delist_date, exchange calendar coverage, and suspension overlaps.',
     'feature_source_asof_issues.csv': 'Feature-source as-of alignment issues such as future financial announcement references.',
     'fundamental_reconciliation_audit.csv': 'Sampled second-layer audit that recomputes stored fundamental values from upstream TuShare daily_basic and fina_indicator rows.',
+    'technical_indicator_reconciliation_audit.csv': 'Sampled second-layer audit that recomputes stored TechnicalIndicator values from historical OHLCV using the same formulas as the backfill command.',
     'effective_universe_daily_coverage.csv': 'Daily PIT effective-universe coverage counts by feature family.',
     'cross_section_metric_audit.csv': 'Sample-date cross-sectional audit of participants and distributions against effective_universe(date).',
     'cross_section_metric_participants.csv': 'Participant lists for sampled cross-sectional metrics.',
@@ -198,6 +205,32 @@ FUNDAMENTAL_RECONCILIATION_FIELDNAMES = [
     'stored_roe_qoq', 'recomputed_roe_qoq',
     'details',
 ]
+TECHNICAL_INDICATOR_RECONCILIATION_FIELDNAMES = [
+    'metric_family', 'metric_name', 'rule_name', 'report_scope', 'audit_status',
+    'asset_id', 'asset_symbol', 'asset_ts_code', 'asset_name', 'date',
+    'indicator_type', 'parameters', 'stored_value', 'recomputed_value', 'details',
+]
+TECHNICAL_INDICATOR_EXPECTED_PARAMETERS = {
+    'ADX': ({'timeperiod': 14},),
+    'BBANDS': ({'timeperiod': 20, 'nbdevup': 2, 'nbdevdn': 2},),
+    'EMA': tuple({'timeperiod': period} for period in BACKFILL_TECHNICAL_EMA_PERIODS),
+    'FIB_RET': ({'lookback_days': 60},),
+    'MACD': ({'fastperiod': 12, 'slowperiod': 26, 'signalperiod': 9},),
+    'MOM_10D': ({'n_days': 10},),
+    'MOM_20D': ({'n_days': 20},),
+    'MOM_5D': ({'n_days': 5},),
+    'OBV': ({},),
+    'RSI': ({'timeperiod': 14},),
+    'RS_SCORE': ({},),
+    'SMA': tuple({'timeperiod': period} for period in BACKFILL_TECHNICAL_SMA_PERIODS),
+    'STOCH': ({'fastk_period': 14, 'slowk_period': 3, 'slowd_period': 3},),
+}
+TECHNICAL_INDICATOR_BOUNDED_RANGES = {
+    'ADX': (Decimal('0'), Decimal('100')),
+    'RSI': (Decimal('0'), Decimal('100')),
+    'RS_SCORE': (Decimal('0'), Decimal('1')),
+    'STOCH': (Decimal('0'), Decimal('100')),
+}
 
 
 def _cell(value):
@@ -280,6 +313,15 @@ class ReportWriter:
                 'list_date', 'delist_date', 'expected_start', 'expected_end', 'first_non_null_date', 'last_non_null_date',
                 'expected_count', 'actual_count', 'snapshot_row_count', 'missing_count', 'missing_pct',
                 'gap_start', 'gap_end', 'gap_missing_count', 'gap_reason',
+            ],
+            'technical_indicator_snapshot_continuity_gaps': [
+                'metric_family', 'metric_name', 'rule_name', 'report_scope',
+                'table', 'field', 'asset_id', 'asset_symbol', 'asset_ts_code', 'asset_name',
+                'parameters', 'issue_type', 'severity', 'list_date', 'delist_date',
+                'expected_start', 'expected_end', 'first_non_null_date', 'last_non_null_date',
+                'expected_count', 'actual_count', 'snapshot_row_count', 'missing_count', 'missing_pct',
+                'gap_start', 'gap_end', 'gap_missing_count', 'date', 'value',
+                'expected_min_value', 'expected_max_value', 'details',
             ],
             'ohlcv_excused_gaps': [
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
@@ -386,6 +428,8 @@ class Command(BaseCommand):
         parser.add_argument('--only-report', default='', help='Comma-separated report filenames to write, for example ohlcv_continuity_gaps.csv.')
         parser.add_argument('--fundamental-reconciliation-sample-size', type=int, default=0, help='0 disables second-layer upstream reconciliation. Positive values sample stored FundamentalFactorSnapshot rows and recompute them from TuShare daily_basic/fina_indicator.')
         parser.add_argument('--fundamental-reconciliation-seed', type=int, default=17, help='Deterministic seed for sampled fundamental reconciliation rows when the sample size is positive.')
+        parser.add_argument('--technical-indicator-reconciliation-sample-size', type=int, default=0, help='0 disables sampled TechnicalIndicator replay. Positive values sample stored TechnicalIndicator rows and recompute them from OHLCV using the backfill formulas.')
+        parser.add_argument('--technical-indicator-reconciliation-seed', type=int, default=29, help='Deterministic seed for sampled TechnicalIndicator replay rows when the sample size is positive.')
         parser.add_argument('--alert', action='store_true', help='Email a summary when critical data-quality issues are found.')
         parser.add_argument('--alert-recipients', default='', help='Comma-separated alert recipients. Falls back to settings.')
         parser.add_argument('--fail-on-critical', action='store_true')
@@ -570,7 +614,15 @@ class Command(BaseCommand):
                     table_counters,
                     field_counters,
                 )
-                self._write_feature_continuity_gaps(asset, baseline_dates, writer)
+                self._write_feature_continuity_gaps(
+                    asset,
+                    baseline_dates,
+                    technical_indicators,
+                    writer,
+                    counters,
+                    table_counters,
+                    field_counters,
+                )
 
             self._validate_null_fields(assets, start_date, end_date, writer, counters, field_counters, reason_counters)
             self._audit_fundamental_reconciliation(
@@ -580,6 +632,18 @@ class Command(BaseCommand):
                 floor_date,
                 options['fundamental_reconciliation_sample_size'],
                 options['fundamental_reconciliation_seed'],
+                writer,
+                counters,
+                table_counters,
+                field_counters,
+            )
+            self._audit_technical_indicator_reconciliation(
+                assets,
+                start_date,
+                end_date,
+                technical_indicators,
+                options['technical_indicator_reconciliation_sample_size'],
+                options['technical_indicator_reconciliation_seed'],
                 writer,
                 counters,
                 table_counters,
@@ -1243,7 +1307,7 @@ class Command(BaseCommand):
                 asset=asset, trading_date=gap_start, details=f'Missing OHLCV from {gap_start} to {gap_end} ({gap_count} trading dates).'
             ))
 
-    def _write_feature_continuity_gaps(self, asset, baseline_dates, writer):
+    def _write_feature_continuity_gaps(self, asset, baseline_dates, technical_indicators, writer, counters, table_counters, field_counters):
         if not baseline_dates:
             return
 
@@ -1293,6 +1357,26 @@ class Command(BaseCommand):
             margin_source_dates=margin_source_dates,
             margin_history_rows=margin_history_rows,
             writer=writer,
+        )
+
+        technical_rows = list(
+            TechnicalIndicator.objects.filter(
+                asset=asset,
+                timestamp__date__gte=min_date,
+                timestamp__date__lte=max_date,
+                indicator_type__in=technical_indicators,
+            ).values('timestamp__date', 'indicator_type', 'parameters', 'value')
+        )
+        self._write_technical_indicator_continuity_gaps(
+            report_name='technical_indicator_snapshot_continuity_gaps',
+            asset=asset,
+            expected_dates=ordered_baseline_dates,
+            technical_indicators=technical_indicators,
+            rows=technical_rows,
+            writer=writer,
+            counters=counters,
+            table_counters=table_counters,
+            field_counters=field_counters,
         )
 
     def _write_feature_family_continuity_gaps(self, report_name, table, fields, asset, expected_dates, rows, writer):
@@ -1421,6 +1505,146 @@ class Command(BaseCommand):
                     'gap_missing_count': gap_count,
                     'gap_reason': gap_reason,
                 })
+
+    def _write_technical_indicator_continuity_gaps(
+        self,
+        report_name,
+        asset,
+        expected_dates,
+        technical_indicators,
+        rows,
+        writer,
+        counters,
+        table_counters,
+        field_counters,
+    ):
+        if not expected_dates:
+            return
+
+        expected_date_set = set(expected_dates)
+        rows_by_variant = defaultdict(list)
+        for row in rows:
+            trading_date = row['timestamp__date']
+            if trading_date not in expected_date_set:
+                continue
+            indicator_type = row['indicator_type']
+            parameters = dict(row.get('parameters') or {})
+            variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
+            rows_by_variant[variant_key].append({
+                'date': trading_date,
+                'value': row.get('value'),
+                'parameters': parameters,
+            })
+
+        expected_variants = self._technical_indicator_expected_variants(technical_indicators)
+        for indicator_type, parameters in expected_variants:
+            variant_name = self._technical_indicator_variant_name(indicator_type, parameters)
+            variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
+            variant_rows = rows_by_variant.get(variant_key, [])
+            non_null_dates = {row['date'] for row in variant_rows}
+            missing_dates = [trading_date for trading_date in expected_dates if trading_date not in non_null_dates]
+            bounded_range = TECHNICAL_INDICATOR_BOUNDED_RANGES.get(indicator_type)
+
+            if missing_dates:
+                expected_count = len(expected_dates)
+                actual_count = len(non_null_dates)
+                missing_pct = (len(missing_dates) / expected_count) if expected_count else 0
+                first_non_null_date = min(non_null_dates) if non_null_dates else None
+                last_non_null_date = max(non_null_dates) if non_null_dates else None
+                for gap_start, gap_end, gap_count in self._iter_contiguous_gaps(expected_dates, non_null_dates):
+                    writer.write_detail(report_name, {
+                        **self._metric_columns('feature', variant_name, 'continuity_gap', 'asset_field_window'),
+                        'table': 'technical_indicator',
+                        'field': variant_name,
+                        'asset_id': asset.id,
+                        'asset_symbol': asset.symbol,
+                        'asset_ts_code': asset.ts_code,
+                        'asset_name': asset.name,
+                        'parameters': parameters,
+                        'issue_type': 'continuity_gap',
+                        'severity': 'warning',
+                        'list_date': asset.list_date,
+                        'delist_date': asset.delist_date,
+                        'expected_start': expected_dates[0],
+                        'expected_end': expected_dates[-1],
+                        'first_non_null_date': first_non_null_date,
+                        'last_non_null_date': last_non_null_date,
+                        'expected_count': expected_count,
+                        'actual_count': actual_count,
+                        'snapshot_row_count': len(variant_rows),
+                        'missing_count': len(missing_dates),
+                        'missing_pct': f'{missing_pct:.6f}',
+                        'gap_start': gap_start,
+                        'gap_end': gap_end,
+                        'gap_missing_count': gap_count,
+                        'expected_min_value': bounded_range[0] if bounded_range else None,
+                        'expected_max_value': bounded_range[1] if bounded_range else None,
+                        'details': f'Expected one {variant_name} row on every OHLCV-backed baseline date.',
+                    })
+
+            if not bounded_range:
+                continue
+
+            min_value, max_value = bounded_range
+            for variant_row in variant_rows:
+                value = variant_row['value']
+                if value is None or (min_value <= value <= max_value):
+                    continue
+
+                issue_type = 'technical_indicator_value_out_of_range'
+                details = (
+                    f'Stored {variant_name} value {value} is outside the expected range '
+                    f'[{min_value}, {max_value}].'
+                )
+                self._increment(counters, issue_type, 'warning', 1)
+                table_counters[('technical_indicator', 'warning', issue_type)] += 1
+                field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
+                writer.write_detail('affected_asset_dates', self._asset_issue_row(
+                    issue_type=issue_type,
+                    severity='warning',
+                    table='technical_indicator',
+                    field=variant_name,
+                    asset=asset,
+                    trading_date=variant_row['date'],
+                    details=details,
+                    rule_name='value_bounds',
+                ))
+                writer.write_detail(report_name, {
+                    **self._metric_columns('feature', variant_name, 'value_bounds', 'asset_date'),
+                    'table': 'technical_indicator',
+                    'field': variant_name,
+                    'asset_id': asset.id,
+                    'asset_symbol': asset.symbol,
+                    'asset_ts_code': asset.ts_code,
+                    'asset_name': asset.name,
+                    'parameters': parameters,
+                    'issue_type': 'value_out_of_range',
+                    'severity': 'warning',
+                    'list_date': asset.list_date,
+                    'delist_date': asset.delist_date,
+                    'date': variant_row['date'],
+                    'value': value,
+                    'expected_min_value': min_value,
+                    'expected_max_value': max_value,
+                    'details': details,
+                })
+
+    def _technical_indicator_expected_variants(self, technical_indicators):
+        variants = []
+        for indicator_type in technical_indicators:
+            for parameters in TECHNICAL_INDICATOR_EXPECTED_PARAMETERS.get(indicator_type, ({},)):
+                variants.append((indicator_type, dict(parameters or {})))
+        return variants
+
+    def _technical_indicator_parameters_key(self, parameters):
+        return json.dumps(dict(parameters or {}), ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+    def _technical_indicator_variant_name(self, indicator_type, parameters):
+        normalized_parameters = dict(parameters or {})
+        if not normalized_parameters:
+            return indicator_type
+        parts = ','.join(f'{key}={normalized_parameters[key]}' for key in sorted(normalized_parameters))
+        return f'{indicator_type}[{parts}]'
 
     def _capital_flow_gap_reason(
         self,
@@ -1752,7 +1976,7 @@ class Command(BaseCommand):
         sampled_rows = list(base_queryset.filter(pk__in=sample_ids).order_by('date', 'asset_id'))
         sampled_rows_by_asset = defaultdict(list)
         for row in sampled_rows:
-            sampled_rows_by_asset[row.asset_id].append(row)
+            sampled_rows_by_asset[row.asset.id].append(row)
 
         pro = ts.pro_api(token)
         audit_rows = []
@@ -1874,6 +2098,150 @@ class Command(BaseCommand):
                 })
 
         writer.write_csv('fundamental_reconciliation_audit', FUNDAMENTAL_RECONCILIATION_FIELDNAMES, audit_rows)
+
+    def _audit_technical_indicator_reconciliation(self, assets, start_date, end_date, technical_indicators, sample_size, sample_seed, writer, counters, table_counters, field_counters):
+        sample_size = max(0, int(sample_size or 0))
+        if sample_size == 0:
+            return
+
+        auditable_indicator_types = tuple(
+            indicator_type
+            for indicator_type in technical_indicators
+            if indicator_type != 'RS_SCORE'
+        )
+        if not auditable_indicator_types:
+            writer.write_csv('technical_indicator_reconciliation_audit', TECHNICAL_INDICATOR_RECONCILIATION_FIELDNAMES, [])
+            return
+
+        asset_ids = [asset.id for asset in assets]
+        base_queryset = TechnicalIndicator.objects.filter(
+            asset_id__in=asset_ids,
+            timestamp__date__gte=start_date,
+            timestamp__date__lte=end_date,
+            indicator_type__in=auditable_indicator_types,
+        ).select_related('asset').order_by('timestamp', 'asset_id', 'indicator_type', 'pk')
+
+        sample_ids = self._reservoir_sample_queryset_ids(base_queryset, sample_size, sample_seed)
+        if not sample_ids:
+            writer.write_csv('technical_indicator_reconciliation_audit', TECHNICAL_INDICATOR_RECONCILIATION_FIELDNAMES, [])
+            return
+
+        sampled_rows = list(base_queryset.filter(pk__in=sample_ids).order_by('timestamp', 'asset_id', 'indicator_type', 'pk'))
+        sampled_rows_by_asset = defaultdict(list)
+        for row in sampled_rows:
+            sampled_rows_by_asset[row.asset.id].append(row)
+
+        recompute_command = TechnicalIndicatorBackfillCommand()
+        audit_rows = []
+        for sampled_asset_rows in sampled_rows_by_asset.values():
+            asset = sampled_asset_rows[0].asset
+            sampled_dates = [row.timestamp.date() for row in sampled_asset_rows]
+            sampled_indicator_types = tuple(sorted({row.indicator_type for row in sampled_asset_rows}))
+            recomputed_values = {}
+            recompute_error = None
+            try:
+                df = recompute_command._load_ohlcv_df(asset.id, max(sampled_dates))
+                if not df.empty:
+                    recomputed_rows = recompute_command._build_rows(
+                        asset,
+                        df,
+                        min(sampled_dates),
+                        max(sampled_dates),
+                        sampled_indicator_types,
+                    )
+                    recomputed_values = {
+                        (
+                            technical_row.timestamp.date(),
+                            technical_row.indicator_type,
+                            self._technical_indicator_parameters_key(technical_row.parameters),
+                        ): technical_row.value
+                        for technical_row in recomputed_rows
+                    }
+            except Exception as exc:
+                recompute_error = str(exc)
+
+            for row in sampled_asset_rows:
+                parameters = dict(row.parameters or {})
+                variant_name = self._technical_indicator_variant_name(row.indicator_type, parameters)
+                recomputed_value = None
+                audit_status = 'matched'
+                details = 'Stored TechnicalIndicator matches the OHLCV replay.'
+                if recompute_error is not None:
+                    audit_status = 'recompute_failed'
+                    details = f'OHLCV replay failed: {recompute_error}'
+                    issue_type = 'technical_indicator_reconciliation_recompute_failed'
+                    self._increment(counters, issue_type, 'warning', 1)
+                    table_counters[('technical_indicator', 'warning', issue_type)] += 1
+                    field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
+                    writer.write_detail('affected_asset_dates', self._asset_issue_row(
+                        issue_type=issue_type,
+                        severity='warning',
+                        table='technical_indicator',
+                        field=variant_name,
+                        asset=row.asset,
+                        trading_date=row.timestamp.date(),
+                        details=details,
+                        rule_name='technical_indicator_reconciliation',
+                    ))
+                else:
+                    recomputed_value = recomputed_values.get(
+                        (
+                            row.timestamp.date(),
+                            row.indicator_type,
+                            self._technical_indicator_parameters_key(parameters),
+                        )
+                    )
+                    if recomputed_value is None:
+                        audit_status = 'recompute_missing'
+                        details = 'No recomputed TechnicalIndicator row was produced for this sampled indicator variant.'
+                        issue_type = 'technical_indicator_reconciliation_missing_recomputed_row'
+                        self._increment(counters, issue_type, 'warning', 1)
+                        table_counters[('technical_indicator', 'warning', issue_type)] += 1
+                        field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
+                        writer.write_detail('affected_asset_dates', self._asset_issue_row(
+                            issue_type=issue_type,
+                            severity='warning',
+                            table='technical_indicator',
+                            field=variant_name,
+                            asset=row.asset,
+                            trading_date=row.timestamp.date(),
+                            details=details,
+                            rule_name='technical_indicator_reconciliation',
+                        ))
+                    elif row.value != recomputed_value:
+                        audit_status = 'mismatch'
+                        details = f'OHLCV replay mismatch: stored={row.value} recomputed={recomputed_value}.'
+                        issue_type = 'technical_indicator_reconciliation_mismatch'
+                        self._increment(counters, issue_type, 'warning', 1)
+                        table_counters[('technical_indicator', 'warning', issue_type)] += 1
+                        field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
+                        writer.write_detail('affected_asset_dates', self._asset_issue_row(
+                            issue_type=issue_type,
+                            severity='warning',
+                            table='technical_indicator',
+                            field=variant_name,
+                            asset=row.asset,
+                            trading_date=row.timestamp.date(),
+                            details=details,
+                            rule_name='technical_indicator_reconciliation',
+                        ))
+
+                audit_rows.append({
+                    **self._metric_columns('feature_source', variant_name, 'technical_indicator_reconciliation', 'sampled_indicator_row'),
+                    'audit_status': audit_status,
+                    'asset_id': row.asset.id,
+                    'asset_symbol': row.asset.symbol,
+                    'asset_ts_code': row.asset.ts_code,
+                    'asset_name': row.asset.name,
+                    'date': row.timestamp.date(),
+                    'indicator_type': row.indicator_type,
+                    'parameters': parameters,
+                    'stored_value': row.value,
+                    'recomputed_value': recomputed_value,
+                    'details': details,
+                })
+
+        writer.write_csv('technical_indicator_reconciliation_audit', TECHNICAL_INDICATOR_RECONCILIATION_FIELDNAMES, audit_rows)
 
     def _normalize_fundamental_audit_payload(self, payload):
         if payload is None:
@@ -2741,6 +3109,11 @@ class Command(BaseCommand):
         ]
         writer.write_csv('null_reason_buckets', ['table', 'field', 'reason', 'severity', 'count'], reason_rows)
 
+        optional_sampled_reports = {
+            'fundamental_reconciliation_audit.csv': int(options.get('fundamental_reconciliation_sample_size') or 0) > 0,
+            'technical_indicator_reconciliation_audit.csv': int(options.get('technical_indicator_reconciliation_sample_size') or 0) > 0,
+        }
+
         writer.write_json('metadata', {
             'generated_at': completed_at.isoformat(),
             'started_at': run_started_at.isoformat(),
@@ -2770,12 +3143,12 @@ class Command(BaseCommand):
                 if (
                     filename == 'metadata.json'
                     or (
-                        filename != 'fundamental_reconciliation_audit.csv'
+                        filename not in optional_sampled_reports
                         and (writer.selected_reports is None or filename[:-4] in writer.selected_reports)
                     )
                     or (
-                        filename == 'fundamental_reconciliation_audit.csv'
-                        and int(options.get('fundamental_reconciliation_sample_size') or 0) > 0
+                        filename in optional_sampled_reports
+                        and optional_sampled_reports[filename]
                         and (writer.selected_reports is None or filename[:-4] in writer.selected_reports)
                     )
                 )

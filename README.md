@@ -128,9 +128,7 @@ effective_universe(date)
 
 ───
 
-3. the current validator cannot fully prove “technical indicators never use future data” from stored history alone.split the technical indicator validation into two parts: 
-3.1 a snapshot continuous gap report for historical data audit that checks for nulls and anomalies in the stored indic
-3.2 a random recomputation test that seeds OHLCV rows and proves the indicator tasks are correct
+3. 
 
 
 B. 因子/特征原始源
@@ -138,7 +136,7 @@ B. 因子/特征原始源
 • [x] backfill pre-warmup ohlcv data for pre 2010-1-4 and pre index listing for calculation of ohlcv-derived data
 1. backfill the pre 20100104 and pre index-listing data for 18 months for technical data calculation and rs_score calculation
 • [x] fina_indicator 类季度财务指标是否正确 as-of 对齐，不用未来财报
-• [ ] 技术指标是否只用到当日及过去数据
+• [x] 技术指标是否只用到当日及过去数据
 • [x] macro snapshot validation and backfill: DXY, CNY/USD, China 6M/1Y/3Y/5Y/7Y/10Y/30Y Yield, PMI Manufacturing, PMI Non-Manufacturing, and CPI YoY
 1. backfill the pre 201607 data from manually downloaded csv from gov site
 2. switch from curve term = [10, 2] to [0.5, 1, 3, 5, 7, 10, 30]
@@ -178,16 +176,7 @@ C. 横截面特征
 • [ ] 不是拿未来扩大后的 universe 倒推过去
 • [ ] 不是 membership 缺失时直接退化成 all assets 且无告警
 
-要抽查
-
-选这 4 个日期：
-
-• [ ] 2024-09-20
-• [ ] 2024-09-23
-• [ ] 2025-01-02
-• [ ] 2025-12-31
-
-对每个日期核查：
+check random 10 dates, 每个日期核查：
 
 • [ ] universe size
 • [ ] rank 分位数分布
@@ -198,7 +187,7 @@ C. 横截面特征
 
 D. 数据覆盖率输出
 
-• [ ] 每类 snapshot 都有 coverage report
+• [x] 每类 snapshot 都有 coverage report
 • [ ] coverage report 至少包含：
   • 日期
   • effective_universe_count
