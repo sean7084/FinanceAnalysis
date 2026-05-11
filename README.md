@@ -129,7 +129,7 @@ effective_universe(date)
 ───
 
 
-
+[680] 600845.SH: already complete, skipped 
 
 B. 因子/特征原始源
 
@@ -148,8 +148,7 @@ B. 因子/特征原始源
 • [x] Capital Flow Snapshots validation and backfill: 1311 gap periods due to upstream data source blackouts. otherwise the coverage should be complete since 2010-01-04 for CSI300 constituents, and since 2024-09-23 for A500 constituents.
 • [x] technical indicator validation and backfill
 • [ ] fundamental snapshot validation and backfill
-
-for fundemental snapshot, using api daily_basic, we should add pe_ttm data to our database. we may keep the pe data, but we should swich to use pe_ttm for factor score computation, model training and prediction, etc.
+1. switched pe to pe_ttm
 
 
 
@@ -933,7 +932,7 @@ Key fixes from the older block:
 
 2. Raw factor, macro, and news backfills:
    ```bash
-   python manage.py backfill_fundamental_snapshots --start-date 2010-01-04 --end-date 2026-04-30
+   python manage.py backfill_fundamental_snapshots --start-date 2010-01-04 --end-date 2026-04-30 --repair-same-announcement-roe
    python manage.py backfill_capital_flow_snapshots --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py backfill_macro_snapshots --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py backfill_news --start-at "2010-01-04 00:00:00" --end-at "2026-04-30 23:59:59" --run-pipeline
@@ -946,12 +945,12 @@ Key fixes from the older block:
    python manage.py backfill_model_data \
      --start-date 2010-01-04 \
      --end-date 2026-04-30 \
-     --checkpoint-file reports/ops_logs/backfill_model_data_20260504_1.json
+     --checkpoint-file reports/ops_logs/backfill_model_data_20260510_1.json
    ```
 
 4. Validation, audits, and benchmark checks:
    ```bash
-   python manage.py validate_data_quality --start-date 2010-01-04 --end-date 2026-04-30 --effective-universe-only --fundamental-reconciliation-sample-size 100 --include-delisted --output-dir 
+   python manage.py validate_data_quality --start-date 2010-01-04 --end-date 2026-04-30 --effective-universe-only --include-delisted --output-dir 
    python manage.py audit_model_data_quality --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py run_validation_backtests --start-date 2024-01-01 --end-date 2026-04-30 --sources heuristic,lightgbm,lstm
    python manage.py run_reference_benchmark_suite --start-date 2024-01-01 --end-date 2026-04-30 --output-dir reports/reference_suite_latest

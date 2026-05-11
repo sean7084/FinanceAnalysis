@@ -324,6 +324,7 @@ class BackfillModelDataCommandTests(TestCase):
             asset=self.asset,
             date=self.trading_dates[0],
             pe=Decimal('10.0'),
+            pe_ttm=Decimal('9.6'),
             pb=Decimal('1.0'),
             roe=Decimal('0.12'),
             roe_qoq=Decimal('0.01'),

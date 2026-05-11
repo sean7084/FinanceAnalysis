@@ -323,6 +323,11 @@ def calculate_factor_scores_for_date(
         for row in latest_fundamentals.values()
         if row.pe is not None
     )
+    pe_ttm_rank = _build_percentile_ranker(
+        Decimal(str(row.pe_ttm))
+        for row in latest_fundamentals.values()
+        if row.pe_ttm is not None
+    )
     pb_rank = _build_percentile_ranker(
         Decimal(str(row.pb))
         for row in latest_fundamentals.values()
@@ -353,12 +358,16 @@ def calculate_factor_scores_for_date(
         f = latest_fundamentals.get(asset.id)
         c = latest_flows.get(asset.id)
 
-        # Lower PE/PB is better for "bottom" candidates.
+        # Lower PE TTM/PB is better for "bottom" candidates.
         pe_score = None
+        pe_ttm_score = None
         pb_score = None
         if f and f.pe is not None:
             current_pe_rank = pe_rank(Decimal(str(f.pe)))
             pe_score = (Decimal('1') - current_pe_rank) if current_pe_rank is not None else None
+        if f and f.pe_ttm is not None:
+            current_pe_ttm_rank = pe_ttm_rank(Decimal(str(f.pe_ttm)))
+            pe_ttm_score = (Decimal('1') - current_pe_ttm_rank) if current_pe_ttm_rank is not None else None
         if f and f.pb is not None:
             current_pb_rank = pb_rank(Decimal(str(f.pb)))
             pb_score = (Decimal('1') - current_pb_rank) if current_pb_rank is not None else None
@@ -377,7 +386,7 @@ def calculate_factor_scores_for_date(
 
         technical_score = technical_scores.get(asset.id, Decimal('0'))
         sentiment_score = sentiment_scores.get(asset.id, Decimal('0.5'))
-        fundamental_score = _avg_decimal([pe_score, pb_score, roe_trend])
+        fundamental_score = _avg_decimal([pe_ttm_score, pb_score, roe_trend])
         capital_flow_score = _avg_decimal([mf_score, mb_score])
 
         composite = (
@@ -394,6 +403,7 @@ def calculate_factor_scores_for_date(
                 date=as_of,
                 mode=FactorScore.FactorMode.COMPOSITE,
                 pe_percentile_score=pe_score,
+                pe_ttm_percentile_score=pe_ttm_score,
                 pb_percentile_score=pb_score,
                 roe_trend_score=roe_trend,
                 main_force_flow_score=mf_score,
@@ -426,6 +436,7 @@ def calculate_factor_scores_for_date(
             unique_fields=['asset', 'date', 'mode'],
             update_fields=[
                 'pe_percentile_score',
+                'pe_ttm_percentile_score',
                 'pb_percentile_score',
                 'roe_trend_score',
                 'main_force_flow_score',

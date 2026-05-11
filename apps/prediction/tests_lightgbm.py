@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.macro.models import MacroSnapshot
-from apps.markets.models import Asset, Market, OHLCV
+from apps.markets.models import Asset, IndexMembership, Market, OHLCV
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
@@ -48,14 +48,35 @@ class LightGBMPredictionTests(TestCase):
     def _auth(self):
         self.client.force_authenticate(user=self.user)
 
+    def _seed_pit_membership(self, asset, trade_dates):
+        memberships = []
+        for trade_date in trade_dates:
+            memberships.append(IndexMembership(
+                asset=asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=trade_date,
+                weight=Decimal('4.2'),
+            ))
+            memberships.append(IndexMembership(
+                asset=asset,
+                index_code='000510.CSI',
+                index_name='CSI A500',
+                trade_date=trade_date,
+                weight=Decimal('4.2'),
+            ))
+        IndexMembership.objects.bulk_create(memberships)
+
     def _seed_features(self):
         """Create factor and sentiment data for inference."""
         d = timezone.now().date()
+        trade_dates = [d - timezone.timedelta(days=offset) for offset in range(12)]
+        self._seed_pit_membership(self.asset, trade_dates)
         FactorScore.objects.create(
             asset=self.asset,
             date=d,
             mode=FactorScore.FactorMode.COMPOSITE,
-            pe_percentile_score=Decimal('0.3'),
+            pe_ttm_percentile_score=Decimal('0.3'),
             pb_percentile_score=Decimal('0.4'),
             roe_trend_score=Decimal('0.6'),
             main_force_flow_score=Decimal('0.55'),
@@ -79,8 +100,7 @@ class LightGBMPredictionTests(TestCase):
             sentiment_score=Decimal('0.35'),
             sentiment_label=SentimentScore.Label.POSITIVE,
         )
-        for offset in range(12):
-            as_of = d - timezone.timedelta(days=offset)
+        for offset, as_of in enumerate(trade_dates):
             OHLCV.objects.create(
                 asset=self.asset,
                 date=as_of,
@@ -121,6 +141,8 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn('return_5d', features)
         self.assertIn('relative_volume_5d', features)
         self.assertIn('sentiment_7d_avg_20d', features)
+        self.assertIn('pe_ttm_percentile', features)
+        self.assertIn('pe_ttm_percentile_x_macro_phase', features)
         self.assertEqual(features['northbound_flow'], 0.5)
 
     def test_extract_features_for_asset_uses_10y_minus_3y_yield_curve(self):
@@ -217,11 +239,12 @@ class LightGBMPredictionTests(TestCase):
                 ts_code=f'70{index:04d}.SH',
                 name=f'LightGBM Asset {index}',
             )
+            self._seed_pit_membership(asset, [d - timezone.timedelta(days=offset) for offset in range(11)])
             FactorScore.objects.create(
                 asset=asset,
                 date=d,
                 mode=FactorScore.FactorMode.COMPOSITE,
-                pe_percentile_score=Decimal('0.3'),
+                pe_ttm_percentile_score=Decimal('0.3'),
                 pb_percentile_score=Decimal('0.4'),
                 roe_trend_score=Decimal('0.6'),
                 main_force_flow_score=Decimal('0.55'),
@@ -349,7 +372,7 @@ class LightGBMPredictionTests(TestCase):
             status=LightGBMModelArtifact.Status.READY,
             artifact_path='/models/lightgbm/3d_lgb-3d-2026-04-12/',
             metrics_json={'accuracy': 0.68, 'f1_macro': 0.65},
-            feature_names=['rsi', 'pe_percentile', 'sentiment_7d'],
+            feature_names=['rsi', 'pe_ttm_percentile', 'sentiment_7d'],
             training_window_start=d.replace(year=d.year - 5),
             training_window_end=d,
             trained_at=timezone.now(),
@@ -386,7 +409,7 @@ class LightGBMPredictionTests(TestCase):
             trade_score=Decimal('1.450000'),
             suggested=True,
             model_artifact=artifact,
-            feature_snapshot={'rsi': 60, 'pe_percentile': 0.3},
+            feature_snapshot={'rsi': 60, 'pe_ttm_percentile': 0.3},
             raw_scores={'down': 0.2, 'flat': 0.35, 'up': 0.45},
             calibrated_scores={'down': 0.24, 'flat': 0.28, 'up': 0.48},
         )

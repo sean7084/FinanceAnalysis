@@ -197,6 +197,22 @@ class Phase17DashboardStockApiTests(TestCase):
         self.asset1 = Asset.objects.create(market=self.market, symbol='600111', ts_code='600111.SH', name='Alpha Corp')
         self.asset2 = Asset.objects.create(market=self.market, symbol='600222', ts_code='600222.SH', name='Beta Corp')
         self.as_of = timezone.now().date()
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=self.asset1,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=self.as_of,
+                weight=Decimal('4.2'),
+            ),
+            IndexMembership(
+                asset=self.asset2,
+                index_code='000510.CSI',
+                index_name='CSI A500',
+                trade_date=self.as_of,
+                weight=Decimal('4.2'),
+            ),
+        ])
 
         for asset, base_price, composite_score, bottom_prob in [
             (self.asset1, Decimal('10.2'), Decimal('0.810000'), Decimal('0.760000')),
@@ -206,7 +222,7 @@ class Phase17DashboardStockApiTests(TestCase):
                 asset=asset,
                 date=self.as_of,
                 mode=FactorScore.FactorMode.COMPOSITE,
-                pe_percentile_score=Decimal('0.300000'),
+                pe_ttm_percentile_score=Decimal('0.300000'),
                 pb_percentile_score=Decimal('0.400000'),
                 roe_trend_score=Decimal('0.600000'),
                 main_force_flow_score=Decimal('0.550000'),

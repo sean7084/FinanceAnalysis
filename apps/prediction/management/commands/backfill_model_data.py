@@ -512,6 +512,7 @@ class Command(BaseCommand):
                         date=row.date,
                         mode=FactorScore.FactorMode.COMPOSITE,
                         pe_percentile_score=None,
+                        pe_ttm_percentile_score=None,
                         pb_percentile_score=None,
                         roe_trend_score=None,
                         main_force_flow_score=None,

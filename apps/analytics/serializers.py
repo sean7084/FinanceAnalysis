@@ -35,7 +35,7 @@ class DashboardStockRowSerializer(serializers.Serializer):
     capital_flow_score = serializers.DecimalField(max_digits=7, decimal_places=6)
     technical_score = serializers.DecimalField(max_digits=7, decimal_places=6)
     factor_sentiment_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
-    pe_percentile_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
+    pe_ttm_percentile_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
     pb_percentile_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
     roe_trend_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)
     main_force_flow_score = serializers.DecimalField(max_digits=7, decimal_places=6, allow_null=True)

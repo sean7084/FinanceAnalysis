@@ -98,6 +98,7 @@ class Command(BaseCommand):
                 date__lte=trading_dates[-1],
             ).filter(
                 Q(pe__isnull=True) |
+                Q(pe_ttm__isnull=True) |
                 Q(pb__isnull=True) |
                 Q(roe__isnull=True) |
                 Q(free_share__isnull=True) |
@@ -144,6 +145,7 @@ class Command(BaseCommand):
                     asset=asset,
                     date=payload['date'],
                     pe=payload['pe'],
+                    pe_ttm=payload['pe_ttm'],
                     pb=payload['pb'],
                     total_share=payload['total_share'],
                     float_share=payload['float_share'],
@@ -164,7 +166,7 @@ class Command(BaseCommand):
             batch_size=2000,
             update_conflicts=True,
             unique_fields=['asset', 'date'],
-            update_fields=['pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq', 'metadata'],
+            update_fields=['pe', 'pe_ttm', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq', 'metadata'],
         )
         return len(rows)
 
@@ -209,7 +211,7 @@ class Command(BaseCommand):
         )
 
     def _fetch_daily_basic(self, pro, ts_code, start_date, end_date):
-        fields = 'trade_date,pe,pb,total_share,float_share,free_share,total_mv,circ_mv'
+        fields = 'trade_date,pe,pe_ttm,pb,total_share,float_share,free_share,total_mv,circ_mv'
         daily_df = self._call_tushare(
             lambda: pro.daily_basic(
                 ts_code=ts_code,

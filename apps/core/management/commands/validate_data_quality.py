@@ -88,12 +88,13 @@ DAILY_COVERAGE_FIELDS = (
     'fundamental_snapshot',
     'capital_flow_snapshot',
     'pe',
+    'pe_ttm',
     'pb',
     'roe',
     'roe_qoq',
     'main_force_net_5d',
     'margin_balance_change_5d',
-    'pe_percentile_score',
+    'pe_ttm_percentile_score',
     'pb_percentile_score',
     'composite_score',
 )
@@ -111,7 +112,7 @@ REPORT_DESCRIPTIONS = {
     'pit_benchmark_daily_gaps.csv': 'Missing PIT union benchmark daily rows on PIT-required trading dates.',
     'feature_dependency_gaps.csv': 'Missing dependent feature rows relative to existing OHLCV rows or required trade-date context rows.',
     'ohlcv_continuity_gaps.csv': 'Missing OHLCV on official exchange open days after listing and before delisting, excluding suspend_d-covered dates.',
-    'fundamental_snapshot_continuity_gaps.csv': 'Missing or NULL PE/PB/ROE/ROE_QOQ windows relative to OHLCV-backed baseline dates.',
+    'fundamental_snapshot_continuity_gaps.csv': 'Missing or NULL PE/PE_TTM/PB/ROE/ROE_QOQ windows relative to OHLCV-backed baseline dates.',
     'capital_flow_snapshot_continuity_gaps.csv': 'Missing or NULL Main Force Net 5D / Margin Balance Change 5D windows relative to OHLCV-backed baseline dates, including source-derived gap_reason labels.',
     'ohlcv_excused_gaps.csv': 'Missing OHLCV dates excluded from continuity expectations because they fall before list_date, on or after delist_date, or on suspend_d-covered dates.',
     'ohlcv_price_anomalies.csv': 'Per-row OHLCV price and volume anomaly checks.',
@@ -134,7 +135,7 @@ INDEX_CODE_LABELS = {
 }
 USABLE_ASSET_CLIFF_DROP_RATIO = 0.2
 FACTOR_SCORE_FIELDS = (
-    'pe_percentile_score',
+    'pe_ttm_percentile_score',
     'pb_percentile_score',
     'roe_trend_score',
     'main_force_flow_score',
@@ -155,8 +156,8 @@ FACTOR_NEUTRAL_DEFAULT_FIELDS = (
     'sentiment_score',
     'roe_trend_score',
 )
-FUNDAMENTAL_FIELDS = ('pe', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq')
-FUNDAMENTAL_CONTINUITY_FIELDS = ('pe', 'pb', 'roe', 'roe_qoq')
+FUNDAMENTAL_FIELDS = ('pe', 'pe_ttm', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq')
+FUNDAMENTAL_CONTINUITY_FIELDS = ('pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq')
 CAPITAL_FLOW_FIELDS = ('main_force_net_5d', 'margin_balance_change_5d')
 FUNDAMENTAL_RECONCILIATION_FINA_LOOKBACK_DAYS = 400
 SNAPSHOT_ROW_FIELD = 'snapshot_row'
@@ -186,6 +187,7 @@ FUNDAMENTAL_RECONCILIATION_FIELDNAMES = [
     'stored_fina_indicator_end_date', 'recomputed_fina_indicator_end_date',
     'mismatch_fields',
     'stored_pe', 'recomputed_pe',
+    'stored_pe_ttm', 'recomputed_pe_ttm',
     'stored_pb', 'recomputed_pb',
     'stored_total_share', 'recomputed_total_share',
     'stored_float_share', 'recomputed_float_share',
@@ -304,9 +306,9 @@ class ReportWriter:
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
                 'date', 'effective_universe_count', 'feature_non_null_count', 'usable_asset_count', 'dropped_asset_count',
                 'ohlcv_count', 'rs_score_count', 'factor_score_count', 'sentiment_score_count',
-                'fundamental_snapshot_count', 'capital_flow_snapshot_count', 'pe_non_null_count', 'pb_non_null_count',
+                'fundamental_snapshot_count', 'capital_flow_snapshot_count', 'pe_non_null_count', 'pe_ttm_non_null_count', 'pb_non_null_count',
                 'roe_non_null_count', 'roe_qoq_non_null_count', 'main_force_net_5d_non_null_count',
-                'margin_balance_change_5d_non_null_count', 'pe_percentile_score_count', 'pb_percentile_score_count',
+                'margin_balance_change_5d_non_null_count', 'pe_ttm_percentile_score_count', 'pb_percentile_score_count',
                 'composite_score_count', 'missing_by_feature', 'coverage_status', 'red_flags',
             ],
             'cross_section_metric_audit': [
@@ -1850,6 +1852,8 @@ class Command(BaseCommand):
                     'mismatch_fields': ','.join(mismatch_fields),
                     'stored_pe': row.pe,
                     'recomputed_pe': expected_payload['pe'] if expected_payload else None,
+                    'stored_pe_ttm': row.pe_ttm,
+                    'recomputed_pe_ttm': expected_payload['pe_ttm'] if expected_payload else None,
                     'stored_pb': row.pb,
                     'recomputed_pb': expected_payload['pb'] if expected_payload else None,
                     'stored_total_share': row.total_share,
@@ -1904,7 +1908,7 @@ class Command(BaseCommand):
         return sample
 
     def _fetch_fundamental_reconciliation_daily_basic(self, pro, ts_code, start_date, end_date):
-        fields = 'trade_date,pe,pb,total_share,float_share,free_share,total_mv,circ_mv'
+        fields = 'trade_date,pe,pe_ttm,pb,total_share,float_share,free_share,total_mv,circ_mv'
         daily_df = self._call_reconciliation_tushare(
             lambda: pro.daily_basic(
                 ts_code=ts_code,
@@ -2400,14 +2404,14 @@ class Command(BaseCommand):
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).select_related('asset').values('date', 'asset_id', 'pe', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
+        ).select_related('asset').values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
                 continue
 
             self._set_feature_presence(feature_bitmaps, 'fundamental_snapshot', row_date, asset_id, bit_positions)
-            for field in ('pe', 'pb', 'roe', 'roe_qoq'):
+            for field in ('pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq'):
                 if row.get(field) is not None:
                     self._set_feature_presence(feature_bitmaps, field, row_date, asset_id, bit_positions)
 
@@ -2471,15 +2475,15 @@ class Command(BaseCommand):
             date__gte=start_date,
             date__lte=end_date,
             mode=FactorScore.FactorMode.COMPOSITE,
-        ).values('date', 'asset_id', 'pe_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
+        ).values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
                 continue
 
             self._set_feature_presence(feature_bitmaps, 'factor_score', row_date, asset_id, bit_positions)
-            if row.get('pe_percentile_score') is not None:
-                self._set_feature_presence(feature_bitmaps, 'pe_percentile_score', row_date, asset_id, bit_positions)
+            if row.get('pe_ttm_percentile_score') is not None:
+                self._set_feature_presence(feature_bitmaps, 'pe_ttm_percentile_score', row_date, asset_id, bit_positions)
             if row.get('pb_percentile_score') is not None:
                 self._set_feature_presence(feature_bitmaps, 'pb_percentile_score', row_date, asset_id, bit_positions)
             if row.get('composite_score') is not None:
@@ -2531,12 +2535,13 @@ class Command(BaseCommand):
                 'fundamental_snapshot_count': (feature_bitmaps['fundamental_snapshot'].get(trading_date, 0) & membership_mask).bit_count(),
                 'capital_flow_snapshot_count': (feature_bitmaps['capital_flow_snapshot'].get(trading_date, 0) & membership_mask).bit_count(),
                 'pe_non_null_count': (feature_bitmaps['pe'].get(trading_date, 0) & membership_mask).bit_count(),
+                'pe_ttm_non_null_count': (feature_bitmaps['pe_ttm'].get(trading_date, 0) & membership_mask).bit_count(),
                 'pb_non_null_count': (feature_bitmaps['pb'].get(trading_date, 0) & membership_mask).bit_count(),
                 'roe_non_null_count': (feature_bitmaps['roe'].get(trading_date, 0) & membership_mask).bit_count(),
                 'roe_qoq_non_null_count': (feature_bitmaps['roe_qoq'].get(trading_date, 0) & membership_mask).bit_count(),
                 'main_force_net_5d_non_null_count': (feature_bitmaps['main_force_net_5d'].get(trading_date, 0) & membership_mask).bit_count(),
                 'margin_balance_change_5d_non_null_count': (feature_bitmaps['margin_balance_change_5d'].get(trading_date, 0) & membership_mask).bit_count(),
-                'pe_percentile_score_count': (feature_bitmaps['pe_percentile_score'].get(trading_date, 0) & membership_mask).bit_count(),
+                'pe_ttm_percentile_score_count': (feature_bitmaps['pe_ttm_percentile_score'].get(trading_date, 0) & membership_mask).bit_count(),
                 'pb_percentile_score_count': (feature_bitmaps['pb_percentile_score'].get(trading_date, 0) & membership_mask).bit_count(),
                 'composite_score_count': (feature_bitmaps['composite_score'].get(trading_date, 0) & membership_mask).bit_count(),
                 'missing_by_feature': missing_by_feature,
@@ -2574,7 +2579,7 @@ class Command(BaseCommand):
             mode=FactorScore.FactorMode.COMPOSITE,
         ).select_related('asset').values(
             'date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name',
-            'pe_percentile_score', 'pb_percentile_score', 'composite_score',
+            'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score',
         ).iterator(chunk_size=5000):
             payload = {
                 'asset_id': row['asset_id'],
@@ -2582,10 +2587,10 @@ class Command(BaseCommand):
                 'ts_code': row['asset__ts_code'],
                 'name': row['asset__name'],
             }
-            if row['pe_percentile_score'] is not None:
-                participant_payload[row['date']]['pe_percentile_score'][row['asset_id']] = {
+            if row['pe_ttm_percentile_score'] is not None:
+                participant_payload[row['date']]['pe_ttm_percentile_score'][row['asset_id']] = {
                     **payload,
-                    'value': float(row['pe_percentile_score']),
+                    'value': float(row['pe_ttm_percentile_score']),
                 }
             if row['pb_percentile_score'] is not None:
                 participant_payload[row['date']]['pb_percentile_score'][row['asset_id']] = {
@@ -2603,7 +2608,7 @@ class Command(BaseCommand):
         for target_date in audit_dates:
             universe_asset_ids = effective_asset_ids.get(target_date, set())
             effective_count = len(universe_asset_ids)
-            for feature_name in ('RS_SCORE', 'pe_percentile_score', 'pb_percentile_score', 'composite_score'):
+            for feature_name in ('RS_SCORE', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score'):
                 participants = participant_payload.get(target_date, {}).get(feature_name, {})
                 participant_ids = set(participants.keys())
                 missing_ids = sorted(universe_asset_ids - participant_ids)

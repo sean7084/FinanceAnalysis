@@ -10,7 +10,7 @@ class FundamentalFactorSnapshotSerializer(serializers.ModelSerializer):
         model = FundamentalFactorSnapshot
         fields = [
             'id', 'asset', 'asset_symbol', 'date',
-            'pe', 'pb', 'roe', 'roe_qoq', 'metadata', 'created_at',
+            'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata', 'created_at',
         ]
 
 
@@ -38,7 +38,7 @@ class FactorScoreSerializer(serializers.ModelSerializer):
             'sentiment_score',
             'financial_weight', 'flow_weight', 'technical_weight', 'sentiment_weight',
             'composite_score', 'bottom_probability_score',
-            'pe_percentile_score', 'pb_percentile_score', 'roe_trend_score',
+            'pe_ttm_percentile_score', 'pb_percentile_score', 'roe_trend_score',
             'main_force_flow_score', 'margin_flow_score',
             'technical_reversal_score', 'metadata', 'created_at', 'updated_at',
         ]

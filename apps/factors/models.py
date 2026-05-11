@@ -14,6 +14,7 @@ class FundamentalFactorSnapshot(models.Model):
     )
     date = models.DateField(_('Date'), db_index=True)
     pe = models.DecimalField(_('PE'), max_digits=12, decimal_places=4, null=True, blank=True)
+    pe_ttm = models.DecimalField(_('PE TTM'), max_digits=12, decimal_places=4, null=True, blank=True)
     pb = models.DecimalField(_('PB'), max_digits=12, decimal_places=4, null=True, blank=True)
     total_share = models.DecimalField(_('Total Share'), max_digits=20, decimal_places=4, null=True, blank=True)
     float_share = models.DecimalField(_('Float Share'), max_digits=20, decimal_places=4, null=True, blank=True)
@@ -137,6 +138,7 @@ class FactorScore(models.Model):
 
     # Raw component metrics
     pe_percentile_score = models.DecimalField(_('PE Percentile Score'), max_digits=7, decimal_places=6, null=True, blank=True)
+    pe_ttm_percentile_score = models.DecimalField(_('PE TTM Percentile Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     pb_percentile_score = models.DecimalField(_('PB Percentile Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     roe_trend_score = models.DecimalField(_('ROE Trend Score'), max_digits=7, decimal_places=6, null=True, blank=True)
     main_force_flow_score = models.DecimalField(_('Main Force Flow Score'), max_digits=7, decimal_places=6, null=True, blank=True)

@@ -188,22 +188,46 @@ def _compute_realized_volatility(rows, window=5):
     return float(pstdev(returns))
 
 
+INTERACTION_FEATURE_SPECS = (
+    ('rsi_x_relative_volume_5d', 'rsi', 'relative_volume_5d'),
+    ('rsi_x_macro_phase', 'rsi', 'macro_phase'),
+    ('factor_composite_x_sentiment', 'factor_composite', 'sentiment_7d'),
+    # Retain the feature name for model-artifact compatibility, but keep the asset-level
+    # northbound placeholder neutral because northbound flow is market-wide, not per-stock.
+    ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
+    ('pe_ttm_percentile_x_macro_phase', 'pe_ttm_percentile', 'macro_phase'),
+)
+LEGACY_PREDICTION_FEATURE_ALIASES = {
+    'pe_percentile': 'pe_ttm_percentile',
+    'pe_percentile_x_macro_phase': 'pe_ttm_percentile_x_macro_phase',
+}
+
+
 def _build_interaction_features(df, feature_names):
-    interaction_specs = [
-        ('rsi_x_relative_volume_5d', 'rsi', 'relative_volume_5d'),
-        ('rsi_x_macro_phase', 'rsi', 'macro_phase'),
-        ('factor_composite_x_sentiment', 'factor_composite', 'sentiment_7d'),
-        # Retain the feature name for model-artifact compatibility, but keep the asset-level
-        # northbound placeholder neutral because northbound flow is market-wide, not per-stock.
-        ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
-        ('pe_percentile_x_macro_phase', 'pe_percentile', 'macro_phase'),
-    ]
     created = []
-    for output_name, left_name, right_name in interaction_specs:
+    for output_name, left_name, right_name in INTERACTION_FEATURE_SPECS:
         if left_name in df.columns and right_name in df.columns:
             df[output_name] = df[left_name] * df[right_name]
             created.append(output_name)
     return df, feature_names + created
+
+
+def _augment_single_asset_features(features):
+    for output_name, left_name, right_name in INTERACTION_FEATURE_SPECS:
+        if left_name in features and right_name in features:
+            features[output_name] = features[left_name] * features[right_name]
+    return features
+
+
+def _resolve_prediction_feature_value(features_dict, feature_name):
+    if feature_name in features_dict:
+        return features_dict[feature_name]
+
+    alias_name = LEGACY_PREDICTION_FEATURE_ALIASES.get(feature_name)
+    if alias_name is not None:
+        return features_dict.get(alias_name, 0.0)
+
+    return 0.0
 
 
 def _coverage_at_count(ranked_features, keep_count):
@@ -530,7 +554,7 @@ def _extract_features_for_asset(asset_id, as_of):
         mode=FactorScore.FactorMode.COMPOSITE,
     ).order_by('-date').first()
 
-    features['pe_percentile'] = _safe_float(getattr(factor, 'pe_percentile_score', 0.5), 0.5) if factor else 0.5
+    features['pe_ttm_percentile'] = _safe_float(getattr(factor, 'pe_ttm_percentile_score', 0.5), 0.5) if factor else 0.5
     features['pb_percentile'] = _safe_float(getattr(factor, 'pb_percentile_score', 0.5), 0.5) if factor else 0.5
     features['roe_trend'] = _safe_float(getattr(factor, 'roe_trend_score', 0.5), 0.5) if factor else 0.5
     features['northbound_flow'] = 0.5
@@ -571,7 +595,7 @@ def _extract_features_for_asset(asset_id, as_of):
     )
     features['sentiment_7d_avg_20d'] = _safe_float(sentiment_window.aggregate(avg=Avg('sentiment_score'))['avg'], 0.0)
 
-    return features
+    return _augment_single_asset_features(features)
 
 
 def _compute_rsi_series(close_series, period=14):
@@ -689,7 +713,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         ).values(
             'asset_id',
             'date',
-            'pe_percentile_score',
+            'pe_ttm_percentile_score',
             'pb_percentile_score',
             'roe_trend_score',
             'main_force_flow_score',
@@ -700,13 +724,13 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
     factor_df = pd.DataFrame.from_records(factor_rows)
     if factor_df.empty:
         factor_df = pd.DataFrame({
-            'asset_id': [], 'date': [], 'pe_percentile_score': [], 'pb_percentile_score': [], 'roe_trend_score': [],
+            'asset_id': [], 'date': [], 'pe_ttm_percentile_score': [], 'pb_percentile_score': [], 'roe_trend_score': [],
             'main_force_flow_score': [], 'margin_flow_score': [], 'composite_score': [],
         })
     else:
         factor_df['date'] = pd.to_datetime(factor_df['date'])
         for column in [
-            'pe_percentile_score', 'pb_percentile_score', 'roe_trend_score',
+            'pe_ttm_percentile_score', 'pb_percentile_score', 'roe_trend_score',
             'main_force_flow_score', 'margin_flow_score', 'composite_score',
         ]:
             factor_df[column] = factor_df[column].astype(float)
@@ -783,7 +807,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
 
         asset_factor_df = factor_df[factor_df['asset_id'] == asset_id][[
             'date',
-            'pe_percentile_score',
+            'pe_ttm_percentile_score',
             'pb_percentile_score',
             'roe_trend_score',
             'main_force_flow_score',
@@ -791,7 +815,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             'composite_score',
         ]].sort_values('date')
         if asset_factor_df.empty:
-            asset_df['pe_percentile'] = 0.5
+            asset_df['pe_ttm_percentile'] = 0.5
             asset_df['pb_percentile'] = 0.5
             asset_df['roe_trend'] = 0.5
             asset_df['northbound_flow'] = 0.5
@@ -800,7 +824,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             asset_df['factor_composite'] = 0.5
         else:
             asset_df = pd.merge_asof(asset_df.sort_values('date'), asset_factor_df, on='date', direction='backward')
-            asset_df['pe_percentile'] = asset_df['pe_percentile_score'].fillna(0.5)
+            asset_df['pe_ttm_percentile'] = asset_df['pe_ttm_percentile_score'].fillna(0.5)
             asset_df['pb_percentile'] = asset_df['pb_percentile_score'].fillna(0.5)
             asset_df['roe_trend'] = asset_df['roe_trend_score'].fillna(0.5)
             asset_df['main_force_flow'] = asset_df['main_force_flow_score'].fillna(0.5)
@@ -867,7 +891,7 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             'rsi_lag_10d', 'rsi_delta_10d', 'mom_5d_delta_10d', 'rs_score_delta_10d',
             'return_3d', 'return_5d', 'return_10d',
             'relative_volume_5d', 'relative_volume_20d', 'realized_volatility_5d',
-            'pe_percentile', 'pb_percentile', 'roe_trend',
+            'pe_ttm_percentile', 'pb_percentile', 'roe_trend',
             'northbound_flow', 'main_force_flow', 'margin_flow', 'factor_composite',
             'macro_phase', 'pmi_manufacturing', 'pmi_non_manufacturing', 'yield_curve',
             'sentiment_7d', 'sentiment_7d_avg_20d',
@@ -1240,7 +1264,7 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
     # Extract features
     features_dict = _extract_features_for_asset(asset_id, target_date)
     feature_names = artifacts['metadata']['feature_names']
-    X = np.array([features_dict.get(name, 0.0) for name in feature_names]).reshape(1, -1)
+    X = np.array([_resolve_prediction_feature_value(features_dict, name) for name in feature_names]).reshape(1, -1)
 
     # Scale
     X_scaled = artifacts['scaler'].transform(X)

@@ -336,7 +336,7 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 'capital_flow_score': factor.capital_flow_score,
                 'technical_score': factor.technical_score,
                 'factor_sentiment_score': factor.sentiment_score,
-                'pe_percentile_score': factor.pe_percentile_score,
+                'pe_ttm_percentile_score': factor.pe_ttm_percentile_score,
                 'pb_percentile_score': factor.pb_percentile_score,
                 'roe_trend_score': factor.roe_trend_score,
                 'main_force_flow_score': factor.main_force_flow_score,

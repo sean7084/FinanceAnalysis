@@ -223,6 +223,7 @@ class DataQualityValidationCommandTests(TestCase):
             asset=asset,
             date=trade_date,
             pe=Decimal('10'),
+            pe_ttm=Decimal('9.5'),
             pb=Decimal('1.5'),
             roe=Decimal('0.100000'),
             roe_qoq=Decimal('0.010000'),
@@ -237,7 +238,7 @@ class DataQualityValidationCommandTests(TestCase):
             asset=asset,
             date=trade_date,
             mode=FactorScore.FactorMode.COMPOSITE,
-            pe_percentile_score=Decimal('0.400000'),
+            pe_ttm_percentile_score=Decimal('0.400000'),
             pb_percentile_score=Decimal('0.500000'),
             roe_trend_score=Decimal('0.600000'),
             main_force_flow_score=Decimal('0.700000'),
@@ -910,6 +911,7 @@ class DataQualityValidationCommandTests(TestCase):
 
         FundamentalFactorSnapshot.objects.filter(asset=matched_asset, date=self.d3).update(
             pe=Decimal('8.5'),
+            pe_ttm=Decimal('8.8'),
             pb=Decimal('1.1'),
             total_share=Decimal('100.0'),
             float_share=Decimal('60.0'),
@@ -926,6 +928,7 @@ class DataQualityValidationCommandTests(TestCase):
         )
         FundamentalFactorSnapshot.objects.filter(asset=mismatch_asset, date=self.d4).update(
             pe=Decimal('9.0'),
+            pe_ttm=Decimal('9.4'),
             pb=Decimal('9.9'),
             total_share=Decimal('100.0'),
             float_share=Decimal('62.0'),
@@ -946,10 +949,10 @@ class DataQualityValidationCommandTests(TestCase):
                 ts_code = kwargs['ts_code']
                 if ts_code == matched_asset.ts_code:
                     return pd.DataFrame([
-                        {'trade_date': '20240104', 'pe': 8.5, 'pb': 1.1, 'total_share': 100.0, 'float_share': 60.0, 'free_share': 55.0, 'total_mv': 1050.0, 'circ_mv': 577.5},
+                        {'trade_date': '20240104', 'pe': 8.5, 'pe_ttm': 8.8, 'pb': 1.1, 'total_share': 100.0, 'float_share': 60.0, 'free_share': 55.0, 'total_mv': 1050.0, 'circ_mv': 577.5},
                     ])
                 return pd.DataFrame([
-                    {'trade_date': '20240105', 'pe': 9.0, 'pb': 1.2, 'total_share': 100.0, 'float_share': 62.0, 'free_share': 57.0, 'total_mv': 1100.0, 'circ_mv': 627.0},
+                    {'trade_date': '20240105', 'pe': 9.0, 'pe_ttm': 9.4, 'pb': 1.2, 'total_share': 100.0, 'float_share': 62.0, 'free_share': 57.0, 'total_mv': 1100.0, 'circ_mv': 627.0},
                 ])
 
             def fina_indicator(self, **kwargs):
@@ -1355,6 +1358,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             asset=asset,
             date=trade_dates[-1],
             pe=Decimal('39.7972'),
+            pe_ttm=Decimal('38.1200'),
             pb=Decimal('4.6495'),
             total_share=Decimal('145920.0'),
             float_share=Decimal('129280.0'),
@@ -1374,7 +1378,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             def daily_basic(self, **kwargs):
                 frame = pd.DataFrame([
                     {
-                        'trade_date': '20100107', 'pe': 39.7972, 'pb': 4.6495,
+                        'trade_date': '20100107', 'pe': 39.7972, 'pe_ttm': 38.1200, 'pb': 4.6495,
                         'total_share': 145920.0, 'float_share': 129280.0, 'free_share': 70530.4651,
                         'total_mv': 1834214.4, 'circ_mv': 1625049.6,
                     },
@@ -1416,6 +1420,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             self.assertEqual(len(audit_rows), 1)
             row = audit_rows[0]
             self.assertEqual(row['audit_status'], 'matched')
+            self.assertEqual(Decimal(row['recomputed_pe_ttm']), Decimal('38.1200'))
             self.assertEqual(row['recomputed_fina_indicator_ann_date'], '2009-10-28')
             self.assertEqual(row['recomputed_fina_indicator_end_date'], '2009-09-30')
             self.assertEqual(Decimal(row['recomputed_roe']), Decimal('0.112604'))
@@ -1439,6 +1444,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             asset=asset,
             date=trade_date,
             pe=Decimal('10.6016'),
+            pe_ttm=Decimal('10.1024'),
             pb=Decimal('0.8408'),
             total_share=Decimal('1756621.5836'),
             float_share=Decimal('1756621.5836'),
@@ -1458,7 +1464,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             def daily_basic(self, **kwargs):
                 frame = pd.DataFrame([
                     {
-                        'trade_date': '20240701', 'pe': 10.6016, 'pb': 0.8408,
+                        'trade_date': '20240701', 'pe': 10.6016, 'pe_ttm': 10.1024, 'pb': 0.8408,
                         'total_share': 1756621.5836, 'float_share': 1756621.5836, 'free_share': 824545.4316,
                         'total_mv': 12647675.4019, 'circ_mv': 12647675.4019,
                     },
@@ -1499,6 +1505,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             self.assertEqual(len(audit_rows), 1)
             row = audit_rows[0]
             self.assertEqual(row['audit_status'], 'matched')
+            self.assertEqual(Decimal(row['recomputed_pe_ttm']), Decimal('10.1024'))
             self.assertEqual(row['recomputed_fina_indicator_ann_date'], '2024-04-27')
             self.assertEqual(row['recomputed_fina_indicator_end_date'], '2024-03-31')
             self.assertEqual(Decimal(row['recomputed_roe']), Decimal('0.021017'))
@@ -1522,6 +1529,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             asset=asset,
             date=trade_date,
             pe=Decimal('222.3770'),
+            pe_ttm=Decimal('180.1234'),
             pb=Decimal('2.9196'),
             total_share=Decimal('268190.1273'),
             float_share=Decimal('52270.7560'),
@@ -1541,7 +1549,7 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
             def daily_basic(self, **kwargs):
                 frame = pd.DataFrame([
                     {
-                        'trade_date': '20151113', 'pe': 222.3770, 'pb': 2.9196,
+                        'trade_date': '20151113', 'pe': 222.3770, 'pe_ttm': 180.1234321, 'pb': 2.9196,
                         'total_share': 268190.1273, 'float_share': 52270.7560, 'free_share': 24066.2262,
                         'total_mv': 5414758.6702, 'circ_mv': 1055346.5636,
                     },
@@ -1662,6 +1670,7 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
                 asset=self.asset,
                 date=trade_date,
                 pe=Decimal('10'),
+                pe_ttm=Decimal('9.8'),
                 pb=Decimal('1.5'),
                 roe=Decimal('0.1'),
                 roe_qoq=Decimal('0.01'),

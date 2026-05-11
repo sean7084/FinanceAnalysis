@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 
 from apps.factors.tasks import calculate_factor_scores_for_date
 from apps.factors.models import FactorScore, FundamentalFactorSnapshot, CapitalFlowSnapshot
-from apps.markets.models import Market, Asset
+from apps.markets.models import Market, Asset, IndexMembership
 from .models import NewsArticle, SentimentScore
 from .tasks import calculate_daily_sentiment, fetch_latest_market_news, ingest_latest_news, run_hourly_historical_news_backfill
 
@@ -109,9 +109,25 @@ class Phase13SentimentTests(TestCase):
 
     def test_sentiment_integrates_into_factor_score(self):
         d = timezone.now().date()
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=self.asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=d,
+                weight=Decimal('4.2'),
+            ),
+            IndexMembership(
+                asset=self.asset,
+                index_code='000510.CSI',
+                index_name='CSI A500',
+                trade_date=d,
+                weight=Decimal('4.2'),
+            ),
+        ])
         FundamentalFactorSnapshot.objects.create(
             asset=self.asset, date=d,
-            pe=Decimal('9'), pb=Decimal('1.2'), roe=Decimal('0.12'), roe_qoq=Decimal('0.03'),
+            pe=Decimal('9'), pe_ttm=Decimal('8.7'), pb=Decimal('1.2'), roe=Decimal('0.12'), roe_qoq=Decimal('0.03'),
         )
         CapitalFlowSnapshot.objects.create(
             asset=self.asset, date=d,

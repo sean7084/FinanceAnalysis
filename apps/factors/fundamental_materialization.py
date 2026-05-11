@@ -6,6 +6,7 @@ import pandas as pd
 
 FUNDAMENTAL_DAILY_BASIC_COLUMNS = (
     'pe',
+    'pe_ttm',
     'pb',
     'total_share',
     'float_share',
@@ -176,6 +177,7 @@ def materialize_fundamental_snapshot_rows(trading_dates, daily_df, fina_df):
             'fina_indicator_ann_date': ann_date.date() if pd.notna(ann_date) else None,
             'fina_indicator_end_date': report_end_date.date() if pd.notna(report_end_date) else None,
             'pe': safe_decimal(getattr(row, 'pe', None)),
+            'pe_ttm': safe_decimal(getattr(row, 'pe_ttm', None)),
             'pb': safe_decimal(getattr(row, 'pb', None)),
             'total_share': safe_decimal(getattr(row, 'total_share', None)),
             'float_share': safe_decimal(getattr(row, 'float_share', None)),
