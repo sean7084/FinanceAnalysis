@@ -8,5 +8,22 @@ FinanceAnalysis.code-workspace
 reports
 source_data
 .venv
-__pycache__
+
+# Python bytecode and cache artifacts
+__pycache__/
+*.py[cod]
+*.pyc.*
+*.pyo
+*.pyd
+*.py,cover
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
 .env
