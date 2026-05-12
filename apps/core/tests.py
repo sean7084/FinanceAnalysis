@@ -297,16 +297,18 @@ class DataQualityValidationCommandTests(TestCase):
                 'summary.csv',
                 'missing_by_table.csv',
                 'missing_fields.csv',
-                'affected_asset_dates.csv',
                 'index_membership_history_gaps.csv',
                 'index_membership_monthly_blanks.csv',
                 'benchmark_index_daily_gaps.csv',
                 'pit_benchmark_daily_gaps.csv',
+                'macro_snapshot_gaps.csv',
+                'factor_score_gaps.csv',
+                'sentiment_score_gaps.csv',
                 'ohlcv_continuity_gaps.csv',
                 'fundamental_snapshot_continuity_gaps.csv',
                 'capital_flow_snapshot_continuity_gaps.csv',
+                'technical_indicator_snapshot_continuity_gaps.csv',
                 'ohlcv_excused_gaps.csv',
-                'feature_dependency_gaps.csv',
                 'ohlcv_price_anomalies.csv',
                 'asset_lifecycle_issues.csv',
                 'feature_source_asof_issues.csv',
@@ -318,6 +320,8 @@ class DataQualityValidationCommandTests(TestCase):
                 'metadata.json',
             ]:
                 self.assertTrue((output_dir / filename).exists(), filename)
+            self.assertFalse((output_dir / 'feature_dependency_gaps.csv').exists())
+            self.assertFalse((output_dir / 'affected_asset_dates.csv').exists())
 
             continuity_rows = read_csv(output_dir / 'ohlcv_continuity_gaps.csv')
             old_asset_rows = [row for row in continuity_rows if row['asset_ts_code'] == '600001.SH']
@@ -328,9 +332,9 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertTrue(all(row['metric_family'] == 'ohlcv' for row in continuity_rows))
 
             fundamental_gap_rows = read_csv(output_dir / 'fundamental_snapshot_continuity_gaps.csv')
-            self.assertEqual(len(fundamental_gap_rows), 4)
+            self.assertEqual(len(fundamental_gap_rows), 5)
             self.assertEqual({row['asset_ts_code'] for row in fundamental_gap_rows}, {'001391.SZ'})
-            self.assertEqual({row['field'] for row in fundamental_gap_rows}, {'pe', 'pb', 'roe', 'roe_qoq'})
+            self.assertEqual({row['field'] for row in fundamental_gap_rows}, {'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq'})
             self.assertTrue(all(row['gap_start'] == '2024-01-04' for row in fundamental_gap_rows))
             self.assertTrue(all(row['gap_end'] == '2024-01-05' for row in fundamental_gap_rows))
             self.assertTrue(all(row['expected_count'] == '3' for row in fundamental_gap_rows))
@@ -396,48 +400,43 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertTrue(any(row['benchmark_code'] == PIT_UNION_BENCHMARK_CODE for row in pit_benchmark_rows))
             self.assertTrue(all(row['metric_family'] == 'benchmark' for row in pit_benchmark_rows))
 
-            cross_rows = read_csv(output_dir / 'feature_dependency_gaps.csv')
-            missing_factor_rows = [row for row in cross_rows if row['issue_type'] == 'missing_factor_score']
+            factor_gap_rows = read_csv(output_dir / 'factor_score_gaps.csv')
+            missing_factor_rows = [row for row in factor_gap_rows if row['issue_type'] == 'missing_factor_score']
             self.assertEqual(len(missing_factor_rows), 2)
             self.assertEqual({row['asset_ts_code'] for row in missing_factor_rows}, {'001391.SZ'})
-            missing_fundamental_rows = [row for row in cross_rows if row['issue_type'] == 'missing_fundamental_snapshot']
-            self.assertEqual(len(missing_fundamental_rows), 2)
-            self.assertEqual({row['asset_ts_code'] for row in missing_fundamental_rows}, {'001391.SZ'})
-            self.assertEqual({row['field'] for row in missing_fundamental_rows}, {'snapshot_row'})
-            self.assertEqual(
-                {row['date'] for row in missing_fundamental_rows},
-                {'2024-01-04', '2024-01-05'},
-            )
-            missing_capital_flow_rows = [row for row in cross_rows if row['issue_type'] == 'missing_capital_flow_snapshot']
-            self.assertEqual(len(missing_capital_flow_rows), 2)
-            self.assertEqual({row['asset_ts_code'] for row in missing_capital_flow_rows}, {'001391.SZ'})
-            self.assertEqual({row['field'] for row in missing_capital_flow_rows}, {'snapshot_row'})
-            self.assertEqual(
-                {row['date'] for row in missing_capital_flow_rows},
-                {'2024-01-04', '2024-01-05'},
-            )
-            missing_macro_rows = [row for row in cross_rows if row['issue_type'] == 'missing_macro_field']
+            self.assertEqual({row['metric_family'] for row in missing_factor_rows}, {'factor_score'})
+            self.assertEqual({row['required_table'] for row in missing_factor_rows}, {'factor_score'})
+            self.assertEqual({row['date'] for row in missing_factor_rows}, {'2024-01-04', '2024-01-05'})
+
+            sentiment_gap_rows = read_csv(output_dir / 'sentiment_score_gaps.csv')
+            missing_sentiment_rows = [row for row in sentiment_gap_rows if row['issue_type'] == 'missing_sentiment_score']
+            self.assertEqual(len(missing_sentiment_rows), 2)
+            self.assertEqual({row['asset_ts_code'] for row in missing_sentiment_rows}, {'001391.SZ'})
+            self.assertEqual({row['field'] for row in missing_sentiment_rows}, {'ASSET_7D'})
+            self.assertEqual({row['metric_family'] for row in missing_sentiment_rows}, {'sentiment_score'})
+            self.assertEqual({row['required_table'] for row in missing_sentiment_rows}, {'sentiment_score'})
+            self.assertEqual({row['date'] for row in missing_sentiment_rows}, {'2024-01-04', '2024-01-05'})
+
+            macro_gap_rows = read_csv(output_dir / 'macro_snapshot_gaps.csv')
+            missing_macro_rows = [row for row in macro_gap_rows if row['issue_type'] == 'missing_macro_field']
             self.assertTrue(missing_macro_rows)
             self.assertTrue(any(
                 row['required_table'] == 'macro_snapshot'
                 and row['field'] == 'dxy'
                 and row['date'] == '2024-01-01'
+                and row['metric_family'] == 'macro_snapshot'
                 for row in missing_macro_rows
             ))
-            missing_indicator_rows = [row for row in cross_rows if row['issue_type'] == 'missing_technical_indicator']
-            self.assertEqual(len(missing_indicator_rows), 26)
-            self.assertEqual({row['asset_ts_code'] for row in missing_indicator_rows}, {'001391.SZ'})
-            self.assertEqual(
-                {row['field'] for row in missing_indicator_rows},
-                {indicator_type for indicator_type, _value, _parameters in REQUIRED_TECHNICAL_INDICATORS},
-            )
-            self.assertEqual(
-                {row['date'] for row in missing_indicator_rows},
-                {'2024-01-04', '2024-01-05'},
-            )
-            latest_indicator_rows = [row for row in cross_rows if row['issue_type'] == 'missing_latest_technical_indicator']
-            self.assertEqual(latest_indicator_rows, [])
-            self.assertTrue(all(row['metric_family'] == 'feature_dependency' for row in cross_rows))
+
+            technical_gap_rows = read_csv(output_dir / 'technical_indicator_snapshot_continuity_gaps.csv')
+            self.assertTrue(any(
+                row['asset_ts_code'] == '001391.SZ'
+                and row['field'] == 'RS_SCORE'
+                and row['issue_type'] == 'continuity_gap'
+                and row['gap_start'] == '2024-01-04'
+                and row['gap_end'] == '2024-01-05'
+                for row in technical_gap_rows
+            ))
 
             anomaly_rows = read_csv(output_dir / 'ohlcv_price_anomalies.csv')
             self.assertTrue(any(row['issue_type'] == 'ohlcv_high_below_low' for row in anomaly_rows))
@@ -520,6 +519,9 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertIn('index_membership_monthly_blanks.csv', metadata['report_descriptions'])
             self.assertIn('benchmark_index_daily_gaps.csv', metadata['report_descriptions'])
             self.assertIn('pit_benchmark_daily_gaps.csv', metadata['report_descriptions'])
+            self.assertIn('macro_snapshot_gaps.csv', metadata['report_descriptions'])
+            self.assertIn('factor_score_gaps.csv', metadata['report_descriptions'])
+            self.assertIn('sentiment_score_gaps.csv', metadata['report_descriptions'])
             self.assertIn('ohlcv_continuity_gaps.csv', metadata['report_descriptions'])
             self.assertIn('fundamental_snapshot_continuity_gaps.csv', metadata['report_descriptions'])
             self.assertIn('capital_flow_snapshot_continuity_gaps.csv', metadata['report_descriptions'])
@@ -633,7 +635,6 @@ class DataQualityValidationCommandTests(TestCase):
             output_dir = Path(temp_dir)
             missing_field_rows = read_csv(output_dir / 'missing_fields.csv')
             reason_rows = read_csv(output_dir / 'null_reason_buckets.csv')
-            affected_rows = read_csv(output_dir / 'affected_asset_dates.csv')
             summary_rows = read_csv(output_dir / 'summary.csv')
 
             self.assertTrue(any(
@@ -713,32 +714,6 @@ class DataQualityValidationCommandTests(TestCase):
                 and row['reason'] == 'unexpected_null_with_margin_source_inputs'
                 and row['count'] == '1'
                 for row in reason_rows
-            ))
-
-            self.assertTrue(any(
-                row['asset_ts_code'] == moneyflow_expected_asset.ts_code
-                and row['field'] == 'main_force_net_5d'
-                and row['issue_type'] == 'expected_field_null'
-                for row in affected_rows
-            ))
-            self.assertTrue(any(
-                row['asset_ts_code'] == moneyflow_suspicious_asset.ts_code
-                and row['field'] == 'main_force_net_5d'
-                and row['issue_type'] == 'suspicious_field_null'
-                for row in affected_rows
-            ))
-            self.assertTrue(any(
-                row['asset_ts_code'] == margin_warmup_asset.ts_code
-                and row['field'] == 'margin_balance_change_5d'
-                and row['issue_type'] == 'expected_field_null'
-                and 'diff(5) requires at least 6' in row['details']
-                for row in affected_rows
-            ))
-            self.assertTrue(any(
-                row['asset_ts_code'] == margin_suspicious_asset.ts_code
-                and row['field'] == 'margin_balance_change_5d'
-                and row['issue_type'] == 'suspicious_field_null'
-                for row in affected_rows
             ))
 
             self.assertTrue(any(
@@ -1073,14 +1048,6 @@ class DataQualityValidationCommandTests(TestCase):
                 for row in missing_field_rows
             ))
 
-            affected_rows = read_csv(output_dir / 'affected_asset_dates.csv')
-            self.assertTrue(any(
-                row['asset_ts_code'] == mismatch_asset.ts_code
-                and row['field'] == 'pb'
-                and row['issue_type'] == 'fundamental_reconciliation_mismatch'
-                for row in affected_rows
-            ))
-
             with (output_dir / 'metadata.json').open(encoding='utf-8') as handle:
                 metadata = json.load(handle)
             self.assertIn('fundamental_reconciliation_audit.csv', metadata['report_descriptions'])
@@ -1168,30 +1135,40 @@ class DataQualityValidationCommandTests(TestCase):
             is_full_day=True,
         )
 
+        validation_start = trade_dates[1]
+
         with tempfile.TemporaryDirectory() as temp_dir:
             call_command(
                 'validate_data_quality',
-                start_date=trade_dates[0].isoformat(),
+                start_date=validation_start.isoformat(),
                 end_date=target_date.isoformat(),
                 output_dir=temp_dir,
             )
 
-            cross_rows = read_csv(Path(temp_dir) / 'feature_dependency_gaps.csv')
+            self.assertFalse((Path(temp_dir) / 'feature_dependency_gaps.csv').exists())
+
+            continuity_rows = read_csv(Path(temp_dir) / 'technical_indicator_snapshot_continuity_gaps.csv')
             rs_rows = [
-                row for row in cross_rows
-                if row['issue_type'] == 'missing_technical_indicator' and row['field'] == 'RS_SCORE'
+                row for row in continuity_rows
+                if row['issue_type'] == 'continuity_gap' and row['field'] == 'RS_SCORE'
             ]
 
             self.assertFalse(any(
-                row['asset_ts_code'] == pre_listing_asset.ts_code and row['date'] == target_date.isoformat()
+                row['asset_ts_code'] == pre_listing_asset.ts_code
+                and row['gap_start'] == target_date.isoformat()
+                and row['gap_end'] == target_date.isoformat()
                 for row in rs_rows
             ))
             self.assertFalse(any(
-                row['asset_ts_code'] == suspended_anchor_asset.ts_code and row['date'] == target_date.isoformat()
+                row['asset_ts_code'] == suspended_anchor_asset.ts_code
+                and row['gap_start'] == target_date.isoformat()
+                and row['gap_end'] == target_date.isoformat()
                 for row in rs_rows
             ))
             self.assertTrue(any(
-                row['asset_ts_code'] == control_asset.ts_code and row['date'] == target_date.isoformat()
+                row['asset_ts_code'] == control_asset.ts_code
+                and row['gap_start'] == target_date.isoformat()
+                and row['gap_end'] == target_date.isoformat()
                 for row in rs_rows
             ))
 
@@ -1292,6 +1269,7 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertTrue((output_dir / 'metadata.json').exists())
             self.assertFalse((output_dir / 'summary.csv').exists())
             self.assertFalse((output_dir / 'feature_dependency_gaps.csv').exists())
+            self.assertFalse((output_dir / 'affected_asset_dates.csv').exists())
             self.assertFalse((output_dir / 'ohlcv_excused_gaps.csv').exists())
 
             continuity_rows = read_csv(output_dir / 'ohlcv_continuity_gaps.csv')

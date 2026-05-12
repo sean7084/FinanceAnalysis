@@ -110,12 +110,13 @@ SECTION_ONE_LIMITATIONS = (
     'TechnicalIndicator rows do not expose full intermediate state, so the default validator checks stored historical completeness for configured indicator variants and uses an optional sampled OHLCV replay audit for direct formula reconciliation.',
 )
 REPORT_DESCRIPTIONS = {
-    'affected_asset_dates.csv': 'Asset-date issue ledger across all validation families with explicit metric labels.',
     'index_membership_history_gaps.csv': 'Required CSI300/CSIA500 membership coverage gaps on PIT trading dates.',
     'index_membership_monthly_blanks.csv': 'Warning months where required CSI300/CSIA500 membership snapshots are completely blank in the required portion of the month.',
     'benchmark_index_daily_gaps.csv': 'Missing official benchmark daily rows on PIT-required trading dates.',
     'pit_benchmark_daily_gaps.csv': 'Missing PIT union benchmark daily rows on PIT-required trading dates.',
-    'feature_dependency_gaps.csv': 'Missing dependent feature rows relative to existing OHLCV rows or required trade-date context rows.',
+    'macro_snapshot_gaps.csv': 'Missing or NULL macro snapshot and market-context rows relative to required trade-date context rows.',
+    'factor_score_gaps.csv': 'Missing FactorScore rows relative to existing OHLCV-backed asset dates.',
+    'sentiment_score_gaps.csv': 'Missing SentimentScore rows relative to existing OHLCV-backed asset dates.',
     'ohlcv_continuity_gaps.csv': 'Missing OHLCV on official exchange open days after listing and before delisting, excluding suspend_d-covered dates.',
     'fundamental_snapshot_continuity_gaps.csv': 'Missing or NULL PE/PE_TTM/PB/ROE/ROE_QOQ windows relative to OHLCV-backed baseline dates.',
     'capital_flow_snapshot_continuity_gaps.csv': 'Missing or NULL Main Force Net 5D / Margin Balance Change 5D windows relative to OHLCV-backed baseline dates, including source-derived gap_reason labels.',
@@ -262,12 +263,12 @@ class ReportWriter:
         return self.selected_reports is None or name in self.selected_reports
 
     def _open_writers(self):
+        dependency_gap_fieldnames = [
+            'metric_family', 'metric_name', 'rule_name', 'report_scope',
+            'issue_type', 'severity', 'required_table', 'field', 'asset_id', 'asset_symbol',
+            'asset_ts_code', 'asset_name', 'date', 'details',
+        ]
         self.specs = {
-            'affected_asset_dates': [
-                'metric_family', 'metric_name', 'rule_name', 'report_scope',
-                'issue_type', 'severity', 'table', 'field', 'asset_id', 'asset_symbol',
-                'asset_ts_code', 'asset_name', 'date', 'details',
-            ],
             'index_membership_history_gaps': [
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
                 'severity', 'index_code', 'index_name', 'expected_start', 'expected_end',
@@ -288,11 +289,9 @@ class ReportWriter:
                 'severity', 'benchmark_code', 'benchmark_name', 'expected_start', 'expected_end',
                 'expected_trade_dates_count', 'gap_start', 'gap_end', 'gap_missing_count', 'details',
             ],
-            'feature_dependency_gaps': [
-                'metric_family', 'metric_name', 'rule_name', 'report_scope',
-                'issue_type', 'severity', 'required_table', 'field', 'asset_id', 'asset_symbol',
-                'asset_ts_code', 'asset_name', 'date', 'details',
-            ],
+            'macro_snapshot_gaps': dependency_gap_fieldnames,
+            'factor_score_gaps': dependency_gap_fieldnames,
+            'sentiment_score_gaps': dependency_gap_fieldnames,
             'ohlcv_continuity_gaps': [
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
                 'asset_id', 'asset_symbol', 'asset_ts_code', 'asset_name', 'list_date', 'delist_date',
@@ -489,9 +488,15 @@ class Command(BaseCommand):
                 end_date,
                 trading_calendar_by_exchange.keys(),
             )
+            suspension_start_date = start_date
+            if 'RS_SCORE' in technical_indicators:
+                suspension_start_date = self._rs_score_anchor_prefill_start_date(
+                    start_date,
+                    trading_date_history_by_exchange,
+                )
             suspensions_by_asset = self._suspensions_by_asset(
                 [asset.id for asset in assets],
-                start_date,
+                suspension_start_date,
                 end_date,
             )
 
@@ -605,10 +610,6 @@ class Command(BaseCommand):
                 self._validate_cross_tables(
                     asset,
                     baseline_dates,
-                    actual_dates,
-                    technical_indicators,
-                    trading_date_history_by_exchange.get(asset.market.code, []),
-                    asset_suspensions,
                     writer,
                     counters,
                     table_counters,
@@ -618,6 +619,8 @@ class Command(BaseCommand):
                     asset,
                     baseline_dates,
                     technical_indicators,
+                    trading_date_history_by_exchange.get(asset.market.code, []),
+                    asset_suspensions,
                     writer,
                     counters,
                     table_counters,
@@ -851,6 +854,10 @@ class Command(BaseCommand):
         if anchor_date in asset_suspensions:
             return True
         return False
+
+    def _rs_score_anchor_prefill_start_date(self, start_date, trading_date_history_by_exchange):
+        del trading_date_history_by_exchange
+        return start_date - timedelta(days=40)
 
     def _required_index_trade_dates_by_code(self, trading_dates):
         required_dates_by_code = defaultdict(list)
@@ -1302,12 +1309,8 @@ class Command(BaseCommand):
                 'gap_end': gap_end,
                 'gap_missing_count': gap_count,
             })
-            writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                issue_type='missing_ohlcv_range', severity='critical', table='ohlcv', field='',
-                asset=asset, trading_date=gap_start, details=f'Missing OHLCV from {gap_start} to {gap_end} ({gap_count} trading dates).'
-            ))
 
-    def _write_feature_continuity_gaps(self, asset, baseline_dates, technical_indicators, writer, counters, table_counters, field_counters):
+    def _write_feature_continuity_gaps(self, asset, baseline_dates, technical_indicators, ordered_trading_dates, asset_suspensions, writer, counters, table_counters, field_counters):
         if not baseline_dates:
             return
 
@@ -1372,6 +1375,8 @@ class Command(BaseCommand):
             asset=asset,
             expected_dates=ordered_baseline_dates,
             technical_indicators=technical_indicators,
+            ordered_trading_dates=ordered_trading_dates,
+            asset_suspensions=asset_suspensions,
             rows=technical_rows,
             writer=writer,
             counters=counters,
@@ -1512,6 +1517,8 @@ class Command(BaseCommand):
         asset,
         expected_dates,
         technical_indicators,
+        ordered_trading_dates,
+        asset_suspensions,
         rows,
         writer,
         counters,
@@ -1541,8 +1548,25 @@ class Command(BaseCommand):
             variant_name = self._technical_indicator_variant_name(indicator_type, parameters)
             variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
             variant_rows = rows_by_variant.get(variant_key, [])
-            non_null_dates = {row['date'] for row in variant_rows}
-            missing_dates = [trading_date for trading_date in expected_dates if trading_date not in non_null_dates]
+            variant_expected_dates = list(expected_dates)
+            if indicator_type == 'RS_SCORE':
+                variant_expected_dates = [
+                    trading_date
+                    for trading_date in expected_dates
+                    if not self._should_skip_missing_rs_score(
+                        asset,
+                        trading_date,
+                        expected_date_set,
+                        ordered_trading_dates,
+                        asset_suspensions,
+                    )
+                ]
+            if not variant_expected_dates:
+                continue
+
+            variant_expected_date_set = set(variant_expected_dates)
+            non_null_dates = {row['date'] for row in variant_rows if row['date'] in variant_expected_date_set}
+            missing_dates = [trading_date for trading_date in variant_expected_dates if trading_date not in non_null_dates]
             bounded_range = TECHNICAL_INDICATOR_BOUNDED_RANGES.get(indicator_type)
 
             if missing_dates:
@@ -1550,12 +1574,12 @@ class Command(BaseCommand):
                 self._increment(counters, issue_type, 'warning', len(missing_dates))
                 table_counters[('technical_indicator', 'warning', issue_type)] += len(missing_dates)
                 field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += len(missing_dates)
-                expected_count = len(expected_dates)
+                expected_count = len(variant_expected_dates)
                 actual_count = len(non_null_dates)
                 missing_pct = (len(missing_dates) / expected_count) if expected_count else 0
                 first_non_null_date = min(non_null_dates) if non_null_dates else None
                 last_non_null_date = max(non_null_dates) if non_null_dates else None
-                for gap_start, gap_end, gap_count in self._iter_contiguous_gaps(expected_dates, non_null_dates):
+                for gap_start, gap_end, gap_count in self._iter_contiguous_gaps(variant_expected_dates, non_null_dates):
                     writer.write_detail(report_name, {
                         **self._metric_columns('feature', variant_name, 'continuity_gap', 'asset_field_window'),
                         'table': 'technical_indicator',
@@ -1569,8 +1593,8 @@ class Command(BaseCommand):
                         'severity': 'warning',
                         'list_date': asset.list_date,
                         'delist_date': asset.delist_date,
-                        'expected_start': expected_dates[0],
-                        'expected_end': expected_dates[-1],
+                        'expected_start': variant_expected_dates[0],
+                        'expected_end': variant_expected_dates[-1],
                         'first_non_null_date': first_non_null_date,
                         'last_non_null_date': last_non_null_date,
                         'expected_count': expected_count,
@@ -1603,16 +1627,6 @@ class Command(BaseCommand):
                 self._increment(counters, issue_type, 'warning', 1)
                 table_counters[('technical_indicator', 'warning', issue_type)] += 1
                 field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
-                writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                    issue_type=issue_type,
-                    severity='warning',
-                    table='technical_indicator',
-                    field=variant_name,
-                    asset=asset,
-                    trading_date=variant_row['date'],
-                    details=details,
-                    rule_name='value_bounds',
-                ))
                 writer.write_detail(report_name, {
                     **self._metric_columns('feature', variant_name, 'value_bounds', 'asset_date'),
                     'table': 'technical_indicator',
@@ -1827,7 +1841,7 @@ class Command(BaseCommand):
         if window_dates:
             yield window_dates[0], window_dates[-1], list(window_dates)
 
-    def _validate_cross_tables(self, asset, baseline_dates, actual_dates, technical_indicators, ordered_trading_dates, asset_suspensions, writer, counters, table_counters, field_counters):
+    def _validate_cross_tables(self, asset, baseline_dates, writer, counters, table_counters, field_counters):
         if not baseline_dates:
             return
         min_date = min(baseline_dates)
@@ -1847,14 +1861,6 @@ class Command(BaseCommand):
             date__lte=max_date,
             score_type=SentimentScore.ScoreType.ASSET_7D,
         ).values_list('date', flat=True))
-        technical_pairs = set(
-            TechnicalIndicator.objects.filter(
-                asset=asset,
-                timestamp__date__gte=min_date,
-                timestamp__date__lte=max_date,
-                indicator_type__in=technical_indicators,
-            ).values_list('timestamp__date', 'indicator_type')
-        )
 
         checks = (
             (
@@ -1899,23 +1905,6 @@ class Command(BaseCommand):
                     issue_type=issue_type, severity=severity, table=table, field=field,
                     asset=asset, trading_date=trading_date,
                     details=details,
-                )
-            for indicator_type in technical_indicators:
-                if (trading_date, indicator_type) in technical_pairs:
-                    continue
-                if indicator_type == 'RS_SCORE' and self._should_skip_missing_rs_score(
-                    asset,
-                    trading_date,
-                    actual_dates,
-                    ordered_trading_dates,
-                    asset_suspensions,
-                ):
-                    continue
-                self._record_asset_cross_gap(
-                    writer, counters, table_counters, field_counters,
-                    issue_type='missing_technical_indicator', severity='critical', table='technical_indicator',
-                    field=indicator_type, asset=asset, trading_date=trading_date,
-                    details='OHLCV exists for asset/date but required TechnicalIndicator is missing.',
                 )
 
     def _validate_null_fields(self, assets, start_date, end_date, writer, counters, field_counters, reason_counters):
@@ -2013,32 +2002,12 @@ class Command(BaseCommand):
                     self._increment(counters, 'fundamental_reconciliation_fetch_failed', 'warning', 1)
                     table_counters[('fundamental_factor_snapshot', 'warning', 'fundamental_reconciliation_fetch_failed')] += 1
                     field_counters[('fundamental_factor_snapshot', SNAPSHOT_ROW_FIELD, 'fundamental_reconciliation_fetch_failed', 'warning')] += 1
-                    writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                        issue_type='fundamental_reconciliation_fetch_failed',
-                        severity='warning',
-                        table='fundamental_factor_snapshot',
-                        field=SNAPSHOT_ROW_FIELD,
-                        asset=row.asset,
-                        trading_date=row.date,
-                        details=details,
-                        rule_name='fundamental_upstream_reconciliation',
-                    ))
                 elif expected_payload is None:
                     audit_status = 'recompute_missing'
                     details = 'No recomputed FundamentalFactorSnapshot row was produced for this sampled date.'
                     self._increment(counters, 'fundamental_reconciliation_missing_recomputed_row', 'warning', 1)
                     table_counters[('fundamental_factor_snapshot', 'warning', 'fundamental_reconciliation_missing_recomputed_row')] += 1
                     field_counters[('fundamental_factor_snapshot', SNAPSHOT_ROW_FIELD, 'fundamental_reconciliation_missing_recomputed_row', 'warning')] += 1
-                    writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                        issue_type='fundamental_reconciliation_missing_recomputed_row',
-                        severity='warning',
-                        table='fundamental_factor_snapshot',
-                        field=SNAPSHOT_ROW_FIELD,
-                        asset=row.asset,
-                        trading_date=row.date,
-                        details=details,
-                        rule_name='fundamental_upstream_reconciliation',
-                    ))
                 else:
                     for field in FUNDAMENTAL_FIELDS:
                         if stored_values[field] != expected_payload[field]:
@@ -2051,16 +2020,6 @@ class Command(BaseCommand):
                         for field in mismatch_fields:
                             field_counters[('fundamental_factor_snapshot', field, 'fundamental_reconciliation_mismatch', 'warning')] += 1
                             mismatch_detail_parts.append(f'{field}: stored={stored_values[field]} recomputed={expected_payload[field]}')
-                            writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                                issue_type='fundamental_reconciliation_mismatch',
-                                severity='warning',
-                                table='fundamental_factor_snapshot',
-                                field=field,
-                                asset=row.asset,
-                                trading_date=row.date,
-                                details=f'Upstream recomputation mismatch for {field}: stored={stored_values[field]} recomputed={expected_payload[field]}.',
-                                rule_name='fundamental_upstream_reconciliation',
-                            ))
                         details = '; '.join(mismatch_detail_parts)
 
                 audit_rows.append({
@@ -2177,16 +2136,6 @@ class Command(BaseCommand):
                     self._increment(counters, issue_type, 'warning', 1)
                     table_counters[('technical_indicator', 'warning', issue_type)] += 1
                     field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
-                    writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                        issue_type=issue_type,
-                        severity='warning',
-                        table='technical_indicator',
-                        field=variant_name,
-                        asset=row.asset,
-                        trading_date=row.timestamp.date(),
-                        details=details,
-                        rule_name='technical_indicator_reconciliation',
-                    ))
                 else:
                     recomputed_value = recomputed_values.get(
                         (
@@ -2202,16 +2151,6 @@ class Command(BaseCommand):
                         self._increment(counters, issue_type, 'warning', 1)
                         table_counters[('technical_indicator', 'warning', issue_type)] += 1
                         field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
-                        writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                            issue_type=issue_type,
-                            severity='warning',
-                            table='technical_indicator',
-                            field=variant_name,
-                            asset=row.asset,
-                            trading_date=row.timestamp.date(),
-                            details=details,
-                            rule_name='technical_indicator_reconciliation',
-                        ))
                     elif row.value != recomputed_value:
                         audit_status = 'mismatch'
                         details = f'OHLCV replay mismatch: stored={row.value} recomputed={recomputed_value}.'
@@ -2219,16 +2158,6 @@ class Command(BaseCommand):
                         self._increment(counters, issue_type, 'warning', 1)
                         table_counters[('technical_indicator', 'warning', issue_type)] += 1
                         field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
-                        writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                            issue_type=issue_type,
-                            severity='warning',
-                            table='technical_indicator',
-                            field=variant_name,
-                            asset=row.asset,
-                            trading_date=row.timestamp.date(),
-                            details=details,
-                            rule_name='technical_indicator_reconciliation',
-                        ))
 
                 audit_rows.append({
                     **self._metric_columns('feature_source', variant_name, 'technical_indicator_reconciliation', 'sampled_indicator_row'),
@@ -2371,15 +2300,6 @@ class Command(BaseCommand):
                 self._increment(counters, f'capital_flow_snapshot.{field}.{issue_type}', 'warning', 1)
                 field_counters[('capital_flow_snapshot', field, issue_type, 'warning')] += 1
                 reason_counters[('capital_flow_snapshot', field, reason, 'warning')] += 1
-                writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                    issue_type=issue_type,
-                    severity='warning',
-                    table='capital_flow_snapshot',
-                    field=field,
-                    asset=row.asset,
-                    trading_date=row.date,
-                    details=details,
-                ))
 
     def _classify_capital_flow_null(self, field, asset_id, trading_date, moneyflow_dates_by_asset, margin_history_by_asset):
         if field == 'main_force_net_5d':
@@ -2497,11 +2417,6 @@ class Command(BaseCommand):
             self._increment(counters, 'technical_indicator.neutral_default_value', 'info', technical_count)
             field_counters[('technical_indicator', ','.join(technical_indicators), 'neutral_default_value', 'info')] += technical_count
             reason_counters[('technical_indicator', ','.join(technical_indicators), 'neutral_default_or_fallback', 'info')] += technical_count
-            for row in technical_queryset.iterator(chunk_size=1000):
-                writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                    issue_type='neutral_default_value', severity='info', table='technical_indicator', field=row.indicator_type,
-                    asset=row.asset, trading_date=row.timestamp.date(), details='Indicator value equals 0.5 neutral/default bucket.',
-                ))
 
         sentiment_queryset = SentimentScore.objects.filter(
             asset_id__in=asset_ids,
@@ -2516,11 +2431,6 @@ class Command(BaseCommand):
             self._increment(counters, 'sentiment_score.neutral_default_value', 'info', sentiment_count)
             field_counters[('sentiment_score', 'sentiment_score', 'neutral_default_value', 'info')] += sentiment_count
             reason_counters[('sentiment_score', 'sentiment_score', 'neutral_sentiment_or_fallback', 'info')] += sentiment_count
-            for row in sentiment_queryset.iterator(chunk_size=1000):
-                writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                    issue_type='neutral_default_value', severity='info', table='sentiment_score', field='sentiment_score',
-                    asset=row.asset, trading_date=row.date, details='ASSET_7D sentiment is neutral with score 0.',
-                ))
 
     def _validate_model_null_fields(self, queryset, table, fields, severity, writer, counters, field_counters, reason_counters):
         for field in fields:
@@ -2531,11 +2441,6 @@ class Command(BaseCommand):
             self._increment(counters, f'{table}.{field}.null', severity, count)
             field_counters[(table, field, 'field_null', severity)] += count
             reason_counters[(table, field, self._null_reason(table, field), severity)] += count
-            for row in null_queryset.iterator(chunk_size=1000):
-                writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                    issue_type='field_null', severity=severity, table=table, field=field,
-                    asset=row.asset, trading_date=row.date, details=f'{field} is NULL.',
-                ))
 
     def _validate_model_value_fields(self, queryset, table, fields, value, issue_type, severity, writer, counters, field_counters, reason_counters, reason):
         for field in fields:
@@ -2546,11 +2451,6 @@ class Command(BaseCommand):
             self._increment(counters, f'{table}.{field}.{issue_type}', severity, count)
             field_counters[(table, field, issue_type, severity)] += count
             reason_counters[(table, field, reason, severity)] += count
-            for row in value_queryset.iterator(chunk_size=1000):
-                writer.write_detail('affected_asset_dates', self._asset_issue_row(
-                    issue_type=issue_type, severity=severity, table=table, field=field,
-                    asset=row.asset, trading_date=row.date, details=f'{field} equals {value}.',
-                ))
 
     def _null_reason(self, table, field):
         if table == 'fundamental_factor_snapshot' and field in {'roe', 'roe_qoq'}:
@@ -2559,14 +2459,22 @@ class Command(BaseCommand):
             return 'missing_component_input_or_uncomputed_score'
         return 'field_null'
 
+    def _dependency_gap_report_name(self, table):
+        return {
+            'factor_score': 'factor_score_gaps',
+            'sentiment_score': 'sentiment_score_gaps',
+        }.get(table)
+
     def _record_asset_cross_gap(self, writer, counters, table_counters, field_counters, issue_type, severity, table, field, asset, trading_date, details):
         self._increment(counters, issue_type, severity, 1)
         table_counters[(table, severity, issue_type)] += 1
         field_counters[(table, field, issue_type, severity)] += 1
-        row = self._asset_issue_row(issue_type, severity, table, field, asset, trading_date, details)
+        report_name = self._dependency_gap_report_name(table)
+        if report_name is None:
+            return
         metric_name = table if field == SNAPSHOT_ROW_FIELD else field or table
-        writer.write_detail('feature_dependency_gaps', {
-            **self._metric_columns('feature_dependency', metric_name, issue_type, 'asset_date'),
+        writer.write_detail(report_name, {
+            **self._metric_columns(table, metric_name, issue_type, 'asset_date'),
             'issue_type': issue_type,
             'severity': severity,
             'required_table': table,
@@ -2578,14 +2486,13 @@ class Command(BaseCommand):
             'date': trading_date,
             'details': details,
         })
-        writer.write_detail('affected_asset_dates', row)
 
     def _record_date_issue(self, writer, counters, table_counters, field_counters, issue_type, severity, table, field, trading_date, details):
         self._increment(counters, issue_type, severity, 1)
         table_counters[(table, severity, issue_type)] += 1
         field_counters[(table, field, issue_type, severity)] += 1
-        writer.write_detail('feature_dependency_gaps', {
-            **self._metric_columns('feature_dependency', field or table, issue_type, 'trade_date'),
+        writer.write_detail('macro_snapshot_gaps', {
+            **self._metric_columns('macro_snapshot', field or table, issue_type, 'trade_date'),
             'issue_type': issue_type,
             'severity': severity,
             'required_table': table,
@@ -2617,15 +2524,6 @@ class Command(BaseCommand):
             'amount': row.get('amount'),
             'details': details,
         })
-        writer.write_detail('affected_asset_dates', self._asset_issue_row(
-            issue_type=issue_type,
-            severity=severity,
-            table='ohlcv',
-            field=field,
-            asset=asset,
-            trading_date=trading_date,
-            details=details,
-        ))
 
     def _record_listing_issue(self, writer, counters, table_counters, field_counters, issue_type, severity, asset, first_observed, last_observed, details, field='list_date', trading_date=None):
         self._increment(counters, issue_type, severity, 1)
@@ -2647,15 +2545,6 @@ class Command(BaseCommand):
             'last_observed_date': last_observed,
             'details': details,
         })
-        writer.write_detail('affected_asset_dates', self._asset_issue_row(
-            issue_type=issue_type,
-            severity=severity,
-            table='asset',
-            field=field,
-            asset=asset,
-            trading_date=trading_date or first_observed or asset.list_date or asset.delist_date,
-            details=details,
-        ))
 
     def _record_source_asof_issue(self, writer, counters, table_counters, field_counters, issue_type, severity, table, asset, trading_date, source_field, source_date, details):
         self._increment(counters, issue_type, severity, 1)
@@ -2675,15 +2564,6 @@ class Command(BaseCommand):
             'source_date': source_date,
             'details': details,
         })
-        writer.write_detail('affected_asset_dates', self._asset_issue_row(
-            issue_type=issue_type,
-            severity=severity,
-            table=table,
-            field=source_field,
-            asset=asset,
-            trading_date=trading_date,
-            details=details,
-        ))
 
     def _build_effective_universe_bitmaps(self, effective_universe_by_date):
         asset_ids = sorted({asset_id for asset_ids in effective_universe_by_date.values() for asset_id in asset_ids})
@@ -3039,37 +2919,6 @@ class Command(BaseCommand):
             'metric_name': metric_name,
             'rule_name': rule_name,
             'report_scope': report_scope,
-        }
-
-    def _metric_family_for_table(self, table):
-        if table == 'asset':
-            return 'asset_lifecycle'
-        if table == 'ohlcv':
-            return 'ohlcv'
-        if table in {'macro_snapshot', 'market_context'}:
-            return 'macro'
-        if table in {'technical_indicator', 'factor_score', 'fundamental_factor_snapshot', 'capital_flow_snapshot', 'sentiment_score'}:
-            return 'feature'
-        return table
-
-    def _asset_issue_row(self, issue_type, severity, table, field, asset, trading_date, details, metric_family=None, metric_name=None, rule_name=None, report_scope='asset_date'):
-        return {
-            **self._metric_columns(
-                metric_family or self._metric_family_for_table(table),
-                metric_name or (field or table),
-                rule_name or issue_type,
-                report_scope,
-            ),
-            'issue_type': issue_type,
-            'severity': severity,
-            'table': table,
-            'field': field,
-            'asset_id': asset.id,
-            'asset_symbol': asset.symbol,
-            'asset_ts_code': asset.ts_code,
-            'asset_name': asset.name,
-            'date': trading_date,
-            'details': details,
         }
 
     def _increment(self, counters, issue_type, severity, count):
