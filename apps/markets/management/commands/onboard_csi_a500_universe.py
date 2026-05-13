@@ -154,7 +154,16 @@ class Command(BaseCommand):
             call_command(
                 'backfill_ohlcv_history',
                 start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
                 symbols=symbol_csv,
+                technical_indicator_warmup=True,
+                stdout=self.stdout,
+            )
+            call_command(
+                'backfill_ohlcv_history',
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                effective_universe_entry_warmup=True,
                 stdout=self.stdout,
             )
             call_command(
@@ -169,6 +178,12 @@ class Command(BaseCommand):
                 start_date=start_date.isoformat(),
                 end_date=end_date.isoformat(),
                 symbols=symbol_csv,
+                stdout=self.stdout,
+            )
+            call_command(
+                'backfill_technical_indicators',
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
                 stdout=self.stdout,
             )
         elif options['skip_raw_backfills']:

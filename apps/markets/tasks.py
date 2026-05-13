@@ -11,6 +11,7 @@ from datetime import date, timedelta
 
 import tushare as ts
 
+from apps.analytics.indicator_warmup import technical_indicator_warmup_prefill_start_date
 from apps.analytics.tasks import calculate_indicators_for_all_assets, calculate_signals_for_all_assets
 from apps.core.date_floor import get_historical_data_floor
 from apps.factors.tasks import calculate_factor_scores_for_date, sync_daily_capital_flow_snapshots
@@ -596,6 +597,37 @@ def _build_asset_history_signatures(asset_map, ts_codes, force_floor_backfill=Fa
     return signatures
 
 
+def _build_asset_history_warmup_signatures(asset_map, ts_codes, target_date):
+    signatures = []
+    floor_date = _historical_floor_date()
+    resolved_target_date = _resolve_target_date(target_date)
+    repair_start_date = technical_indicator_warmup_prefill_start_date(resolved_target_date).isoformat()
+    repair_end_date = resolved_target_date.isoformat()
+
+    for ts_code in sorted(set(ts_codes)):
+        asset = asset_map.get(ts_code)
+        market_code = _market_code_for_ts_code(ts_code)
+        if asset is None or market_code is None or asset.list_date is None:
+            continue
+        if asset.list_date >= floor_date:
+            continue
+        signatures.append(
+            sync_asset_history.s(
+                asset.symbol,
+                asset.name,
+                market_code,
+                True,
+                asset.list_date.isoformat(),
+                asset.listing_status,
+                asset.delist_date.isoformat() if asset.delist_date else None,
+                repair_start_date=repair_start_date,
+                repair_end_date=repair_end_date,
+                allow_pre_floor_repair=True,
+            )
+        )
+    return signatures
+
+
 def sync_index_constituent_universe(
     index_codes=None,
     start_date=None,
@@ -791,6 +823,7 @@ def sync_index_constituent_universe(
     ).distinct()
 
     changed_current_ts_codes = set()
+    new_current_union_ts_codes = set()
     tagged_assets_updated = 0
     for asset in affected_assets:
         current_tags = set(asset.membership_tags or [])
@@ -799,6 +832,8 @@ def sync_index_constituent_universe(
         desired_tags = sorted((current_tags - managed_tags) | desired_managed_tags)
         if current_managed_tags != desired_managed_tags and desired_managed_tags:
             changed_current_ts_codes.add(asset.ts_code)
+            if not current_managed_tags:
+                new_current_union_ts_codes.add(asset.ts_code)
         if list(asset.membership_tags or []) != desired_tags:
             Asset.objects.filter(pk=asset.pk).update(membership_tags=desired_tags)
             tagged_assets_updated += 1
@@ -823,6 +858,7 @@ def sync_index_constituent_universe(
         'latest_trade_dates': latest_trade_dates,
         'current_constituent_counts': current_counts,
         'current_union_ts_codes': sorted(current_tags_by_ts_code.keys()),
+        'new_current_union_ts_codes': sorted(new_current_union_ts_codes),
         'overlap_count': overlap_count,
         'current_union_count': current_union_count,
         'new_assets': new_current_assets,
@@ -1027,6 +1063,13 @@ def sync_daily_a_shares(target_date=None):
             asset_map,
             summary.get('current_union_ts_codes', []),
             force_floor_backfill=False,
+        )
+        signatures.extend(
+            _build_asset_history_warmup_signatures(
+                asset_map,
+                summary.get('new_current_union_ts_codes', []),
+                today,
+            )
         )
 
         if signatures:

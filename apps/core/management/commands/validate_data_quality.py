@@ -22,6 +22,7 @@ from apps.analytics.management.commands.backfill_technical_indicators import (
     EMA_PERIODS as BACKFILL_TECHNICAL_EMA_PERIODS,
     SMA_PERIODS as BACKFILL_TECHNICAL_SMA_PERIODS,
 )
+from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import TechnicalIndicator
 from apps.core.date_floor import get_historical_data_floor
 from apps.factors.fundamental_materialization import (
@@ -855,6 +856,29 @@ class Command(BaseCommand):
             return True
         return False
 
+    def _should_skip_missing_technical_indicator(self, asset, trading_date, actual_dates, ordered_trading_dates, asset_suspensions, indicator_type, parameters):
+        if indicator_type == 'RS_SCORE':
+            return self._should_skip_missing_rs_score(
+                asset,
+                trading_date,
+                actual_dates,
+                ordered_trading_dates,
+                asset_suspensions,
+            )
+        if asset.list_date is None or not ordered_trading_dates:
+            return False
+        if asset.list_date < ordered_trading_dates[0]:
+            return False
+
+        lookback = technical_indicator_variant_warmup_lookback(indicator_type, parameters)
+        if lookback <= 0:
+            return False
+
+        anchor_date = self._nth_prior_trading_date(ordered_trading_dates, trading_date, lookback)
+        if anchor_date is None:
+            return True
+        return anchor_date < asset.list_date
+
     def _rs_score_anchor_prefill_start_date(self, start_date, trading_date_history_by_exchange):
         del trading_date_history_by_exchange
         return start_date - timedelta(days=40)
@@ -1548,19 +1572,19 @@ class Command(BaseCommand):
             variant_name = self._technical_indicator_variant_name(indicator_type, parameters)
             variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
             variant_rows = rows_by_variant.get(variant_key, [])
-            variant_expected_dates = list(expected_dates)
-            if indicator_type == 'RS_SCORE':
-                variant_expected_dates = [
-                    trading_date
-                    for trading_date in expected_dates
-                    if not self._should_skip_missing_rs_score(
-                        asset,
-                        trading_date,
-                        expected_date_set,
-                        ordered_trading_dates,
-                        asset_suspensions,
-                    )
-                ]
+            variant_expected_dates = [
+                trading_date
+                for trading_date in expected_dates
+                if not self._should_skip_missing_technical_indicator(
+                    asset,
+                    trading_date,
+                    expected_date_set,
+                    ordered_trading_dates,
+                    asset_suspensions,
+                    indicator_type,
+                    parameters,
+                )
+            ]
             if not variant_expected_dates:
                 continue
 

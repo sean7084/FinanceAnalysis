@@ -20,6 +20,50 @@ WARMUP_CALENDAR_BUFFER_MULTIPLIER = 2
 MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS = 548
 
 
+def _resolve_positive_int_parameter(parameters, key, default):
+    if parameters is None:
+        return max(int(default or 0), 0)
+    return max(int(parameters.get(key, default) or 0), 0)
+
+
+def technical_indicator_variant_warmup_lookback(indicator_type, parameters=None):
+    resolved_indicator_type = str(indicator_type or '').strip().upper()
+    if not resolved_indicator_type:
+        raise ValueError('indicator_type must be provided.')
+
+    if resolved_indicator_type in {'EMA', 'SMA'}:
+        return max(_resolve_positive_int_parameter(parameters, 'timeperiod', 0) - 1, 0)
+    if resolved_indicator_type == 'BBANDS':
+        return max(_resolve_positive_int_parameter(parameters, 'timeperiod', 20) - 1, 0)
+    if resolved_indicator_type == 'MACD':
+        fastperiod = _resolve_positive_int_parameter(parameters, 'fastperiod', 12)
+        slowperiod = _resolve_positive_int_parameter(parameters, 'slowperiod', 26)
+        signalperiod = _resolve_positive_int_parameter(parameters, 'signalperiod', 9)
+        return max(max(fastperiod, slowperiod) + signalperiod - 2, 0)
+    if resolved_indicator_type == 'STOCH':
+        fastk_period = _resolve_positive_int_parameter(parameters, 'fastk_period', 14)
+        slowk_period = _resolve_positive_int_parameter(parameters, 'slowk_period', 3)
+        slowd_period = _resolve_positive_int_parameter(parameters, 'slowd_period', 3)
+        return max(fastk_period + slowk_period + slowd_period - 3, 0)
+    if resolved_indicator_type == 'ADX':
+        return max((_resolve_positive_int_parameter(parameters, 'timeperiod', 14) * 2) - 1, 0)
+    if resolved_indicator_type == 'RSI':
+        return _resolve_positive_int_parameter(parameters, 'timeperiod', 14)
+    if resolved_indicator_type in {'FIB_RET', 'OBV'}:
+        return 1
+    if resolved_indicator_type.startswith('MOM_'):
+        return _resolve_positive_int_parameter(
+            parameters,
+            'n_days',
+            TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS.get(resolved_indicator_type, 0),
+        )
+    if resolved_indicator_type == 'RS_SCORE':
+        return 20
+    if resolved_indicator_type in TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS:
+        return TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS[resolved_indicator_type]
+    raise ValueError(f'Unsupported technical indicator type: {resolved_indicator_type}')
+
+
 def minimum_history_prefill_start_date(start_date, calendar_days=MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS):
     resolved_calendar_days = int(calendar_days or 0)
     if resolved_calendar_days <= 0:

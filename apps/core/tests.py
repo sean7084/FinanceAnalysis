@@ -14,6 +14,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.analytics.management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand
+from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.backtest.models import BacktestRun, BacktestTrade
 from apps.factors.models import AssetMarginDetailSnapshot, AssetMoneyFlowSnapshot, CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
@@ -1671,6 +1672,24 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
         df = command._load_ohlcv_df(asset.id, end_date)
         return command._build_rows(asset, df, start_date, end_date, indicator_types)
 
+    def test_technical_indicator_variant_warmup_lookback_uses_variant_parameters(self):
+        self.assertEqual(technical_indicator_variant_warmup_lookback('RSI', {'timeperiod': 14}), 14)
+        self.assertEqual(
+            technical_indicator_variant_warmup_lookback(
+                'MACD',
+                {'fastperiod': 12, 'slowperiod': 26, 'signalperiod': 9},
+            ),
+            33,
+        )
+        self.assertEqual(technical_indicator_variant_warmup_lookback('EMA', {'timeperiod': 200}), 199)
+        self.assertEqual(
+            technical_indicator_variant_warmup_lookback(
+                'STOCH',
+                {'fastk_period': 14, 'slowk_period': 3, 'slowd_period': 3},
+            ),
+            17,
+        )
+
     def test_technical_indicator_continuity_report_flags_missing_rsi_rows(self):
         market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
         asset = Asset.objects.create(
@@ -1678,7 +1697,7 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
             symbol='600188',
             ts_code='600188.SH',
             name='Technical Continuity Asset',
-            list_date=timezone.datetime(2024, 1, 2).date(),
+            list_date=timezone.datetime(2023, 1, 2).date(),
         )
         trade_dates = [timezone.datetime(2024, 1, day).date() for day in (2, 3, 4)]
         self._create_calendar('SSE', trade_dates)
@@ -1714,6 +1733,34 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
             self.assertEqual(row['gap_missing_count'], '1')
             self.assertEqual(row['missing_count'], '1')
             self.assertEqual(row['snapshot_row_count'], '2')
+
+    def test_technical_indicator_continuity_report_skips_new_listing_rsi_warmup_prefix(self):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        trade_dates = [timezone.datetime(2024, 1, day).date() for day in (2, 3, 4)]
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600189',
+            ts_code='600189.SH',
+            name='Technical Warmup Asset',
+            list_date=trade_dates[0],
+        )
+        self._create_calendar('SSE', trade_dates)
+        self._create_ohlcv_series(asset, trade_dates)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=trade_dates[0].isoformat(),
+                end_date=trade_dates[-1].isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RSI',
+                only_report='technical_indicator_snapshot_continuity_gaps.csv',
+            )
+
+            rows = read_csv(Path(temp_dir) / 'technical_indicator_snapshot_continuity_gaps.csv')
+            continuity_rows = [row for row in rows if row['issue_type'] == 'continuity_gap']
+            self.assertEqual(continuity_rows, [])
 
     def test_technical_indicator_continuity_report_flags_out_of_range_rsi(self):
         market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')

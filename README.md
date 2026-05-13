@@ -913,8 +913,9 @@ Key fixes from the older block:
 1. Universe and market foundation:
    ```bash
    python manage.py sync_index_constituents --start-date 2010-01-04 --end-date 2026-04-30 --skip-sync-dispatch
-   python manage.py backfill_ohlcv_history --start-date 2010-01-04 --end-date 2026-04-30
-   python manage.py backfill_asset_list_dates
+   python manage.py backfill_ohlcv_history --start-date 2010-01-04 --end-date 2026-04-30 --technical-indicator-warmup
+   python manage.py backfill_ohlcv_history --start-date 2010-01-04 --end-date 2026-04-30 --effective-universe-entry-warmup
+   python manage.py backfill_asset_list_dates --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py backfill_asset_suspensions --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py backfill_trading_calendar --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py sync_benchmark_index_history --start-date 2010-01-04 --end-date 2026-04-30

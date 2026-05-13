@@ -874,6 +874,64 @@ class IndexConstituentSyncTests(TestCase):
     @patch('apps.markets.tasks.sync_asset_suspensions')
     @patch('apps.markets.tasks.sync_exchange_trading_calendar')
     @patch('apps.markets.tasks.sync_benchmark_index_history')
+    @patch('apps.markets.tasks.chord')
+    @patch('apps.markets.tasks.sync_asset_history.s')
+    @patch('apps.markets.tasks.sync_index_constituent_universe')
+    def test_sync_daily_a_shares_adds_warmup_repairs_for_new_pre_floor_union_assets(
+        self,
+        mock_sync_universe,
+        mock_signature,
+        mock_chord,
+        mock_benchmark_sync,
+        mock_calendar_sync,
+        mock_suspension_sync,
+    ):
+        mock_calendar_sync.return_value = {
+            'latest_trade_dates': {'SSE': '2026-04-25', 'SZSE': '2026-04-25'},
+            'rows_written': 2,
+        }
+        mock_benchmark_sync.return_value = {
+            'latest_trade_dates': {'000300.SH': '20260425', '000510.CSI': '20260425'},
+            'rows_written': 3,
+        }
+        mock_suspension_sync.return_value = {
+            'rows_written': 0,
+            'full_day_rows': 0,
+        }
+        mock_sync_universe.return_value = {
+            'current_union_count': 1,
+            'overlap_count': 0,
+            'current_constituent_counts': {'000300.SH': 1, '000510.CSI': 0},
+            'current_union_ts_codes': ['600001.SH'],
+            'new_current_union_ts_codes': ['600001.SH'],
+        }
+        mock_signature.side_effect = ['sig-standard', 'sig-warmup']
+        mock_chord_runner = MagicMock()
+        mock_chord.return_value = mock_chord_runner
+
+        Asset.objects.filter(pk=self.existing_asset.pk).update(list_date=date(1993, 1, 1))
+        self.existing_asset.refresh_from_db()
+
+        result = sync_daily_a_shares(target_date='2026-04-25')
+
+        self.assertIn('Dispatched 2 tasks', result)
+        self.assertEqual(mock_signature.call_count, 2)
+
+        standard_call = mock_signature.call_args_list[0]
+        self.assertEqual(standard_call.args[:4], ('600001', 'Existing Overlap Asset', 'SSE', False))
+
+        warmup_call = mock_signature.call_args_list[1]
+        self.assertEqual(warmup_call.args[:4], ('600001', 'Existing Overlap Asset', 'SSE', True))
+        self.assertEqual(warmup_call.kwargs['repair_end_date'], '2026-04-25')
+        self.assertTrue(warmup_call.kwargs['allow_pre_floor_repair'])
+        self.assertLess(warmup_call.kwargs['repair_start_date'], '2026-04-25')
+
+        mock_chord.assert_called_once_with(['sig-standard', 'sig-warmup'])
+        mock_chord_runner.assert_called_once()
+
+    @patch('apps.markets.tasks.sync_asset_suspensions')
+    @patch('apps.markets.tasks.sync_exchange_trading_calendar')
+    @patch('apps.markets.tasks.sync_benchmark_index_history')
     @patch('apps.markets.tasks.run_post_sync_universal_refresh.delay')
     @patch('apps.markets.tasks.sync_index_constituent_universe')
     def test_sync_daily_a_shares_runs_post_sync_refresh_directly_when_no_signatures(
@@ -1449,8 +1507,10 @@ class UniverseOnboardingCommandTests(TestCase):
                 'run_reference_benchmark_suite',
                 'sync_index_constituents',
                 'backfill_ohlcv_history',
+                'backfill_ohlcv_history',
                 'backfill_fundamental_snapshots',
                 'backfill_capital_flow_snapshots',
+                'backfill_technical_indicators',
                 'build_pit_union_benchmark',
                 'backfill_model_data',
                 'rebuild_lightgbm_pipeline',
@@ -1463,15 +1523,28 @@ class UniverseOnboardingCommandTests(TestCase):
         self.assertTrue(sync_kwargs['skip_sync_dispatch'])
         self.assertEqual(sync_kwargs['index_codes'], '000300.SH,000510.CSI')
 
-        for call_args in mock_call_command.call_args_list[2:5]:
+        targeted_ohlcv_kwargs = mock_call_command.call_args_list[2].kwargs
+        self.assertEqual(targeted_ohlcv_kwargs['symbols'], '000001')
+        self.assertTrue(targeted_ohlcv_kwargs['technical_indicator_warmup'])
+
+        entry_warmup_kwargs = mock_call_command.call_args_list[3].kwargs
+        self.assertTrue(entry_warmup_kwargs['effective_universe_entry_warmup'])
+        self.assertEqual(entry_warmup_kwargs['start_date'], '2020-01-01')
+        self.assertEqual(entry_warmup_kwargs['end_date'], '2020-12-31')
+
+        for call_args in mock_call_command.call_args_list[4:6]:
             self.assertEqual(call_args.kwargs['symbols'], '000001')
 
-        pit_benchmark_kwargs = mock_call_command.call_args_list[5].kwargs
+        technical_backfill_kwargs = mock_call_command.call_args_list[6].kwargs
+        self.assertEqual(technical_backfill_kwargs['start_date'], '2020-01-01')
+        self.assertEqual(technical_backfill_kwargs['end_date'], '2020-12-31')
+
+        pit_benchmark_kwargs = mock_call_command.call_args_list[7].kwargs
         self.assertEqual(pit_benchmark_kwargs['start_date'], '2020-01-01')
         self.assertEqual(pit_benchmark_kwargs['end_date'], '2020-12-31')
 
-        self.assertTrue(mock_call_command.call_args_list[7].kwargs['skip_backfill'])
-        self.assertTrue(mock_call_command.call_args_list[8].kwargs['skip_backfill'])
+        self.assertTrue(mock_call_command.call_args_list[9].kwargs['skip_backfill'])
+        self.assertTrue(mock_call_command.call_args_list[10].kwargs['skip_backfill'])
 
         self.assertEqual(manifest['a500_only_symbols'], ['000001'])
         self.assertEqual(manifest['pit_benchmark_window']['start_date'], '2020-01-01')
