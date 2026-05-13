@@ -840,12 +840,6 @@ export async function fetchLightGBMModels(limit = 30, horizonDays?: number): Pro
   return payload.results
 }
 
-export async function fetchLightGBMPredictions(limit = 60, date?: string): Promise<LightGBMPredictionDto[]> {
-  const query = date ? `&date=${encodeURIComponent(date)}` : ''
-  const payload = await apiGet<Paginated<LightGBMPredictionDto>>(`/lightgbm-predictions/?page_size=${limit}${query}`)
-  return payload.results
-}
-
 export async function fetchLightGBMPredictionBySymbol(symbol: string): Promise<LightGBMPredictionStockDto | null> {
   try {
     return await apiGet<LightGBMPredictionStockDto>(`/lightgbm-predictions/${encodeURIComponent(symbol)}/`)

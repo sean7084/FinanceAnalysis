@@ -361,6 +361,10 @@ class LightGBMPredictionTests(TestCase):
         response = self.client.post('/api/v1/lightgbm-predictions/batch/', {'stock_codes': [self.asset.symbol]}, format='json')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_lightgbm_history_list_route_is_not_exposed(self):
+        response = self.client.get('/api/v1/lightgbm-predictions/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_lightgbm_model_artifact_storage(self):
         """LightGBM model artifacts should be correctly stored and retrieved."""
         self._auth()

@@ -121,11 +121,10 @@ class LightGBMModelArtifactViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(payload)
 
 
-class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
+class LightGBMPredictionViewSet(viewsets.GenericViewSet):
     """
     Phase 14 LightGBM predictions (parallel to heuristic baseline).
     
-    GET /api/v1/lightgbm-predictions/
     POST /api/v1/lightgbm-predictions/train/
     POST /api/v1/lightgbm-predictions/recalculate/
     POST /api/v1/lightgbm-predictions/batch/
@@ -133,23 +132,6 @@ class LightGBMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
     """
     serializer_class = LightGBMPredictionSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        qs = LightGBMPrediction.objects.select_related('asset', 'model_artifact').all().order_by('-date', 'asset__symbol', 'horizon_days')
-        date_str = self.request.query_params.get('date')
-        horizon = self.request.query_params.get('horizon_days')
-        if date_str:
-            try:
-                target_date = date.fromisoformat(date_str)
-                qs = qs.filter(date=target_date)
-            except ValueError:
-                pass
-        if horizon:
-            try:
-                qs = qs.filter(horizon_days=int(horizon))
-            except ValueError:
-                pass
-        return qs
 
     @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>(?!(?:train|recalculate|batch)(?:/|$))[^/.]+)')
     def stock(self, request, stock_code=None):

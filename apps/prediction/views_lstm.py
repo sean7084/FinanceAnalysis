@@ -16,11 +16,10 @@ from .tasks_lstm import (
 )
 
 
-class LSTMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
+class LSTMPredictionViewSet(viewsets.GenericViewSet):
     """
     LSTM predictions stored in PredictionResult rows with model_type=LSTM.
 
-    GET /api/v1/lstm-predictions/
     GET /api/v1/lstm-predictions/{stock_code}/
     POST /api/v1/lstm-predictions/recalculate/
     POST /api/v1/lstm-predictions/train/
@@ -29,27 +28,6 @@ class LSTMPredictionViewSet(viewsets.ReadOnlyModelViewSet):
 
     serializer_class = PredictionResultSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        qs = (
-            PredictionResult.objects.select_related('asset', 'model_version')
-            .filter(model_version__model_type='LSTM')
-            .order_by('-date', 'asset__symbol', 'horizon_days')
-        )
-        date_str = self.request.query_params.get('date')
-        horizon = self.request.query_params.get('horizon_days')
-        if date_str:
-            try:
-                target_date = date.fromisoformat(date_str)
-                qs = qs.filter(date=target_date)
-            except ValueError:
-                pass
-        if horizon:
-            try:
-                qs = qs.filter(horizon_days=int(horizon))
-            except ValueError:
-                pass
-        return qs
 
     @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>(?!(?:train|recalculate|batch)(?:/|$))[^/.]+)')
     def stock(self, request, stock_code=None):

@@ -24,7 +24,7 @@ class ModelVersionViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
 
-class PredictionViewSet(viewsets.ReadOnlyModelViewSet):
+class PredictionViewSet(viewsets.GenericViewSet):
     """
     Phase 14 endpoints:
     - GET /api/v1/prediction/{stock_code}/
@@ -33,23 +33,6 @@ class PredictionViewSet(viewsets.ReadOnlyModelViewSet):
     """
     serializer_class = PredictionResultSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        qs = PredictionResult.objects.select_related('asset', 'model_version').all().order_by('-date', 'asset__symbol', 'horizon_days')
-        date_str = self.request.query_params.get('date')
-        horizon = self.request.query_params.get('horizon_days')
-        if date_str:
-            try:
-                target_date = date.fromisoformat(date_str)
-                qs = qs.filter(date=target_date)
-            except ValueError:
-                pass
-        if horizon:
-            try:
-                qs = qs.filter(horizon_days=int(horizon))
-            except ValueError:
-                pass
-        return qs
 
     @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>[^/.]+)')
     def stock(self, request, stock_code=None):

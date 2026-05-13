@@ -176,6 +176,13 @@ class Phase14PredictionTests(TestCase):
         response = self.client.post('/api/v1/prediction/batch/', {'stock_codes': [self.asset.symbol]}, format='json')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_prediction_history_list_routes_are_not_exposed(self):
+        response = self.client.get('/api/v1/prediction/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        response = self.client.get('/api/v1/lstm-predictions/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_generate_predictions_task_creates_snapshot_rows(self):
         d = self._seed_features()
         generate_predictions_for_date(target_date=str(d), horizons=[3, 7, 30])

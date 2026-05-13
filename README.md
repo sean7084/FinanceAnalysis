@@ -52,7 +52,7 @@ This platform provides comprehensive financial data analysis for Chinese stock m
 - **Technical Indicators**: 1,141,393 stored indicator rows across RSI, MACD, BBANDS, SMA, EMA, STOCH, ADX, OBV, FIB_RET, MOM_5D, MOM_10D, MOM_20D, and RS_SCORE
 - **Signal/Sentiment Tables**: 2,855 signal events, 44,468 news articles, 1,836,395 sentiment scores, and 88 concept heat rows
 - **Factor Tables**: 1,145,013 fundamental snapshots, 1,145,611 capital-flow snapshots, 990,029 raw moneyflow rows, 768,393 raw margin-detail rows, and 1,801,500 factor-score rows
-- **Prediction Tables**: 10,804 `PredictionResult` rows for heuristic/LSTM storage surfaces and 446,482 LightGBM prediction rows, with target/stop/risk-reward/trade-score/suggested fields available on prediction outputs
+- **Prediction Tables**: 10,804 `PredictionResult` rows for heuristic/LSTM daily snapshot storage and 446,482 LightGBM daily snapshot rows, with target/stop/risk-reward/trade-score/suggested fields available on current prediction outputs; backtests regenerate candidates on demand rather than depending on historical prediction coverage
 - **Model Monitoring Volume**: 14 LightGBM artifacts (3 active), 23 model-version rows, 475 feature-importance snapshots, and 3 ensemble-weight snapshots
 - **Backtest Release Export**: benchmark suites and detailed run exports are generated locally under `reports/` through `run_reference_benchmark_suite` and `export_backtest_runs`, rather than treated as committed source files
 

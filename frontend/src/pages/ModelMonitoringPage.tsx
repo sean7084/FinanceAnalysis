@@ -3,13 +3,11 @@ import {
   fetchEnsembleWeights,
   fetchLightGBMFeatureImportanceTrends,
   fetchLightGBMModels,
-  fetchLightGBMPredictions,
   fetchModelVersions,
   type FeatureImportanceTrendGroupDto,
   hasAnyAuthCredential,
   type EnsembleWeightSnapshotDto,
   type LightGBMModelArtifactDto,
-  type LightGBMPredictionDto,
   type ModelVersionDto,
 } from '../lib/api'
 import { useI18n } from '../i18n'
@@ -32,7 +30,6 @@ export function ModelMonitoringPage() {
   const [error, setError] = useState<string | null>(null)
   const [modelVersions, setModelVersions] = useState<ModelVersionDto[]>([])
   const [lightgbmModels, setLightgbmModels] = useState<LightGBMModelArtifactDto[]>([])
-  const [lightgbmPredictions, setLightgbmPredictions] = useState<LightGBMPredictionDto[]>([])
   const [ensembleWeights, setEnsembleWeights] = useState<EnsembleWeightSnapshotDto[]>([])
   const [featureTrends, setFeatureTrends] = useState<FeatureImportanceTrendGroupDto[]>([])
 
@@ -41,10 +38,9 @@ export function ModelMonitoringPage() {
     ;(async () => {
       try {
         setLoading(true)
-        const [versions, models, predictions, weights, trends] = await Promise.all([
+        const [versions, models, weights, trends] = await Promise.all([
           fetchModelVersions(undefined, 20),
           fetchLightGBMModels(20),
-          fetchLightGBMPredictions(40),
           fetchEnsembleWeights(20),
           fetchLightGBMFeatureImportanceTrends(undefined, 5, 5),
         ])
@@ -55,7 +51,6 @@ export function ModelMonitoringPage() {
 
         setModelVersions(versions)
         setLightgbmModels(models)
-        setLightgbmPredictions(predictions)
         setEnsembleWeights(weights)
         setFeatureTrends(trends.results)
         setError(null)
@@ -74,18 +69,6 @@ export function ModelMonitoringPage() {
       alive = false
     }
   }, [])
-
-  const comparisonRows = useMemo(() => {
-    return lightgbmPredictions.slice(0, 12).map((row) => ({
-      key: `${row.asset_symbol}-${row.date}-${row.horizon_days}`,
-      asset: `${row.asset_symbol} ${row.asset_name}`,
-      date: row.date,
-      horizon: row.horizon_days,
-      confidence: Number(row.confidence).toFixed(3),
-      label: row.predicted_label,
-      topFeatures: topFeatureSummary(row.feature_snapshot),
-    }))
-  }, [lightgbmPredictions])
 
   const featureTrendRows = useMemo(() => {
     return featureTrends.flatMap((group) => {
@@ -201,39 +184,6 @@ export function ModelMonitoringPage() {
               </tr>
             ))}
             {featureTrendRows.length === 0 && !loading && (
-              <tr>
-                <td colSpan={6}>{t('common.noData')}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card">
-        <h3>{t('models.predictionComparison')}</h3>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>{t('models.asset')}</th>
-              <th>{t('models.date')}</th>
-              <th>{t('models.horizon')}</th>
-              <th>{t('models.confidence')}</th>
-              <th>{t('models.label')}</th>
-              <th>{t('models.topFeatures')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {comparisonRows.map((row) => (
-              <tr key={row.key}>
-                <td>{row.asset}</td>
-                <td>{row.date}</td>
-                <td>{row.horizon}D</td>
-                <td>{row.confidence}</td>
-                <td>{row.label}</td>
-                <td>{row.topFeatures}</td>
-              </tr>
-            ))}
-            {comparisonRows.length === 0 && !loading && (
               <tr>
                 <td colSpan={6}>{t('common.noData')}</td>
               </tr>

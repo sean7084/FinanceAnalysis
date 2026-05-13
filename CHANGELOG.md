@@ -51,6 +51,7 @@
 - `validate_data_quality` now treats `ExchangeTradingCalendar` as the official source of opening days; OHLCV continuity excludes pre-listing dates, on/after-delist dates, and suspension-covered dates instead of inferring expectations from stored bars.
 - Normal PIT-aware workflows now fail fast when required `IndexMembership` history is missing rather than silently widening to the full asset table.
 - Historical warm-up repairs may intentionally reach before the shared floor only when the command is explicitly running a bounded repair or feature warm-up window.
+- Stored `PredictionResult` and `LightGBMPrediction` rows remain available as the live daily snapshot layer for stock-level prediction flows, but backtests continue to regenerate heuristic, `LightGBM`, and `LSTM` candidates at runtime and no longer rely on prediction-history list/admin surfaces.
 
 **Key Files**:
 - `apps/markets/benchmarking.py`
