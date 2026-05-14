@@ -10,10 +10,14 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+import json
+import tempfile
 import datetime
+from pathlib import Path
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
+from .management.commands.backfill_technical_indicators import DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.models_lightgbm import LightGBMModelArtifact, LightGBMPrediction
@@ -1113,6 +1117,98 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
         ).count()
 
         self.assertEqual(first_count, second_count)
+
+    def test_backfill_technical_indicators_processes_large_windows_in_chunks(self):
+        output = StringIO()
+
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=self.end_date.isoformat(),
+            symbols=self.asset.symbol,
+            chunk_size_days=2,
+            stdout=output,
+        )
+
+        self.assertIn('processed_chunks=3', output.getvalue())
+        self.assertEqual(
+            TechnicalIndicator.objects.filter(
+                asset=self.asset,
+                indicator_type='RSI',
+                timestamp__date__gte=self.start_date,
+                timestamp__date__lte=self.end_date,
+            ).count(),
+            5,
+        )
+
+    def test_backfill_technical_indicators_resume_from_checkpoint_skips_completed_chunks(self):
+        first_chunk_end = self.start_date + datetime.timedelta(days=1)
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=first_chunk_end.isoformat(),
+            symbols=self.asset.symbol,
+            chunk_size_days=2,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / 'technical_indicator_backfill_checkpoint.json'
+            checkpoint_path.write_text(json.dumps({
+                'command': 'backfill_technical_indicators',
+                'version': 1,
+                'window': {
+                    'start_date': self.start_date.isoformat(),
+                    'end_date': self.end_date.isoformat(),
+                },
+                'options': {
+                    'technical_indicators': list(DEFAULT_TECHNICAL_INDICATORS),
+                    'chunk_size_days': 2,
+                    'symbols': [self.asset.symbol],
+                    'limit_assets': 0,
+                },
+                'asset_selection': {
+                    'count': 1,
+                    'ts_codes': [self.asset.ts_code],
+                },
+                'assets': {
+                    self.asset.ts_code: {
+                        'status': 'running',
+                        'last_completed_chunk_end': first_chunk_end.isoformat(),
+                        'completed_chunks': 1,
+                    },
+                },
+            }), encoding='utf-8')
+
+            output = StringIO()
+            call_command(
+                'backfill_technical_indicators',
+                start_date=self.start_date.isoformat(),
+                end_date=self.end_date.isoformat(),
+                symbols=self.asset.symbol,
+                chunk_size_days=2,
+                checkpoint_file=str(checkpoint_path),
+                resume_from_checkpoint=True,
+                stdout=output,
+            )
+
+            self.assertIn(f'checkpoint resume skips through {first_chunk_end}', output.getvalue())
+            self.assertIn('processed_chunks=2', output.getvalue())
+
+            checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+            self.assertEqual(checkpoint['assets'][self.asset.ts_code]['status'], 'completed')
+            self.assertEqual(
+                checkpoint['assets'][self.asset.ts_code]['last_completed_chunk_end'],
+                self.end_date.isoformat(),
+            )
+            self.assertEqual(
+                TechnicalIndicator.objects.filter(
+                    asset=self.asset,
+                    indicator_type='RSI',
+                    timestamp__date__gte=self.start_date,
+                    timestamp__date__lte=self.end_date,
+                ).count(),
+                5,
+            )
 
     def test_backfill_technical_indicators_rejects_rs_score(self):
         with self.assertRaises(CommandError):
