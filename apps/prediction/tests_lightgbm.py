@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.macro.models import MacroSnapshot
-from apps.markets.models import Asset, IndexMembership, Market, OHLCV
+from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
@@ -22,6 +22,25 @@ from .tasks_lightgbm import (
     _extract_features_for_asset,
     train_lightgbm_models,
 )
+
+
+def _seed_trading_calendar_dates(exchange_code, trade_dates):
+    resolved_exchange_code = str(exchange_code or '').upper()
+    existing_dates = set(
+        ExchangeTradingCalendar.objects.filter(exchange_code=resolved_exchange_code)
+        .values_list('trade_date', flat=True)
+    )
+    ordered_dates = sorted(existing_dates | set(trade_dates))
+    for index, trade_date in enumerate(ordered_dates):
+        previous_trade_date = ordered_dates[index - 1] if index > 0 else None
+        calendar, _created = ExchangeTradingCalendar.objects.get_or_create(
+            exchange_code=resolved_exchange_code,
+            trade_date=trade_date,
+            defaults={'previous_trade_date': previous_trade_date},
+        )
+        if calendar.previous_trade_date != previous_trade_date:
+            calendar.previous_trade_date = previous_trade_date
+            calendar.save(update_fields=['previous_trade_date'])
 
 
 class LightGBMPredictionTests(TestCase):
@@ -71,6 +90,7 @@ class LightGBMPredictionTests(TestCase):
         """Create factor and sentiment data for inference."""
         d = timezone.now().date()
         trade_dates = [d - timezone.timedelta(days=offset) for offset in range(12)]
+        _seed_trading_calendar_dates('SSE', trade_dates)
         self._seed_pit_membership(self.asset, trade_dates)
         FactorScore.objects.create(
             asset=self.asset,
@@ -167,6 +187,32 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn('rsi_x_relative_volume_5d', feature_df.columns)
         self.assertIn('factor_composite_x_sentiment', feature_df.columns)
 
+    def test_extract_features_for_asset_defaults_engineered_features_for_gappy_recent_history(self):
+        d = self._seed_features()
+        OHLCV.objects.filter(
+            asset=self.asset,
+            date__in=[d - timezone.timedelta(days=2), d - timezone.timedelta(days=3)],
+        ).delete()
+
+        features = _extract_features_for_asset(self.asset.id, d)
+
+        self.assertEqual(features['return_3d'], 0.0)
+        self.assertEqual(features['relative_volume_5d'], 1.0)
+        self.assertEqual(features['realized_volatility_5d'], 0.0)
+
+    def test_create_feature_matrix_defaults_engineered_features_for_gappy_recent_history(self):
+        d = self._seed_features()
+        OHLCV.objects.filter(
+            asset=self.asset,
+            date__in=[d - timezone.timedelta(days=2), d - timezone.timedelta(days=3)],
+        ).delete()
+
+        feature_df = _create_feature_matrix(d, d, asset_ids=[self.asset.id])
+
+        self.assertEqual(float(feature_df.iloc[0]['return_3d']), 0.0)
+        self.assertEqual(float(feature_df.iloc[0]['relative_volume_5d']), 1.0)
+        self.assertEqual(float(feature_df.iloc[0]['realized_volatility_5d']), 0.0)
+
     def test_build_lightgbm_model_version_appends_normalized_tag(self):
         d = timezone.datetime(2024, 12, 31).date()
 
@@ -231,6 +277,7 @@ class LightGBMPredictionTests(TestCase):
     @patch('apps.prediction.tasks_lightgbm.lgb.train')
     def test_train_lightgbm_models_records_metadata_and_snapshots(self, mock_train, mock_calibrator_cls, mock_save_artifacts):
         d = self._seed_features()
+        _seed_trading_calendar_dates('SSE', [d - timezone.timedelta(days=offset) for offset in range(35)])
 
         for index in range(120):
             asset = Asset.objects.create(

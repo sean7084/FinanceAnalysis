@@ -1,6 +1,6 @@
 # Technical Guide
 
-Last refreshed: `2026-04-27` (from live DB snapshots after expanding the Data Metrics Sheet coverage audit).
+Last refreshed: `2026-05-14` (after the shared technical-indicator stale-guard rollout across daily sync, historical backfills, and runtime feature extraction).
 
 ## Data Metrics Sheet
 Date range format: `YYYY-MM-DD`.
@@ -82,6 +82,75 @@ Stored analytics rows are primarily for API, dashboard, and inspection surfaces.
 Implication:
 - Sparse stored RSI/MACD/BBANDS rows do not by themselves break runtime backtests or runtime LightGBM inference.
 - Stale or missing `RS_SCORE` / `FactorScore` rows still affect model behavior.
+
+### technical stale-guard policy
+
+Technical freshness is now enforced consistently in:
+- daily analytics/signal tasks in `apps/analytics/tasks.py`
+- historical non-RS indicator backfills in `backfill_technical_indicators`
+- historical `RS_SCORE` rebuilds in `backfill_model_data`
+- runtime OHLCV-derived helpers in `apps/prediction/historical_features.py`
+- LightGBM/LSTM runtime and training feature builders in `apps/prediction/tasks_lightgbm.py` and `apps/prediction/tasks_lstm.py`
+
+The shared rule set is based on official `ExchangeTradingCalendar` rows, not raw calendar-day differences or sparse OHLCV row counts.
+
+#### gap-tolerant trend and smoothing metrics
+
+| Metric family | Trading-day max gap | Runtime/backfill behavior when violated |
+| --- | --- | --- |
+| `RSI(14)` | `3` | skip stored row; runtime falls back to `50` |
+| `MACD(12,26,9)` | `3` | skip stored row |
+| `BBANDS(20)` | `5` | skip stored row; runtime returns `None` |
+| `SMA/EMA(5)` | `2` | skip stored row; runtime SMA falls back to neutral/default |
+| `SMA/EMA(10)` | `3` | same |
+| `SMA/EMA(20)` | `5` | same |
+| `SMA/EMA(50)` | `7` | same |
+| `SMA/EMA(100)` | `10` | same |
+| `SMA/EMA(200)` | `15` | same |
+| `STOCH(14,3,3)` | `5` | skip stored row |
+| `ADX(14)` | `5` | skip stored row |
+| `OBV` | `7` | skip stored row |
+| `FIB_RET(60)` | `10` | skip stored row |
+
+Notes:
+- Unlisted moving-average periods use the nearest configured bucket; the current runtime `SMA(60)` support in TP/SL logic inherits the `<=100` bucket and therefore uses a `10`-trading-day max gap.
+- For gap-tolerant metrics, the guard checks both the age of the latest usable bar versus the current official trading date and the maximum trading-day gap inside the required trailing window.
+
+#### exact-window metrics
+
+These metrics do not reuse stale trailing windows. They require an exact current trading date plus an exact aligned anchor date.
+
+| Metric family | Required bars | Neutral fallback / write behavior |
+| --- | --- | --- |
+| `MOM_5D` | `6` | runtime fallback `0`; no stored row if incomplete |
+| `MOM_10D` | `11` | runtime fallback `0`; no stored row if incomplete |
+| `MOM_20D` | `21` | runtime fallback `0`; no stored row if incomplete |
+| `return_3d` | exact `3` trading-day anchor | runtime/training fallback `0` |
+| `return_5d` | exact `5` trading-day anchor | runtime/training fallback `0` |
+| `return_10d` | exact `10` trading-day anchor | runtime/training fallback `0` |
+| `realized_volatility_5d` | `6` aligned bars | runtime/training fallback `0` |
+
+`relative_volume_5d` and `relative_volume_20d` are treated like rolling volume averages rather than exact-anchor returns:
+- `relative_volume_5d` uses the `5`-day moving-average gap rule and falls back to `1.0`
+- `relative_volume_20d` uses the `20`-day moving-average gap rule and falls back to `1.0`
+
+#### cross-sectional `RS_SCORE`
+
+`RS_SCORE` no longer accepts sparse row-order approximations.
+
+- Daily sync and historical backfill now require an exact `20`-trading-day anchor from the official exchange calendar.
+- Assets missing the current trading date, the exact anchor date, or interior sessions inside that `20`-day window are excluded from that day’s ranking.
+- Runtime consumption of stored `RS_SCORE` falls back to neutral `0.5` when the latest stored row is older than `5` trading days.
+- Historical reruns delete and rebuild the requested `RS_SCORE`/`HIGH_RS_SCORE` slice so newly invalid windows remove previously stored stale rows.
+
+#### signal-event suppression
+
+Signal tasks no longer emit stale technical events just because an old OHLCV row exists.
+
+- MA, Bollinger, volume, momentum, and reversal signals now require fresh enough underlying windows.
+- If the underlying OHLCV window is stale or incomplete, the signal row is skipped rather than reusing old state.
+- This keeps `SignalEvent` behavior aligned with the stored-indicator and runtime-feature guards.
+- Historical non-RS signal rows can now be rebuilt with `python manage.py backfill_signal_events --start-date <date> --end-date <date>`; `HIGH_RS_SCORE` remains owned by `backfill_model_data`.
 
 ### macro snapshot coverage and semantics
 

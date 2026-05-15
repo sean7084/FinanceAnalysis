@@ -19,7 +19,7 @@ from apps.factors.models import FundamentalFactorSnapshot
 from apps.factors.models import FactorScore
 from apps.analytics.indicator_warmup import MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS
 from apps.markets.benchmarking import PITMembershipCoverageError
-from apps.markets.models import Asset, IndexMembership, Market, OHLCV
+from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
@@ -27,6 +27,25 @@ from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
 from .tasks import generate_predictions_for_date
 from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training
 from .tasks_lstm import train_lstm_models
+
+
+def _seed_trading_calendar_dates(exchange_code, trade_dates):
+    resolved_exchange_code = str(exchange_code or '').upper()
+    existing_dates = set(
+        ExchangeTradingCalendar.objects.filter(exchange_code=resolved_exchange_code)
+        .values_list('trade_date', flat=True)
+    )
+    ordered_dates = sorted(existing_dates | set(trade_dates))
+    for index, trade_date in enumerate(ordered_dates):
+        previous_trade_date = ordered_dates[index - 1] if index > 0 else None
+        calendar, _created = ExchangeTradingCalendar.objects.get_or_create(
+            exchange_code=resolved_exchange_code,
+            trade_date=trade_date,
+            defaults={'previous_trade_date': previous_trade_date},
+        )
+        if calendar.previous_trade_date != previous_trade_date:
+            calendar.previous_trade_date = previous_trade_date
+            calendar.save(update_fields=['previous_trade_date'])
 
 
 class Phase14PredictionTests(TestCase):
@@ -50,6 +69,8 @@ class Phase14PredictionTests(TestCase):
 
     def _seed_features(self):
         d = timezone.now().date()
+        trade_dates = [d - timezone.timedelta(days=offset) for offset in range(30)]
+        _seed_trading_calendar_dates('SSE', trade_dates)
         self._seed_required_pit_membership(self.asset, d)
         FactorScore.objects.create(
             asset=self.asset,
@@ -118,6 +139,8 @@ class Phase14PredictionTests(TestCase):
 
     def _seed_features_for_asset(self, asset, index_codes=('000300.SH', '000510.CSI')):
         d = timezone.now().date()
+        trade_dates = [d - timezone.timedelta(days=offset) for offset in range(30)]
+        _seed_trading_calendar_dates('SSE', trade_dates)
         self._seed_required_pit_membership(asset, d, index_codes=index_codes)
         FactorScore.objects.create(
             asset=asset,
@@ -326,6 +349,7 @@ class BackfillModelDataCommandTests(TestCase):
                 volume=100000,
                 amount=Decimal('1020000'),
             )
+            _seed_trading_calendar_dates('SSE', self.trading_dates)
 
         FundamentalFactorSnapshot.objects.create(
             asset=self.asset,
@@ -411,6 +435,7 @@ class BackfillModelDataCommandTests(TestCase):
                     volume=100000,
                     amount=close_value * Decimal('100000'),
                 )
+        _seed_trading_calendar_dates('SSE', trade_dates)
 
         expected_top_asset = assets[-1]
 
@@ -477,6 +502,11 @@ class BackfillModelDataCommandTests(TestCase):
                 volume=100000,
                 amount=close_value * Decimal('100000'),
             )
+        full_trade_dates = [
+            sparse_dates[0] + timezone.timedelta(days=offset)
+            for offset in range((target_date - sparse_dates[0]).days + 1)
+        ]
+        _seed_trading_calendar_dates('SSE', full_trade_dates)
 
         for index_code, index_name, weight in (
             ('000300.SH', 'CSI 300', Decimal('4.2')),
@@ -502,7 +532,7 @@ class BackfillModelDataCommandTests(TestCase):
         target_timestamp = timezone.make_aware(
             timezone.datetime.combine(target_date, timezone.datetime.min.time())
         )
-        self.assertTrue(
+        self.assertFalse(
             TechnicalIndicator.objects.filter(
                 asset=asset,
                 timestamp=target_timestamp,
@@ -538,6 +568,7 @@ class BackfillModelDataCommandTests(TestCase):
                     volume=100000,
                     amount=close_value * Decimal('100000'),
                 )
+        _seed_trading_calendar_dates('SSE', trade_dates)
 
         IndexMembership.objects.create(
             asset=assets[-1],
@@ -578,41 +609,74 @@ class BackfillModelDataCommandTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_backfill_model_data_removes_rs_rows_when_window_becomes_invalid(self):
+        target_date = timezone.datetime(2024, 2, 22).date()
+        trade_dates = [target_date - timezone.timedelta(days=offset) for offset in range(21, -1, -1)]
+        _seed_trading_calendar_dates('SSE', trade_dates)
+
+        for offset, trade_date in enumerate(trade_dates):
+            close_value = Decimal('10.0') + (Decimal('0.05') * Decimal(offset))
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=trade_date,
+                open=close_value,
+                high=close_value + Decimal('0.1'),
+                low=close_value - Decimal('0.1'),
+                close=close_value,
+                adj_close=close_value,
+                volume=100000,
+                amount=close_value * Decimal('100000'),
+            )
+
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=target_date,
+            weight=Decimal('4.2'),
+        )
+
+        call_command(
+            'backfill_model_data',
+            start_date=target_date.isoformat(),
+            end_date=target_date.isoformat(),
+            skip_sentiment=True,
+        )
+
+        target_timestamp = timezone.make_aware(
+            timezone.datetime.combine(target_date, timezone.datetime.min.time())
+        )
         self.assertTrue(
             TechnicalIndicator.objects.filter(
-                asset=assets[-1],
+                asset=self.asset,
+                timestamp=target_timestamp,
+                indicator_type='RS_SCORE',
+            ).exists()
+        )
+
+        OHLCV.objects.filter(asset=self.asset, date=trade_dates[5]).delete()
+
+        call_command(
+            'backfill_model_data',
+            start_date=target_date.isoformat(),
+            end_date=target_date.isoformat(),
+            skip_sentiment=True,
+        )
+
+        self.assertFalse(
+            TechnicalIndicator.objects.filter(
+                asset=self.asset,
                 timestamp=target_timestamp,
                 indicator_type='RS_SCORE',
             ).exists()
         )
         self.assertFalse(
-            TechnicalIndicator.objects.filter(
-                asset=assets[0],
-                timestamp=target_timestamp,
-                indicator_type='RS_SCORE',
-            ).exists()
-        )
-        self.assertTrue(
             SignalEvent.objects.filter(
-                asset=assets[-1],
+                asset=self.asset,
                 timestamp=target_timestamp,
                 signal_type='HIGH_RS_SCORE',
             ).exists()
-        )
-
-        call_command(
-            'backfill_model_data',
-            start_date=trade_dates[0].isoformat(),
-            end_date=trade_dates[-1].isoformat(),
-            skip_sentiment=True,
-        )
-
-        self.assertEqual(
-            SignalEvent.objects.filter(
-                timestamp=target_timestamp,
-                signal_type='HIGH_RS_SCORE',
-            ).count(),
-            1,
         )
 
     @override_settings(HISTORICAL_DATA_FLOOR='2010-01-01')

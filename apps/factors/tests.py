@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.markets.benchmarking import PITMembershipCoverageError
-from apps.markets.models import Market, Asset, IndexMembership, OHLCV
+from apps.markets.models import ExchangeTradingCalendar, Market, Asset, IndexMembership, OHLCV
 from apps.prediction.models import ModelVersion, PredictionResult
 from .fundamental_materialization import materialize_fundamental_snapshot_rows
 from .models import (
@@ -24,6 +24,25 @@ from .models import (
     FundamentalFactorSnapshot,
 )
 from .tasks import calculate_factor_scores_for_date, sync_daily_capital_flow_snapshots
+
+
+def _seed_trading_calendar_dates(exchange_code, trade_dates):
+    resolved_exchange_code = str(exchange_code or '').upper()
+    existing_dates = set(
+        ExchangeTradingCalendar.objects.filter(exchange_code=resolved_exchange_code)
+        .values_list('trade_date', flat=True)
+    )
+    ordered_dates = sorted(existing_dates | set(trade_dates))
+    for index, trade_date in enumerate(ordered_dates):
+        previous_trade_date = ordered_dates[index - 1] if index > 0 else None
+        calendar, _created = ExchangeTradingCalendar.objects.get_or_create(
+            exchange_code=resolved_exchange_code,
+            trade_date=trade_date,
+            defaults={'previous_trade_date': previous_trade_date},
+        )
+        if calendar.previous_trade_date != previous_trade_date:
+            calendar.previous_trade_date = previous_trade_date
+            calendar.save(update_fields=['previous_trade_date'])
 
 
 class Phase11FactorTests(TestCase):
@@ -67,6 +86,7 @@ class Phase11FactorTests(TestCase):
                 volume=800000,
                 amount=Decimal('16080000'),
             )
+            _seed_trading_calendar_dates('SSE', [base_date - timedelta(days=i) for i in range(30)])
 
         FundamentalFactorSnapshot.objects.create(
             asset=self.asset1,

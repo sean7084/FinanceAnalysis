@@ -17,12 +17,19 @@ from channels.layers import get_channel_layer
 from apps.markets.benchmarking import ensure_pit_membership_coverage, point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from .models import TechnicalIndicator, AlertRule, AlertEvent, SignalEvent
+from .technical_staleness import (
+    exact_trading_window_available,
+    latest_official_trade_date,
+    ordered_trading_dates_for_asset,
+    trading_date_positions,
+    trailing_indicator_window_is_fresh,
+)
 
-def get_ohlcv_df(asset_id, days_history=200):
+def get_ohlcv_df(asset_id, days_history=200, end_date=None):
     """
     Fetches the last N days of OHLCV data for an asset and returns a DataFrame.
     """
-    end_date = timezone.now().date()
+    end_date = end_date or timezone.now().date()
     start_date = end_date - timedelta(days=days_history)
     
     ohlcv_qs = OHLCV.objects.filter(
@@ -46,17 +53,37 @@ def get_ohlcv_df(asset_id, days_history=200):
     
     return df
 
+
+def _asset_ohlcv_context(asset_id, days_history=200, end_date=None):
+    asset = Asset.objects.select_related('market').get(id=asset_id)
+    as_of = end_date or timezone.now().date()
+    df = get_ohlcv_df(asset_id, days_history=days_history, end_date=as_of)
+    ordered_trading_dates = ordered_trading_dates_for_asset(asset, as_of)
+    position_map = trading_date_positions(ordered_trading_dates)
+    current_trade_date = latest_official_trade_date(ordered_trading_dates, as_of)
+    actual_dates = list(df.index) if not df.empty else []
+    return asset, df, actual_dates, current_trade_date, position_map
+
 @shared_task
 def calculate_rsi_for_asset(asset_id, timeperiod=14):
     """
     Calculates the Relative Strength Index (RSI) for a given asset and saves it.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty or len(df) < timeperiod:
         print(f"Not enough data for RSI calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='RSI',
+        parameters={'timeperiod': timeperiod},
+    ):
+        print(f"Skipping stale RSI calculation for asset {asset_id}.")
+        return
+
     rsi_values = talib.RSI(df['close'], timeperiod=timeperiod)
     
     last_valid_index = rsi_values.last_valid_index()
@@ -87,12 +114,25 @@ def calculate_macd_for_asset(asset_id, fastperiod=12, slowperiod=26, signalperio
     """
     Calculates the Moving Average Convergence Divergence (MACD) for a given asset and saves it.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty or len(df) < slowperiod:
         print(f"Not enough data for MACD calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='MACD',
+        parameters={
+            'fastperiod': fastperiod,
+            'slowperiod': slowperiod,
+            'signalperiod': signalperiod,
+        },
+    ):
+        print(f"Skipping stale MACD calculation for asset {asset_id}.")
+        return
+
     macd, macdsignal, macdhist = talib.MACD(
         df['close'], fastperiod=fastperiod, slowperiod=slowperiod, signalperiod=signalperiod
     )
@@ -125,12 +165,21 @@ def calculate_bollinger_bands_for_asset(asset_id, timeperiod=20, nbdevup=2, nbde
     """
     Calculates Bollinger Bands (upper, middle, lower) for a given asset.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty or len(df) < timeperiod:
         print(f"Not enough data for Bollinger Bands calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='BBANDS',
+        parameters={'timeperiod': timeperiod, 'nbdevup': nbdevup, 'nbdevdn': nbdevdn},
+    ):
+        print(f"Skipping stale Bollinger Bands calculation for asset {asset_id}.")
+        return
+
     upper, middle, lower = talib.BBANDS(
         df['close'], timeperiod=timeperiod, nbdevup=nbdevup, nbdevdn=nbdevdn
     )
@@ -184,16 +233,23 @@ def calculate_sma_for_asset(asset_id, timeperiods=[5, 10, 20, 50, 100, 200]):
     """
     Calculates Simple Moving Averages for multiple periods.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty:
         print(f"Not enough data for SMA calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
     from django.utils import timezone as tz
     
     for period in timeperiods:
         if len(df) < period:
+            continue
+        if not trailing_indicator_window_is_fresh(
+            actual_dates,
+            current_trade_date,
+            position_map,
+            indicator_type='SMA',
+            parameters={'timeperiod': period},
+        ):
             continue
             
         sma_values = talib.SMA(df['close'], timeperiod=period)
@@ -225,16 +281,23 @@ def calculate_ema_for_asset(asset_id, timeperiods=[5, 10, 20, 50, 100, 200]):
     """
     Calculates Exponential Moving Averages for multiple periods.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty:
         print(f"Not enough data for EMA calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
     from django.utils import timezone as tz
     
     for period in timeperiods:
         if len(df) < period:
+            continue
+        if not trailing_indicator_window_is_fresh(
+            actual_dates,
+            current_trade_date,
+            position_map,
+            indicator_type='EMA',
+            parameters={'timeperiod': period},
+        ):
             continue
             
         ema_values = talib.EMA(df['close'], timeperiod=period)
@@ -266,13 +329,26 @@ def calculate_stochastic_for_asset(asset_id, fastk_period=14, slowk_period=3, sl
     """
     Calculates Stochastic Oscillator (%K and %D lines).
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     required_period = max(fastk_period, slowk_period) + slowd_period
     if df.empty or len(df) < required_period:
         print(f"Not enough data for Stochastic calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='STOCH',
+        parameters={
+            'fastk_period': fastk_period,
+            'slowk_period': slowk_period,
+            'slowd_period': slowd_period,
+        },
+    ):
+        print(f"Skipping stale Stochastic calculation for asset {asset_id}.")
+        return
+
     slowk, slowd = talib.STOCH(
         df['high'], df['low'], df['close'],
         fastk_period=fastk_period,
@@ -331,12 +407,21 @@ def calculate_adx_for_asset(asset_id, timeperiod=14):
     """
     Calculates Average Directional Index (ADX) for trend strength.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty or len(df) < timeperiod * 2:
         print(f"Not enough data for ADX calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='ADX',
+        parameters={'timeperiod': timeperiod},
+    ):
+        print(f"Skipping stale ADX calculation for asset {asset_id}.")
+        return
+
     adx = talib.ADX(df['high'], df['low'], df['close'], timeperiod=timeperiod)
     plus_di = talib.PLUS_DI(df['high'], df['low'], df['close'], timeperiod=timeperiod)
     minus_di = talib.MINUS_DI(df['high'], df['low'], df['close'], timeperiod=timeperiod)
@@ -384,12 +469,21 @@ def calculate_obv_for_asset(asset_id):
     """
     Calculates On-Balance Volume (OBV) indicator.
     """
-    df = get_ohlcv_df(asset_id)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id)
     if df.empty or len(df) < 2:
         print(f"Not enough data for OBV calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='OBV',
+        parameters={},
+    ):
+        print(f"Skipping stale OBV calculation for asset {asset_id}.")
+        return
+
     obv_values = talib.OBV(df['close'], df['volume'])
     
     last_valid_index = obv_values.last_valid_index()
@@ -426,14 +520,28 @@ def calculate_fibonacci_retracement_for_asset(asset_id, lookback_days=60):
         print(f"Invalid lookback_days={lookback_days} for Fibonacci calculation.")
         return
 
+    asset = Asset.objects.select_related('market').get(id=asset_id)
     candles = list(
-        OHLCV.objects.filter(asset_id=asset_id).order_by('-date')[:lookback_days]
+        OHLCV.objects.filter(asset_id=asset_id, date__lte=timezone.now().date()).order_by('-date')[:lookback_days]
     )
     if len(candles) < 2:
         print(f"Not enough data for Fibonacci calculation for asset {asset_id}.")
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    ordered_trading_dates = ordered_trading_dates_for_asset(asset, timezone.now().date())
+    current_trade_date = latest_official_trade_date(ordered_trading_dates, timezone.now().date())
+    position_map = trading_date_positions(ordered_trading_dates)
+    actual_dates = [candle.date for candle in reversed(candles)]
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='FIB_RET',
+        parameters={'lookback_days': lookback_days},
+    ):
+        print(f"Skipping stale Fibonacci calculation for asset {asset_id}.")
+        return
+
     period_high = max(float(c.high) for c in candles)
     period_low = min(float(c.low) for c in candles)
     price_range = period_high - period_low
@@ -634,11 +742,19 @@ def calculate_ma_signals_for_asset(asset_id):
     """
     Computes MA5/10/20/60 and detects golden cross, death cross, and alignment signals.
     """
-    df = get_ohlcv_df(asset_id, days_history=200)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id, days_history=200)
     if df.empty or len(df) < 62:
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='SMA',
+        parameters={'timeperiod': 60},
+    ):
+        return
+
     from django.utils import timezone as tz
 
     ma5 = talib.SMA(df['close'], timeperiod=5)
@@ -703,17 +819,33 @@ def calculate_bollinger_signals_for_asset(asset_id, timeperiod=20, nbdevup=2, nb
     """
     Detects Bollinger Band squeeze, price breakouts, and combined RSI+BB overbought/oversold.
     """
-    df = get_ohlcv_df(asset_id, days_history=100)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id, days_history=100)
     if df.empty or len(df) < timeperiod + 14:
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='BBANDS',
+        parameters={'timeperiod': timeperiod, 'nbdevup': nbdevup, 'nbdevdn': nbdevdn},
+    ):
+        return
+
     from django.utils import timezone as tz
 
     upper, middle, lower = talib.BBANDS(
         df['close'], timeperiod=timeperiod, nbdevup=nbdevup, nbdevdn=nbdevdn
     )
-    rsi = talib.RSI(df['close'], timeperiod=14)
+    rsi = None
+    if trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='RSI',
+        parameters={'timeperiod': 14},
+    ):
+        rsi = talib.RSI(df['close'], timeperiod=14)
 
     latest_date = df.index[-1]
     if pd.isna(upper[latest_date]) or pd.isna(lower[latest_date]):
@@ -724,7 +856,7 @@ def calculate_bollinger_signals_for_asset(asset_id, timeperiod=20, nbdevup=2, nb
     m = float(middle[latest_date])
     l = float(lower[latest_date])
     bandwidth = (u - l) / m if m > 0 else 0
-    rsi_val = float(rsi[latest_date]) if not pd.isna(rsi[latest_date]) else None
+    rsi_val = float(rsi[latest_date]) if rsi is not None and not pd.isna(rsi[latest_date]) else None
     latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
 
     if bandwidth < 0.05:
@@ -770,11 +902,19 @@ def calculate_volume_signals_for_asset(asset_id, avg_period=20, spike_multiplier
     """
     Detects volume spikes and volume-price divergence signals using OBV.
     """
-    df = get_ohlcv_df(asset_id, days_history=60)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id, days_history=60)
     if df.empty or len(df) < avg_period + 2:
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        required_points=avg_period,
+        max_gap=5,
+    ):
+        return
+
     from django.utils import timezone as tz
 
     avg_volume = df['volume'].iloc[-(avg_period + 1):-1].mean()
@@ -793,7 +933,7 @@ def calculate_volume_signals_for_asset(asset_id, avg_period=20, spike_multiplier
             )
 
     # Volume-price divergence via 5-day OBV trend vs price trend
-    if len(df) >= 7:
+    if len(df) >= 7 and exact_trading_window_available(actual_dates, current_trade_date, position_map, 5):
         obv = talib.OBV(df['close'], df['volume'])
         obv_5d_ago = float(obv.iloc[-6])
         obv_now = float(obv.iloc[-1])
@@ -823,11 +963,10 @@ def calculate_momentum_signals_for_asset(asset_id):
     Calculates 5/10/20-day momentum as TechnicalIndicator values.
     Flags MOMENTUM_UP_5D / MOMENTUM_DOWN_5D when 5-day move exceeds ±5%.
     """
-    df = get_ohlcv_df(asset_id, days_history=60)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id, days_history=60)
     if df.empty or len(df) < 22:
         return
 
-    asset = Asset.objects.get(id=asset_id)
     from django.utils import timezone as tz
 
     latest_close = float(df['close'].iloc[-1])
@@ -836,6 +975,8 @@ def calculate_momentum_signals_for_asset(asset_id):
 
     for n_days in [5, 10, 20]:
         if len(df) <= n_days:
+            continue
+        if not exact_trading_window_available(actual_dates, current_trade_date, position_map, n_days):
             continue
         past_close = float(df['close'].iloc[-(n_days + 1)])
         if past_close <= 0:
@@ -854,7 +995,10 @@ def calculate_momentum_signals_for_asset(asset_id):
             obj.save()
 
     # Signal flags for 5-day momentum
-    past_close_5d = float(df['close'].iloc[-6])
+    if exact_trading_window_available(actual_dates, current_trade_date, position_map, 5):
+        past_close_5d = float(df['close'].iloc[-6])
+    else:
+        past_close_5d = 0.0
     if past_close_5d > 0:
         momentum_5d = (latest_close - past_close_5d) / past_close_5d
         if momentum_5d >= 0.05:
@@ -878,11 +1022,35 @@ def calculate_reversal_signals_for_asset(asset_id, timeperiod_bb=20, timeperiod_
     """
     Detects oversold reversal combinations: RSI < 30 AND price near lower BB AND low volume.
     """
-    df = get_ohlcv_df(asset_id, days_history=100)
+    asset, df, actual_dates, current_trade_date, position_map = _asset_ohlcv_context(asset_id, days_history=100)
     if df.empty or len(df) < max(timeperiod_bb, timeperiod_rsi) + 5:
         return
 
-    asset = Asset.objects.get(id=asset_id)
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='BBANDS',
+        parameters={'timeperiod': timeperiod_bb},
+    ):
+        return
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        indicator_type='RSI',
+        parameters={'timeperiod': timeperiod_rsi},
+    ):
+        return
+    if not trailing_indicator_window_is_fresh(
+        actual_dates,
+        current_trade_date,
+        position_map,
+        required_points=21,
+        max_gap=5,
+    ):
+        return
+
     from django.utils import timezone as tz
 
     upper, middle, lower = talib.BBANDS(df['close'], timeperiod=timeperiod_bb)
@@ -930,12 +1098,28 @@ def calculate_rs_scores_for_all_assets():
     if not asset_ids:
         return
 
+    asset_map = {
+        asset.id: asset
+        for asset in Asset.objects.select_related('market').filter(id__in=asset_ids)
+    }
+
     scores = []
 
     for asset_id in asset_ids:
+        asset = asset_map.get(asset_id)
+        if asset is None:
+            continue
         candles = list(OHLCV.objects.filter(asset_id=asset_id, date__lte=today).order_by('-date')[:21])
         if len(candles) < 21:
             continue
+
+        ordered_trading_dates = ordered_trading_dates_for_asset(asset, today)
+        current_trade_date = latest_official_trade_date(ordered_trading_dates, today)
+        position_map = trading_date_positions(ordered_trading_dates)
+        actual_dates = sorted(candle.date for candle in candles)
+        if not exact_trading_window_available(actual_dates, current_trade_date, position_map, 20):
+            continue
+
         close_today = float(candles[0].close)
         close_20d = float(candles[20].close)
         if close_20d <= 0:

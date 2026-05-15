@@ -1,3 +1,4 @@
+from bisect import bisect_right
 import json
 import time
 from datetime import date, datetime, timedelta
@@ -11,7 +12,15 @@ from django.db.models import Min
 from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
+from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.analytics.tasks import persist_ranked_rs_scores
+from apps.analytics.technical_staleness import (
+    asset_exchange_code,
+    exact_trading_window_available,
+    latest_official_trade_date,
+    ordered_trading_dates_for_exchange,
+    trading_date_positions,
+)
 from apps.analytics.indicator_warmup import (
     MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS,
     minimum_history_prefill_start_date,
@@ -386,28 +395,84 @@ class Command(BaseCommand):
             self.stdout.write('  rs_score: no OHLCV rows found, skipping')
             return
 
+        actual_dates_by_asset = {}
+        for row in rows:
+            actual_dates_by_asset.setdefault(row['asset_id'], []).append(row['date'])
+
         frame = pd.DataFrame.from_records(rows)
         frame['close'] = frame['close'].astype(float)
         pivot = frame.pivot(index='date', columns='asset_id', values='close').sort_index()
-        returns_20d = pivot.pct_change(periods=20, fill_method=None)
+
+        asset_map = {
+            asset.id: asset
+            for asset in Asset.objects.select_related('market').filter(id__in=ever_union_asset_ids)
+        }
+        exchange_codes = {asset_exchange_code(asset) for asset in asset_map.values()}
+        ordered_trading_dates_by_exchange = {
+            exchange_code: ordered_trading_dates_for_exchange(exchange_code, end_date)
+            for exchange_code in exchange_codes
+        }
+        position_maps_by_exchange = {
+            exchange_code: trading_date_positions(ordered_dates)
+            for exchange_code, ordered_dates in ordered_trading_dates_by_exchange.items()
+        }
+
+        delete_start = trading_dates[0]
+        delete_end = trading_dates[-1]
+        TechnicalIndicator.objects.filter(
+            indicator_type='RS_SCORE',
+            timestamp__date__gte=delete_start,
+            timestamp__date__lte=delete_end,
+        ).delete()
+        SignalEvent.objects.filter(
+            signal_type='HIGH_RS_SCORE',
+            timestamp__date__gte=delete_start,
+            timestamp__date__lte=delete_end,
+        ).delete()
 
         attempted_indicators = 0
         attempted_signals = 0
         stage_started = time.perf_counter()
         for index, trading_date in enumerate(trading_dates, start=1):
-            if trading_date not in returns_20d.index:
-                self._mark_stage_progress(stage_name, last_completed_date=trading_date)
-                continue
-            series = returns_20d.loc[trading_date].dropna()
             union_asset_ids = membership_by_date.get(trading_date) or set()
-            series = series[series.index.isin(union_asset_ids)]
-            if series.empty:
+            ranked_scores = []
+            for asset_id in union_asset_ids:
+                asset = asset_map.get(asset_id)
+                if asset is None:
+                    continue
+                exchange_code = asset_exchange_code(asset)
+                ordered_trading_dates = ordered_trading_dates_by_exchange.get(exchange_code, ())
+                position_map = position_maps_by_exchange.get(exchange_code, {})
+                current_trade_date = latest_official_trade_date(ordered_trading_dates, trading_date)
+                if current_trade_date is None:
+                    continue
+                current_position = position_map.get(current_trade_date)
+                if current_position is None or current_position < 20:
+                    continue
+
+                actual_dates = actual_dates_by_asset.get(asset_id, [])
+                actual_index = bisect_right(actual_dates, current_trade_date)
+                window_dates = actual_dates[max(0, actual_index - 21):actual_index]
+                if not exact_trading_window_available(window_dates, current_trade_date, position_map, 20):
+                    continue
+
+                anchor_date = window_dates[0]
+                if current_trade_date not in pivot.index or anchor_date not in pivot.index:
+                    continue
+                current_close = pivot.at[current_trade_date, asset_id] if asset_id in pivot.columns else None
+                anchor_close = pivot.at[anchor_date, asset_id] if asset_id in pivot.columns else None
+                if pd.isna(current_close) or pd.isna(anchor_close) or float(anchor_close) <= 0:
+                    continue
+                momentum_20d = (float(current_close) - float(anchor_close)) / float(anchor_close)
+                ranked_scores.append((asset_id, momentum_20d))
+
+            if not ranked_scores:
                 self._mark_stage_progress(stage_name, last_completed_date=trading_date)
                 continue
 
-            descending = series.sort_values(ascending=False)
+            descending = sorted(ranked_scores, key=lambda item: item[1], reverse=True)
             timestamp = timezone.make_aware(datetime.combine(trading_date, datetime.min.time()))
-            result = persist_ranked_rs_scores(list(descending.items()), timestamp)
+            result = persist_ranked_rs_scores(descending, timestamp)
             attempted_indicators += result['indicator_rows']
             attempted_signals += result['signal_rows']
             self._mark_stage_progress(stage_name, last_completed_date=trading_date)

@@ -29,6 +29,16 @@ from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
 from apps.analytics.models import TechnicalIndicator
+from apps.analytics.technical_staleness import (
+    asset_exchange_code,
+    exact_trading_window_available,
+    latest_official_trade_date,
+    ordered_trading_dates_for_asset,
+    ordered_trading_dates_for_exchange,
+    technical_indicator_max_gap_trading_days,
+    trading_date_positions,
+    trailing_indicator_window_is_fresh,
+)
 from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
@@ -156,6 +166,14 @@ def _get_recent_ohlcv_rows(asset_id, as_of, limit=30):
     )
 
 
+def _asset_trading_context(asset_id, as_of):
+    asset = Asset.objects.select_related('market').get(id=asset_id)
+    ordered_trading_dates = ordered_trading_dates_for_asset(asset, as_of)
+    position_map = trading_date_positions(ordered_trading_dates)
+    current_trade_date = latest_official_trade_date(ordered_trading_dates, as_of)
+    return asset, current_trade_date, position_map
+
+
 def _row_value(rows, index, key, default):
     if index >= len(rows):
         return float(default)
@@ -186,6 +204,29 @@ def _compute_realized_volatility(rows, window=5):
     if len(returns) <= 1:
         return 0.0
     return float(pstdev(returns))
+
+
+def _rolling_gap_valid_mask(trade_positions, required_points, max_gap):
+    resolved_points = max(int(required_points or 0), 0)
+    if resolved_points <= 1:
+        return trade_positions.notna()
+    rolling_max_gap = trade_positions.diff().rolling(
+        window=resolved_points - 1,
+        min_periods=resolved_points - 1,
+    ).max()
+    return trade_positions.notna() & rolling_max_gap.le(float(max_gap)).fillna(False)
+
+
+def _exact_window_valid_mask(trade_positions, periods):
+    resolved_periods = max(int(periods or 0), 0)
+    if resolved_periods <= 0:
+        return trade_positions.notna()
+    lagged_positions = trade_positions.shift(resolved_periods)
+    return (
+        trade_positions.notna()
+        & lagged_positions.notna()
+        & (trade_positions - lagged_positions == float(resolved_periods))
+    )
 
 
 INTERACTION_FEATURE_SPECS = (
@@ -515,7 +556,9 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
 def _extract_features_for_asset(asset_id, as_of):
     """Extract all available features for a single asset on a given date."""
     features = {}
+    _asset, current_trade_date, position_map = _asset_trading_context(asset_id, as_of)
     recent_rows = _get_recent_ohlcv_rows(asset_id, as_of, limit=25)
+    recent_actual_dates = [row['date'] for row in reversed(recent_rows)]
 
     # Phase 10: Technical Indicators
     features['rsi'] = _safe_float(latest_rsi(asset_id, as_of, default=Decimal('50')), 50.0)
@@ -535,17 +578,31 @@ def _extract_features_for_asset(asset_id, as_of):
         features[f'mom_5d_delta_{lag_window}d'] = features['mom_5d'] - lagged_momentum
         features[f'rs_score_delta_{lag_window}d'] = features['rs_score'] - lagged_rs
 
-    features['return_3d'] = _compute_return(recent_rows, 3)
-    features['return_5d'] = _compute_return(recent_rows, 5)
-    features['return_10d'] = _compute_return(recent_rows, 10)
+    features['return_3d'] = _compute_return(recent_rows, 3) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 3) else 0.0
+    features['return_5d'] = _compute_return(recent_rows, 5) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 5) else 0.0
+    features['return_10d'] = _compute_return(recent_rows, 10) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 10) else 0.0
     current_volume = _row_value(recent_rows, 0, 'volume', 0.0)
     volume_samples_5 = [_row_value(recent_rows, index, 'volume', 0.0) for index in range(min(5, len(recent_rows)))]
     volume_samples_20 = [_row_value(recent_rows, index, 'volume', 0.0) for index in range(min(20, len(recent_rows)))]
     average_volume_5 = float(np.mean(volume_samples_5)) if volume_samples_5 else 0.0
     average_volume_20 = float(np.mean(volume_samples_20)) if volume_samples_20 else 0.0
-    features['relative_volume_5d'] = current_volume / average_volume_5 if average_volume_5 else 1.0
-    features['relative_volume_20d'] = current_volume / average_volume_20 if average_volume_20 else 1.0
-    features['realized_volatility_5d'] = _compute_realized_volatility(recent_rows, window=5)
+    volume_5_fresh = trailing_indicator_window_is_fresh(
+        recent_actual_dates,
+        current_trade_date,
+        position_map,
+        required_points=5,
+        max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 5}),
+    )
+    volume_20_fresh = trailing_indicator_window_is_fresh(
+        recent_actual_dates,
+        current_trade_date,
+        position_map,
+        required_points=20,
+        max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 20}),
+    )
+    features['relative_volume_5d'] = current_volume / average_volume_5 if volume_5_fresh and average_volume_5 else 1.0
+    features['relative_volume_20d'] = current_volume / average_volume_20 if volume_20_fresh and average_volume_20 else 1.0
+    features['realized_volatility_5d'] = _compute_realized_volatility(recent_rows, window=5) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 5) else 0.0
 
     # Phase 11: Multi-Factor Scores
     factor = FactorScore.objects.filter(
@@ -768,42 +825,100 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
 
     macro_df, context_df = _prepare_macro_dataframe(end_date)
 
+    asset_map = {
+        asset.id: asset
+        for asset in Asset.objects.select_related('market').filter(id__in=eligible_asset_ids)
+    }
+    exchange_codes = {asset_exchange_code(asset) for asset in asset_map.values()}
+    ordered_trading_dates_by_exchange = {
+        exchange_code: ordered_trading_dates_for_exchange(exchange_code, end_date)
+        for exchange_code in exchange_codes
+    }
+    position_maps_by_exchange = {
+        exchange_code: trading_date_positions(ordered_dates)
+        for exchange_code, ordered_dates in ordered_trading_dates_by_exchange.items()
+    }
+
     frames = []
     target_start_ts = pd.Timestamp(start_date)
     target_end_ts = pd.Timestamp(end_date)
 
     for asset_id, asset_df in ohlcv_df.groupby('asset_id', sort=False):
         asset_df = asset_df.sort_values('date').copy()
+        asset = asset_map.get(int(asset_id))
+        if asset is None:
+            continue
+        exchange_code = asset_exchange_code(asset)
+        position_map = position_maps_by_exchange.get(exchange_code, {})
+        asset_df['trade_position'] = asset_df['date'].dt.date.map(position_map).astype('float64')
+
+        rsi_valid = _rolling_gap_valid_mask(
+            asset_df['trade_position'],
+            required_points=15,
+            max_gap=technical_indicator_max_gap_trading_days('RSI', {'timeperiod': 14}),
+        )
+        mom_5d_valid = _exact_window_valid_mask(asset_df['trade_position'], 5)
+        return_3d_valid = _exact_window_valid_mask(asset_df['trade_position'], 3)
+        return_5d_valid = _exact_window_valid_mask(asset_df['trade_position'], 5)
+        return_10d_valid = _exact_window_valid_mask(asset_df['trade_position'], 10)
+        relative_volume_5d_valid = _rolling_gap_valid_mask(
+            asset_df['trade_position'],
+            required_points=5,
+            max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 5}),
+        )
+        relative_volume_20d_valid = _rolling_gap_valid_mask(
+            asset_df['trade_position'],
+            required_points=20,
+            max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 20}),
+        )
+        volatility_5d_valid = _exact_window_valid_mask(asset_df['trade_position'], 5)
+
         asset_df['rsi'] = _compute_rsi_series(asset_df['close'])
-        asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).fillna(0.0)
-        asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).fillna(0.0)
-        asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).fillna(0.0)
-        asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).fillna(0.0)
-        asset_df['relative_volume_5d'] = (asset_df['volume'] / asset_df['volume'].rolling(window=5, min_periods=1).mean()).replace([np.inf, -np.inf], np.nan).fillna(1.0)
-        asset_df['relative_volume_20d'] = (asset_df['volume'] / asset_df['volume'].rolling(window=20, min_periods=1).mean()).replace([np.inf, -np.inf], np.nan).fillna(1.0)
-        close_returns = asset_df['close'].pct_change().fillna(0.0)
-        asset_df['realized_volatility_5d'] = close_returns.rolling(window=5, min_periods=2).std(ddof=0).fillna(0.0)
+        asset_df['rsi'] = asset_df['rsi'].where(rsi_valid, 50.0).fillna(50.0)
+        asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).where(mom_5d_valid, 0.0).fillna(0.0)
+        asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid, 0.0).fillna(0.0)
+        asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid, 0.0).fillna(0.0)
+        asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid, 0.0).fillna(0.0)
+        relative_volume_5d = (
+            asset_df['volume'] / asset_df['volume'].rolling(window=5, min_periods=5).mean()
+        ).replace([np.inf, -np.inf], np.nan)
+        relative_volume_20d = (
+            asset_df['volume'] / asset_df['volume'].rolling(window=20, min_periods=20).mean()
+        ).replace([np.inf, -np.inf], np.nan)
+        asset_df['relative_volume_5d'] = relative_volume_5d.where(relative_volume_5d_valid, 1.0).fillna(1.0)
+        asset_df['relative_volume_20d'] = relative_volume_20d.where(relative_volume_20d_valid, 1.0).fillna(1.0)
+        close_returns = asset_df['close'].pct_change()
+        realized_volatility_5d = close_returns.rolling(window=5, min_periods=5).std(ddof=0)
+        asset_df['realized_volatility_5d'] = realized_volatility_5d.where(volatility_5d_valid, 0.0).fillna(0.0)
 
         asset_rs_df = rs_df[rs_df['asset_id'] == asset_id][['date', 'rs_score']].sort_values('date')
         if asset_rs_df.empty:
             asset_df['rs_score'] = 0.5
         else:
+            asset_rs_df = asset_rs_df.rename(columns={'date': 'rs_source_date'})
             asset_df = pd.merge_asof(
                 asset_df.sort_values('date'),
                 asset_rs_df,
-                on='date',
+                left_on='date',
+                right_on='rs_source_date',
                 direction='backward',
             )
-            asset_df['rs_score'] = asset_df['rs_score'].fillna(0.5)
+            asset_df['rs_source_position'] = asset_df['rs_source_date'].dt.date.map(position_map).astype('float64')
+            rs_age = asset_df['trade_position'] - asset_df['rs_source_position']
+            asset_df['rs_score'] = asset_df['rs_score'].where(
+                rs_age.le(float(technical_indicator_max_gap_trading_days('RS_SCORE'))),
+                0.5,
+            ).fillna(0.5)
 
         for lag_window in LAG_WINDOWS:
+            lag_valid = _exact_window_valid_mask(asset_df['trade_position'], lag_window)
             lag_rsi = asset_df['rsi'].shift(lag_window)
             lag_mom = asset_df['mom_5d'].shift(lag_window)
             lag_rs = asset_df['rs_score'].shift(lag_window)
-            asset_df[f'rsi_lag_{lag_window}d'] = lag_rsi.fillna(asset_df['rsi'])
-            asset_df[f'rsi_delta_{lag_window}d'] = asset_df['rsi'] - asset_df[f'rsi_lag_{lag_window}d']
-            asset_df[f'mom_5d_delta_{lag_window}d'] = asset_df['mom_5d'] - lag_mom.fillna(asset_df['mom_5d'])
-            asset_df[f'rs_score_delta_{lag_window}d'] = asset_df['rs_score'] - lag_rs.fillna(asset_df['rs_score'])
+            asset_df[f'rsi_lag_{lag_window}d'] = lag_rsi.where(lag_valid, asset_df['rsi']).fillna(asset_df['rsi'])
+            asset_df[f'rsi_delta_{lag_window}d'] = (asset_df['rsi'] - lag_rsi).where(lag_valid, 0.0).fillna(0.0)
+            asset_df[f'mom_5d_delta_{lag_window}d'] = (asset_df['mom_5d'] - lag_mom).where(lag_valid, 0.0).fillna(0.0)
+            asset_df[f'rs_score_delta_{lag_window}d'] = (asset_df['rs_score'] - lag_rs).where(lag_valid, 0.0).fillna(0.0)
 
         asset_factor_df = factor_df[factor_df['asset_id'] == asset_id][[
             'date',

@@ -150,6 +150,8 @@ B. 因子/特征原始源
 • [x] fundamental snapshot validation and backfill
 1. switched pe to pe_ttm
 2. 55 assets have null pe_ttm rows due to TuShare upstream data source blackouts
+• [x] added stale gate to localy computed indicators
+1. refer to the updated technicalguide.md for the stale gate rules for each technical indicator
 
 
 
@@ -572,7 +574,7 @@ extras:
 2. 没有 limit_up / limit_down 规则. 没有按昨收去判断 10% / 20% / ST 涨跌停板. 没有按交易所制度去区分主板、创业板、科创板、北交所的不同涨跌幅限制. 也没有“超大日收益跳变”这类 return-based price anomaly 规则. 涨跌停是否被标记：否.
 3. macro snapshot yeild curve is using the first day data for each month. cny/usd is using monthly open. we should switch to use the previous monthly ohlcv data instead.macro snapshot and market context sync and backfill按发布日期/可得日期对齐，不是按统计期硬贴
 4. for macrosnapshot US Dollar Index (DXY): rename it to Dow Jones FXCM Dollar Index Basket (USDOLLAR) since that is the index we are currently syncing
-
+5. Runtime recomputation → Stored TechnicalIndicator
 
 ###
 1. 14d model
@@ -915,10 +917,10 @@ Key fixes from the older block:
    python manage.py sync_index_constituents --start-date 2010-01-04 --end-date 2026-04-30 --skip-sync-dispatch
    python manage.py backfill_ohlcv_history --start-date 2010-01-04 --end-date 2026-04-30 --technical-indicator-warmup
    python manage.py backfill_ohlcv_history --start-date 2010-01-04 --end-date 2026-04-30 --effective-universe-entry-warmup
-   python manage.py backfill_asset_list_dates --start-date 2010-01-04 --end-date 2026-04-30
-   python manage.py backfill_asset_suspensions --start-date 2010-01-04 --end-date 2026-04-30
-   python manage.py backfill_trading_calendar --start-date 2010-01-04 --end-date 2026-04-30
-   python manage.py sync_benchmark_index_history --start-date 2010-01-04 --end-date 2026-04-30
+   python manage.py backfill_asset_list_dates
+   python manage.py backfill_asset_suspensions --start-date 2001-01-01 --end-date 2026-04-30
+   python manage.py backfill_trading_calendar --start-date 2001-01-01 --end-date 2026-04-30
+   python manage.py sync_benchmark_index_history --start-date 2001-01-01 --end-date 2026-04-30
    python manage.py build_pit_union_benchmark --start-date 2010-01-04 --end-date 2026-04-30
    ```
 
@@ -934,10 +936,8 @@ Key fixes from the older block:
    ```bash
    python manage.py backfill_market_context --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py backfill_technical_indicators --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/technical_indicator_backfill_20260513.json
-   python manage.py backfill_model_data \
-     --start-date 2010-01-04 \
-     --end-date 2026-04-30 \
-     --checkpoint-file reports/ops_logs/backfill_model_data_20260510_1.json
+   python manage.py backfill_signal_events --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/signal_event_backfill_20260514.json
+   python manage.py backfill_model_data --start-date 2010-01-04 --end-date 2026-04-30 --checkpoint-file reports/ops_logs/backfill_model_data_20260510_1.json
    ```
 
 4. Validation, audits, and benchmark checks:
@@ -984,6 +984,7 @@ Key fixes from the older block:
 | Command | Purpose | Handles |
 | --- | --- | --- |
 | `backfill_technical_indicators` | Backfill non-RS technical indicators from OHLCV | `--start-date`, `--end-date`, `--symbols`, `--limit-assets`, `--technical-indicators` |
+| `backfill_signal_events` | Backfill non-RS historical `SignalEvent` families from OHLCV | `--start-date`, `--end-date`, `--symbols`, `--limit-assets`, `--signal-types`, `--chunk-size-days`, `--checkpoint-file`, `--resume-from-checkpoint` |
 | `backfill_model_data` | Backfill `SentimentScore`, `RS_SCORE`, and `FactorScore` inputs for training/inference | `--start-date`, `--end-date`, `--sentiment-weight`, `--skip-sentiment`, `--checkpoint-file`, `--resume-from-checkpoint` |
 
 ##### validation, audit, repair, and cleanup

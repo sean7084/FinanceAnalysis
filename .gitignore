@@ -30,3 +30,4 @@ htmlcov/
 # Runtime PID files
 *.pid
 .env
+test_results.log
