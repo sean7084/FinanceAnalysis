@@ -935,6 +935,7 @@ Key fixes from the older block:
 3. OHLCV-derived, macro snapshots derived, and model-input backfills:
    ```bash
    python manage.py backfill_market_context --start-date 2010-01-04 --end-date 2026-04-30
+   python manage.py backfill_signal_events --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/signal_event_backfill_20260514_2.json
    python manage.py backfill_technical_indicators --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/technical_indicator_backfill_20260513.json
    python manage.py backfill_signal_events --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/signal_event_backfill_20260514.json
    python manage.py backfill_model_data --start-date 2010-01-04 --end-date 2026-04-30 --checkpoint-file reports/ops_logs/backfill_model_data_20260510_1.json

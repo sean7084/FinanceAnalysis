@@ -300,6 +300,18 @@ def sync_exchange_trading_calendar(exchange_codes=None, start_date=None, end_dat
             if calendar_df is None or calendar_df.empty:
                 continue
 
+            if 'is_open' not in calendar_df.columns:
+                raise ValueError(
+                    f'TuShare trade_cal response for {exchange_code} is missing is_open; refusing to persist calendar rows.'
+                )
+
+            calendar_df = calendar_df.loc[
+                calendar_df['is_open'].map(lambda value: _safe_int(value, default=0) == 1)
+            ].copy()
+
+            if calendar_df.empty:
+                continue
+
             calendar_rows = []
             for _, row in calendar_df.iterrows():
                 trade_date = _parse_tushare_date(row.get('cal_date'))

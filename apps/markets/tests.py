@@ -404,6 +404,39 @@ class TradingCalendarAndSuspensionSyncTests(TestCase):
         self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SZSE', trade_date='2026-04-24').exists())
 
     @patch('apps.markets.tasks.ts.pro_api')
+    def test_sync_exchange_trading_calendar_filters_closed_days_from_mixed_response(self, mock_pro_api):
+        class StubPro:
+            def trade_cal(self, **kwargs):
+                return pd.DataFrame([
+                    {'exchange': 'SSE', 'cal_date': '20260311', 'is_open': '1', 'pretrade_date': '20260310'},
+                    {'exchange': 'SSE', 'cal_date': '20260312', 'is_open': '1', 'pretrade_date': '20260311'},
+                    {'exchange': 'SSE', 'cal_date': '20260313', 'is_open': '1', 'pretrade_date': '20260312'},
+                    {'exchange': 'SSE', 'cal_date': '20260314', 'is_open': '0', 'pretrade_date': '20260313'},
+                    {'exchange': 'SSE', 'cal_date': '20260315', 'is_open': '0', 'pretrade_date': '20260313'},
+                    {'exchange': 'SSE', 'cal_date': '20260316', 'is_open': '1', 'pretrade_date': '20260313'},
+                ])
+
+        mock_pro_api.return_value = StubPro()
+
+        with patch('apps.markets.tasks.settings.TUSHARE_TOKEN', 'test-token'):
+            summary = sync_exchange_trading_calendar(
+                exchange_codes=('SSE',),
+                start_date='2026-03-11',
+                end_date='2026-03-16',
+            )
+
+        self.assertEqual(summary['rows_written'], 4)
+        self.assertFalse(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-03-14').exists())
+        self.assertFalse(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-03-15').exists())
+        self.assertTrue(
+            ExchangeTradingCalendar.objects.filter(
+                exchange_code='SSE',
+                trade_date='2026-03-16',
+                previous_trade_date='2026-03-13',
+            ).exists()
+        )
+
+    @patch('apps.markets.tasks.ts.pro_api')
     def test_sync_asset_suspensions_persists_full_day_flags(self, mock_pro_api):
         suspend_kwargs = {}
 
