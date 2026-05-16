@@ -46,6 +46,63 @@
   - updated `README.md` for the Linux-native local stack, benchmark-aware system status, and validated command inventory for backfill, validation, and training flows
   - updated `TechnicalGuide.md` to reflect the canonical effective-universe rules and the expanded macro yield surface
 
+B. 因子/特征原始源
+
+• [x] backfill pre-warmup ohlcv data for pre 2010-1-4 and pre index listing for calculation of ohlcv-derived data
+1. backfill the pre 20100104 and pre index-listing data for 18 months for technical data calculation and rs_score calculation
+• [x] fina_indicator 类季度财务指标是否正确 as-of 对齐，不用未来财报
+• [x] 技术指标是否只用到当日及过去数据
+• [x] macro snapshot validation and backfill: DXY, CNY/USD, China 6M/1Y/3Y/5Y/7Y/10Y/30Y Yield, PMI Manufacturing, PMI Non-Manufacturing, and CPI YoY
+1. backfill the pre 201607 data from manually downloaded csv from gov site
+2. switch from curve term = [10, 2] to [0.5, 1, 3, 5, 7, 10, 30]
+3. switch runtime yield_curve to cn10y_yield - cn3y_yield
+4. stick to curve type = 曲线类型：0-到期
+5. rescheduled the syncing to the second day of each month at 0:10 am
+6. maps the Yahoo monthly open onto month-start MacroSnapshot.cny_usd rows for 2010-01 through 2012-02 
+• [x] market context validation and backfill 
+• [x] Capital Flow Snapshots validation and backfill: 1311 gap periods due to upstream data source blackouts. otherwise the coverage should be complete since 2010-01-04 for CSI300 constituents, and since 2024-09-23 for A500 constituents.
+• [x] technical indicator validation and backfill
+• [x] fundamental snapshot validation and backfill
+1. switched pe to pe_ttm
+2. 55 assets have null pe_ttm rows due to TuShare upstream data source blackouts
+• [x] added stale gate to localy computed indicators
+1. refer to the updated technicalguide.md for the stale gate rules for each technical indicator
+• [x] added calendar date validation if there are duplicated rows from the upstream
+• [x] dispose pretrade_date from the system: `ExchangeTradingCalendar` stores TuShare `cal_date` as `trade_date` plus `is_open`; open-day consumers filter on `is_open=True`
+
+
+要抽查
+
+• [x] PE/PB/ROE 在 2010-2026 是否不是大面积空值
+• [x] 任取一个日期，检查该日 snapshot 是否引用了未来季度财报或未来宏观值：抽查 2024-04-15，300 个 effective-universe assets 均未引用未来 `fina_indicator_ann_date` / report period / daily-basic source date；MacroContext 指向 2024-04-01 MacroSnapshot（当前 MacroSnapshot 尚未存 per-field release date）
+
+
+
+───
+
+C. 横截面特征
+
+• [x] rs_score: missing values
+• [x] factor score: Composite Score, Bottom Probability Score, Fundamental Score, Capital Flow Score, Technical Score
+
+都必须确认：
+
+• [x] 只在 当日 effective_universe 内计算
+• [x] 不是拿全市场算
+• [x] 不是拿未来扩大后的 universe 倒推过去
+• [x] 不是 membership 缺失时直接退化成 all assets 且无告警
+
+check random 10 dates, 每个日期核查：
+
+• [x] universe size
+• [x] rank 分位数分布
+• [x] 参与横截面排名的股票清单
+• [x] 是否与 membership 一致
+
+抽查 10 个交易日：2010-01-04、2011-05-20、2013-12-31、2016-06-01、2020-03-16、2024-09-20、2024-09-23、2025-01-02、2025-12-31、2026-03-02。
+
+结果：`FactorScore` 五个核心字段（`composite_score`、`bottom_probability_score`、`fundamental_score`、`capital_flow_score`、`technical_score`）在 10 个日期均与 `effective_universe(date)` 精确一致，`unexpected_outside_universe_count = 0`、`missing_from_universe_count = 0`；`RS_SCORE` 仍有少量 missing rows，但 10 个日期均无 outside-universe participants，且所有抽查字段取值均落在 `[0, 1]`。
+
 **Current Notes**:
 
 - `validate_data_quality` now treats `ExchangeTradingCalendar` as the official source of opening days; OHLCV continuity excludes pre-listing dates, on/after-delist dates, and suspension-covered dates instead of inferring expectations from stored bars.

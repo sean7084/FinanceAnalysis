@@ -1,6 +1,6 @@
 # Technical Guide
 
-Last refreshed: `2026-05-14` (after the shared technical-indicator stale-guard rollout across daily sync, historical backfills, and runtime feature extraction).
+Last refreshed: `2026-05-16` (after validating factor-score rebuild cleanup and reclassifying remaining Section D missing-value causes).
 
 ## Data Metrics Sheet
 Date range format: `YYYY-MM-DD`.
@@ -59,6 +59,12 @@ Universe operations now use `sync_index_constituents` for CSI 300 + CSI A500 mem
 | Feature Importance Snapshots | LightGBM diagnostics | `prediction_featureimportancesnapshot` | `475` rows, `2026-04-15` to `2026-04-26` | Monitoring and pruning diagnostics for `LightGBM` retraining. | Missing snapshots disable historical pruning and fall back to the full engineered feature set. |
 | Ensemble Weight Snapshots | Model blending diagnostics | `prediction_ensembleweightsnapshot` | `3` rows, `2024-12-31` to `2026-04-15` | Monitoring/reporting only; not used directly by backtest ranking today. | No direct runtime blocking; reduces retrospective blend tracking only. |
 | Backtest Export Sheet | Management command export from `BacktestRun` and optional `BacktestTrade` detail rows | `reports/backtests_89_112_v0_1_9/*.csv` | Current folder state has `3` light-export CSVs: `run_summary.csv`, `run_config_results.csv`, and `model_references.csv`; run summary/config cover existing IDs in `89..112` | Export/reporting only. | Stale or missing files reduce auditability only. |
+
+### Current Missing-Data Notes
+
+- `margin_balance_change_5d`: the validator keeps `missing_margin_detail_source_row` separate from `margin_diff_5_warmup_insufficient`. In the `2026-05-16` bundle, the large retained null bucket is primarily raw `margin_detail` source absence: pre-first-source coverage gaps plus mid-history/trailing TuShare blackout windows. The expected 5-session diff warmup is already tracked separately and should not be conflated with `missing_margin_detail_source_row`.
+- `RS_SCORE`: the sampled cross-sectional misses on `2024-09-20`, `2024-09-23`, `2025-01-02`, and `2025-12-31` were caused by full-day suspension gaps inside the required exact 20-trading-day window. They were not caused by outside-universe leakage, and newly listed 20-day warmup was not the sampled cause in this bundle.
+- `pe_ttm_percentile_score`: the sampled cross-sectional misses in the same bundle came from the latest `FundamentalFactorSnapshot` carrying `pe_ttm = NULL` even when a same-day `daily_basic_trade_date` was present. That pattern points to TuShare `daily_basic.pe_ttm` null / blackout behavior rather than stale factor rows; newly listed warmup was not the dominant sampled cause.
 
 ### precomputed data
 
