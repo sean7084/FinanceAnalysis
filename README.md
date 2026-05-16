@@ -159,7 +159,7 @@ B. 因子/特征原始源
 要抽查
 
 • [x] PE/PB/ROE 在 2010-2026 是否不是大面积空值
-• [ ] 任取一个日期，检查该日 snapshot 是否引用了未来季度财报或未来宏观值
+• [x] 任取一个日期，检查该日 snapshot 是否引用了未来季度财报或未来宏观值：抽查 2024-04-15，300 个 effective-universe assets 均未引用未来 `fina_indicator_ann_date` / report period / daily-basic source date；MacroContext 指向 2024-04-01 MacroSnapshot（当前 MacroSnapshot 尚未存 per-field release date）
 
 
 
@@ -167,31 +167,33 @@ B. 因子/特征原始源
 
 C. 横截面特征
 
-这个最容易脏。
-
-• [ ] rs_score
-• [ ] factor score: Composite Score, Bottom Probability Score, Fundamental Score, Capital Flow Score, Technical Score
+• [x] rs_score: missing values
+• [x] factor score: Composite Score, Bottom Probability Score, Fundamental Score, Capital Flow Score, Technical Score
 
 都必须确认：
 
-• [ ] 只在 当日 effective_universe 内计算
-• [ ] 不是拿全市场算
-• [ ] 不是拿未来扩大后的 universe 倒推过去
-• [ ] 不是 membership 缺失时直接退化成 all assets 且无告警
+• [x] 只在 当日 effective_universe 内计算
+• [x] 不是拿全市场算
+• [x] 不是拿未来扩大后的 universe 倒推过去
+• [x] 不是 membership 缺失时直接退化成 all assets 且无告警
 
 check random 10 dates, 每个日期核查：
 
-• [ ] universe size
-• [ ] rank 分位数分布
-• [ ] 参与横截面排名的股票清单
-• [ ] 是否与 membership 一致
+• [x] universe size
+• [x] rank 分位数分布
+• [x] 参与横截面排名的股票清单
+• [x] 是否与 membership 一致
+
+抽查 10 个交易日：2010-01-04、2011-05-20、2013-12-31、2016-06-01、2020-03-16、2024-09-20、2024-09-23、2025-01-02、2025-12-31、2026-03-02。
+
+结果：`FactorScore` 五个核心字段（`composite_score`、`bottom_probability_score`、`fundamental_score`、`capital_flow_score`、`technical_score`）在 10 个日期均与 `effective_universe(date)` 精确一致，`unexpected_outside_universe_count = 0`、`missing_from_universe_count = 0`；`RS_SCORE` 仍有少量 missing rows，但 10 个日期均无 outside-universe participants，且所有抽查字段取值均落在 `[0, 1]`。
 
 ───
 
 D. 数据覆盖率输出
 
 • [x] 每类 snapshot 都有 coverage report
-• [ ] coverage report 至少包含：
+• [ ] 每类 snapshot 至少包含：
   • 日期
   • effective_universe_count
   • feature_non_null_count

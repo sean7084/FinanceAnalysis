@@ -396,6 +396,115 @@ class BackfillModelDataCommandTests(TestCase):
             ['2024-01-02', '2024-01-03', '2024-01-04'],
         )
 
+    def test_backfill_model_data_clears_factor_score_window_before_rebuild(self):
+        outside_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600099',
+            ts_code='600099.SH',
+            name='Outside Universe Asset',
+        )
+        outside_window_date = self.trading_dates[-1] + timezone.timedelta(days=1)
+        FactorScore.objects.create(
+            asset=outside_asset,
+            date=self.trading_dates[1],
+            mode=FactorScore.FactorMode.COMPOSITE,
+            composite_score=Decimal('0.9'),
+            bottom_probability_score=Decimal('0.9'),
+        )
+        FactorScore.objects.create(
+            asset=self.asset,
+            date=self.trading_dates[1],
+            mode=FactorScore.FactorMode.TECHNICAL,
+            composite_score=Decimal('0.4'),
+            bottom_probability_score=Decimal('0.4'),
+        )
+        FactorScore.objects.create(
+            asset=outside_asset,
+            date=outside_window_date,
+            mode=FactorScore.FactorMode.COMPOSITE,
+            composite_score=Decimal('0.8'),
+            bottom_probability_score=Decimal('0.8'),
+        )
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.trading_dates[0],
+            weight=Decimal('4.2'),
+        )
+
+        call_command(
+            'backfill_model_data',
+            start_date=self.trading_dates[0].isoformat(),
+            end_date=self.trading_dates[-1].isoformat(),
+            skip_sentiment=True,
+        )
+
+        composite_rows = FactorScore.objects.filter(
+            date__gte=self.trading_dates[0],
+            date__lte=self.trading_dates[-1],
+            mode=FactorScore.FactorMode.COMPOSITE,
+        )
+        self.assertEqual(set(composite_rows.values_list('asset_id', flat=True)), {self.asset.id})
+        self.assertEqual(set(composite_rows.values_list('date', flat=True)), set(self.trading_dates))
+        self.assertTrue(
+            FactorScore.objects.filter(
+                asset=self.asset,
+                date=self.trading_dates[1],
+                mode=FactorScore.FactorMode.TECHNICAL,
+            ).exists()
+        )
+        self.assertTrue(
+            FactorScore.objects.filter(
+                asset=outside_asset,
+                date=outside_window_date,
+                mode=FactorScore.FactorMode.COMPOSITE,
+            ).exists()
+        )
+
+    def test_backfill_model_data_fast_factor_scores_filter_to_point_in_time_union(self):
+        FundamentalFactorSnapshot.objects.all().delete()
+        outside_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600098',
+            ts_code='600098.SH',
+            name='Fast Path Outside Asset',
+        )
+        for trading_date in self.trading_dates:
+            OHLCV.objects.create(
+                asset=outside_asset,
+                date=trading_date,
+                open=Decimal('20.0'),
+                high=Decimal('20.5'),
+                low=Decimal('19.8'),
+                close=Decimal('20.2'),
+                adj_close=Decimal('20.2'),
+                volume=100000,
+                amount=Decimal('2020000'),
+            )
+        IndexMembership.objects.create(
+            asset=self.asset,
+            index_code='000300.SH',
+            index_name='CSI 300',
+            trade_date=self.trading_dates[0],
+            weight=Decimal('4.2'),
+        )
+
+        call_command(
+            'backfill_model_data',
+            start_date=self.trading_dates[0].isoformat(),
+            end_date=self.trading_dates[-1].isoformat(),
+            skip_sentiment=True,
+        )
+
+        composite_rows = FactorScore.objects.filter(
+            date__gte=self.trading_dates[0],
+            date__lte=self.trading_dates[-1],
+            mode=FactorScore.FactorMode.COMPOSITE,
+        )
+        self.assertEqual(set(composite_rows.values_list('asset_id', flat=True)), {self.asset.id})
+        self.assertEqual(set(composite_rows.values_list('date', flat=True)), set(self.trading_dates))
+
     def test_backfill_model_data_requires_explicit_start_and_end_dates(self):
         with self.assertRaisesMessage(CommandError, 'start-date and end-date are required.'):
             call_command(

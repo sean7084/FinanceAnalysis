@@ -493,6 +493,9 @@ class Command(BaseCommand):
         if not trading_dates:
             self.stdout.write('  factor_scores: no remaining dates to process after checkpoint resume')
             return
+
+        self._clear_factor_score_window(trading_dates)
+
         if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists() and float(sentiment_weight) == 0.0:
             return self._backfill_factor_scores_fast(trading_dates)
 
@@ -511,18 +514,40 @@ class Command(BaseCommand):
                     f'({elapsed:.1f}s elapsed, {elapsed / index:.3f}s/date)'
                 )
 
+    def _clear_factor_score_window(self, trading_dates):
+        delete_start = trading_dates[0]
+        delete_end = trading_dates[-1]
+        deleted_count, _ = FactorScore.objects.filter(
+            date__gte=delete_start,
+            date__lte=delete_end,
+            mode=FactorScore.FactorMode.COMPOSITE,
+        ).delete()
+        self.stdout.write(
+            f'  factor_scores: deleted {deleted_count} existing COMPOSITE rows '
+            f'from {delete_start} to {delete_end}'
+        )
+
     def _backfill_factor_scores_fast(self, trading_dates):
         self.stdout.write(self.style.NOTICE('Backfilling daily factor scores with OHLCV-only fast path...'))
         start_date = trading_dates[0]
         end_date = trading_dates[-1]
-        FactorScore.objects.filter(
-            date__gte=start_date,
-            date__lte=end_date,
-            mode=FactorScore.FactorMode.COMPOSITE,
-        ).delete()
+
+        membership_by_date = point_in_time_union_asset_ids_by_dates(trading_dates)
+        ever_union_asset_ids = sorted({
+            asset_id
+            for asset_ids in membership_by_date.values()
+            for asset_id in asset_ids
+        })
+        if not ever_union_asset_ids:
+            self.stdout.write('  factor_scores: no PIT-union assets found, skipping fast path')
+            return
 
         rows = list(
-            OHLCV.objects.filter(date__gte=start_date, date__lte=end_date)
+            OHLCV.objects.filter(
+                asset_id__in=ever_union_asset_ids,
+                date__gte=start_date,
+                date__lte=end_date,
+            )
             .values('asset_id', 'date', 'close', 'volume')
             .order_by('asset_id', 'date')
         )
@@ -570,11 +595,16 @@ class Command(BaseCommand):
 
                 technical_score = min(technical_score, Decimal('1'))
                 composite_score = Decimal('0.35') + (technical_score * Decimal('0.3'))
+                row_date = row.date
+                if hasattr(row_date, 'date'):
+                    row_date = row_date.date()
+                if int(asset_id) not in membership_by_date.get(row_date, set()):
+                    continue
 
                 pending.append(
                     FactorScore(
                         asset_id=int(asset_id),
-                        date=row.date,
+                        date=row_date,
                         mode=FactorScore.FactorMode.COMPOSITE,
                         pe_percentile_score=None,
                         pe_ttm_percentile_score=None,
@@ -593,7 +623,7 @@ class Command(BaseCommand):
                         sentiment_weight=Decimal('0.0'),
                         composite_score=composite_score,
                         bottom_probability_score=composite_score,
-                        metadata={'target_date': str(row.date), 'source': 'historical_ohlcv_fast_path'},
+                        metadata={'target_date': str(row_date), 'source': 'historical_ohlcv_fast_path'},
                     )
                 )
 
