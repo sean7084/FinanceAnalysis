@@ -37,8 +37,8 @@ class IndexMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(ExchangeTradingCalendar)
 class ExchangeTradingCalendarAdmin(admin.ModelAdmin):
-    list_display = ('exchange_code', 'trade_date', 'previous_trade_date', 'source')
-    list_filter = ('exchange_code', 'source')
+    list_display = ('exchange_code', 'trade_date', 'is_open', 'source')
+    list_filter = ('exchange_code', 'is_open', 'source')
     search_fields = ('exchange_code',)
     date_hierarchy = 'trade_date'
 

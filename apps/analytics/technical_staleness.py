@@ -79,6 +79,7 @@ def _ordered_trading_dates(exchange_code, end_date_iso):
         ExchangeTradingCalendar.objects.filter(
             exchange_code=exchange_code,
             trade_date__lte=end_date,
+            is_open=True,
         )
         .order_by('trade_date')
         .values_list('trade_date', flat=True)

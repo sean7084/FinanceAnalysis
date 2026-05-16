@@ -367,7 +367,7 @@ class ReportWriter:
             ],
             'official_trading_calendar': [
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
-                'exchange_code', 'trade_date', 'previous_trade_date', 'calendar_gap_days',
+                'exchange_code', 'trade_date', 'is_open', 'calendar_gap_days',
             ],
         }
         for name, fieldnames in self.specs.items():
@@ -832,6 +832,7 @@ class Command(BaseCommand):
         for exchange_code, trade_date in ExchangeTradingCalendar.objects.filter(
             exchange_code__in=exchange_codes,
             trade_date__lte=end_date,
+            is_open=True,
         ).order_by('exchange_code', 'trade_date').values_list('exchange_code', 'trade_date'):
             history_by_exchange[exchange_code].append(trade_date)
         return history_by_exchange
@@ -1088,12 +1089,14 @@ class Command(BaseCommand):
     def _load_official_trading_calendar(self, start_date, end_date):
         calendar_rows = list(
             ExchangeTradingCalendar.objects.filter(trade_date__gte=start_date, trade_date__lte=end_date)
-            .values('exchange_code', 'trade_date', 'previous_trade_date')
+            .values('exchange_code', 'trade_date', 'is_open')
             .order_by('exchange_code', 'trade_date')
         )
         calendar_by_exchange = defaultdict(list)
         trading_dates = set()
         for row in calendar_rows:
+            if not row['is_open']:
+                continue
             calendar_by_exchange[row['exchange_code']].append(row['trade_date'])
             trading_dates.add(row['trade_date'])
         return calendar_rows, dict(calendar_by_exchange), sorted(trading_dates)
@@ -1116,13 +1119,20 @@ class Command(BaseCommand):
 
     def _write_trading_calendar_report(self, calendar_rows, writer):
         rows = []
+        previous_open_by_exchange = {}
         for row in calendar_rows:
+            actual_previous_open_date = previous_open_by_exchange.get(row['exchange_code'])
+            calendar_gap_days = ''
+            if row['is_open']:
+                if actual_previous_open_date:
+                    calendar_gap_days = (row['trade_date'] - actual_previous_open_date).days
+                previous_open_by_exchange[row['exchange_code']] = row['trade_date']
             rows.append({
                 **self._metric_columns('trading_calendar', 'official_open_day', 'trade_cal_open_day', 'exchange_trade_date'),
                 'exchange_code': row['exchange_code'],
                 'trade_date': row['trade_date'],
-                'previous_trade_date': row['previous_trade_date'],
-                'calendar_gap_days': (row['trade_date'] - row['previous_trade_date']).days if row['previous_trade_date'] else '',
+                'is_open': row['is_open'],
+                'calendar_gap_days': calendar_gap_days,
             })
         writer.write_csv('official_trading_calendar', writer.fieldnames_for('official_trading_calendar'), rows)
 

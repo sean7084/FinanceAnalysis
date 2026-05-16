@@ -16,6 +16,7 @@ from apps.analytics.indicator_warmup import (
     MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS,
     technical_indicator_warmup_prefill_start_date,
 )
+from apps.analytics.technical_staleness import ordered_trading_dates_for_exchange
 from .benchmarking import PITMembershipCoverageError, build_point_in_time_union_benchmark_rows, ensure_pit_membership_coverage, point_in_time_union_asset_ids, refresh_latest_point_in_time_union_benchmark, refresh_point_in_time_union_benchmark, required_pit_index_codes_for_date, resolve_point_in_time_union_membership
 from .models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
 from .tasks import run_post_sync_universal_refresh, sync_asset_suspensions, sync_benchmark_index_history, sync_daily_a_shares, sync_exchange_trading_calendar, sync_monthly_index_memberships
@@ -184,8 +185,8 @@ class MarketAdminAndBackfillTests(TestCase):
         )
         self.delisted_asset.refresh_from_db()
 
-        ExchangeTradingCalendar.objects.create(exchange_code='SSE', trade_date='2011-01-04', previous_trade_date='2010-12-31')
-        ExchangeTradingCalendar.objects.create(exchange_code='SSE', trade_date='2011-01-05', previous_trade_date='2011-01-04')
+        ExchangeTradingCalendar.objects.create(exchange_code='SSE', trade_date='2011-01-04')
+        ExchangeTradingCalendar.objects.create(exchange_code='SSE', trade_date='2011-01-05')
         mock_effective_universe_by_dates.return_value = {
             date(2011, 1, 4): {self.active_asset.id, self.delisted_asset.id},
             date(2011, 1, 5): {self.active_asset.id},
@@ -378,12 +379,17 @@ class TradingCalendarAndSuspensionSyncTests(TestCase):
             def trade_cal(self, **kwargs):
                 if kwargs['exchange'] == 'SSE':
                     return pd.DataFrame([
-                        {'exchange': 'SSE', 'cal_date': '20260424', 'is_open': '1', 'pretrade_date': '20260423'},
-                        {'exchange': 'SSE', 'cal_date': '20260427', 'is_open': '1', 'pretrade_date': '20260424'},
+                        {'exchange': 'SSE', 'cal_date': '20260424', 'is_open': '1'},
+                        {'exchange': 'SSE', 'cal_date': '20260425', 'is_open': '0'},
+                        {'exchange': 'SSE', 'cal_date': '20260426', 'is_open': '0'},
+                        {'exchange': 'SSE', 'cal_date': '20260427', 'is_open': '1'},
                     ])
                 if kwargs['exchange'] == 'SZSE':
                     return pd.DataFrame([
-                        {'exchange': 'SZSE', 'cal_date': '20260424', 'is_open': '1', 'pretrade_date': '20260423'},
+                        {'exchange': 'SZSE', 'cal_date': '20260424', 'is_open': '1'},
+                        {'exchange': 'SZSE', 'cal_date': '20260425', 'is_open': '0'},
+                        {'exchange': 'SZSE', 'cal_date': '20260426', 'is_open': '0'},
+                        {'exchange': 'SZSE', 'cal_date': '20260427', 'is_open': '0'},
                     ])
                 return pd.DataFrame([])
 
@@ -396,24 +402,27 @@ class TradingCalendarAndSuspensionSyncTests(TestCase):
                 end_date='2026-04-27',
             )
 
-        self.assertEqual(summary['rows_written'], 3)
+        self.assertEqual(summary['rows_written'], 8)
         self.assertEqual(summary['latest_trade_dates']['SSE'], '2026-04-27')
         self.assertEqual(summary['latest_trade_dates']['SZSE'], '2026-04-24')
-        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-04-24').exists())
-        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-04-27', previous_trade_date='2026-04-24').exists())
-        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SZSE', trade_date='2026-04-24').exists())
+        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-04-24', is_open=True).exists())
+        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-04-27', is_open=True).exists())
+        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SZSE', trade_date='2026-04-24', is_open=True).exists())
 
     @patch('apps.markets.tasks.ts.pro_api')
-    def test_sync_exchange_trading_calendar_filters_closed_days_from_mixed_response(self, mock_pro_api):
+    def test_sync_exchange_trading_calendar_records_open_status_from_mixed_response(self, mock_pro_api):
+        trade_cal_kwargs = []
+
         class StubPro:
             def trade_cal(self, **kwargs):
+                trade_cal_kwargs.append(kwargs)
                 return pd.DataFrame([
-                    {'exchange': 'SSE', 'cal_date': '20260311', 'is_open': '1', 'pretrade_date': '20260310'},
-                    {'exchange': 'SSE', 'cal_date': '20260312', 'is_open': '1', 'pretrade_date': '20260311'},
-                    {'exchange': 'SSE', 'cal_date': '20260313', 'is_open': '1', 'pretrade_date': '20260312'},
-                    {'exchange': 'SSE', 'cal_date': '20260314', 'is_open': '0', 'pretrade_date': '20260313'},
-                    {'exchange': 'SSE', 'cal_date': '20260315', 'is_open': '0', 'pretrade_date': '20260313'},
-                    {'exchange': 'SSE', 'cal_date': '20260316', 'is_open': '1', 'pretrade_date': '20260313'},
+                    {'exchange': 'SSE', 'cal_date': '20260311', 'is_open': '1'},
+                    {'exchange': 'SSE', 'cal_date': '20260312', 'is_open': '1'},
+                    {'exchange': 'SSE', 'cal_date': '20260313', 'is_open': '1'},
+                    {'exchange': 'SSE', 'cal_date': '20260314', 'is_open': '0'},
+                    {'exchange': 'SSE', 'cal_date': '20260315', 'is_open': '0'},
+                    {'exchange': 'SSE', 'cal_date': '20260316', 'is_open': '1'},
                 ])
 
         mock_pro_api.return_value = StubPro()
@@ -425,14 +434,52 @@ class TradingCalendarAndSuspensionSyncTests(TestCase):
                 end_date='2026-03-16',
             )
 
-        self.assertEqual(summary['rows_written'], 4)
-        self.assertFalse(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-03-14').exists())
-        self.assertFalse(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-03-15').exists())
+        self.assertEqual(summary['rows_written'], 6)
+        self.assertNotIn('is_open', trade_cal_kwargs[0])
+        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-03-14', is_open=False).exists())
+        self.assertTrue(ExchangeTradingCalendar.objects.filter(exchange_code='SSE', trade_date='2026-03-15', is_open=False).exists())
         self.assertTrue(
             ExchangeTradingCalendar.objects.filter(
                 exchange_code='SSE',
                 trade_date='2026-03-16',
-                previous_trade_date='2026-03-13',
+                is_open=True,
+            ).exists()
+        )
+        self.assertEqual(
+            ordered_trading_dates_for_exchange('SSE', date(2026, 3, 16)),
+            (date(2026, 3, 11), date(2026, 3, 12), date(2026, 3, 13), date(2026, 3, 16)),
+        )
+
+    @patch('apps.markets.tasks.ts.pro_api')
+    def test_sync_exchange_trading_calendar_rejects_partial_calendar_payload(self, mock_pro_api):
+        ExchangeTradingCalendar.objects.create(
+            exchange_code='SSE',
+            trade_date=date(2026, 3, 14),
+            is_open=False,
+        )
+
+        class StubPro:
+            def trade_cal(self, **kwargs):
+                return pd.DataFrame([
+                    {'exchange': 'SSE', 'cal_date': '20260313', 'is_open': '1'},
+                    {'exchange': 'SSE', 'cal_date': '20260316', 'is_open': '1'},
+                ])
+
+        mock_pro_api.return_value = StubPro()
+
+        with patch('apps.markets.tasks.settings.TUSHARE_TOKEN', 'test-token'):
+            with self.assertRaisesRegex(ValueError, 'missing 2 calendar dates'):
+                sync_exchange_trading_calendar(
+                    exchange_codes=('SSE',),
+                    start_date='2026-03-13',
+                    end_date='2026-03-16',
+                )
+
+        self.assertTrue(
+            ExchangeTradingCalendar.objects.filter(
+                exchange_code='SSE',
+                trade_date='2026-03-14',
+                is_open=False,
             ).exists()
         )
 

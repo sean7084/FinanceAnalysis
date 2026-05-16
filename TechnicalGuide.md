@@ -92,7 +92,7 @@ Technical freshness is now enforced consistently in:
 - runtime OHLCV-derived helpers in `apps/prediction/historical_features.py`
 - LightGBM/LSTM runtime and training feature builders in `apps/prediction/tasks_lightgbm.py` and `apps/prediction/tasks_lstm.py`
 
-The shared rule set is based on official `ExchangeTradingCalendar` rows, not raw calendar-day differences or sparse OHLCV row counts.
+The shared rule set is based on official open `ExchangeTradingCalendar` rows, not raw calendar-day differences or sparse OHLCV row counts. `ExchangeTradingCalendar.trade_date` stores TuShare `trade_cal.cal_date`, and `is_open` stores TuShare `trade_cal.is_open`; TuShare `pretrade_date` is not persisted or used for continuity decisions.
 
 #### gap-tolerant trend and smoothing metrics
 

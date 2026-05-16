@@ -229,6 +229,7 @@ class Command(BaseCommand):
             ExchangeTradingCalendar.objects.filter(
                 trade_date__gte=start_date,
                 trade_date__lte=end_date,
+                is_open=True,
             )
             .order_by('trade_date')
             .values_list('trade_date', flat=True)

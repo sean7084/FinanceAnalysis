@@ -152,7 +152,8 @@ B. 因子/特征原始源
 2. 55 assets have null pe_ttm rows due to TuShare upstream data source blackouts
 • [x] added stale gate to localy computed indicators
 1. refer to the updated technicalguide.md for the stale gate rules for each technical indicator
-
+• [x] added calendar date validation if there are duplicated rows from the upstream
+• [x] dispose pretrade_date from the system: `ExchangeTradingCalendar` stores TuShare `cal_date` as `trade_date` plus `is_open`; open-day consumers filter on `is_open=True`
 
 
 要抽查
@@ -965,7 +966,7 @@ Key fixes from the older block:
 | `backfill_ohlcv_history` | Backfill OHLCV history or targeted continuity-gap windows | `--start-date`, `--end-date`, `--csv-file`, `--symbols`, `--limit-assets`, `--queue`, `--effective-universe-entry-warmup`, `--technical-indicator-warmup` |
 | `backfill_asset_list_dates` | Backfill `Asset.list_date`, `delist_date`, and `listing_status` | `--symbols`, `--limit-assets` |
 | `backfill_asset_suspensions` | Backfill full-day/partial-day suspension data | `--start-date`, `--end-date`, `--symbols` |
-| `backfill_trading_calendar` | Backfill official SSE/SZSE trading calendar rows | `--start-date`, `--end-date`, `--exchange-codes` |
+| `backfill_trading_calendar` | Backfill SSE/SZSE `trade_cal` rows, preserving each `cal_date` and `is_open` flag | `--start-date`, `--end-date`, `--exchange-codes` |
 | `sync_benchmark_index_history` | Backfill official CSI 300 / CSI A500 index daily history | `--index-codes`, `--start-date`, `--end-date` |
 | `build_pit_union_benchmark` | Build or refresh the internal PIT union benchmark | `--start-date`, `--end-date`, `--initial-nav` |
 

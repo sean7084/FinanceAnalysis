@@ -586,17 +586,11 @@ def _seed_trading_calendar_dates(exchange_code, trade_dates):
         ExchangeTradingCalendar.objects.filter(exchange_code=resolved_exchange_code)
         .values_list('trade_date', flat=True)
     )
-    ordered_dates = sorted(existing_dates | set(trade_dates))
-    for index, trade_date in enumerate(ordered_dates):
-        previous_trade_date = ordered_dates[index - 1] if index > 0 else None
-        calendar, _created = ExchangeTradingCalendar.objects.get_or_create(
+    for trade_date in sorted(existing_dates | set(trade_dates)):
+        ExchangeTradingCalendar.objects.get_or_create(
             exchange_code=resolved_exchange_code,
             trade_date=trade_date,
-            defaults={'previous_trade_date': previous_trade_date},
         )
-        if calendar.previous_trade_date != previous_trade_date:
-            calendar.previous_trade_date = previous_trade_date
-            calendar.save(update_fields=['previous_trade_date'])
 
 
 class Phase10SignalTests(TestCase):

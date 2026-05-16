@@ -97,9 +97,9 @@ class DataQualityValidationCommandTests(TestCase):
         for exchange_code in ('SSE', 'SZSE'):
             ExchangeTradingCalendar.objects.bulk_create([
                 ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d1),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d2, previous_trade_date=self.d1),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d3, previous_trade_date=self.d2),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d4, previous_trade_date=self.d3),
+                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d2),
+                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d3),
+                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=self.d4),
             ])
 
         AssetSuspension.objects.create(
@@ -531,8 +531,8 @@ class DataQualityValidationCommandTests(TestCase):
         d5 = timezone.datetime(2024, 1, 6).date()
         d6 = timezone.datetime(2024, 1, 7).date()
         for exchange_code in ('SSE', 'SZSE'):
-            ExchangeTradingCalendar.objects.create(exchange_code=exchange_code, trade_date=d5, previous_trade_date=self.d4)
-            ExchangeTradingCalendar.objects.create(exchange_code=exchange_code, trade_date=d6, previous_trade_date=d5)
+            ExchangeTradingCalendar.objects.create(exchange_code=exchange_code, trade_date=d5)
+            ExchangeTradingCalendar.objects.create(exchange_code=exchange_code, trade_date=d6)
 
         moneyflow_expected_asset = Asset.objects.create(
             market=self.market_sse,
@@ -741,7 +741,7 @@ class DataQualityValidationCommandTests(TestCase):
     def test_validate_data_quality_labels_capital_flow_continuity_gap_reasons(self):
         d5 = timezone.datetime(2024, 1, 6).date()
         for exchange_code in ('SSE', 'SZSE'):
-            ExchangeTradingCalendar.objects.create(exchange_code=exchange_code, trade_date=d5, previous_trade_date=self.d4)
+            ExchangeTradingCalendar.objects.create(exchange_code=exchange_code, trade_date=d5)
 
         moneyflow_gap_asset = Asset.objects.create(
             market=self.market_sse,
@@ -1059,14 +1059,11 @@ class DataQualityValidationCommandTests(TestCase):
         anchor_date = trade_dates[0]
 
         for exchange_code in ('SSE', 'SZSE'):
-            previous_trade_date = None
             for trade_date in trade_dates:
                 ExchangeTradingCalendar.objects.create(
                     exchange_code=exchange_code,
                     trade_date=trade_date,
-                    previous_trade_date=previous_trade_date,
                 )
-                previous_trade_date = trade_date
 
         MacroSnapshot.objects.create(
             date=timezone.datetime(2024, 2, 1).date(),
@@ -1182,9 +1179,9 @@ class DataQualityValidationCommandTests(TestCase):
         for exchange_code in ('SSE', 'SZSE'):
             ExchangeTradingCalendar.objects.bulk_create([
                 ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=jan2010_d1),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=jan2010_d2, previous_trade_date=jan2010_d1),
+                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=jan2010_d2),
                 ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=sep2024_d1),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=sep2024_d2, previous_trade_date=sep2024_d1),
+                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=sep2024_d2),
             ])
 
         IndexMembership.objects.create(
@@ -1355,14 +1352,11 @@ class DataQualityValidationCommandTests(TestCase):
 
 class FundamentalReconciliationAuditRegressionTests(TestCase):
     def _create_calendar(self, market_code, trade_dates):
-        previous_trade_date = None
         for trade_date in trade_dates:
             ExchangeTradingCalendar.objects.create(
                 exchange_code=market_code,
                 trade_date=trade_date,
-                previous_trade_date=previous_trade_date,
             )
-            previous_trade_date = trade_date
 
     def _create_ohlcv(self, asset, trade_date, close='10'):
         close_value = Decimal(close)
@@ -1639,14 +1633,11 @@ class FundamentalReconciliationAuditRegressionTests(TestCase):
 
 class TechnicalIndicatorValidationRegressionTests(TestCase):
     def _create_calendar(self, market_code, trade_dates):
-        previous_trade_date = None
         for trade_date in trade_dates:
             ExchangeTradingCalendar.objects.create(
                 exchange_code=market_code,
                 trade_date=trade_date,
-                previous_trade_date=previous_trade_date,
             )
-            previous_trade_date = trade_date
 
     def _create_ohlcv_series(self, asset, trade_dates, start_close='10'):
         base_close = Decimal(start_close)

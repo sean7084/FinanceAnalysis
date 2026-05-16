@@ -309,14 +309,14 @@ def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=D
         missing_market_cap = 0
 
         if index > 0 and asset_ids:
-            previous_trade_date = trading_dates[index - 1]
+            prior_trade_date = trading_dates[index - 1]
             current_prices = {
                 row['asset_id']: _to_decimal(row['close'])
                 for row in OHLCV.objects.filter(asset_id__in=asset_ids, date=trade_date).values('asset_id', 'close')
             }
             previous_prices = {
                 row['asset_id']: _to_decimal(row['close'])
-                for row in OHLCV.objects.filter(asset_id__in=asset_ids, date=previous_trade_date).values('asset_id', 'close')
+                for row in OHLCV.objects.filter(asset_id__in=asset_ids, date=prior_trade_date).values('asset_id', 'close')
             }
             fundamentals = _latest_fundamental_rows(asset_ids, trade_date)
 

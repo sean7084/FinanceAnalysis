@@ -68,7 +68,7 @@ class ExchangeTradingCalendar(models.Model):
     """
     exchange_code = models.CharField(_("Exchange Code"), max_length=10, db_index=True)
     trade_date = models.DateField(_("Trade Date"), db_index=True)
-    previous_trade_date = models.DateField(_("Previous Trade Date"), null=True, blank=True)
+    is_open = models.BooleanField(_("Is Open"), default=True, db_index=True)
     source = models.CharField(_("Source"), max_length=50, default='tushare_trade_cal')
 
     class Meta:

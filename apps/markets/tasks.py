@@ -286,51 +286,57 @@ def sync_exchange_trading_calendar(exchange_codes=None, start_date=None, end_dat
                     exchange=exchange_code,
                     start_date=window_start.strftime('%Y%m%d'),
                     end_date=window_end.strftime('%Y%m%d'),
-                    is_open='1',
                 ),
                 label=f'trade_cal:{exchange_code}:{window_start}:{window_end}',
             )
 
-            ExchangeTradingCalendar.objects.filter(
-                exchange_code=exchange_code,
-                trade_date__gte=window_start,
-                trade_date__lte=window_end,
-            ).delete()
-
             if calendar_df is None or calendar_df.empty:
                 continue
 
-            if 'is_open' not in calendar_df.columns:
+            if 'cal_date' not in calendar_df.columns or 'is_open' not in calendar_df.columns:
                 raise ValueError(
-                    f'TuShare trade_cal response for {exchange_code} is missing is_open; refusing to persist calendar rows.'
+                    f'TuShare trade_cal response for {exchange_code} is missing cal_date/is_open; refusing to persist calendar rows.'
                 )
-
-            calendar_df = calendar_df.loc[
-                calendar_df['is_open'].map(lambda value: _safe_int(value, default=0) == 1)
-            ].copy()
-
-            if calendar_df.empty:
-                continue
 
             calendar_rows = []
             for _, row in calendar_df.iterrows():
                 trade_date = _parse_tushare_date(row.get('cal_date'))
                 if trade_date is None:
                     continue
-                previous_trade_date = _parse_tushare_date(row.get('pretrade_date'))
+                is_open = _safe_int(row.get('is_open'), default=0) == 1
                 calendar_rows.append(
                     ExchangeTradingCalendar(
                         exchange_code=exchange_code,
                         trade_date=trade_date,
-                        previous_trade_date=previous_trade_date,
+                        is_open=is_open,
                         source='tushare_trade_cal',
                     )
                 )
-                latest_trade_dates[exchange_code] = max(latest_trade_dates[exchange_code] or trade_date, trade_date)
+                if is_open:
+                    latest_trade_dates[exchange_code] = max(latest_trade_dates[exchange_code] or trade_date, trade_date)
 
             if not calendar_rows:
                 continue
 
+            expected_trade_dates = {
+                window_start + timedelta(days=offset)
+                for offset in range((window_end - window_start).days + 1)
+            }
+            observed_trade_dates = {row.trade_date for row in calendar_rows}
+            missing_trade_dates = sorted(expected_trade_dates - observed_trade_dates)
+            if missing_trade_dates:
+                sample = ', '.join(trade_date.isoformat() for trade_date in missing_trade_dates[:5])
+                raise ValueError(
+                    f'TuShare trade_cal response for {exchange_code} {window_start}..{window_end} '
+                    f'is missing {len(missing_trade_dates)} calendar dates; first missing: {sample}. '
+                    'Refusing to replace existing calendar rows.'
+                )
+
+            ExchangeTradingCalendar.objects.filter(
+                exchange_code=exchange_code,
+                trade_date__gte=window_start,
+                trade_date__lte=window_end,
+            ).delete()
             ExchangeTradingCalendar.objects.bulk_create(calendar_rows, batch_size=2000)
             rows_written += len(calendar_rows)
 
