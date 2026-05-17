@@ -22,6 +22,7 @@ from .tasks_lightgbm import (
     _create_feature_matrix,
     _extract_features_for_asset,
     _resolve_prediction_feature_value,
+    generate_lightgbm_predictions_for_date,
     train_lightgbm_models,
 )
 
@@ -513,6 +514,66 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(float(retrieved.confidence), 0.45)
         self.assertEqual(float(retrieved.trade_score), 1.45)
         self.assertTrue(retrieved.suggested)
+
+    @patch('apps.prediction.tasks_lightgbm._predict_with_lightgbm')
+    def test_generate_lightgbm_predictions_task_filters_to_point_in_time_effective_universe(self, mock_predict):
+        included_asset = self.asset
+        excluded_asset = Asset.objects.create(
+            market=self.market,
+            symbol='606002',
+            ts_code='606002.SH',
+            name='Excluded LightGBM Asset',
+        )
+
+        d = self._seed_features()
+        for offset, as_of in enumerate([d - timezone.timedelta(days=value) for value in range(12)]):
+            OHLCV.objects.create(
+                asset=excluded_asset,
+                date=as_of,
+                open=Decimal('10') + Decimal(offset) / Decimal('10'),
+                high=Decimal('11') + Decimal(offset) / Decimal('10'),
+                low=Decimal('9') + Decimal(offset) / Decimal('10'),
+                close=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                adj_close=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                volume=Decimal('100000') + Decimal(offset * 5000),
+                amount=Decimal('2500000') + Decimal(offset * 10000),
+            )
+
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-universe-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/test',
+            metrics_json={'accuracy': 0.5},
+            feature_names=['rsi'],
+            training_window_start=d,
+            training_window_end=d,
+            trained_at=timezone.now(),
+            is_active=True,
+        )
+        mock_predict.return_value = {
+            'model_artifact': artifact,
+            'up_probability': Decimal('0.55'),
+            'flat_probability': Decimal('0.25'),
+            'down_probability': Decimal('0.20'),
+            'confidence': Decimal('0.55'),
+            'predicted_label': 'UP',
+            'target_price': Decimal('11.3000'),
+            'stop_loss_price': Decimal('9.7000'),
+            'risk_reward_ratio': Decimal('1.500000'),
+            'trade_score': Decimal('1.100000'),
+            'suggested': True,
+            'feature_snapshot': {'rsi': 55.0},
+            'raw_scores': {'up': 0.55, 'flat': 0.25, 'down': 0.20},
+            'calibrated_scores': {'up': 0.55, 'flat': 0.25, 'down': 0.20},
+            'metadata': {'source': 'unit_test'},
+        }
+
+        generate_lightgbm_predictions_for_date(target_date=str(d), horizons=[7])
+
+        self.assertTrue(LightGBMPrediction.objects.filter(asset=included_asset, date=d, horizon_days=7).exists())
+        self.assertFalse(LightGBMPrediction.objects.filter(asset=excluded_asset, date=d, horizon_days=7).exists())
+        mock_predict.assert_called_once()
 
     def test_lightgbm_batch_endpoint(self):
         """Batch endpoint should handle multiple stock_codes."""

@@ -9,7 +9,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import PIT_UNION_BENCHMARK_CODE, ensure_pit_membership_coverage, point_in_time_union_asset_ids
+from apps.markets.benchmarking import PIT_UNION_BENCHMARK_CODE, effective_universe_tradeable_asset_ids
 from apps.markets.models import OHLCV, PointInTimeBenchmarkDaily
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
@@ -244,15 +244,10 @@ def _eligible_backtest_asset_ids(dt, cache):
     if cache_key in cache:
         return cache[cache_key]
 
-    trading_asset_ids = list(OHLCV.objects.filter(date=dt).values_list('asset_id', flat=True))
-    if not trading_asset_ids:
-        cache[cache_key] = []
-        return cache[cache_key]
-
-    ensure_pit_membership_coverage([dt], context=f'Backtest universe selection for {dt}')
-    pit_asset_ids = set(point_in_time_union_asset_ids(dt))
-    eligible_asset_ids = [asset_id for asset_id in trading_asset_ids if asset_id in pit_asset_ids]
-
+    eligible_asset_ids = effective_universe_tradeable_asset_ids(
+        dt,
+        context=f'Backtest universe selection for {dt}',
+    )
     cache[cache_key] = eligible_asset_ids
     return eligible_asset_ids
 

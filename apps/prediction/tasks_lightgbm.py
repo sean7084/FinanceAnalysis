@@ -24,7 +24,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
 
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import effective_universe_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
+from apps.markets.benchmarking import effective_universe_tradeable_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.sentiment.models import SentimentScore
@@ -1826,7 +1826,7 @@ def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
     horizons = horizons or [3, 7, 30]
     processed = 0
 
-    for asset in effective_universe_assets(as_of, context=f'LightGBM daily prediction for {as_of}'):
+    for asset in effective_universe_tradeable_assets(as_of, context=f'LightGBM daily prediction for {as_of}'):
         for horizon in horizons:
             pred = _predict_with_lightgbm(asset.id, as_of, horizon)
 

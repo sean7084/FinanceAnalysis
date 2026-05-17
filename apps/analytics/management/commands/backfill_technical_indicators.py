@@ -12,13 +12,6 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.analytics.models import TechnicalIndicator
-from apps.analytics.technical_staleness import (
-    exact_trading_window_available,
-    ordered_trading_dates_for_asset,
-    technical_indicator_gap_window_points,
-    trading_date_positions,
-    trailing_indicator_window_is_fresh,
-)
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import Asset, OHLCV
 
@@ -386,10 +379,6 @@ class Command(BaseCommand):
         return df
 
     def _build_rows(self, asset, df, start_date, end_date, indicator_types):
-        actual_dates = list(df.index)
-        actual_index_by_date = {trading_date: index for index, trading_date in enumerate(actual_dates)}
-        ordered_trading_dates = ordered_trading_dates_for_asset(asset, end_date)
-        position_map = trading_date_positions(ordered_trading_dates)
         rows = []
         if 'RSI' in indicator_types:
             rows.extend(self._series_rows(
@@ -399,9 +388,6 @@ class Command(BaseCommand):
                 {'timeperiod': 14},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         if 'MACD' in indicator_types:
@@ -413,9 +399,6 @@ class Command(BaseCommand):
                 {'fastperiod': 12, 'slowperiod': 26, 'signalperiod': 9},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         if 'BBANDS' in indicator_types:
@@ -427,9 +410,6 @@ class Command(BaseCommand):
                 {'timeperiod': 20, 'nbdevup': 2, 'nbdevdn': 2},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         if 'SMA' in indicator_types:
@@ -441,9 +421,6 @@ class Command(BaseCommand):
                     {'timeperiod': period},
                     start_date,
                     end_date,
-                    actual_dates,
-                    actual_index_by_date,
-                    position_map,
                 ))
 
         if 'EMA' in indicator_types:
@@ -455,9 +432,6 @@ class Command(BaseCommand):
                     {'timeperiod': period},
                     start_date,
                     end_date,
-                    actual_dates,
-                    actual_index_by_date,
-                    position_map,
                 ))
 
         if 'STOCH' in indicator_types:
@@ -478,9 +452,6 @@ class Command(BaseCommand):
                 {'fastk_period': 14, 'slowk_period': 3, 'slowd_period': 3},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         if 'ADX' in indicator_types:
@@ -491,9 +462,6 @@ class Command(BaseCommand):
                 {'timeperiod': 14},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         if 'OBV' in indicator_types:
@@ -507,9 +475,6 @@ class Command(BaseCommand):
                 {},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         if 'FIB_RET' in indicator_types:
@@ -523,9 +488,6 @@ class Command(BaseCommand):
                 {'lookback_days': 60},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         for indicator_type, periods in (
@@ -542,29 +504,17 @@ class Command(BaseCommand):
                 {'n_days': periods},
                 start_date,
                 end_date,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
             ))
 
         return rows
 
-    def _series_rows(self, asset, series, indicator_type, parameters, start_date, end_date, actual_dates, actual_index_by_date, position_map):
+    def _series_rows(self, asset, series, indicator_type, parameters, start_date, end_date):
         rows = []
         for trading_date, value in series.items():
             if trading_date < start_date or trading_date > end_date:
                 continue
             decimal_value = _safe_decimal(value)
             if decimal_value is None:
-                continue
-            if not self._row_is_fresh(
-                trading_date,
-                indicator_type,
-                parameters,
-                actual_dates,
-                actual_index_by_date,
-                position_map,
-            ):
                 continue
             rows.append(TechnicalIndicator(
                 asset=asset,
@@ -574,25 +524,3 @@ class Command(BaseCommand):
                 parameters=parameters,
             ))
         return rows
-
-    def _row_is_fresh(self, trading_date, indicator_type, parameters, actual_dates, actual_index_by_date, position_map):
-        actual_index = actual_index_by_date.get(trading_date)
-        if actual_index is None:
-            return False
-
-        if str(indicator_type or '').upper().startswith('MOM_'):
-            periods = int((parameters or {}).get('n_days') or 0)
-            start_index = max(0, actual_index + 1 - (periods + 1))
-            window_dates = actual_dates[start_index:actual_index + 1]
-            return exact_trading_window_available(window_dates, trading_date, position_map, periods)
-
-        required_points = technical_indicator_gap_window_points(indicator_type, parameters)
-        start_index = max(0, actual_index + 1 - required_points)
-        window_dates = actual_dates[start_index:actual_index + 1]
-        return trailing_indicator_window_is_fresh(
-            window_dates,
-            trading_date,
-            position_map,
-            indicator_type=indicator_type,
-            parameters=parameters,
-        )

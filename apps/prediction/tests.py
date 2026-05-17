@@ -31,6 +31,7 @@ from .tasks_lstm import (
     _fit_scaler_on_sequences,
     _resolve_lstm_model_version,
     _transform_sequences,
+    generate_lstm_predictions_for_date,
     train_lstm_models,
 )
 
@@ -232,6 +233,77 @@ class Phase14PredictionTests(TestCase):
 
         self.assertTrue(PredictionResult.objects.filter(asset=included_asset, date=d, horizon_days=7).exists())
         self.assertFalse(PredictionResult.objects.filter(asset=excluded_asset, date=d, horizon_days=7).exists())
+
+    def test_generate_predictions_task_skips_effective_universe_assets_without_same_day_ohlcv(self):
+        included_asset = self.asset
+        excluded_asset = Asset.objects.create(
+            market=self.market,
+            symbol='605004',
+            ts_code='605004.SH',
+            name='Suspended Prediction Asset',
+        )
+
+        d = self._seed_features_for_asset(included_asset)
+        self._seed_features_for_asset(excluded_asset)
+        OHLCV.objects.filter(asset=excluded_asset, date=d).delete()
+
+        generate_predictions_for_date(target_date=str(d), horizons=[7])
+
+        self.assertTrue(PredictionResult.objects.filter(asset=included_asset, date=d, horizon_days=7).exists())
+        self.assertFalse(PredictionResult.objects.filter(asset=excluded_asset, date=d, horizon_days=7).exists())
+
+    @patch('apps.prediction.tasks_lstm._predict_with_lstm')
+    @patch('apps.prediction.tasks_lstm._resolve_lstm_model_version')
+    def test_generate_lstm_predictions_task_filters_to_point_in_time_effective_universe(
+        self,
+        mock_resolve_model_version,
+        mock_predict_with_lstm,
+    ):
+        included_asset = self.asset
+        excluded_asset = Asset.objects.create(
+            market=self.market,
+            symbol='605003',
+            ts_code='605003.SH',
+            name='Excluded LSTM Prediction Asset',
+        )
+
+        d = self._seed_features_for_asset(included_asset)
+        self._seed_features_for_asset(excluded_asset, index_codes=())
+
+        model_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-universe-test',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/test',
+            is_active=True,
+        )
+        mock_resolve_model_version.return_value = model_version
+        mock_predict_with_lstm.return_value = {
+            'up_probability': Decimal('0.55'),
+            'flat_probability': Decimal('0.25'),
+            'down_probability': Decimal('0.20'),
+            'confidence': Decimal('0.55'),
+            'predicted_label': PredictionResult.Label.UP,
+            'feature_snapshot': {'rsi': 55.0},
+            'raw_scores': {'up': 0.55, 'flat': 0.25, 'down': 0.20},
+            'calibrated_scores': {'up': 0.55, 'flat': 0.25, 'down': 0.20},
+            'artifact_path': 'models/lstm/test',
+            'sequence_length': 20,
+            'missing_value_strategy': 'mask_and_zero_impute',
+            'trade_decision': {
+                'target_price': Decimal('11.3000'),
+                'stop_loss_price': Decimal('9.7000'),
+                'risk_reward_ratio': Decimal('1.500000'),
+                'trade_score': Decimal('1.100000'),
+                'suggested': True,
+            },
+        }
+
+        generate_lstm_predictions_for_date(target_date=str(d), horizons=[7])
+
+        self.assertTrue(PredictionResult.objects.filter(asset=included_asset, date=d, horizon_days=7).exists())
+        self.assertFalse(PredictionResult.objects.filter(asset=excluded_asset, date=d, horizon_days=7).exists())
+        mock_predict_with_lstm.assert_called_once()
 
     def test_generate_predictions_task_raises_when_required_pit_membership_is_missing(self):
         d = timezone.now().date()

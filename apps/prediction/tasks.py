@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import effective_universe_assets
+from apps.markets.benchmarking import effective_universe_tradeable_assets
 from apps.markets.models import Asset
 from apps.macro.models import MarketContext
 from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
@@ -176,7 +176,7 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
     version = _ensure_active_ensemble_version(as_of)
 
     processed = 0
-    for asset in effective_universe_assets(as_of, context=f'Daily prediction for {as_of}'):
+    for asset in effective_universe_tradeable_assets(as_of, context=f'Daily prediction for {as_of}'):
         features = _feature_snapshot(asset.id, as_of)
         for horizon in horizons:
             up, flat, down = _probabilities_from_features(features, int(horizon), ctx_macro)

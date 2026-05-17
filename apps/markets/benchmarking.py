@@ -254,6 +254,30 @@ def effective_universe_assets(trade_date, index_codes=None, context='Effective u
     return list(Asset.objects.filter(id__in=asset_ids).order_by('id'))
 
 
+def effective_universe_tradeable_asset_ids(trade_date, index_codes=None, context='Effective universe'):
+    asset_ids = effective_universe_asset_ids(trade_date, index_codes=index_codes, context=context)
+    if not asset_ids:
+        return []
+
+    tradeable_asset_ids = list(
+        OHLCV.objects.filter(date=trade_date)
+        .values_list('asset_id', flat=True)
+        .distinct()
+    )
+    if not tradeable_asset_ids:
+        return []
+
+    effective_asset_id_set = set(asset_ids)
+    return [asset_id for asset_id in tradeable_asset_ids if asset_id in effective_asset_id_set]
+
+
+def effective_universe_tradeable_assets(trade_date, index_codes=None, context='Effective universe'):
+    asset_ids = effective_universe_tradeable_asset_ids(trade_date, index_codes=index_codes, context=context)
+    if not asset_ids:
+        return []
+    return list(Asset.objects.filter(id__in=asset_ids).order_by('id'))
+
+
 def current_active_union_assets():
     return effective_universe_assets(date.today(), context='Current effective universe')
 

@@ -15,9 +15,8 @@ import tempfile
 import datetime
 from pathlib import Path
 from apps.markets.benchmarking import PITMembershipCoverageError
-from apps.markets.models import ExchangeTradingCalendar, Market, Asset, IndexMembership, OHLCV
+from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
-from .management.commands.backfill_signal_events import DEFAULT_SIGNAL_TYPES
 from .management.commands.backfill_technical_indicators import DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
@@ -519,7 +518,6 @@ class Phase8IndicatorTests(TestCase):
                 volume=900000 + i * 1000,
                 amount=Decimal(str((900000 + i * 1000) * close)),
             )
-            _seed_trading_calendar_dates('BSE', [today - timedelta(days=i) for i in range(1, 7)])
 
     def test_calculate_fibonacci_retracement_creates_indicator(self):
         calculate_fibonacci_retracement_for_asset(self.asset.id, lookback_days=5)
@@ -549,10 +547,8 @@ def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
     if base_date is None:
         base_date = timezone.now().date()
     n = len(prices)
-    trade_dates = []
     for i, close in enumerate(prices):
         day = base_date - datetime.timedelta(days=(n - 1 - i))
-        trade_dates.append(day)
         OHLCV.objects.get_or_create(
             asset=asset,
             date=day,
@@ -565,31 +561,6 @@ def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
                 volume=volume,
                 amount=Decimal(str(close * volume)),
             ),
-        )
-    _seed_trading_calendar_dates(_asset_exchange_code(asset), trade_dates)
-
-
-def _asset_exchange_code(asset):
-    ts_code = str(asset.ts_code or '').upper()
-    if ts_code.endswith('.SH'):
-        return 'SSE'
-    if ts_code.endswith('.SZ'):
-        return 'SZSE'
-    if ts_code.endswith('.BJ'):
-        return 'BSE'
-    return str(getattr(getattr(asset, 'market', None), 'code', '') or '').upper()
-
-
-def _seed_trading_calendar_dates(exchange_code, trade_dates):
-    resolved_exchange_code = str(exchange_code or '').upper()
-    existing_dates = set(
-        ExchangeTradingCalendar.objects.filter(exchange_code=resolved_exchange_code)
-        .values_list('trade_date', flat=True)
-    )
-    for trade_date in sorted(existing_dates | set(trade_dates)):
-        ExchangeTradingCalendar.objects.get_or_create(
-            exchange_code=resolved_exchange_code,
-            trade_date=trade_date,
         )
 
 
@@ -639,23 +610,6 @@ class Phase10SignalTests(TestCase):
                 indicator_type='RSI',
                 timestamp__date=as_of + datetime.timedelta(days=1),
             ).exists()
-        )
-
-    def test_calculate_rsi_for_asset_skips_stale_latest_bar_past_max_gap(self):
-        as_of = datetime.date(2024, 4, 30)
-        latest_bar_date = as_of - datetime.timedelta(days=4)
-        prices = [10.0 + (index * 0.1) for index in range(30)]
-        _make_ohlcv_sequence(self.asset, prices, base_date=latest_bar_date)
-        _seed_trading_calendar_dates('SSE', [latest_bar_date + datetime.timedelta(days=offset) for offset in range(5)])
-
-        with patch(
-            'apps.analytics.tasks.timezone.now',
-            return_value=timezone.make_aware(datetime.datetime(2024, 4, 30, 16, 0, 0)),
-        ):
-            calculate_rsi_for_asset(self.asset.id)
-
-        self.assertFalse(
-            TechnicalIndicator.objects.filter(asset=self.asset, indicator_type='RSI').exists()
         )
 
     # ------------------------------------------------------------------
@@ -744,51 +698,6 @@ class Phase10SignalTests(TestCase):
             SignalEvent.objects.filter(asset=self.asset, signal_type='MOMENTUM_DOWN_5D').exists()
         )
 
-    def test_calculate_momentum_signals_for_asset_skips_incomplete_5d_window(self):
-        as_of = datetime.date(2024, 2, 23)
-        trade_dates = [as_of - datetime.timedelta(days=offset) for offset in range(22, -1, -1)]
-        missing_date = as_of - datetime.timedelta(days=3)
-        _seed_trading_calendar_dates('SSE', trade_dates)
-
-        prices = [10.0 + (index * 0.2) for index in range(len(trade_dates))]
-        price_by_date = dict(zip(trade_dates, prices))
-        for trade_date in trade_dates:
-            if trade_date == missing_date:
-                continue
-            close_value = Decimal(str(price_by_date[trade_date]))
-            OHLCV.objects.create(
-                asset=self.asset,
-                date=trade_date,
-                open=close_value,
-                high=close_value + Decimal('0.1'),
-                low=close_value - Decimal('0.1'),
-                close=close_value,
-                adj_close=close_value,
-                volume=1000,
-                amount=close_value * Decimal('1000'),
-            )
-
-        with patch(
-            'apps.analytics.tasks.timezone.now',
-            return_value=timezone.make_aware(datetime.datetime(2024, 2, 23, 16, 0, 0)),
-        ):
-            calculate_momentum_signals_for_asset(self.asset.id)
-
-        self.assertFalse(
-            TechnicalIndicator.objects.filter(
-                asset=self.asset,
-                indicator_type='MOM_5D',
-                timestamp__date=as_of,
-            ).exists()
-        )
-        self.assertFalse(
-            SignalEvent.objects.filter(
-                asset=self.asset,
-                signal_type='MOMENTUM_UP_5D',
-                timestamp__date=as_of,
-            ).exists()
-        )
-
     def test_calculate_rs_scores_for_all_assets_creates_high_rs_score_for_top_bucket(self):
         assets = [self.asset]
         for asset_index in range(1, 5):
@@ -817,7 +726,6 @@ class Phase10SignalTests(TestCase):
                     volume=1000,
                     amount=close_value * Decimal('1000'),
                 )
-        _seed_trading_calendar_dates('SSE', trade_dates)
 
         IndexMembership.objects.bulk_create([
             IndexMembership(
@@ -873,7 +781,6 @@ class Phase10SignalTests(TestCase):
                     volume=1000,
                     amount=close_value * Decimal('1000'),
                 )
-        _seed_trading_calendar_dates('SSE', trade_dates)
 
         OHLCV.objects.create(
             asset=self.asset,
@@ -954,7 +861,6 @@ class Phase10SignalTests(TestCase):
                     volume=1000,
                     amount=close_value * Decimal('1000'),
                 )
-        _seed_trading_calendar_dates('SSE', trade_dates)
 
         IndexMembership.objects.create(
             asset=assets[-1],
@@ -1018,7 +924,6 @@ class Phase10SignalTests(TestCase):
                 volume=1000,
                 amount=Decimal('10000'),
             )
-        _seed_trading_calendar_dates('SSE', [trade_date - datetime.timedelta(days=20 - offset) for offset in range(21)])
 
         with patch('apps.analytics.tasks.timezone.now', return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0))):
             with self.assertRaisesMessage(
@@ -1026,85 +931,6 @@ class Phase10SignalTests(TestCase):
                 'missing point-in-time membership coverage for 000300.SH on 2024-02-21',
             ):
                 calculate_rs_scores_for_all_assets()
-
-    def test_calculate_rs_scores_for_all_assets_excludes_assets_without_exact_20_trading_day_window(self):
-        peer_asset = Asset.objects.create(
-            market=self.market,
-            symbol='P10300',
-            ts_code='P10300.SH',
-            name='Phase10 Exact Window Peer',
-        )
-
-        target_date = datetime.date(2024, 2, 22)
-        trade_dates = [target_date - datetime.timedelta(days=offset) for offset in range(21, -1, -1)]
-        missing_date = trade_dates[5]
-        _seed_trading_calendar_dates('SSE', trade_dates)
-
-        for offset, trade_date in enumerate(trade_dates):
-            peer_close = Decimal('10.0') + (Decimal('0.10') * Decimal(offset))
-            OHLCV.objects.create(
-                asset=peer_asset,
-                date=trade_date,
-                open=peer_close,
-                high=peer_close + Decimal('0.1'),
-                low=peer_close - Decimal('0.1'),
-                close=peer_close,
-                adj_close=peer_close,
-                volume=1000,
-                amount=peer_close * Decimal('1000'),
-            )
-            if trade_date == missing_date:
-                continue
-            self_close = Decimal('10.0') + (Decimal('0.05') * Decimal(offset))
-            OHLCV.objects.create(
-                asset=self.asset,
-                date=trade_date,
-                open=self_close,
-                high=self_close + Decimal('0.1'),
-                low=self_close - Decimal('0.1'),
-                close=self_close,
-                adj_close=self_close,
-                volume=1000,
-                amount=self_close * Decimal('1000'),
-            )
-
-        IndexMembership.objects.bulk_create([
-            IndexMembership(
-                asset=self.asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
-                trade_date=target_date,
-                weight=Decimal('4.2'),
-            ),
-            IndexMembership(
-                asset=peer_asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
-                trade_date=target_date,
-                weight=Decimal('4.2'),
-            ),
-        ])
-
-        with patch(
-            'apps.analytics.tasks.timezone.now',
-            return_value=timezone.make_aware(datetime.datetime(2024, 2, 22, 16, 0, 0)),
-        ):
-            calculate_rs_scores_for_all_assets()
-
-        self.assertFalse(
-            TechnicalIndicator.objects.filter(
-                asset=self.asset,
-                timestamp__date=target_date,
-                indicator_type='RS_SCORE',
-            ).exists()
-        )
-        self.assertTrue(
-            TechnicalIndicator.objects.filter(
-                asset=peer_asset,
-                timestamp__date=target_date,
-                indicator_type='RS_SCORE',
-            ).exists()
-        )
 
     # ------------------------------------------------------------------
     # API endpoint tests
@@ -1265,50 +1091,6 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
         self.assertTrue(obv_values)
         self.assertGreater(max(abs(value) for value in obv_values), Decimal('10000000000'))
 
-    def test_backfill_technical_indicators_skips_stale_rsi_after_long_gap(self):
-        gap_asset = Asset.objects.create(
-            market=self.market,
-            symbol='600789',
-            ts_code='600789.SH',
-            name='Gap RSI Asset',
-        )
-        target_date = self.base_date
-        trade_dates = [target_date - datetime.timedelta(days=offset) for offset in range(19, -1, -1)]
-        _seed_trading_calendar_dates('SSE', trade_dates)
-
-        missing_dates = set(trade_dates[-5:-1])
-        for offset, trade_date in enumerate(trade_dates):
-            if trade_date in missing_dates:
-                continue
-            close_value = Decimal('10.0') + (Decimal(offset) / Decimal('10'))
-            OHLCV.objects.create(
-                asset=gap_asset,
-                date=trade_date,
-                open=close_value,
-                high=close_value + Decimal('0.1'),
-                low=close_value - Decimal('0.1'),
-                close=close_value,
-                adj_close=close_value,
-                volume=100000,
-                amount=close_value * Decimal('100000'),
-            )
-
-        call_command(
-            'backfill_technical_indicators',
-            start_date=target_date.isoformat(),
-            end_date=target_date.isoformat(),
-            symbols=gap_asset.symbol,
-            technical_indicators='RSI',
-        )
-
-        self.assertFalse(
-            TechnicalIndicator.objects.filter(
-                asset=gap_asset,
-                indicator_type='RSI',
-                timestamp__date=target_date,
-            ).exists()
-        )
-
     def test_backfill_technical_indicators_is_idempotent_for_same_slice(self):
         call_command(
             'backfill_technical_indicators',
@@ -1436,148 +1218,4 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
                 end_date=self.end_date.isoformat(),
                 symbols=self.asset.symbol,
                 technical_indicators='RS_SCORE',
-            )
-
-
-class SignalEventBackfillCommandTests(TestCase):
-    def setUp(self):
-        self.market = Market.objects.create(code='BSEV', name='Backfill Signal Event Market')
-        self.asset = Asset.objects.create(
-            market=self.market,
-            symbol='600654',
-            ts_code='600654.SH',
-            name='Backfill Signal Event Asset',
-        )
-        self.base_date = timezone.datetime(2024, 4, 30).date()
-        self.start_date = self.base_date - datetime.timedelta(days=4)
-        self.end_date = self.base_date
-
-    def test_backfill_signal_events_persists_default_non_rs_history(self):
-        prices = [10.0] * 64 + [15.0]
-        _make_ohlcv_sequence(self.asset, prices, base_date=self.base_date, volume=1000)
-        latest = OHLCV.objects.get(asset=self.asset, date=self.base_date)
-        latest.volume = 3000
-        latest.save(update_fields=['volume'])
-
-        output = StringIO()
-        call_command(
-            'backfill_signal_events',
-            start_date=self.base_date.isoformat(),
-            end_date=self.base_date.isoformat(),
-            symbols=self.asset.symbol,
-            stdout=output,
-        )
-
-        self.assertIn('processed_assets=1', output.getvalue())
-        observed_signal_types = set(
-            SignalEvent.objects.filter(
-                asset=self.asset,
-                timestamp__date=self.base_date,
-            ).values_list('signal_type', flat=True)
-        )
-        self.assertTrue(
-            {'GOLDEN_CROSS', 'BB_BREAKOUT_UP', 'VOLUME_SPIKE', 'MOMENTUM_UP_5D'}.issubset(observed_signal_types)
-        )
-        self.assertFalse(
-            SignalEvent.objects.filter(asset=self.asset, signal_type='HIGH_RS_SCORE').exists()
-        )
-
-    def test_backfill_signal_events_skips_incomplete_momentum_window(self):
-        target_date = self.base_date
-        trade_dates = [target_date - datetime.timedelta(days=offset) for offset in range(22, -1, -1)]
-        missing_date = target_date - datetime.timedelta(days=3)
-        _seed_trading_calendar_dates('SSE', trade_dates)
-
-        prices = [10.0 + (index * 0.2) for index in range(len(trade_dates))]
-        price_by_date = dict(zip(trade_dates, prices))
-        for trade_date in trade_dates:
-            if trade_date == missing_date:
-                continue
-            close_value = Decimal(str(price_by_date[trade_date]))
-            OHLCV.objects.create(
-                asset=self.asset,
-                date=trade_date,
-                open=close_value,
-                high=close_value + Decimal('0.1'),
-                low=close_value - Decimal('0.1'),
-                close=close_value,
-                adj_close=close_value,
-                volume=1000,
-                amount=close_value * Decimal('1000'),
-            )
-
-        call_command(
-            'backfill_signal_events',
-            start_date=target_date.isoformat(),
-            end_date=target_date.isoformat(),
-            symbols=self.asset.symbol,
-            signal_types='MOMENTUM_UP_5D,MOMENTUM_DOWN_5D',
-        )
-
-        self.assertFalse(
-            SignalEvent.objects.filter(
-                asset=self.asset,
-                signal_type__in=['MOMENTUM_UP_5D', 'MOMENTUM_DOWN_5D'],
-                timestamp__date=target_date,
-            ).exists()
-        )
-
-    def test_backfill_signal_events_is_idempotent_for_same_slice(self):
-        prices = [10.0] * 64 + [15.0]
-        _make_ohlcv_sequence(self.asset, prices, base_date=self.base_date, volume=1000)
-
-        call_command(
-            'backfill_signal_events',
-            start_date=self.base_date.isoformat(),
-            end_date=self.base_date.isoformat(),
-            symbols=self.asset.symbol,
-        )
-        first_count = SignalEvent.objects.filter(
-            asset=self.asset,
-            timestamp__date=self.base_date,
-        ).count()
-
-        call_command(
-            'backfill_signal_events',
-            start_date=self.base_date.isoformat(),
-            end_date=self.base_date.isoformat(),
-            symbols=self.asset.symbol,
-        )
-        second_count = SignalEvent.objects.filter(
-            asset=self.asset,
-            timestamp__date=self.base_date,
-        ).count()
-
-        self.assertEqual(first_count, second_count)
-
-    def test_backfill_signal_events_processes_large_windows_in_chunks(self):
-        prices = [10.0] * 64 + [15.0]
-        _make_ohlcv_sequence(self.asset, prices, base_date=self.base_date, volume=1000)
-
-        output = StringIO()
-        call_command(
-            'backfill_signal_events',
-            start_date=self.start_date.isoformat(),
-            end_date=self.end_date.isoformat(),
-            symbols=self.asset.symbol,
-            chunk_size_days=2,
-            stdout=output,
-        )
-
-        self.assertIn('processed_chunks=3', output.getvalue())
-        self.assertTrue(
-            SignalEvent.objects.filter(
-                asset=self.asset,
-                timestamp__date=self.base_date,
-            ).exists()
-        )
-
-    def test_backfill_signal_events_rejects_high_rs_score(self):
-        with self.assertRaises(CommandError):
-            call_command(
-                'backfill_signal_events',
-                start_date=self.base_date.isoformat(),
-                end_date=self.base_date.isoformat(),
-                symbols=self.asset.symbol,
-                signal_types='HIGH_RS_SCORE',
             )

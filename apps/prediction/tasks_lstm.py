@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from apps.core.date_floor import get_historical_data_floor
-from apps.markets.benchmarking import effective_universe_assets
+from apps.markets.benchmarking import effective_universe_tradeable_assets
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import LightGBMModelArtifact
 from apps.markets.models import Asset
@@ -777,7 +777,7 @@ def generate_lstm_predictions_for_date(target_date=None, horizons=None):
     runtime_cache = {}
     processed = 0
 
-    for asset in effective_universe_assets(as_of, context=f'LSTM daily prediction for {as_of}'):
+    for asset in effective_universe_tradeable_assets(as_of, context=f'LSTM daily prediction for {as_of}'):
         for horizon in selected_horizons:
             prediction = _predict_with_lstm(
                 asset_id=asset.id,
