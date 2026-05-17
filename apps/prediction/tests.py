@@ -407,6 +407,118 @@ class Phase14PredictionTests(TestCase):
         self.assertIn('retired 2 legacy stub model versions', result)
 
 
+class PurgePredictionModelStubsCommandTests(TestCase):
+    def test_purge_prediction_model_stubs_dry_run_preserves_rows(self):
+        inactive_lightgbm_stub = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='lightgbm-2026-05-15-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lightgbm/2026-05-15.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            is_active=False,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        inactive_lstm_stub = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2026-05-15-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/2026-05-15.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            is_active=False,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        active_stub = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2026-05-16-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/2026-05-16.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            is_active=True,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        real_inactive_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='lgb-2024-12-31',
+            status=ModelVersion.Status.READY,
+            artifact_path='/tmp/lightgbm/2024-12-31',
+            metrics={'accuracy': 0.62},
+            feature_schema=['feature_a'],
+            trained_at=timezone.now(),
+            is_active=False,
+            metadata={'source': 'lightgbm_training_pipeline'},
+        )
+
+        stdout = StringIO()
+        call_command('purge_prediction_model_stubs', stdout=stdout)
+
+        self.assertTrue(ModelVersion.objects.filter(id=inactive_lightgbm_stub.id).exists())
+        self.assertTrue(ModelVersion.objects.filter(id=inactive_lstm_stub.id).exists())
+        self.assertTrue(ModelVersion.objects.filter(id=active_stub.id).exists())
+        self.assertTrue(ModelVersion.objects.filter(id=real_inactive_version.id).exists())
+        self.assertIn('Dry run: would delete 2 inactive legacy prediction stub rows', stdout.getvalue())
+
+    def test_purge_prediction_model_stubs_apply_deletes_only_inactive_stub_rows(self):
+        inactive_lightgbm_stub = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='lightgbm-2026-05-15-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lightgbm/2026-05-15.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            is_active=False,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        inactive_lstm_stub = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2026-05-15-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/2026-05-15.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            is_active=False,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        active_stub = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2026-05-16-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/2026-05-16.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            is_active=True,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        real_inactive_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='lgb-2024-12-31',
+            status=ModelVersion.Status.READY,
+            artifact_path='/tmp/lightgbm/2024-12-31',
+            metrics={'accuracy': 0.62},
+            feature_schema=['feature_a'],
+            trained_at=timezone.now(),
+            is_active=False,
+            metadata={'source': 'lightgbm_training_pipeline'},
+        )
+
+        stdout = StringIO()
+        call_command('purge_prediction_model_stubs', apply=True, stdout=stdout)
+
+        self.assertFalse(ModelVersion.objects.filter(id=inactive_lightgbm_stub.id).exists())
+        self.assertFalse(ModelVersion.objects.filter(id=inactive_lstm_stub.id).exists())
+        self.assertTrue(ModelVersion.objects.filter(id=active_stub.id).exists())
+        self.assertTrue(ModelVersion.objects.filter(id=real_inactive_version.id).exists())
+        self.assertIn('Deleted 2 inactive legacy prediction stub rows', stdout.getvalue())
+
+
 class BackfillModelDataCommandTests(TestCase):
     def setUp(self):
         self.market = Market.objects.create(code='P14CMD', name='Phase 14 Command Market')
