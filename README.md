@@ -399,9 +399,9 @@ D. 结果可追溯性
 
 每个 backtest run 最好都能追到：
 
-• [ ] compare_backtest_run_id
-• [ ] model artifact id
-• [ ] horizon
+• [x] compare_backtest_run_id
+• [x] model artifact id / model version id
+• [x] horizon
 
 这样你以后看到结果变化，能知道是：
 
@@ -409,6 +409,15 @@ D. 结果可追溯性
 • membership 变了
 • 训练变了
 • 还是回测逻辑变了
+
+当前代码/测试审计结果（2026-05-17）：
+
+• `compare_backtest_run_id` 当前可以关闭：serializer 已经强校验 compare target 必须存在、已完成、同 strategy type、且 prediction source 兼容；comparison payload 也会把它回传给前端。这一轮又把它补进了 `run.report['compare_backtest_run_id']`，并补进 `export_backtest_runs -> run_config_results.csv`，所以 run-level 和 export-level 两条 traceability 路径现在是一致的。
+• `horizon` 当前可以关闭：`BacktestRun.parameters['horizon_days']` 仍是 canonical config，trade signal payload 里每笔 BUY/SELL 也都带 `horizon_days`；这一轮又把归一化后的 `run.report['horizon_days']` 固化下来，因此单看 run 本身也能知道这是 3d / 7d / 30d 的哪一档回测。
+• “model artifact id” 这一条在当前系统里应该更准确地理解为 “model artifact / model version reference”：LightGBM 路径用 `model_artifact_id`，heuristic / LSTM 路径用 `model_version_id`。这两类 reference 原本就在 trade `signal_payload` 里、也会被 `model_references.csv` 导出；这一轮又新增了 `run.report['model_references']` + `model_reference_count`，把当前 run 实际打到的 registry reference、version、horizon、feature_count、training_window_start/end 聚合到 run-level summary 上。因此这条可以按“reference id 可追溯”关闭，而不是狭义地只盯 LightGBM artifact id。
+• benchmark 侧当前只能算部分可追：`run.report['benchmark']` 已经会保存 `strategy`、`source`、`benchmark_code`、`weighting_method`，足以区分“预计算 PIT benchmark” vs “runtime equal-weight fallback”；但还没有独立的 `benchmark_build_version` / benchmark artifact id，所以“benchmark build version” 仍不能关闭。
+• feature schema / universe policy 也仍是部分可追：新加的 `run.report['model_references']` 会尽量从 registry metadata 里带出 `schema_version`、`effective_universe_policy`、`universe_version`、`label_definition`、`data_snapshot_version`、`code_version` / `git_commit` 等字段；但这些键是否存在取决于上游 LightGBM / LSTM artifact metadata 本身。当前 active artifacts 还没有把这些 provenance 字段补齐到位，所以 4D 后三条仍应继续保持 open。
+• focused regressions 已覆盖这轮 traceability 改动：`test_run_backtest_supports_lightgbm_prediction_source` 现在会断言 run report 里确实写入 `compare_backtest_run_id`、`horizon_days`、`model_references`；`test_export_backtest_runs_includes_compare_backtest_run_id` 会断言 compare target 真实导出到 `run_config_results.csv`。因此，Section 4D 当前可以按“基础比较/模型/周期 provenance 已落 run-level + export-level，schema/universe/benchmark version 仍未补齐”来收口。
 
 ───
 
@@ -471,21 +480,6 @@ D. 输出结果与落库
 • [ ] candidate selected true/false
 • [ ] prediction timestamp
 • [ ] input data version
-
-───
-
-六、建议你加一个“红灯清单”
-
-只要出现以下任何一项，当轮结果不进入结论层：
-
-• [ ] membership 缺失后 fallback 到 all assets
-• [ ] benchmark coverage 假完整
-• [ ] feature schema 与训练不一致
-• [ ] TP/SL 参数写进 report 但未执行
-• [ ] effective_universe(date) 未统一调用
-• [ ] 横截面特征不是按当日 universe 算
-• [ ] daily prediction 用的 active artifact 与回测不一致
-• [ ] A500 在 2024-09-23 前被提前使用
 
 ───
 

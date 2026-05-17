@@ -831,6 +831,111 @@ def _build_benchmark_equity_curve(trading_dates, price_map, initial_capital):
     }
 
 
+def _serialize_provenance_value(value):
+    return value.isoformat() if hasattr(value, 'isoformat') else value
+
+
+def _compact_provenance_row(row):
+    return {
+        key: _serialize_provenance_value(value)
+        for key, value in row.items()
+        if value not in (None, '', [], {})
+    }
+
+
+def _reference_metadata_subset(metadata):
+    if not isinstance(metadata, dict):
+        return {}
+
+    row = {}
+    for key in (
+        'schema_version',
+        'effective_universe_policy',
+        'universe_version',
+        'label_definition',
+        'data_snapshot_version',
+        'code_version',
+        'git_commit',
+        'missing_value_strategy',
+    ):
+        value = metadata.get(key)
+        if value not in (None, '', [], {}):
+            row[key] = value
+    return row
+
+
+def _collect_run_model_references(run):
+    version_payloads = {}
+    artifact_payloads = {}
+
+    for trade in run.trades.only('signal_payload').all():
+        payload = trade.signal_payload or {}
+        prediction_source = str(payload.get('prediction_source') or '').lower()
+        try:
+            horizon_days = int(payload['horizon_days']) if payload.get('horizon_days') is not None else None
+        except (TypeError, ValueError):
+            horizon_days = None
+
+        if payload.get('model_version_id'):
+            try:
+                model_version_id = int(payload['model_version_id'])
+            except (TypeError, ValueError):
+                model_version_id = None
+            if model_version_id is not None and model_version_id not in version_payloads:
+                version_payloads[model_version_id] = {
+                    'prediction_source': prediction_source,
+                    'horizon_days': horizon_days,
+                }
+
+        if payload.get('model_artifact_id'):
+            try:
+                model_artifact_id = int(payload['model_artifact_id'])
+            except (TypeError, ValueError):
+                model_artifact_id = None
+            if model_artifact_id is not None and model_artifact_id not in artifact_payloads:
+                artifact_payloads[model_artifact_id] = {
+                    'prediction_source': prediction_source,
+                    'horizon_days': horizon_days,
+                }
+
+    references = []
+    for model_version in ModelVersion.objects.filter(id__in=version_payloads.keys()).order_by('model_type', 'version'):
+        payload_context = version_payloads.get(model_version.id, {})
+        references.append(_compact_provenance_row({
+            'prediction_source': payload_context.get('prediction_source') or model_version.model_type.lower(),
+            'reference_type': 'ModelVersion',
+            'reference_id': model_version.id,
+            'version': model_version.version,
+            'horizon_days': payload_context.get('horizon_days'),
+            'status': model_version.status,
+            'is_active': model_version.is_active,
+            'feature_count': len(model_version.feature_schema or []),
+            'training_window_start': model_version.training_window_start,
+            'training_window_end': model_version.training_window_end,
+            'trained_at': model_version.trained_at,
+            **_reference_metadata_subset(model_version.metadata),
+        }))
+
+    for artifact in LightGBMModelArtifact.objects.filter(id__in=artifact_payloads.keys()).order_by('horizon_days', 'version'):
+        payload_context = artifact_payloads.get(artifact.id, {})
+        references.append(_compact_provenance_row({
+            'prediction_source': payload_context.get('prediction_source') or 'lightgbm',
+            'reference_type': 'LightGBMModelArtifact',
+            'reference_id': artifact.id,
+            'version': artifact.version,
+            'horizon_days': payload_context.get('horizon_days') or artifact.horizon_days,
+            'status': artifact.status,
+            'is_active': artifact.is_active,
+            'feature_count': len(artifact.feature_names or []),
+            'training_window_start': artifact.training_window_start,
+            'training_window_end': artifact.training_window_end,
+            'trained_at': artifact.trained_at,
+            **_reference_metadata_subset(artifact.metadata),
+        }))
+
+    return references
+
+
 def _prediction_source(run):
     params = run.parameters or {}
     return str(params.get('prediction_source', 'heuristic')).lower()
@@ -1518,6 +1623,9 @@ def run_backtest(backtest_run_id):
         total_trades = len(closed_pnls)
         winning = len([p for p in closed_pnls if p > 0])
         win_rate = (_d(winning) / _d(total_trades)) if total_trades else DECIMAL_0
+        resolved_horizon_days = int((run.parameters or {}).get('horizon_days', 7))
+        compare_backtest_run_id = (run.parameters or {}).get('compare_backtest_run_id')
+        model_references = _collect_run_model_references(run)
 
         run.status = BacktestRun.Status.COMPLETED
         run.cash = final_value
@@ -1537,6 +1645,8 @@ def run_backtest(backtest_run_id):
             'candidate_mode': _candidate_mode(run),
             'trade_score_scope': _trade_score_scope(run),
             'use_macro_context': _use_macro_context(run),
+            'compare_backtest_run_id': compare_backtest_run_id,
+            'horizon_days': resolved_horizon_days,
             'entry_weekdays': entry_weekdays,
             'holding_period_days': holding_period_days,
             'enable_stop_target_exit': stop_target_exit_enabled,
@@ -1545,6 +1655,8 @@ def run_backtest(backtest_run_id):
                 **fee_config['summary'],
                 'slippage_bps': float(slippage_bps),
             },
+            'model_reference_count': len(model_references),
+            'model_references': model_references,
             'macro_context_monthly': [
                 {
                     'month': month,

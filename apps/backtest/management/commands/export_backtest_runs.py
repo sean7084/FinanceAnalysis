@@ -21,6 +21,7 @@ PARAMETER_KEYS = [
     'up_threshold',
     'trade_score_scope',
     'trade_score_threshold',
+    'compare_backtest_run_id',
     'entry_weekdays',
     'holding_period_days',
     'capital_fraction_per_entry',

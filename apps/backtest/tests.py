@@ -404,6 +404,17 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
     @patch('apps.backtest.tasks._load_model_artifacts')
     def test_run_backtest_supports_lightgbm_prediction_source(self, mock_load_artifacts, _mock_extract_features):
+        compare_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Compare Target',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            report={'equity_curve': [100000.0, 101000.0], 'prediction_source': 'lightgbm'},
+            parameters={'prediction_source': 'lightgbm'},
+        )
         artifact = LightGBMModelArtifact.objects.create(
             horizon_days=7,
             version='lgb-bt-test',
@@ -431,6 +442,7 @@ class Phase15BacktestTests(TestCase):
                 'horizon_days': 7,
                 'up_threshold': 0.55,
                 'prediction_source': 'lightgbm',
+                'compare_backtest_run_id': compare_run.id,
             },
         )
 
@@ -448,6 +460,12 @@ class Phase15BacktestTests(TestCase):
         self.assertIsNotNone(buy_trade.signal_payload.get('trade_score'))
         self.assertIsNotNone(buy_trade.signal_payload.get('target_price'))
         self.assertIsNotNone(buy_trade.signal_payload.get('stop_loss_price'))
+        self.assertEqual(run.report['compare_backtest_run_id'], compare_run.id)
+        self.assertEqual(run.report['horizon_days'], 7)
+        self.assertEqual(run.report['model_reference_count'], 1)
+        self.assertEqual(run.report['model_references'][0]['reference_type'], 'LightGBMModelArtifact')
+        self.assertEqual(run.report['model_references'][0]['reference_id'], artifact.id)
+        self.assertEqual(run.report['model_references'][0]['horizon_days'], 7)
         self.assertIsNotNone(sell_trade)
         self.assertEqual(sell_trade.metadata['exit_reason'], 'SCHEDULED')
 
@@ -1828,3 +1846,48 @@ class BacktestManagementCommandTests(TestCase):
                 ['heuristic', 'lstm'],
             )
             self.assertIn('Reference benchmark suite exported to', output.getvalue())
+
+    def test_export_backtest_runs_includes_compare_backtest_run_id(self):
+        compare_run = BacktestRun.objects.create(
+            user=self.user,
+            name='Export Compare Target',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            initial_capital=Decimal('100000.00'),
+            report={'equity_curve': [100000.0, 101000.0], 'prediction_source': 'lightgbm'},
+            parameters={'prediction_source': 'lightgbm'},
+        )
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='Export Subject Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.COMPLETED,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            initial_capital=Decimal('100000.00'),
+            report={'equity_curve': [100000.0, 102000.0], 'prediction_source': 'lightgbm'},
+            parameters={
+                'prediction_source': 'lightgbm',
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'compare_backtest_run_id': compare_run.id,
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / 'export_compare'
+            call_command(
+                'export_backtest_runs',
+                start_id=run.id,
+                end_id=run.id,
+                output_dir=str(output_dir),
+            )
+
+            with (output_dir / 'run_config_results.csv').open(newline='', encoding='utf-8') as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['compare_backtest_run_id'], str(compare_run.id))
