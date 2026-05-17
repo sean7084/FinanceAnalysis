@@ -983,7 +983,9 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
             elif target_price is not None and sell_close >= target_price:
                 exit_reason = 'TARGET_PRICE'
 
-        if exit_reason is None and position['exit_date'] != current_date:
+        # If the scheduled exit day had no valid close, retry the scheduled sell
+        # on the next later tradable date with a usable price.
+        if exit_reason is None and current_date < position['exit_date']:
             remaining_positions.append(position)
             continue
 

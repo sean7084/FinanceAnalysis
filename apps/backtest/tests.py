@@ -15,7 +15,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.factors.models import FactorScore
-from apps.markets.models import Asset, BenchmarkIndexDaily, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
+from apps.markets.models import Asset, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
@@ -53,6 +53,11 @@ class Phase15BacktestTests(TestCase):
         self.today = timezone.now().date()
         self.d1 = self.today - timedelta(days=2)
         self.d2 = self.today - timedelta(days=1)
+
+        ExchangeTradingCalendar.objects.bulk_create([
+            ExchangeTradingCalendar(exchange_code='SSE', trade_date=self.d1, is_open=True),
+            ExchangeTradingCalendar(exchange_code='SSE', trade_date=self.d2, is_open=True),
+        ])
 
         OHLCV.objects.create(
             asset=self.asset,
@@ -493,6 +498,249 @@ class Phase15BacktestTests(TestCase):
         self.assertIsNotNone(buy_trade.signal_payload.get('stop_loss_price'))
         self.assertIsNotNone(sell_trade)
         self.assertEqual(sell_trade.metadata['exit_reason'], 'TARGET_PRICE')
+
+    @patch('apps.backtest.tasks._pick_candidates')
+    def test_scheduled_exit_prioritizes_stop_loss_when_enabled(self, mock_pick_candidates):
+        OHLCV.objects.filter(asset=self.asset, date=self.d2).update(
+            open=Decimal('9.0000'),
+            high=Decimal('9.2000'),
+            low=Decimal('8.8000'),
+            close=Decimal('9.0000'),
+            adj_close=Decimal('9.0000'),
+            amount=Decimal('900000.0000'),
+        )
+        mock_pick_candidates.return_value = [
+            {
+                'asset_id': self.asset.id,
+                'rank_value': Decimal('0.700000'),
+                'signal_payload': {
+                    'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'prediction_source': 'heuristic',
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': 'up_prob_7d',
+                    'horizon_days': 7,
+                    'up_probability': 0.7,
+                    'flat_probability': 0.2,
+                    'down_probability': 0.1,
+                    'confidence': 0.7,
+                    'predicted_label': 'UP',
+                    'trade_score': 1.2,
+                    'target_price': 12.0,
+                    'stop_loss_price': 9.5,
+                    'suggested': True,
+                    'generated_on_demand': True,
+                },
+            },
+        ]
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Stop Loss Priority Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'enable_stop_target_exit': True,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        sell_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.SELL).first()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertIsNotNone(sell_trade)
+        self.assertEqual(sell_trade.metadata['exit_reason'], 'STOP_LOSS')
+
+    @patch('apps.backtest.tasks._pick_candidates')
+    def test_run_backtest_applies_capital_fraction_fee_and_slippage(self, mock_pick_candidates):
+        mock_pick_candidates.return_value = [
+            {
+                'asset_id': self.asset.id,
+                'rank_value': Decimal('0.700000'),
+                'signal_payload': {
+                    'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'prediction_source': 'heuristic',
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': 'up_prob_7d',
+                    'horizon_days': 7,
+                    'up_probability': 0.7,
+                    'flat_probability': 0.2,
+                    'down_probability': 0.1,
+                    'confidence': 0.7,
+                    'predicted_label': 'UP',
+                    'trade_score': 1.2,
+                    'target_price': 12.0,
+                    'stop_loss_price': 9.0,
+                    'suggested': True,
+                    'generated_on_demand': True,
+                },
+            },
+        ]
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Cost Application Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'capital_fraction_per_entry': 0.25,
+                'fee_rate': 0.01,
+                'slippage_bps': 100,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.get(backtest_run=run, side=BacktestTrade.Side.BUY)
+        sell_trade = BacktestTrade.objects.get(backtest_run=run, side=BacktestTrade.Side.SELL)
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertEqual(buy_trade.price, Decimal('10.1000'))
+        self.assertEqual(buy_trade.slippage, Decimal('0.1000'))
+        self.assertEqual(sell_trade.price, Decimal('10.8900'))
+        self.assertEqual(sell_trade.slippage, Decimal('0.1100'))
+        self.assertGreater(buy_trade.fee, Decimal('0'))
+        self.assertGreater(sell_trade.fee, Decimal('0'))
+        self.assertAlmostEqual(float(buy_trade.amount + buy_trade.fee), 25000.0, places=2)
+
+    @patch('apps.backtest.tasks._pick_candidates')
+    def test_entry_skips_asset_when_buy_close_is_invalid(self, mock_pick_candidates):
+        OHLCV.objects.filter(asset=self.asset, date=self.d1).update(
+            open=Decimal('0.0000'),
+            high=Decimal('0.0000'),
+            low=Decimal('0.0000'),
+            close=Decimal('0.0000'),
+            adj_close=Decimal('0.0000'),
+            amount=Decimal('0.0000'),
+        )
+        mock_pick_candidates.return_value = [
+            {
+                'asset_id': self.asset.id,
+                'rank_value': Decimal('0.700000'),
+                'signal_payload': {
+                    'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'prediction_source': 'heuristic',
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': 'up_prob_7d',
+                    'horizon_days': 7,
+                    'up_probability': 0.7,
+                    'flat_probability': 0.2,
+                    'down_probability': 0.1,
+                    'confidence': 0.7,
+                    'predicted_label': 'UP',
+                    'trade_score': 1.2,
+                    'target_price': 12.0,
+                    'stop_loss_price': 9.0,
+                    'suggested': True,
+                    'generated_on_demand': True,
+                },
+            },
+        ]
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Invalid Entry Price Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertEqual(run.total_trades, 0)
+        self.assertEqual(BacktestTrade.objects.filter(backtest_run=run).count(), 0)
+
+    @patch('apps.backtest.tasks._pick_candidates')
+    def test_scheduled_exit_retries_on_next_tradeable_price_after_invalid_close(self, mock_pick_candidates):
+        d3 = self.d2 + timedelta(days=1)
+        ExchangeTradingCalendar.objects.create(exchange_code='SSE', trade_date=d3, is_open=True)
+        OHLCV.objects.filter(asset=self.asset, date=self.d2).update(
+            open=Decimal('0.0000'),
+            high=Decimal('0.0000'),
+            low=Decimal('0.0000'),
+            close=Decimal('0.0000'),
+            adj_close=Decimal('0.0000'),
+            amount=Decimal('0.0000'),
+        )
+        OHLCV.objects.create(
+            asset=self.asset,
+            date=d3,
+            open=Decimal('10.6000'),
+            high=Decimal('10.9000'),
+            low=Decimal('10.5000'),
+            close=Decimal('10.8000'),
+            adj_close=Decimal('10.8000'),
+            volume=130000,
+            amount=Decimal('1404000.0000'),
+        )
+        mock_pick_candidates.return_value = [
+            {
+                'asset_id': self.asset.id,
+                'rank_value': Decimal('0.700000'),
+                'signal_payload': {
+                    'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'prediction_source': 'heuristic',
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': 'up_prob_7d',
+                    'horizon_days': 7,
+                    'up_probability': 0.7,
+                    'flat_probability': 0.2,
+                    'down_probability': 0.1,
+                    'confidence': 0.7,
+                    'predicted_label': 'UP',
+                    'trade_score': 1.2,
+                    'target_price': 12.0,
+                    'stop_loss_price': 9.0,
+                    'suggested': True,
+                    'generated_on_demand': True,
+                },
+            },
+        ]
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Deferred Scheduled Exit Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=d3,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'holding_period_days': 1,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        sell_trade = BacktestTrade.objects.get(backtest_run=run, side=BacktestTrade.Side.SELL)
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertEqual(sell_trade.trade_date, d3)
+        self.assertEqual(sell_trade.metadata['exit_reason'], 'SCHEDULED')
 
     def test_trade_decision_policy_adjusts_near_target_and_stop_distance(self):
         policy_asset = Asset.objects.create(

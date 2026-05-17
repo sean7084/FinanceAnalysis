@@ -369,19 +369,30 @@ A. 候选池生成
 
 B. 交易执行逻辑
 
-• [ ] 开仓日只在 entry_weekdays
-• [ ] 平仓优先级明确：先 TP/SL 还是先持有期结束
-• [ ] holding_period_days 真正生效
-• [ ] 仓位上限、单笔资金比例、手续费、滑点都生效
-• [ ] 停牌/无法成交的处理有规则
+• [x] 开仓日只在 entry_weekdays
+• [x] 平仓优先级明确：先 TP/SL 还是先持有期结束
+• [x] holding_period_days 真正生效
+• [x] 仓位上限、单笔资金比例、手续费、滑点都生效
+• [x] 停牌/无法成交的处理有规则
 
 重点排查
 
 你之前已经踩过：
 
-• [ ] TP/SL 配置传下去了没有
-• [ ] LightGBM 路径和 heuristic 路径执行逻辑是否一致
-• [ ] 参数写进 report 但实际上没执行，这种假生效必须排除
+• [x] TP/SL 配置传下去了没有
+• [x] LightGBM 路径和 heuristic 路径执行逻辑是否一致
+• [x] 参数写进 report 但实际上没执行，这种假生效必须排除
+
+当前代码/测试审计结果（2026-05-17）：
+
+• `run_backtest()` 的日循环固定是“先平仓，再判断是否开仓”。开仓只经过 `_should_enter_position(current_date, entry_weekdays)`；`entry_weekdays` 由 `_normalize_entry_weekdays()` 统一成 weekday index。现有 regression `test_backtest_supports_tuesday_thursday_top3_seven_day_hold` 复核到 buy dates 只出现在 `2026-04-07`、`2026-04-09` 两个 Tue/Thu 日，report 里也记录 `entry_weekdays=[1, 3]`。
+• `holding_period_days` 当前真实生效：`_resolve_exit_date()` 会取“第一条 `>= entry_date + holding_period_days` 的交易日”作为计划平仓日，而不是简单按自然日强平。上面的 Tue/Thu 样本里，`holding_period_days=7` 对应 sell dates 是 `2026-04-14`、`2026-04-16`，与计划持有天数一致。
+• 平仓优先级当前可以明确关闭：`_close_positions_for_date()` 先读当日 close；若启用 `enable_stop_target_exit`，先判 `STOP_LOSS`，再判 `TARGET_PRICE`，最后才落到 `SCHEDULED`。因此 TP/SL 在计划平仓日也会优先于普通持有期卖出。已有/新增 regressions 分别覆盖了 `TARGET_PRICE` 和 `STOP_LOSS` 分支。
+• “停牌/无法成交” 现在也有明确规则，而且这一轮刚修掉一个真实缺口：开仓日如果 `buy_close` 缺失或 `<= 0`，`_open_positions_for_date()` 会直接 skip，不造假成交；平仓扫描日如果 `sell_close` 缺失或 `<= 0`，仓位会继续保留，直到后续出现第一条可成交 close 再执行卖出。原先这里存在“错过 scheduled exit 后不再重试”的缺陷，现已修复，并由 focused regression `test_scheduled_exit_retries_on_next_tradeable_price_after_invalid_close` 锁住。
+• 仓位/成本参数当前确实执行，但要区分语义：`capital_fraction_per_entry` 通过 `deployable_capital = min(cash, initial_capital * capital_fraction)` 生效；fee/slippage 分别作用于买卖两侧；`max_positions` 只在 `candidate_mode='trade_score'` 时作为并发持仓上限生效，`top_n` 模式仍由 `top_n` 控制。新 regression `test_run_backtest_applies_capital_fraction_fee_and_slippage` 用 `capital_fraction_per_entry=0.25`、`fee_rate=1%`、`slippage_bps=100` 验证到单笔总买入成本约等于 `25000`，买入成交价从 `10.00` 变成 `10.10`，卖出成交价从 `11.00` 变成 `10.89`。
+• “TP/SL 配置传下去了没有” 当前可以关闭：LightGBM / heuristic / LSTM 三条 candidate builder 都把 `target_price` / `stop_loss_price` / `trade_score` 归一到同一份 `signal_payload`，`_open_positions_for_date()` 在落 BUY 前还会调用 `_backfill_prediction_trade_decision()` 补齐缺字段。现有 regressions `test_lightgbm_top_n_stop_target_exit_uses_propagated_levels`、`test_lightgbm_top_n_applies_trade_decision_policy_to_payload`、`test_open_positions_backfills_missing_prediction_trade_decision_fields` 都覆盖了这一点。
+• “LightGBM 路径和 heuristic 路径执行逻辑是否一致” 当前未发现分叉：source-specific 差异只在 candidate/prediction payload 生成，真正的成交、持仓、TP/SL、scheduled exit、fee/slippage 都走同一个 `_open_positions_for_date()` / `_close_positions_for_date()` 执行层。上面的 LightGBM target test 和 heuristic stop-loss / invalid-entry tests 实际都落在同一执行分支。
+• “参数写进 report 但实际上没执行” 当前未观察到假生效：`entry_weekdays` / `holding_period_days` / `enable_stop_target_exit` 会写进 `run.report`；`capital_fraction_per_entry` / `fee_rate` / `slippage_bps` 虽然不回写到 `run.report`，但 `run_backtest()` 直接从 `run.parameters` 读取执行，`export_backtest_runs` 也会把它们导出到 `run_config_results.csv`。上面的 focused regressions 已经直接验证这些参数会改变成交日、成交价、手续费、和平仓原因。
 
 ───
 

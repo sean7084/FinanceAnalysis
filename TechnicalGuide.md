@@ -524,7 +524,7 @@ Primary backend/API:
   - Checks `close <= stop_loss_price` first and exits with `exit_reason=STOP_LOSS`.
   - If stop-loss does not trigger, checks `close >= target_price` and exits with `exit_reason=TARGET_PRICE`.
 - If neither early-exit condition is met and the scheduled exit date has not arrived, the position remains open.
-- If sell close is missing or non-positive for the current date, the position remains open.
+- If sell close is missing or non-positive for the current date, the position remains open and a scheduled exit is retried on the next later date with a valid close.
 - If neither TP/SL condition triggers on the scheduled exit date, the position exits with `exit_reason=SCHEDULED`.
 
 ### Cost and position mechanics
