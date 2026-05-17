@@ -103,6 +103,27 @@ check random 10 dates, 每个日期核查：
 
 结果：`FactorScore` 五个核心字段（`composite_score`、`bottom_probability_score`、`fundamental_score`、`capital_flow_score`、`technical_score`）在 10 个日期均与 `effective_universe(date)` 精确一致，`unexpected_outside_universe_count = 0`、`missing_from_universe_count = 0`；`RS_SCORE` 仍有少量 missing rows，但 10 个日期均无 outside-universe participants，且所有抽查字段取值均落在 `[0, 1]`。
 
+D. 数据覆盖率输出
+
+• [x] 每类 snapshot 都有 coverage report
+• [x] 每类 snapshot 至少包含：
+  • 日期
+  • effective_universe_count
+  • feature_non_null_count
+  • usable_asset_count
+  • dropped_asset_count
+  • missing_by_feature
+
+当前这些字段已统一出现在 `effective_universe_daily_coverage.csv` 中。
+
+红灯项：
+
+• [x] 未发现某关键日期 usable_asset_count 突然断崖式下降
+• [x] 某大类特征在长时间段大量空值: `margin_balance_change_5d` 和 `pe_ttm_percentile_score` 主要来自 TuShare/source-side 缺口；抽查到的 `RS_SCORE` missing 则是停牌导致 exact-window 不成立
+• [x] cross-sectional ranking 的母集和 effective_universe 不一致
+
+当前 bundle 未出现 `usable_asset_count_cliff` 红灯；但 `margin_balance_change_5d` 仍存在长时间段稀疏覆盖，`null_reason_buckets.csv` 记录了 `820934` 条 `missing_margin_detail_source_row` 和总计 `826243` 条 `margin_balance_change_5d.expected_field_null`。这类缺口主要是原始 `margin_detail` 源缺失，5 日差分 warmup 已由单独的 `margin_diff_5_warmup_insufficient` reason 统计。`pe_ttm_percentile_score` 的抽查 missing 则来自最新 `FundamentalFactorSnapshot.pe_ttm = NULL`，对应 TuShare `daily_basic.pe_ttm` 的 source-side null / blackout。另一方面，当前抽查到的 `RS_SCORE` missing participants 不是 universe 泄漏，而是 full-day suspension 让 exact 20-trading-day window 不成立；这部分属于预期跳过而不是 TuShare blackout。
+
 **Current Notes**:
 
 - `validate_data_quality` now treats `ExchangeTradingCalendar` as the official source of opening days; OHLCV continuity excludes pre-listing dates, on/after-delist dates, and suspension-covered dates instead of inferring expectations from stored bars.

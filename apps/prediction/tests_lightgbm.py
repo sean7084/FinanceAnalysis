@@ -16,10 +16,12 @@ from apps.sentiment.models import SentimentScore
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 from .tasks_lightgbm import (
+    MISSING_VALUE_STRATEGY_NATIVE_NAN,
     _build_lightgbm_model_version,
     _build_snapshot_feature_pruning_plan,
     _create_feature_matrix,
     _extract_features_for_asset,
+    _resolve_prediction_feature_value,
     train_lightgbm_models,
 )
 
@@ -194,6 +196,23 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(features['relative_volume_5d'], 1.0)
         self.assertEqual(features['realized_volatility_5d'], 0.0)
 
+    def test_extract_features_for_asset_preserves_nan_for_gappy_recent_history_under_native_nan_strategy(self):
+        d = self._seed_features()
+        OHLCV.objects.filter(
+            asset=self.asset,
+            date__in=[d - timezone.timedelta(days=2), d - timezone.timedelta(days=3)],
+        ).delete()
+
+        features = _extract_features_for_asset(
+            self.asset.id,
+            d,
+            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+        )
+
+        self.assertTrue(np.isnan(features['return_3d']))
+        self.assertTrue(np.isnan(features['relative_volume_5d']))
+        self.assertTrue(np.isnan(features['realized_volatility_5d']))
+
     def test_create_feature_matrix_defaults_engineered_features_for_gappy_recent_history(self):
         d = self._seed_features()
         OHLCV.objects.filter(
@@ -206,6 +225,33 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(float(feature_df.iloc[0]['return_3d']), 0.0)
         self.assertEqual(float(feature_df.iloc[0]['relative_volume_5d']), 1.0)
         self.assertEqual(float(feature_df.iloc[0]['realized_volatility_5d']), 0.0)
+
+    def test_create_feature_matrix_preserves_nan_for_gappy_recent_history_under_native_nan_strategy(self):
+        d = self._seed_features()
+        OHLCV.objects.filter(
+            asset=self.asset,
+            date__in=[d - timezone.timedelta(days=2), d - timezone.timedelta(days=3)],
+        ).delete()
+
+        feature_df = _create_feature_matrix(
+            d,
+            d,
+            asset_ids=[self.asset.id],
+            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+        )
+
+        self.assertTrue(np.isnan(float(feature_df.iloc[0]['return_3d'])))
+        self.assertTrue(np.isnan(float(feature_df.iloc[0]['relative_volume_5d'])))
+        self.assertTrue(np.isnan(float(feature_df.iloc[0]['realized_volatility_5d'])))
+
+    def test_resolve_prediction_feature_value_returns_nan_for_missing_keys_under_native_nan_strategy(self):
+        resolved = _resolve_prediction_feature_value(
+            {},
+            'totally_missing_feature',
+            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+        )
+
+        self.assertTrue(np.isnan(resolved))
 
     def test_build_lightgbm_model_version_appends_normalized_tag(self):
         d = timezone.datetime(2024, 12, 31).date()
@@ -378,6 +424,7 @@ class LightGBMPredictionTests(TestCase):
         artifact = LightGBMModelArtifact.objects.filter(horizon_days=3).latest('created_at')
         self.assertEqual(artifact.version, f'lgb-3d-{d.isoformat()}-regstrong-v1')
         self.assertEqual(artifact.metadata['engineered_feature_version'], 'v2')
+        self.assertEqual(artifact.metadata['missing_value_strategy'], MISSING_VALUE_STRATEGY_NATIVE_NAN)
         self.assertEqual(artifact.metadata['pruning']['rule'], 'none')
         self.assertEqual(artifact.metadata['version_tag'], 'regstrong-v1')
         self.assertEqual(artifact.metadata['lgb_params']['num_leaves'], 15)
@@ -391,6 +438,7 @@ class LightGBMPredictionTests(TestCase):
         self.assertTrue(EnsembleWeightSnapshot.objects.filter(date=d).exists())
         first_save_kwargs = mock_save_artifacts.call_args_list[0].kwargs
         self.assertEqual(first_save_kwargs['version'], f'lgb-3d-{d.isoformat()}-regstrong-v1')
+        self.assertEqual(first_save_kwargs['extra_metadata']['missing_value_strategy'], MISSING_VALUE_STRATEGY_NATIVE_NAN)
         self.assertEqual(first_save_kwargs['extra_metadata']['version_tag'], 'regstrong-v1')
         self.assertEqual(first_save_kwargs['extra_metadata']['lgb_params']['num_leaves'], 15)
 

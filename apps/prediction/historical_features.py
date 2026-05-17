@@ -17,10 +17,14 @@ from apps.markets.models import Asset, OHLCV
 
 def _to_decimal(value, default):
     if value is None:
+        if default is None:
+            return None
         return Decimal(str(default))
     try:
         return Decimal(str(value))
     except Exception:
+        if default is None:
+            return None
         return Decimal(str(default))
 
 

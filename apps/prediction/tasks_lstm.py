@@ -17,12 +17,24 @@ from apps.markets.benchmarking import effective_universe_assets
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import LightGBMModelArtifact
 from apps.markets.models import Asset
-from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training, _refresh_ensemble_weights
+from .tasks_lightgbm import (
+    MISSING_VALUE_STRATEGY_LEGACY,
+    MISSING_VALUE_STRATEGY_METADATA_KEY,
+    MISSING_VALUE_STRATEGY_NATIVE_NAN,
+    _create_feature_matrix,
+    _create_labels_for_training,
+    _refresh_ensemble_weights,
+    _sanitize_feature_snapshot,
+)
 from .odds import estimate_trade_decision
 
 
 LSTM_MODELS_DIR = os.path.join(settings.BASE_DIR, 'models', 'lstm')
 os.makedirs(LSTM_MODELS_DIR, exist_ok=True)
+
+LSTM_MISSING_INDICATOR_SUFFIX = '__is_missing'
+LSTM_MISSING_VALUE_STRATEGY = 'mask_and_zero_impute'
+LSTM_STUB_METADATA_SOURCES = {'phase14_training_stub'}
 
 
 class LSTMClassifier(nn.Module):
@@ -66,6 +78,31 @@ def _parse_training_window(training_start_date=None, training_end_date=None):
         training_start = get_historical_data_floor()
 
     return training_start, training_end
+
+
+def _lstm_missing_indicator_name(feature_name):
+    return f'{feature_name}{LSTM_MISSING_INDICATOR_SUFFIX}'
+
+
+def _is_lstm_missing_indicator(feature_name):
+    return str(feature_name).endswith(LSTM_MISSING_INDICATOR_SUFFIX)
+
+
+def _base_lstm_feature_names(feature_names):
+    return [feature_name for feature_name in feature_names if not _is_lstm_missing_indicator(feature_name)]
+
+
+def _augment_lstm_missingness_features(feature_df, base_feature_names):
+    working_df = feature_df.copy()
+    full_feature_names = []
+    for feature_name in base_feature_names:
+        if feature_name not in working_df.columns:
+            working_df[feature_name] = np.nan
+        full_feature_names.append(feature_name)
+        missing_feature_name = _lstm_missing_indicator_name(feature_name)
+        working_df[missing_feature_name] = working_df[feature_name].isna().astype(np.float32)
+        full_feature_names.append(missing_feature_name)
+    return working_df, full_feature_names
 
 
 def _build_sequences(feature_df, labels_dict, horizon_days, feature_names, sequence_length):
@@ -113,6 +150,7 @@ def _fit_scaler_on_sequences(X_train):
 def _transform_sequences(X, scaler):
     flat = X.reshape(-1, X.shape[-1])
     transformed = scaler.transform(flat)
+    transformed = np.nan_to_num(transformed, nan=0.0, posinf=0.0, neginf=0.0)
     return transformed.reshape(X.shape).astype(np.float32)
 
 
@@ -134,6 +172,8 @@ def _resolve_lstm_model_version(target_date):
         model_type=ModelVersion.ModelType.LSTM,
         is_active=True,
         status=ModelVersion.Status.READY,
+    ).exclude(
+        metadata__source__in=LSTM_STUB_METADATA_SOURCES,
     ).order_by('-trained_at', '-created_at').first()
     if version:
         return version
@@ -141,17 +181,39 @@ def _resolve_lstm_model_version(target_date):
     fallback = ModelVersion.objects.filter(
         model_type=ModelVersion.ModelType.LSTM,
         status=ModelVersion.Status.READY,
+    ).exclude(
+        metadata__source__in=LSTM_STUB_METADATA_SOURCES,
     ).order_by('-trained_at', '-created_at').first()
     if fallback:
         return fallback
+
+    stub_fallback = ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.LSTM,
+        is_active=True,
+        status=ModelVersion.Status.READY,
+    ).order_by('-trained_at', '-created_at').first()
+    if stub_fallback:
+        return stub_fallback
 
     raise ValueError(f'No READY LSTM model version available for inference on {target_date}.')
 
 
 def _load_lstm_artifact(model_version, horizon_days):
-    model_dir = model_version.artifact_path or os.path.join(LSTM_MODELS_DIR, model_version.version)
-    file_path = os.path.join(model_dir, f'{int(horizon_days)}d_model.pt')
-    if not os.path.exists(file_path):
+    candidate_dirs = []
+    if model_version.artifact_path:
+        candidate_dirs.append(model_version.artifact_path)
+    fallback_dir = os.path.join(LSTM_MODELS_DIR, model_version.version)
+    if fallback_dir not in candidate_dirs:
+        candidate_dirs.append(fallback_dir)
+
+    file_path = None
+    for model_dir in candidate_dirs:
+        candidate_path = os.path.join(model_dir, f'{int(horizon_days)}d_model.pt')
+        if os.path.exists(candidate_path):
+            file_path = candidate_path
+            break
+
+    if file_path is None:
         return None
 
     payload = torch.load(file_path, map_location='cpu')
@@ -176,6 +238,7 @@ def _load_lstm_artifact(model_version, horizon_days):
     scaler_mean = np.asarray(payload.get('scaler_mean') or [0.0] * len(feature_names), dtype=np.float32)
     scaler_scale = np.asarray(payload.get('scaler_scale') or [1.0] * len(feature_names), dtype=np.float32)
     scaler_scale = np.where(scaler_scale == 0, 1.0, scaler_scale)
+    train_meta = dict(payload.get('train_meta') or {})
 
     return {
         'model': model,
@@ -184,13 +247,33 @@ def _load_lstm_artifact(model_version, horizon_days):
         'scaler_mean': scaler_mean,
         'scaler_scale': scaler_scale,
         'file_path': file_path,
+        'missing_value_strategy': (
+            train_meta.get(MISSING_VALUE_STRATEGY_METADATA_KEY)
+            or payload.get(MISSING_VALUE_STRATEGY_METADATA_KEY)
+            or MISSING_VALUE_STRATEGY_LEGACY
+        ),
     }
 
 
-def _build_inference_sequence(asset_id, target_date, feature_names, sequence_length):
+def _build_inference_sequence(
+    asset_id,
+    target_date,
+    feature_names,
+    sequence_length,
+    missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+):
     lookback_days = max(120, int(sequence_length * 4))
     start_date = target_date - timedelta(days=lookback_days)
-    feature_df = _create_feature_matrix(start_date, target_date, asset_ids=[int(asset_id)])
+    feature_df = _create_feature_matrix(
+        start_date,
+        target_date,
+        asset_ids=[int(asset_id)],
+        missing_value_strategy=(
+            MISSING_VALUE_STRATEGY_NATIVE_NAN
+            if missing_value_strategy == LSTM_MISSING_VALUE_STRATEGY
+            else MISSING_VALUE_STRATEGY_LEGACY
+        ),
+    )
     if feature_df.empty:
         return None, None
 
@@ -203,18 +286,25 @@ def _build_inference_sequence(asset_id, target_date, feature_names, sequence_len
     if len(rows) < int(sequence_length):
         return None, None
 
-    for feature in feature_names:
-        if feature not in rows.columns:
-            rows[feature] = 0.0
+    if missing_value_strategy == LSTM_MISSING_VALUE_STRATEGY:
+        rows, resolved_feature_names = _augment_lstm_missingness_features(
+            rows,
+            _base_lstm_feature_names(feature_names),
+        )
+    else:
+        resolved_feature_names = list(feature_names)
+        for feature in resolved_feature_names:
+            if feature not in rows.columns:
+                rows[feature] = 0.0
 
-    sequence = rows[feature_names].astype(np.float32).to_numpy()
+    sequence = rows[resolved_feature_names].astype(np.float32).to_numpy()
     if sequence.shape[0] != int(sequence_length):
         return None, None
 
-    latest_snapshot = {
-        feature: float(sequence[-1, index])
-        for index, feature in enumerate(feature_names)
-    }
+    latest_snapshot = _sanitize_feature_snapshot({
+        feature: sequence[-1, index]
+        for index, feature in enumerate(resolved_feature_names)
+    })
     return sequence, latest_snapshot
 
 
@@ -236,11 +326,13 @@ def _predict_with_lstm(asset_id, target_date, horizon_days, model_version=None, 
         target_date=target_date,
         feature_names=artifact['feature_names'],
         sequence_length=artifact['sequence_length'],
+        missing_value_strategy=artifact['missing_value_strategy'],
     )
     if sequence is None:
         return None
 
     normalized = (sequence - artifact['scaler_mean']) / artifact['scaler_scale']
+    normalized = np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     tensor = torch.from_numpy(normalized.reshape(1, artifact['sequence_length'], -1)).float()
 
     with torch.no_grad():
@@ -283,6 +375,7 @@ def _predict_with_lstm(asset_id, target_date, horizon_days, model_version=None, 
         'trade_decision': trade_decision,
         'artifact_path': artifact['file_path'],
         'sequence_length': artifact['sequence_length'],
+        MISSING_VALUE_STRATEGY_METADATA_KEY: artifact['missing_value_strategy'],
     }
 
 
@@ -301,6 +394,7 @@ def _save_lstm_artifact(model, scaler, feature_names, sequence_length, horizon_d
         'class_labels': ['DOWN', 'FLAT', 'UP'],
         'scaler_mean': scaler.mean_.tolist(),
         'scaler_scale': scaler.scale_.tolist(),
+        MISSING_VALUE_STRATEGY_METADATA_KEY: train_meta.get(MISSING_VALUE_STRATEGY_METADATA_KEY),
         'train_meta': train_meta,
     }
 
@@ -314,7 +408,17 @@ def _save_lstm_artifact(model, scaler, feature_names, sequence_length, horizon_d
     return artifact_path
 
 
-def _train_single_horizon_lstm(X, y, dates, feature_names, horizon_days, version, sequence_length, device):
+def _train_single_horizon_lstm(
+    X,
+    y,
+    dates,
+    feature_names,
+    horizon_days,
+    version,
+    sequence_length,
+    device,
+    missing_value_strategy=LSTM_MISSING_VALUE_STRATEGY,
+):
     if len(y) < 400:
         return {
             'status': 'insufficient_data',
@@ -398,6 +502,7 @@ def _train_single_horizon_lstm(X, y, dates, feature_names, horizon_days, version
         'hidden_size': 64,
         'num_layers': 2,
         'dropout': 0.2,
+        MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
         'trained_at': timezone.now().isoformat(),
     }
 
@@ -465,6 +570,8 @@ def train_lstm_models(
         for horizon in selected_horizons
     }
 
+    missing_value_strategy = LSTM_MISSING_VALUE_STRATEGY
+    base_feature_names = []
     feature_names = []
     buffered = {
         horizon: {
@@ -477,17 +584,26 @@ def train_lstm_models(
     sample_counts = {horizon: 0 for horizon in selected_horizons}
 
     for chunk_asset_ids in _iter_chunks(all_asset_ids, max(int(asset_chunk_size), 1)):
-        chunk_df = _create_feature_matrix(training_start, training_end, asset_ids=chunk_asset_ids)
+        chunk_df = _create_feature_matrix(
+            training_start,
+            training_end,
+            asset_ids=chunk_asset_ids,
+            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+        )
         if chunk_df.empty:
             continue
 
-        if not feature_names:
-            feature_names = list(
+        if not base_feature_names:
+            base_feature_names = list(
                 chunk_df.attrs.get('feature_names')
                 or [col for col in chunk_df.columns if col not in ['date', 'asset_id']]
             )
-            if not feature_names:
+            if not base_feature_names:
                 continue
+
+        chunk_df, chunk_feature_names = _augment_lstm_missingness_features(chunk_df, base_feature_names)
+        if not feature_names:
+            feature_names = chunk_feature_names
 
         for horizon in selected_horizons:
             if sample_counts[horizon] >= int(max_samples_per_horizon):
@@ -555,6 +671,7 @@ def train_lstm_models(
             version=version,
             sequence_length=int(sequence_length),
             device=device,
+            missing_value_strategy=missing_value_strategy,
         )
 
     success_accuracies = [float(payload['accuracy']) for payload in results.values() if payload.get('status') == 'success']
@@ -571,6 +688,7 @@ def train_lstm_models(
                 'training_window_end': training_end.isoformat(),
                 'horizons': selected_horizons,
                 'sequence_length': int(sequence_length),
+                MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
                 'results': results,
                 'aggregate_accuracy': aggregate_accuracy,
             },
@@ -606,6 +724,7 @@ def train_lstm_models(
                 'source': 'pytorch_lstm_pipeline',
                 'horizons': selected_horizons,
                 'sequence_length': int(sequence_length),
+                MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
                 'results': results,
                 'model_architecture': {
                     'hidden_size': 64,
@@ -697,6 +816,7 @@ def generate_lstm_predictions_for_date(target_date=None, horizons=None):
                         'calibrated_scores': prediction['calibrated_scores'],
                         'artifact_path': prediction['artifact_path'],
                         'sequence_length': prediction['sequence_length'],
+                        MISSING_VALUE_STRATEGY_METADATA_KEY: prediction[MISSING_VALUE_STRATEGY_METADATA_KEY],
                     },
                 },
             )
@@ -767,6 +887,7 @@ def generate_lstm_prediction_for_asset(asset_id, target_date=None, horizons=None
                     'calibrated_scores': prediction['calibrated_scores'],
                     'artifact_path': prediction['artifact_path'],
                     'sequence_length': prediction['sequence_length'],
+                    MISSING_VALUE_STRATEGY_METADATA_KEY: prediction[MISSING_VALUE_STRATEGY_METADATA_KEY],
                 },
             },
         )

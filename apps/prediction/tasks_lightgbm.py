@@ -135,6 +135,10 @@ def _load_model_artifacts(horizon_days, version):
 
 LAG_WINDOWS = (3, 5, 10)
 
+MISSING_VALUE_STRATEGY_LEGACY = 'legacy_neutral_fill'
+MISSING_VALUE_STRATEGY_NATIVE_NAN = 'native_nan'
+MISSING_VALUE_STRATEGY_METADATA_KEY = 'missing_value_strategy'
+
 
 class IdentityCalibrator:
     """Fallback calibrator for LightGBM boosters that already emit class probabilities."""
@@ -149,13 +153,38 @@ class IdentityCalibrator:
         return np.asarray(self.model.predict(matrix))
 
 
-def _safe_float(value, default=0.0):
-    if value is None:
-        return float(default)
+def _preserves_true_missing(missing_value_strategy):
+    return missing_value_strategy == MISSING_VALUE_STRATEGY_NATIVE_NAN
+
+
+def _default_numeric(default, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
+    if preserve_missing and _preserves_true_missing(missing_value_strategy):
+        return np.nan
+    return float(default)
+
+
+def _is_nan_like(value):
     try:
-        return float(value)
+        return np.isnan(float(value))
     except (TypeError, ValueError):
-        return float(default)
+        return False
+
+
+def _safe_float(value, default=0.0, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
+    fallback = _default_numeric(
+        default,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=preserve_missing,
+    )
+    if value is None:
+        return fallback
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if np.isnan(parsed):
+        return fallback
+    return parsed
 
 
 def _get_recent_ohlcv_rows(asset_id, as_of, limit=30):
@@ -174,35 +203,81 @@ def _asset_trading_context(asset_id, as_of):
     return asset, current_trade_date, position_map
 
 
-def _row_value(rows, index, key, default):
+def _row_value(rows, index, key, default, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
     if index >= len(rows):
-        return float(default)
-    return _safe_float(rows[index].get(key), default)
+        return _default_numeric(
+            default,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=preserve_missing,
+        )
+    return _safe_float(
+        rows[index].get(key),
+        default,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=preserve_missing,
+    )
 
 
-def _compute_return(rows, periods, default=0.0):
+def _compute_return(rows, periods, default=0.0, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
+    fallback = _default_numeric(
+        default,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=preserve_missing,
+    )
     if len(rows) <= periods:
-        return float(default)
-    current_close = _row_value(rows, 0, 'close', 0.0)
-    historical_close = _row_value(rows, periods, 'close', 0.0)
-    if not historical_close:
-        return float(default)
+        return fallback
+    current_close = _row_value(
+        rows,
+        0,
+        'close',
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=preserve_missing,
+    )
+    historical_close = _row_value(
+        rows,
+        periods,
+        'close',
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=preserve_missing,
+    )
+    if _is_nan_like(current_close) or _is_nan_like(historical_close) or not historical_close:
+        return fallback
     return (current_close - historical_close) / historical_close
 
 
-def _compute_realized_volatility(rows, window=5):
+def _compute_realized_volatility(rows, window=5, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
+    fallback = _default_numeric(
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=preserve_missing,
+    )
     if len(rows) <= window:
-        return 0.0
-    closes = [_row_value(rows, idx, 'close', 0.0) for idx in range(window + 1)]
-    closes = list(reversed([close for close in closes if close]))
+        return fallback
+    closes = [
+        _row_value(
+            rows,
+            idx,
+            'close',
+            0.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=preserve_missing,
+        )
+        for idx in range(window + 1)
+    ]
+    closes = list(reversed([
+        close for close in closes
+        if not _is_nan_like(close) and close
+    ]))
     if len(closes) <= 1:
-        return 0.0
+        return fallback
     returns = []
     for previous_close, current_close in zip(closes, closes[1:]):
         if previous_close:
             returns.append((current_close - previous_close) / previous_close)
     if len(returns) <= 1:
-        return 0.0
+        return fallback
     return float(pstdev(returns))
 
 
@@ -260,15 +335,40 @@ def _augment_single_asset_features(features):
     return features
 
 
-def _resolve_prediction_feature_value(features_dict, feature_name):
+def _resolve_prediction_feature_value(
+    features_dict,
+    feature_name,
+    missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+):
     if feature_name in features_dict:
         return features_dict[feature_name]
 
     alias_name = LEGACY_PREDICTION_FEATURE_ALIASES.get(feature_name)
     if alias_name is not None:
-        return features_dict.get(alias_name, 0.0)
+        return features_dict.get(
+            alias_name,
+            _default_numeric(
+                0.0,
+                missing_value_strategy=missing_value_strategy,
+                preserve_missing=True,
+            ),
+        )
 
-    return 0.0
+    return _default_numeric(
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=True,
+    )
+
+
+def _sanitize_feature_snapshot(features_dict):
+    payload = {}
+    for key, value in (features_dict or {}).items():
+        if value is None or _is_nan_like(value):
+            payload[key] = None
+        else:
+            payload[key] = float(value)
+    return payload
 
 
 def _coverage_at_count(ranked_features, keep_count):
@@ -553,37 +653,141 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
         },
     )
 
-def _extract_features_for_asset(asset_id, as_of):
+def _extract_features_for_asset(
+    asset_id,
+    as_of,
+    missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+):
     """Extract all available features for a single asset on a given date."""
     features = {}
+    preserve_true_missing = _preserves_true_missing(missing_value_strategy)
     _asset, current_trade_date, position_map = _asset_trading_context(asset_id, as_of)
     recent_rows = _get_recent_ohlcv_rows(asset_id, as_of, limit=25)
     recent_actual_dates = [row['date'] for row in reversed(recent_rows)]
 
     # Phase 10: Technical Indicators
-    features['rsi'] = _safe_float(latest_rsi(asset_id, as_of, default=Decimal('50')), 50.0)
-    features['mom_5d'] = _safe_float(latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0')), 0.0)
-    features['rs_score'] = _safe_float(latest_rs_score(asset_id, as_of, default=Decimal('0.5')), 0.5)
+    features['rsi'] = _safe_float(
+        latest_rsi(asset_id, as_of, default=None if preserve_true_missing else Decimal('50')),
+        50.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=True,
+    )
+    features['mom_5d'] = _safe_float(
+        latest_momentum(asset_id, as_of, n_days=5, default=None if preserve_true_missing else Decimal('0')),
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=True,
+    )
+    features['rs_score'] = _safe_float(
+        latest_rs_score(asset_id, as_of, default=None if preserve_true_missing else Decimal('0.5')),
+        0.5,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=True,
+    )
 
     for lag_window in LAG_WINDOWS:
         lag_date = as_of - timedelta(days=lag_window)
-        lagged_rsi = _safe_float(latest_rsi(asset_id, lag_date, default=Decimal(str(features['rsi']))), features['rsi'])
-        lagged_momentum = _safe_float(
-            latest_momentum(asset_id, lag_date, n_days=5, default=Decimal(str(features['mom_5d']))),
-            features['mom_5d'],
+        lagged_rsi = _safe_float(
+            latest_rsi(
+                asset_id,
+                lag_date,
+                default=None if preserve_true_missing else Decimal(str(features['rsi'])),
+            ),
+            features['rsi'],
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
         )
-        lagged_rs = _safe_float(latest_rs_score(asset_id, lag_date, default=Decimal(str(features['rs_score']))), features['rs_score'])
+        lagged_momentum = _safe_float(
+            latest_momentum(
+                asset_id,
+                lag_date,
+                n_days=5,
+                default=None if preserve_true_missing else Decimal(str(features['mom_5d'])),
+            ),
+            features['mom_5d'],
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        lagged_rs = _safe_float(
+            latest_rs_score(
+                asset_id,
+                lag_date,
+                default=None if preserve_true_missing else Decimal(str(features['rs_score'])),
+            ),
+            features['rs_score'],
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
         features[f'rsi_lag_{lag_window}d'] = lagged_rsi
         features[f'rsi_delta_{lag_window}d'] = features['rsi'] - lagged_rsi
         features[f'mom_5d_delta_{lag_window}d'] = features['mom_5d'] - lagged_momentum
         features[f'rs_score_delta_{lag_window}d'] = features['rs_score'] - lagged_rs
 
-    features['return_3d'] = _compute_return(recent_rows, 3) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 3) else 0.0
-    features['return_5d'] = _compute_return(recent_rows, 5) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 5) else 0.0
-    features['return_10d'] = _compute_return(recent_rows, 10) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 10) else 0.0
-    current_volume = _row_value(recent_rows, 0, 'volume', 0.0)
-    volume_samples_5 = [_row_value(recent_rows, index, 'volume', 0.0) for index in range(min(5, len(recent_rows)))]
-    volume_samples_20 = [_row_value(recent_rows, index, 'volume', 0.0) for index in range(min(20, len(recent_rows)))]
+    missing_numeric = _default_numeric(
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=True,
+    )
+    features['return_3d'] = (
+        _compute_return(
+            recent_rows,
+            3,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 3)
+        else missing_numeric
+    )
+    features['return_5d'] = (
+        _compute_return(
+            recent_rows,
+            5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 5)
+        else missing_numeric
+    )
+    features['return_10d'] = (
+        _compute_return(
+            recent_rows,
+            10,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 10)
+        else missing_numeric
+    )
+    current_volume = _row_value(
+        recent_rows,
+        0,
+        'volume',
+        0.0,
+        missing_value_strategy=missing_value_strategy,
+        preserve_missing=True,
+    )
+    volume_samples_5 = [
+        _row_value(
+            recent_rows,
+            index,
+            'volume',
+            0.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        for index in range(min(5, len(recent_rows)))
+    ]
+    volume_samples_20 = [
+        _row_value(
+            recent_rows,
+            index,
+            'volume',
+            0.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        for index in range(min(20, len(recent_rows)))
+    ]
     average_volume_5 = float(np.mean(volume_samples_5)) if volume_samples_5 else 0.0
     average_volume_20 = float(np.mean(volume_samples_20)) if volume_samples_20 else 0.0
     volume_5_fresh = trailing_indicator_window_is_fresh(
@@ -600,9 +804,26 @@ def _extract_features_for_asset(asset_id, as_of):
         required_points=20,
         max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 20}),
     )
-    features['relative_volume_5d'] = current_volume / average_volume_5 if volume_5_fresh and average_volume_5 else 1.0
-    features['relative_volume_20d'] = current_volume / average_volume_20 if volume_20_fresh and average_volume_20 else 1.0
-    features['realized_volatility_5d'] = _compute_realized_volatility(recent_rows, window=5) if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 5) else 0.0
+    features['relative_volume_5d'] = (
+        current_volume / average_volume_5
+        if volume_5_fresh and average_volume_5 and not _is_nan_like(current_volume)
+        else _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
+    )
+    features['relative_volume_20d'] = (
+        current_volume / average_volume_20
+        if volume_20_fresh and average_volume_20 and not _is_nan_like(current_volume)
+        else _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
+    )
+    features['realized_volatility_5d'] = (
+        _compute_realized_volatility(
+            recent_rows,
+            window=5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 5)
+        else missing_numeric
+    )
 
     # Phase 11: Multi-Factor Scores
     factor = FactorScore.objects.filter(
@@ -611,13 +832,61 @@ def _extract_features_for_asset(asset_id, as_of):
         mode=FactorScore.FactorMode.COMPOSITE,
     ).order_by('-date').first()
 
-    features['pe_ttm_percentile'] = _safe_float(getattr(factor, 'pe_ttm_percentile_score', 0.5), 0.5) if factor else 0.5
-    features['pb_percentile'] = _safe_float(getattr(factor, 'pb_percentile_score', 0.5), 0.5) if factor else 0.5
-    features['roe_trend'] = _safe_float(getattr(factor, 'roe_trend_score', 0.5), 0.5) if factor else 0.5
+    features['pe_ttm_percentile'] = (
+        _safe_float(
+            getattr(factor, 'pe_ttm_percentile_score', None),
+            0.5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+    )
+    features['pb_percentile'] = (
+        _safe_float(
+            getattr(factor, 'pb_percentile_score', None),
+            0.5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+    )
+    features['roe_trend'] = (
+        _safe_float(
+            getattr(factor, 'roe_trend_score', None),
+            0.5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+    )
     features['northbound_flow'] = 0.5
-    features['main_force_flow'] = _safe_float(getattr(factor, 'main_force_flow_score', 0.5), 0.5) if factor else 0.5
-    features['margin_flow'] = _safe_float(getattr(factor, 'margin_flow_score', 0.5), 0.5) if factor else 0.5
-    features['factor_composite'] = _safe_float(getattr(factor, 'composite_score', 0.5), 0.5) if factor else 0.5
+    features['main_force_flow'] = (
+        _safe_float(
+            getattr(factor, 'main_force_flow_score', None),
+            0.5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+    )
+    features['margin_flow'] = (
+        _safe_float(
+            getattr(factor, 'margin_flow_score', None),
+            0.5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+    )
+    features['factor_composite'] = (
+        _safe_float(
+            getattr(factor, 'composite_score', None),
+            0.5,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+    )
 
     # Phase 12: Macro Context
     current_context = MarketContext.objects.filter(
@@ -627,15 +896,51 @@ def _extract_features_for_asset(asset_id, as_of):
     ).order_by('-starts_at').first()
 
     phase_to_int = {'RECOVERY': 1, 'OVERHEAT': 2, 'STAGFLATION': 3, 'RECESSION': 0}
-    features['macro_phase'] = float(phase_to_int.get(getattr(current_context, 'macro_phase', 'RECOVERY'), 1))
+    if current_context is None:
+        features['macro_phase'] = _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
+    else:
+        features['macro_phase'] = _safe_float(
+            phase_to_int.get(getattr(current_context, 'macro_phase', None)),
+            1.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
 
     macro_snap = MacroSnapshot.objects.filter(date__lte=as_of).order_by('-date').first()
-    features['pmi_manufacturing'] = _safe_float(getattr(macro_snap, 'pmi_manufacturing', 50), 50.0) if macro_snap else 50.0
-    features['pmi_non_manufacturing'] = _safe_float(getattr(macro_snap, 'pmi_non_manufacturing', 50), 50.0) if macro_snap else 50.0
-    features['yield_curve'] = (
-        _safe_float(getattr(macro_snap, 'cn10y_yield', 2.0), 2.0) -
-        _safe_float(getattr(macro_snap, 'cn3y_yield', 2.0), 2.0)
-    ) if macro_snap else 0.0
+    if macro_snap is None:
+        features['pmi_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
+        features['pmi_non_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
+        features['yield_curve'] = _default_numeric(0.0, missing_value_strategy, preserve_missing=True)
+    else:
+        features['pmi_manufacturing'] = _safe_float(
+            getattr(macro_snap, 'pmi_manufacturing', None),
+            50.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        features['pmi_non_manufacturing'] = _safe_float(
+            getattr(macro_snap, 'pmi_non_manufacturing', None),
+            50.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        cn10y = _safe_float(
+            getattr(macro_snap, 'cn10y_yield', None),
+            2.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        cn3y = _safe_float(
+            getattr(macro_snap, 'cn3y_yield', None),
+            2.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        features['yield_curve'] = (
+            cn10y - cn3y
+            if not _is_nan_like(cn10y) and not _is_nan_like(cn3y)
+            else _default_numeric(0.0, missing_value_strategy, preserve_missing=True)
+        )
 
     # Phase 13: Sentiment
     sentiment = SentimentScore.objects.filter(
@@ -655,7 +960,7 @@ def _extract_features_for_asset(asset_id, as_of):
     return _augment_single_asset_features(features)
 
 
-def _compute_rsi_series(close_series, period=14):
+def _compute_rsi_series(close_series, period=14, fill_default=50.0):
     delta = close_series.diff()
     gains = delta.clip(lower=0)
     losses = -delta.clip(upper=0)
@@ -663,10 +968,12 @@ def _compute_rsi_series(close_series, period=14):
     avg_loss = losses.rolling(window=period, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50.0)
+    if fill_default is None:
+        return rsi
+    return rsi.fillna(fill_default)
 
 
-def _prepare_macro_dataframe(end_date):
+def _prepare_macro_dataframe(end_date, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY):
     macro_rows = list(
         MacroSnapshot.objects.filter(date__lte=end_date)
         .values('date', 'pmi_manufacturing', 'pmi_non_manufacturing', 'cn10y_yield', 'cn3y_yield')
@@ -677,12 +984,16 @@ def _prepare_macro_dataframe(end_date):
         macro_df = pd.DataFrame({'date': [], 'pmi_manufacturing': [], 'pmi_non_manufacturing': [], 'yield_curve': []})
     else:
         macro_df['date'] = pd.to_datetime(macro_df['date'])
-        macro_df['yield_curve'] = (
-            macro_df['cn10y_yield'].astype(float).fillna(2.0) -
-            macro_df['cn3y_yield'].astype(float).fillna(2.0)
-        )
-        macro_df['pmi_manufacturing'] = macro_df['pmi_manufacturing'].astype(float).fillna(50.0)
-        macro_df['pmi_non_manufacturing'] = macro_df['pmi_non_manufacturing'].astype(float).fillna(50.0)
+        macro_df['cn10y_yield'] = pd.to_numeric(macro_df['cn10y_yield'], errors='coerce')
+        macro_df['cn3y_yield'] = pd.to_numeric(macro_df['cn3y_yield'], errors='coerce')
+        macro_df['pmi_manufacturing'] = pd.to_numeric(macro_df['pmi_manufacturing'], errors='coerce')
+        macro_df['pmi_non_manufacturing'] = pd.to_numeric(macro_df['pmi_non_manufacturing'], errors='coerce')
+        if _preserves_true_missing(missing_value_strategy):
+            macro_df['yield_curve'] = macro_df['cn10y_yield'] - macro_df['cn3y_yield']
+        else:
+            macro_df['yield_curve'] = macro_df['cn10y_yield'].fillna(2.0) - macro_df['cn3y_yield'].fillna(2.0)
+            macro_df['pmi_manufacturing'] = macro_df['pmi_manufacturing'].fillna(50.0)
+            macro_df['pmi_non_manufacturing'] = macro_df['pmi_non_manufacturing'].fillna(50.0)
         macro_df = macro_df[['date', 'pmi_manufacturing', 'pmi_non_manufacturing', 'yield_curve']]
 
     phase_map = {'RECOVERY': 1.0, 'OVERHEAT': 2.0, 'STAGFLATION': 3.0, 'RECESSION': 0.0}
@@ -696,13 +1007,20 @@ def _prepare_macro_dataframe(end_date):
         context_df = pd.DataFrame({'date': [], 'macro_phase': []})
     else:
         context_df['date'] = pd.to_datetime(context_df['starts_at']).dt.normalize()
-        context_df['macro_phase'] = context_df['macro_phase'].map(phase_map).fillna(1.0)
+        context_df['macro_phase'] = context_df['macro_phase'].map(phase_map)
+        if not _preserves_true_missing(missing_value_strategy):
+            context_df['macro_phase'] = context_df['macro_phase'].fillna(1.0)
         context_df = context_df[['date', 'macro_phase']]
 
     return macro_df.sort_values('date'), context_df.sort_values('date')
 
 
-def _create_feature_matrix(start_date, end_date, asset_ids=None):
+def _create_feature_matrix(
+    start_date,
+    end_date,
+    asset_ids=None,
+    missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+):
     """
     Create a feature matrix for all assets over a date range.
     Used for training.
@@ -823,7 +1141,11 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         rs_df['rs_score'] = rs_df['value'].astype(float)
         rs_df = rs_df[['asset_id', 'date', 'rs_score']]
 
-    macro_df, context_df = _prepare_macro_dataframe(end_date)
+    preserve_true_missing = _preserves_true_missing(missing_value_strategy)
+    macro_df, context_df = _prepare_macro_dataframe(
+        end_date,
+        missing_value_strategy=missing_value_strategy,
+    )
 
     asset_map = {
         asset.id: asset
@@ -873,27 +1195,44 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         )
         volatility_5d_valid = _exact_window_valid_mask(asset_df['trade_position'], 5)
 
-        asset_df['rsi'] = _compute_rsi_series(asset_df['close'])
-        asset_df['rsi'] = asset_df['rsi'].where(rsi_valid, 50.0).fillna(50.0)
-        asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).where(mom_5d_valid, 0.0).fillna(0.0)
-        asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid, 0.0).fillna(0.0)
-        asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid, 0.0).fillna(0.0)
-        asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid, 0.0).fillna(0.0)
+        asset_df['rsi'] = _compute_rsi_series(
+            asset_df['close'],
+            fill_default=None if preserve_true_missing else 50.0,
+        )
+        if preserve_true_missing:
+            asset_df['rsi'] = asset_df['rsi'].where(rsi_valid)
+            asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).where(mom_5d_valid)
+            asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid)
+            asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid)
+            asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid)
+        else:
+            asset_df['rsi'] = asset_df['rsi'].where(rsi_valid, 50.0).fillna(50.0)
+            asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).where(mom_5d_valid, 0.0).fillna(0.0)
+            asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid, 0.0).fillna(0.0)
+            asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid, 0.0).fillna(0.0)
+            asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid, 0.0).fillna(0.0)
         relative_volume_5d = (
             asset_df['volume'] / asset_df['volume'].rolling(window=5, min_periods=5).mean()
         ).replace([np.inf, -np.inf], np.nan)
         relative_volume_20d = (
             asset_df['volume'] / asset_df['volume'].rolling(window=20, min_periods=20).mean()
         ).replace([np.inf, -np.inf], np.nan)
-        asset_df['relative_volume_5d'] = relative_volume_5d.where(relative_volume_5d_valid, 1.0).fillna(1.0)
-        asset_df['relative_volume_20d'] = relative_volume_20d.where(relative_volume_20d_valid, 1.0).fillna(1.0)
+        if preserve_true_missing:
+            asset_df['relative_volume_5d'] = relative_volume_5d.where(relative_volume_5d_valid)
+            asset_df['relative_volume_20d'] = relative_volume_20d.where(relative_volume_20d_valid)
+        else:
+            asset_df['relative_volume_5d'] = relative_volume_5d.where(relative_volume_5d_valid, 1.0).fillna(1.0)
+            asset_df['relative_volume_20d'] = relative_volume_20d.where(relative_volume_20d_valid, 1.0).fillna(1.0)
         close_returns = asset_df['close'].pct_change()
         realized_volatility_5d = close_returns.rolling(window=5, min_periods=5).std(ddof=0)
-        asset_df['realized_volatility_5d'] = realized_volatility_5d.where(volatility_5d_valid, 0.0).fillna(0.0)
+        if preserve_true_missing:
+            asset_df['realized_volatility_5d'] = realized_volatility_5d.where(volatility_5d_valid)
+        else:
+            asset_df['realized_volatility_5d'] = realized_volatility_5d.where(volatility_5d_valid, 0.0).fillna(0.0)
 
         asset_rs_df = rs_df[rs_df['asset_id'] == asset_id][['date', 'rs_score']].sort_values('date')
         if asset_rs_df.empty:
-            asset_df['rs_score'] = 0.5
+            asset_df['rs_score'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
         else:
             asset_rs_df = asset_rs_df.rename(columns={'date': 'rs_source_date'})
             asset_df = pd.merge_asof(
@@ -905,20 +1244,31 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             )
             asset_df['rs_source_position'] = asset_df['rs_source_date'].dt.date.map(position_map).astype('float64')
             rs_age = asset_df['trade_position'] - asset_df['rs_source_position']
-            asset_df['rs_score'] = asset_df['rs_score'].where(
-                rs_age.le(float(technical_indicator_max_gap_trading_days('RS_SCORE'))),
-                0.5,
-            ).fillna(0.5)
+            if preserve_true_missing:
+                asset_df['rs_score'] = asset_df['rs_score'].where(
+                    rs_age.le(float(technical_indicator_max_gap_trading_days('RS_SCORE'))),
+                )
+            else:
+                asset_df['rs_score'] = asset_df['rs_score'].where(
+                    rs_age.le(float(technical_indicator_max_gap_trading_days('RS_SCORE'))),
+                    0.5,
+                ).fillna(0.5)
 
         for lag_window in LAG_WINDOWS:
             lag_valid = _exact_window_valid_mask(asset_df['trade_position'], lag_window)
             lag_rsi = asset_df['rsi'].shift(lag_window)
             lag_mom = asset_df['mom_5d'].shift(lag_window)
             lag_rs = asset_df['rs_score'].shift(lag_window)
-            asset_df[f'rsi_lag_{lag_window}d'] = lag_rsi.where(lag_valid, asset_df['rsi']).fillna(asset_df['rsi'])
-            asset_df[f'rsi_delta_{lag_window}d'] = (asset_df['rsi'] - lag_rsi).where(lag_valid, 0.0).fillna(0.0)
-            asset_df[f'mom_5d_delta_{lag_window}d'] = (asset_df['mom_5d'] - lag_mom).where(lag_valid, 0.0).fillna(0.0)
-            asset_df[f'rs_score_delta_{lag_window}d'] = (asset_df['rs_score'] - lag_rs).where(lag_valid, 0.0).fillna(0.0)
+            if preserve_true_missing:
+                asset_df[f'rsi_lag_{lag_window}d'] = lag_rsi.where(lag_valid)
+                asset_df[f'rsi_delta_{lag_window}d'] = (asset_df['rsi'] - lag_rsi).where(lag_valid)
+                asset_df[f'mom_5d_delta_{lag_window}d'] = (asset_df['mom_5d'] - lag_mom).where(lag_valid)
+                asset_df[f'rs_score_delta_{lag_window}d'] = (asset_df['rs_score'] - lag_rs).where(lag_valid)
+            else:
+                asset_df[f'rsi_lag_{lag_window}d'] = lag_rsi.where(lag_valid, asset_df['rsi']).fillna(asset_df['rsi'])
+                asset_df[f'rsi_delta_{lag_window}d'] = (asset_df['rsi'] - lag_rsi).where(lag_valid, 0.0).fillna(0.0)
+                asset_df[f'mom_5d_delta_{lag_window}d'] = (asset_df['mom_5d'] - lag_mom).where(lag_valid, 0.0).fillna(0.0)
+                asset_df[f'rs_score_delta_{lag_window}d'] = (asset_df['rs_score'] - lag_rs).where(lag_valid, 0.0).fillna(0.0)
 
         asset_factor_df = factor_df[factor_df['asset_id'] == asset_id][[
             'date',
@@ -930,21 +1280,29 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
             'composite_score',
         ]].sort_values('date')
         if asset_factor_df.empty:
-            asset_df['pe_ttm_percentile'] = 0.5
-            asset_df['pb_percentile'] = 0.5
-            asset_df['roe_trend'] = 0.5
+            asset_df['pe_ttm_percentile'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+            asset_df['pb_percentile'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+            asset_df['roe_trend'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
             asset_df['northbound_flow'] = 0.5
-            asset_df['main_force_flow'] = 0.5
-            asset_df['margin_flow'] = 0.5
-            asset_df['factor_composite'] = 0.5
+            asset_df['main_force_flow'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+            asset_df['margin_flow'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
+            asset_df['factor_composite'] = _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
         else:
             asset_df = pd.merge_asof(asset_df.sort_values('date'), asset_factor_df, on='date', direction='backward')
-            asset_df['pe_ttm_percentile'] = asset_df['pe_ttm_percentile_score'].fillna(0.5)
-            asset_df['pb_percentile'] = asset_df['pb_percentile_score'].fillna(0.5)
-            asset_df['roe_trend'] = asset_df['roe_trend_score'].fillna(0.5)
-            asset_df['main_force_flow'] = asset_df['main_force_flow_score'].fillna(0.5)
-            asset_df['margin_flow'] = asset_df['margin_flow_score'].fillna(0.5)
-            asset_df['factor_composite'] = asset_df['composite_score'].fillna(0.5)
+            if preserve_true_missing:
+                asset_df['pe_ttm_percentile'] = asset_df['pe_ttm_percentile_score']
+                asset_df['pb_percentile'] = asset_df['pb_percentile_score']
+                asset_df['roe_trend'] = asset_df['roe_trend_score']
+                asset_df['main_force_flow'] = asset_df['main_force_flow_score']
+                asset_df['margin_flow'] = asset_df['margin_flow_score']
+                asset_df['factor_composite'] = asset_df['composite_score']
+            else:
+                asset_df['pe_ttm_percentile'] = asset_df['pe_ttm_percentile_score'].fillna(0.5)
+                asset_df['pb_percentile'] = asset_df['pb_percentile_score'].fillna(0.5)
+                asset_df['roe_trend'] = asset_df['roe_trend_score'].fillna(0.5)
+                asset_df['main_force_flow'] = asset_df['main_force_flow_score'].fillna(0.5)
+                asset_df['margin_flow'] = asset_df['margin_flow_score'].fillna(0.5)
+                asset_df['factor_composite'] = asset_df['composite_score'].fillna(0.5)
         asset_df['northbound_flow'] = 0.5
 
         asset_sentiment_df = sentiment_df[sentiment_df['asset_id'] == asset_id][['date', 'sentiment_score']].sort_values('date')
@@ -959,31 +1317,35 @@ def _create_feature_matrix(start_date, end_date, asset_ids=None):
         if not macro_df.empty:
             asset_df = pd.merge_asof(asset_df.sort_values('date'), macro_df, on='date', direction='backward')
         else:
-            asset_df['pmi_manufacturing'] = 50.0
-            asset_df['pmi_non_manufacturing'] = 50.0
-            asset_df['yield_curve'] = 0.0
+            asset_df['pmi_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
+            asset_df['pmi_non_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
+            asset_df['yield_curve'] = _default_numeric(0.0, missing_value_strategy, preserve_missing=True)
 
         if not context_df.empty:
             asset_df = pd.merge_asof(asset_df.sort_values('date'), context_df, on='date', direction='backward')
         else:
-            asset_df['macro_phase'] = 1.0
+            asset_df['macro_phase'] = _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
 
         if 'pmi_manufacturing' not in asset_df:
-            asset_df['pmi_manufacturing'] = 50.0
+            asset_df['pmi_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
         else:
-            asset_df['pmi_manufacturing'] = asset_df['pmi_manufacturing'].fillna(50.0)
+            if not preserve_true_missing:
+                asset_df['pmi_manufacturing'] = asset_df['pmi_manufacturing'].fillna(50.0)
         if 'pmi_non_manufacturing' not in asset_df:
-            asset_df['pmi_non_manufacturing'] = 50.0
+            asset_df['pmi_non_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
         else:
-            asset_df['pmi_non_manufacturing'] = asset_df['pmi_non_manufacturing'].fillna(50.0)
+            if not preserve_true_missing:
+                asset_df['pmi_non_manufacturing'] = asset_df['pmi_non_manufacturing'].fillna(50.0)
         if 'yield_curve' not in asset_df:
-            asset_df['yield_curve'] = 0.0
+            asset_df['yield_curve'] = _default_numeric(0.0, missing_value_strategy, preserve_missing=True)
         else:
-            asset_df['yield_curve'] = asset_df['yield_curve'].fillna(0.0)
+            if not preserve_true_missing:
+                asset_df['yield_curve'] = asset_df['yield_curve'].fillna(0.0)
         if 'macro_phase' not in asset_df:
-            asset_df['macro_phase'] = 1.0
+            asset_df['macro_phase'] = _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
         else:
-            asset_df['macro_phase'] = asset_df['macro_phase'].fillna(1.0)
+            if not preserve_true_missing:
+                asset_df['macro_phase'] = asset_df['macro_phase'].fillna(1.0)
 
         asset_df = asset_df[(asset_df['date'] >= target_start_ts) & (asset_df['date'] <= target_end_ts)].copy()
         if asset_df.empty:
@@ -1164,7 +1526,12 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
         print(f'Training LightGBM models from {training_start} to {training_end}')
 
     # Create feature and label matrices
-    X_df = _create_feature_matrix(training_start, training_end)
+    missing_value_strategy = MISSING_VALUE_STRATEGY_NATIVE_NAN
+    X_df = _create_feature_matrix(
+        training_start,
+        training_end,
+        missing_value_strategy=missing_value_strategy,
+    )
     feature_names = list(X_df.attrs.get('feature_names') or [col for col in X_df.columns if col not in ['date', 'asset_id']])
 
     results = {
@@ -1263,6 +1630,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
             artifact_metadata = {
                 'engineered_feature_version': 'v2',
                 'calibration_method': calibration_method,
+                MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
                 'interaction_features': [name for name in selected_feature_names if '_x_' in name],
                 'pruned_features': pruned_feature_names,
                 'pruning': pruning_audit,
@@ -1283,6 +1651,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 extra_metadata={
                     'training_window_start': training_start.isoformat(),
                     'training_window_end': training_end.isoformat(),
+                    MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
                     'version_tag': normalized_version_tag,
                     'lgb_params': dict(lgb_params),
                     'pruning': pruning_audit,
@@ -1377,9 +1746,29 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
         return None
 
     # Extract features
-    features_dict = _extract_features_for_asset(asset_id, target_date)
+    artifact_metadata = dict(artifacts.get('metadata') or {})
+    missing_value_strategy = (
+        artifact_metadata.get(MISSING_VALUE_STRATEGY_METADATA_KEY)
+        or (model_artifact.metadata or {}).get(MISSING_VALUE_STRATEGY_METADATA_KEY)
+        or MISSING_VALUE_STRATEGY_LEGACY
+    )
+    features_dict = _extract_features_for_asset(
+        asset_id,
+        target_date,
+        missing_value_strategy=missing_value_strategy,
+    )
     feature_names = artifacts['metadata']['feature_names']
-    X = np.array([_resolve_prediction_feature_value(features_dict, name) for name in feature_names]).reshape(1, -1)
+    X = np.asarray(
+        [
+            _resolve_prediction_feature_value(
+                features_dict,
+                name,
+                missing_value_strategy=missing_value_strategy,
+            )
+            for name in feature_names
+        ],
+        dtype=np.float64,
+    ).reshape(1, -1)
 
     # Scale
     X_scaled = artifacts['scaler'].transform(X)
@@ -1411,13 +1800,14 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
         'risk_reward_ratio': trade_decision['risk_reward_ratio'],
         'trade_score': trade_decision['trade_score'],
         'suggested': trade_decision['suggested'],
-        'feature_snapshot': features_dict,
+        'feature_snapshot': _sanitize_feature_snapshot(features_dict),
         'raw_scores': {'down': float(raw_probs[0]), 'flat': float(raw_probs[1]), 'up': float(raw_probs[2])},
         'calibrated_scores': {'down': float(down_prob), 'flat': float(flat_prob), 'up': float(up_prob)},
         'model_artifact': model_artifact,
         'metadata': {
             'source': 'phase14_lightgbm_prediction',
             'trade_decision_engine': 'v1',
+            MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
         },
     }
 

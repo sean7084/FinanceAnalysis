@@ -24,9 +24,15 @@ from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
-from .tasks import generate_predictions_for_date
+from .tasks import generate_predictions_for_date, train_prediction_models
 from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training
-from .tasks_lstm import train_lstm_models
+from .tasks_lstm import (
+    LSTM_MISSING_VALUE_STRATEGY,
+    _fit_scaler_on_sequences,
+    _resolve_lstm_model_version,
+    _transform_sequences,
+    train_lstm_models,
+)
 
 
 def _seed_trading_calendar_dates(exchange_code, trade_dates):
@@ -315,6 +321,90 @@ class Phase14PredictionTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_train_delay.assert_called_once()
         mock_predict_delay.assert_called_once()
+
+    def test_train_prediction_models_refreshes_only_ensemble_registry(self):
+        as_of = timezone.datetime(2026, 5, 16).date()
+        lightgbm_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='lgb-2024-12-31',
+            status=ModelVersion.Status.READY,
+            artifact_path='/tmp/lightgbm/2024-12-31',
+            metrics={'accuracy': 0.62},
+            feature_schema=['feature_a'],
+            trained_at=timezone.now() - timezone.timedelta(days=2),
+            training_window_start=timezone.datetime(2016, 6, 1).date(),
+            training_window_end=timezone.datetime(2024, 12, 31).date(),
+            is_active=True,
+            metadata={'source': 'lightgbm_training_pipeline'},
+        )
+        lightgbm_stub_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='lightgbm-2026-05-15-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lightgbm/2026-05-15.bin',
+            metrics={'accuracy': 0.5, 'f1_macro': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now() - timezone.timedelta(days=1),
+            training_window_start=timezone.datetime(2021, 5, 15).date(),
+            training_window_end=timezone.datetime(2026, 5, 15).date(),
+            is_active=True,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        lstm_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2024-12-31',
+            status=ModelVersion.Status.READY,
+            artifact_path='/tmp/lstm/2024-12-31',
+            metrics={'accuracy': 0.61},
+            feature_schema=['feature_a', 'feature_a__is_missing'],
+            trained_at=timezone.now() - timezone.timedelta(days=1),
+            training_window_start=timezone.datetime(2016, 6, 1).date(),
+            training_window_end=timezone.datetime(2024, 12, 31).date(),
+            is_active=True,
+            metadata={'source': 'pytorch_lstm_pipeline'},
+        )
+        lstm_stub_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2026-05-15-stub',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/2026-05-15.bin',
+            metrics={'accuracy': 0.5, 'f1_macro': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now() - timezone.timedelta(days=1),
+            training_window_start=timezone.datetime(2021, 5, 15).date(),
+            training_window_end=timezone.datetime(2026, 5, 15).date(),
+            is_active=True,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        old_ensemble_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.ENSEMBLE,
+            version='ensemble-2026-05-15',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/ensemble/latest.json',
+            metrics={'note': 'heuristic baseline pending full ML training pipeline'},
+            feature_schema=['factor_composite', 'factor_bottom_prob', 'sentiment_score', 'rsi', 'mom_5d', 'rs_score'],
+            trained_at=timezone.now() - timezone.timedelta(days=1),
+            training_window_start=timezone.datetime(2021, 5, 15).date(),
+            training_window_end=timezone.datetime(2026, 5, 15).date(),
+            is_active=True,
+            metadata={'source': 'phase14_baseline'},
+        )
+
+        result = train_prediction_models(target_date=str(as_of))
+
+        active_ensemble_version = ModelVersion.objects.get(model_type=ModelVersion.ModelType.ENSEMBLE, is_active=True)
+        self.assertNotEqual(active_ensemble_version.id, old_ensemble_version.id)
+        self.assertEqual(active_ensemble_version.version, 'ensemble-2026-05-16')
+        self.assertEqual(active_ensemble_version.metadata['source'], 'phase14_baseline')
+        self.assertFalse(ModelVersion.objects.get(id=old_ensemble_version.id).is_active)
+        self.assertTrue(ModelVersion.objects.get(id=lightgbm_version.id).is_active)
+        self.assertTrue(ModelVersion.objects.get(id=lstm_version.id).is_active)
+        self.assertFalse(ModelVersion.objects.get(id=lightgbm_stub_version.id).is_active)
+        self.assertFalse(ModelVersion.objects.get(id=lstm_stub_version.id).is_active)
+        self.assertEqual(ModelVersion.objects.filter(model_type=ModelVersion.ModelType.ENSEMBLE, is_active=True).count(), 1)
+        self.assertFalse(ModelVersion.objects.filter(metadata__source='phase14_training_stub', is_active=True).exists())
+        self.assertIn('ensemble baseline refreshed', result)
+        self.assertIn('retired 2 legacy stub model versions', result)
 
 
 class BackfillModelDataCommandTests(TestCase):
@@ -1141,10 +1231,67 @@ class LstmTrainingRegistryTests(TestCase):
 
         self.assertEqual(result['status'], 'completed')
         self.assertAlmostEqual(result['aggregate_accuracy'], 0.66)
+        self.assertEqual(mock_create_feature_matrix.call_args.kwargs['missing_value_strategy'], 'native_nan')
+        self.assertEqual(
+            mock_build_sequences.call_args.kwargs['feature_names'],
+            ['feature_a', 'feature_a__is_missing'],
+        )
         self.assertEqual(lstm_version.training_window_start.isoformat(), '2016-06-01')
         self.assertEqual(lstm_version.training_window_end.isoformat(), '2024-12-31')
+        self.assertEqual(lstm_version.feature_schema, ['feature_a', 'feature_a__is_missing'])
+        self.assertEqual(lstm_version.metadata['missing_value_strategy'], LSTM_MISSING_VALUE_STRATEGY)
         self.assertAlmostEqual(lstm_version.metrics['accuracy'], 0.66)
         self.assertAlmostEqual(ensemble_version.metrics['lightgbm_accuracy'], 0.62)
         self.assertAlmostEqual(ensemble_version.metrics['lstm_accuracy'], 0.66)
         self.assertAlmostEqual(ensemble_snapshot.basis_metrics['lightgbm_accuracy'], 0.62)
         self.assertAlmostEqual(ensemble_snapshot.basis_metrics['lstm_accuracy'], 0.66)
+
+    def test_transform_sequences_imputes_nan_to_zero_after_scaling(self):
+        X = np.asarray(
+            [
+                [[1.0, 0.0], [np.nan, 1.0]],
+                [[2.0, 0.0], [4.0, 0.0]],
+            ],
+            dtype=np.float32,
+        )
+
+        scaler = _fit_scaler_on_sequences(X)
+        transformed = _transform_sequences(X, scaler)
+
+        self.assertTrue(np.isfinite(transformed).all())
+        self.assertEqual(float(transformed[0, 1, 0]), 0.0)
+
+    def test_resolve_lstm_model_version_prefers_trained_row_over_active_stub(self):
+        ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2026-05-16',
+            status=ModelVersion.Status.READY,
+            artifact_path='models/lstm/2026-05-16.bin',
+            metrics={'accuracy': 0.5},
+            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
+            trained_at=timezone.now(),
+            training_window_start=timezone.now().date() - timezone.timedelta(days=30),
+            training_window_end=timezone.now().date(),
+            is_active=True,
+            metadata={'source': 'phase14_training_stub'},
+        )
+        trained = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-2024-12-31',
+            status=ModelVersion.Status.READY,
+            artifact_path='/app/models/lstm/lstm-2024-12-31',
+            metrics={'accuracy': 0.61},
+            feature_schema=['feature_a', 'feature_a__is_missing'],
+            trained_at=timezone.now() - timezone.timedelta(days=1),
+            training_window_start=timezone.datetime(2016, 6, 1).date(),
+            training_window_end=timezone.datetime(2024, 12, 31).date(),
+            is_active=False,
+            metadata={
+                'source': 'pytorch_lstm_pipeline',
+                'missing_value_strategy': LSTM_MISSING_VALUE_STRATEGY,
+            },
+        )
+
+        resolved = _resolve_lstm_model_version(timezone.now().date())
+
+        self.assertEqual(resolved.id, trained.id)

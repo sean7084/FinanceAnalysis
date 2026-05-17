@@ -143,23 +143,22 @@ def train_prediction_models(target_date=None):
     else:
         as_of = timezone.now().date()
 
-    for model_type in [ModelVersion.ModelType.LIGHTGBM, ModelVersion.ModelType.LSTM, ModelVersion.ModelType.ENSEMBLE]:
-        ModelVersion.objects.filter(model_type=model_type, is_active=True).update(is_active=False)
-        ModelVersion.objects.create(
-            model_type=model_type,
-            version=f'{model_type.lower()}-{as_of.isoformat()}',
-            status=ModelVersion.Status.READY,
-            artifact_path=f'models/{model_type.lower()}/{as_of.isoformat()}.bin',
-            metrics={'accuracy': 0.5, 'f1_macro': 0.5},
-            feature_schema=['phase10', 'phase11', 'phase12', 'phase13'],
-            trained_at=timezone.now(),
-            training_window_start=as_of.replace(year=max(2000, as_of.year - 5)),
-            training_window_end=as_of,
-            is_active=True,
-            metadata={'source': 'phase14_training_stub'},
-        )
+    retired_stub_count = ModelVersion.objects.filter(
+        model_type__in=[ModelVersion.ModelType.LIGHTGBM, ModelVersion.ModelType.LSTM],
+        is_active=True,
+        metadata__source='phase14_training_stub',
+    ).update(is_active=False)
 
-    return f'Phase 14 model versions refreshed for {as_of}'
+    ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.ENSEMBLE,
+        is_active=True,
+    ).update(is_active=False)
+    refreshed_version = _ensure_active_ensemble_version(as_of)
+
+    return (
+        f'Phase 14 ensemble baseline refreshed for {as_of} '
+        f'({refreshed_version.version}); retired {retired_stub_count} legacy stub model versions'
+    )
 
 
 @shared_task
