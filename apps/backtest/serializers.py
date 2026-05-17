@@ -96,6 +96,27 @@ class BacktestRunSerializer(serializers.ModelSerializer):
                 if not 0 < capital_fraction_per_entry <= 1:
                     raise serializers.ValidationError({'parameters': 'capital_fraction_per_entry must be between 0 and 1.'})
 
+            structured_fee_keys = {
+                'commission_rate_per_mille',
+                'commission_min',
+                'exchange_fee_rate_per_mille',
+                'regulatory_fee_rate_per_mille',
+                'stamp_duty_rate_per_mille',
+                'transfer_fee_rate_per_mille',
+            }
+            if 'fee_rate' in parameters and any(key in parameters for key in structured_fee_keys):
+                raise serializers.ValidationError({'parameters': 'fee_rate cannot be combined with structured fee parameters.'})
+
+            for numeric_key in ['fee_rate', 'slippage_bps', *structured_fee_keys]:
+                if numeric_key not in parameters:
+                    continue
+                try:
+                    numeric_value = float(parameters[numeric_key])
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError({'parameters': f'{numeric_key} must be numeric.'})
+                if numeric_value < 0:
+                    raise serializers.ValidationError({'parameters': f'{numeric_key} must be greater than or equal to 0.'})
+
             candidate_mode = str(parameters.get('candidate_mode', 'top_n')).lower()
             if candidate_mode not in VALID_CANDIDATE_MODES:
                 raise serializers.ValidationError({'parameters': 'candidate_mode must be either top_n or trade_score.'})

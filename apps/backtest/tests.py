@@ -616,6 +616,71 @@ class Phase15BacktestTests(TestCase):
         self.assertAlmostEqual(float(buy_trade.amount + buy_trade.fee), 25000.0, places=2)
 
     @patch('apps.backtest.tasks._pick_candidates')
+    def test_run_backtest_uses_default_cn_a_share_fee_schedule(self, mock_pick_candidates):
+        mock_pick_candidates.return_value = [
+            {
+                'asset_id': self.asset.id,
+                'rank_value': Decimal('0.700000'),
+                'signal_payload': {
+                    'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'prediction_source': 'heuristic',
+                    'candidate_mode': 'top_n',
+                    'top_n_metric': 'up_prob_7d',
+                    'horizon_days': 7,
+                    'up_probability': 0.7,
+                    'flat_probability': 0.2,
+                    'down_probability': 0.1,
+                    'confidence': 0.7,
+                    'predicted_label': 'UP',
+                    'trade_score': 1.2,
+                    'target_price': 12.0,
+                    'stop_loss_price': 9.0,
+                    'suggested': True,
+                    'generated_on_demand': True,
+                },
+            },
+        ]
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Default CN A Share Fees Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('10000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'slippage_bps': 0,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.get(backtest_run=run, side=BacktestTrade.Side.BUY)
+        sell_trade = BacktestTrade.objects.get(backtest_run=run, side=BacktestTrade.Side.SELL)
+
+        buy_levy_rate = Decimal('0.0000641')
+        sell_levy_rate = Decimal('0.0005641')
+        commission_min = Decimal('5')
+        buy_amount = (Decimal('10000.00') - commission_min) / (Decimal('1') + buy_levy_rate)
+        expected_buy_fee = commission_min + (buy_amount * buy_levy_rate)
+        quantity = buy_amount / Decimal('10.0000')
+        sell_amount = quantity * Decimal('11.0000')
+        expected_sell_fee = commission_min + (sell_amount * sell_levy_rate)
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertEqual(run.report['fee_model'], 'cn_a_share_default')
+        self.assertAlmostEqual(float(buy_trade.fee), float(expected_buy_fee), places=4)
+        self.assertAlmostEqual(float(sell_trade.fee), float(expected_sell_fee), places=4)
+        self.assertEqual(buy_trade.metadata['fee_breakdown']['commission'], 5.0)
+        self.assertEqual(buy_trade.metadata['fee_breakdown']['stamp_duty'], 0.0)
+        self.assertGreater(sell_trade.metadata['fee_breakdown']['stamp_duty'], 0.0)
+        self.assertGreater(sell_trade.fee, buy_trade.fee)
+
+    @patch('apps.backtest.tasks._pick_candidates')
     def test_entry_skips_asset_when_buy_close_is_invalid(self, mock_pick_candidates):
         OHLCV.objects.filter(asset=self.asset, date=self.d1).update(
             open=Decimal('0.0000'),
@@ -1347,6 +1412,30 @@ class Phase15BacktestTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_backtest_serializer_rejects_mixed_legacy_and_structured_fee_params(self):
+        self._auth()
+        response = self.client.post(
+            '/api/v1/backtest/',
+            {
+                'name': 'P15 Mixed Fee Config',
+                'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                'start_date': str(self.d1),
+                'end_date': str(self.d2),
+                'initial_capital': '100000.00',
+                'parameters': {
+                    'top_n': 1,
+                    'horizon_days': 7,
+                    'up_threshold': 0.55,
+                    'fee_rate': 0.001,
+                    'commission_rate_per_mille': 0.1,
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('fee_rate cannot be combined with structured fee parameters', str(response.data))
 
     @patch('apps.backtest.views.run_backtest.delay')
     def test_backtest_serializer_aligns_horizon_with_top_n_metric(self, mock_delay):

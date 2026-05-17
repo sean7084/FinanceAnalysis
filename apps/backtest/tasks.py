@@ -24,7 +24,14 @@ from .models import BacktestRun, BacktestTrade
 DECIMAL_0 = Decimal('0')
 DECIMAL_1 = Decimal('1')
 DECIMAL_100 = Decimal('100')
+DECIMAL_1000 = Decimal('1000')
 TRADING_DAYS = Decimal('252')
+DEFAULT_COMMISSION_RATE_PER_MILLE = Decimal('0.1')
+DEFAULT_COMMISSION_MIN = Decimal('5')
+DEFAULT_TRANSACTION_HANDLING_RATE_PER_MILLE = Decimal('0.0341')
+DEFAULT_REGULATORY_FEE_RATE_PER_MILLE = Decimal('0.02')
+DEFAULT_STAMP_DUTY_RATE_PER_MILLE = Decimal('0.5')
+DEFAULT_TRANSFER_FEE_RATE_PER_MILLE = Decimal('0.01')
 WEEKDAY_NAME_TO_INDEX = {
     'MON': 0,
     'TUE': 1,
@@ -55,8 +62,167 @@ def _d(value):
     return Decimal(str(value))
 
 
+def _per_mille_to_ratio(value):
+    return _d(value) / DECIMAL_1000
+
+
+def _non_negative_decimal(name, value):
+    resolved = _d(value)
+    if resolved < 0:
+        raise ValueError(f'{name} must be greater than or equal to 0.')
+    return resolved
+
+
 def _clamp(v, low=Decimal('-1'), high=Decimal('10')):
     return max(low, min(high, v))
+
+
+def _resolve_fee_config(run):
+    params = run.parameters or {}
+    structured_keys = {
+        'commission_rate_per_mille',
+        'commission_min',
+        'exchange_fee_rate_per_mille',
+        'regulatory_fee_rate_per_mille',
+        'stamp_duty_rate_per_mille',
+        'transfer_fee_rate_per_mille',
+    }
+
+    if 'fee_rate' in params and any(key in params for key in structured_keys):
+        raise ValueError('fee_rate cannot be combined with structured fee parameters.')
+
+    if 'fee_rate' in params:
+        legacy_rate = _non_negative_decimal('fee_rate', params.get('fee_rate', '0'))
+        return {
+            'mode': 'legacy_flat_fee',
+            'commission_rate': DECIMAL_0,
+            'commission_min': DECIMAL_0,
+            'exchange_fee_rate': DECIMAL_0,
+            'regulatory_fee_rate': DECIMAL_0,
+            'stamp_duty_rate': DECIMAL_0,
+            'transfer_fee_rate': DECIMAL_0,
+            'buy_levy_rate': legacy_rate,
+            'sell_levy_rate': legacy_rate,
+            'summary': {
+                'fee_rate': float(legacy_rate),
+            },
+        }
+
+    commission_rate_per_mille = _non_negative_decimal(
+        'commission_rate_per_mille',
+        params.get('commission_rate_per_mille', DEFAULT_COMMISSION_RATE_PER_MILLE),
+    )
+    commission_min = _non_negative_decimal(
+        'commission_min',
+        params.get('commission_min', DEFAULT_COMMISSION_MIN),
+    )
+    transaction_handling_rate_per_mille = _non_negative_decimal(
+        'exchange_fee_rate_per_mille',
+        params.get('exchange_fee_rate_per_mille', DEFAULT_TRANSACTION_HANDLING_RATE_PER_MILLE),
+    )
+    regulatory_fee_rate_per_mille = _non_negative_decimal(
+        'regulatory_fee_rate_per_mille',
+        params.get('regulatory_fee_rate_per_mille', DEFAULT_REGULATORY_FEE_RATE_PER_MILLE),
+    )
+    stamp_duty_rate_per_mille = _non_negative_decimal(
+        'stamp_duty_rate_per_mille',
+        params.get('stamp_duty_rate_per_mille', DEFAULT_STAMP_DUTY_RATE_PER_MILLE),
+    )
+    transfer_fee_rate_per_mille = _non_negative_decimal(
+        'transfer_fee_rate_per_mille',
+        params.get('transfer_fee_rate_per_mille', DEFAULT_TRANSFER_FEE_RATE_PER_MILLE),
+    )
+
+    commission_rate = _per_mille_to_ratio(commission_rate_per_mille)
+    transaction_handling_rate = _per_mille_to_ratio(transaction_handling_rate_per_mille)
+    regulatory_fee_rate = _per_mille_to_ratio(regulatory_fee_rate_per_mille)
+    stamp_duty_rate = _per_mille_to_ratio(stamp_duty_rate_per_mille)
+    transfer_fee_rate = _per_mille_to_ratio(transfer_fee_rate_per_mille)
+
+    return {
+        'mode': 'cn_a_share_default',
+        'commission_rate': commission_rate,
+        'commission_min': commission_min,
+        'exchange_fee_rate': transaction_handling_rate,
+        'regulatory_fee_rate': regulatory_fee_rate,
+        'stamp_duty_rate': stamp_duty_rate,
+        'transfer_fee_rate': transfer_fee_rate,
+        'buy_levy_rate': transaction_handling_rate + regulatory_fee_rate + transfer_fee_rate,
+        'sell_levy_rate': transaction_handling_rate + regulatory_fee_rate + transfer_fee_rate + stamp_duty_rate,
+        'summary': {
+            'commission_rate_per_mille': float(commission_rate_per_mille),
+            'commission_min': float(commission_min),
+            'exchange_fee_rate_per_mille': float(transaction_handling_rate_per_mille),
+            'regulatory_fee_rate_per_mille': float(regulatory_fee_rate_per_mille),
+            'stamp_duty_rate_per_mille': float(stamp_duty_rate_per_mille),
+            'transfer_fee_rate_per_mille': float(transfer_fee_rate_per_mille),
+            'buy_total_rate_per_mille_ex_commission': float(
+                transaction_handling_rate_per_mille + regulatory_fee_rate_per_mille + transfer_fee_rate_per_mille
+            ),
+            'sell_total_rate_per_mille_ex_commission': float(
+                transaction_handling_rate_per_mille
+                + regulatory_fee_rate_per_mille
+                + stamp_duty_rate_per_mille
+                + transfer_fee_rate_per_mille
+            ),
+        },
+    }
+
+
+def _trade_fee_breakdown(amount, fee_config, *, is_sell):
+    if fee_config['mode'] == 'legacy_flat_fee':
+        legacy_rate = fee_config['sell_levy_rate'] if is_sell else fee_config['buy_levy_rate']
+        total_fee = amount * legacy_rate
+        return {
+            'commission': DECIMAL_0,
+            'exchange_fee': DECIMAL_0,
+            'regulatory_fee': DECIMAL_0,
+            'transfer_fee': DECIMAL_0,
+            'stamp_duty': DECIMAL_0,
+            'total_fee': total_fee,
+        }
+
+    commission = amount * fee_config['commission_rate']
+    if fee_config['commission_min'] > 0:
+        commission = max(commission, fee_config['commission_min'])
+
+    exchange_fee = amount * fee_config['exchange_fee_rate']
+    regulatory_fee = amount * fee_config['regulatory_fee_rate']
+    transfer_fee = amount * fee_config['transfer_fee_rate']
+    stamp_duty = amount * fee_config['stamp_duty_rate'] if is_sell else DECIMAL_0
+    total_fee = commission + exchange_fee + regulatory_fee + transfer_fee + stamp_duty
+    return {
+        'commission': commission,
+        'exchange_fee': exchange_fee,
+        'regulatory_fee': regulatory_fee,
+        'transfer_fee': transfer_fee,
+        'stamp_duty': stamp_duty,
+        'total_fee': total_fee,
+    }
+
+
+def _fee_breakdown_payload(breakdown):
+    return {key: float(value) for key, value in breakdown.items()}
+
+
+def _max_buy_amount_for_budget(total_budget, fee_config):
+    if total_budget <= 0:
+        return DECIMAL_0
+
+    variable_denom = DECIMAL_1 + fee_config['buy_levy_rate'] + fee_config['commission_rate']
+    variable_amount = (total_budget / variable_denom) if variable_denom > 0 else DECIMAL_0
+
+    if fee_config['commission_min'] <= 0:
+        return max(DECIMAL_0, variable_amount)
+
+    if fee_config['commission_rate'] > 0 and variable_amount * fee_config['commission_rate'] >= fee_config['commission_min']:
+        return max(DECIMAL_0, variable_amount)
+
+    if total_budget <= fee_config['commission_min']:
+        return DECIMAL_0
+
+    fixed_denom = DECIMAL_1 + fee_config['buy_levy_rate']
+    return max(DECIMAL_0, (total_budget - fee_config['commission_min']) / fixed_denom)
 
 
 def _get_trading_dates(start_date, end_date):
@@ -966,7 +1132,7 @@ def _backfill_prediction_trade_decision(asset_id, current_date, signal_payload):
     return signal_payload
 
 
-def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_rate, slippage_bps, closed_pnls, enable_stop_target_exit):
+def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit):
     remaining_positions = []
     for position in open_positions:
         sell_close = price_map.get((position['asset_id'], current_date))
@@ -995,7 +1161,8 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
         slippage_sell = sell_close * slippage_bps / DECIMAL_100 / DECIMAL_100
         sell_price = sell_close - slippage_sell
         sell_amount = position['quantity'] * sell_price
-        sell_fee = sell_amount * fee_rate
+        sell_fee_breakdown = _trade_fee_breakdown(sell_amount, fee_config, is_sell=True)
+        sell_fee = sell_fee_breakdown['total_fee']
         pnl = sell_amount - sell_fee - position['buy_amount'] - position['buy_fee']
         cash += sell_amount - sell_fee
         closed_pnls.append(pnl)
@@ -1012,13 +1179,17 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
             amount=sell_amount,
             pnl=pnl,
             signal_payload=position['signal_payload'],
-            metadata={'exit_reason': exit_reason},
+            metadata={
+                'exit_reason': exit_reason,
+                'fee_model': fee_config['mode'],
+                'fee_breakdown': _fee_breakdown_payload(sell_fee_breakdown),
+            },
         )
 
     return cash, remaining_positions
 
 
-def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash, initial_capital, capital_fraction, price_map, fee_rate, slippage_bps, open_positions, max_positions):
+def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash, initial_capital, capital_fraction, price_map, fee_config, slippage_bps, open_positions, max_positions):
     if not candidate_rows:
         return cash
 
@@ -1032,7 +1203,7 @@ def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash,
     if deployable_capital <= 0:
         return cash
 
-    allocation = (deployable_capital / _d(len(candidate_rows))) / (DECIMAL_1 + fee_rate)
+    allocation_budget = deployable_capital / _d(len(candidate_rows))
     for row in candidate_rows:
         asset_id = row['asset_id']
         signal_payload = {
@@ -1047,12 +1218,16 @@ def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash,
 
         slippage_buy = buy_close * slippage_bps / DECIMAL_100 / DECIMAL_100
         buy_price = buy_close + slippage_buy
-        quantity = allocation / buy_price
+        buy_amount = _max_buy_amount_for_budget(allocation_budget, fee_config)
+        if buy_amount <= 0:
+            continue
+        quantity = buy_amount / buy_price
         if quantity <= 0:
             continue
 
         buy_amount = quantity * buy_price
-        buy_fee = buy_amount * fee_rate
+        buy_fee_breakdown = _trade_fee_breakdown(buy_amount, fee_config, is_sell=False)
+        buy_fee = buy_fee_breakdown['total_fee']
         total_cost = buy_amount + buy_fee
         if total_cost > cash:
             continue
@@ -1082,6 +1257,10 @@ def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash,
             amount=buy_amount,
             pnl=DECIMAL_0,
             signal_payload=signal_payload,
+            metadata={
+                'fee_model': fee_config['mode'],
+                'fee_breakdown': _fee_breakdown_payload(buy_fee_breakdown),
+            },
         )
 
     return cash
@@ -1220,8 +1399,8 @@ def run_backtest(backtest_run_id):
             raise ValueError('Not enough OHLCV data in selected date range.')
 
         price_map = _build_price_map(run.start_date, run.end_date)
-        fee_rate = _d((run.parameters or {}).get('fee_rate', '0.001'))
-        slippage_bps = _d((run.parameters or {}).get('slippage_bps', '5'))
+        fee_config = _resolve_fee_config(run)
+        slippage_bps = _non_negative_decimal('slippage_bps', (run.parameters or {}).get('slippage_bps', '5'))
         entry_weekdays = _entry_weekdays(run)
         holding_period_days = _holding_period_days(run)
         capital_fraction = _capital_fraction_per_entry(run, entry_weekdays)
@@ -1253,7 +1432,7 @@ def run_backtest(backtest_run_id):
                 open_positions,
                 cash,
                 price_map,
-                fee_rate,
+                fee_config,
                 slippage_bps,
                 closed_pnls,
                 stop_target_exit_enabled,
@@ -1287,7 +1466,7 @@ def run_backtest(backtest_run_id):
                         _d(run.initial_capital),
                         capital_fraction,
                         price_map,
-                        fee_rate,
+                        fee_config,
                         slippage_bps,
                         open_positions,
                         max_positions,
@@ -1361,6 +1540,11 @@ def run_backtest(backtest_run_id):
             'entry_weekdays': entry_weekdays,
             'holding_period_days': holding_period_days,
             'enable_stop_target_exit': stop_target_exit_enabled,
+            'fee_model': fee_config['mode'],
+            'fee_parameters': {
+                **fee_config['summary'],
+                'slippage_bps': float(slippage_bps),
+            },
             'macro_context_monthly': [
                 {
                     'month': month,

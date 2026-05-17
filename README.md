@@ -374,8 +374,7 @@ B. 交易执行逻辑
 • [x] holding_period_days 真正生效
 • [x] 仓位上限、单笔资金比例、手续费、滑点都生效
 • [x] 停牌/无法成交的处理有规则
-
-重点排查
+• [x] create a fee model for transaction fees replacing the current .1% flat fee
 
 你之前已经踩过：
 
@@ -389,10 +388,10 @@ B. 交易执行逻辑
 • `holding_period_days` 当前真实生效：`_resolve_exit_date()` 会取“第一条 `>= entry_date + holding_period_days` 的交易日”作为计划平仓日，而不是简单按自然日强平。上面的 Tue/Thu 样本里，`holding_period_days=7` 对应 sell dates 是 `2026-04-14`、`2026-04-16`，与计划持有天数一致。
 • 平仓优先级当前可以明确关闭：`_close_positions_for_date()` 先读当日 close；若启用 `enable_stop_target_exit`，先判 `STOP_LOSS`，再判 `TARGET_PRICE`，最后才落到 `SCHEDULED`。因此 TP/SL 在计划平仓日也会优先于普通持有期卖出。已有/新增 regressions 分别覆盖了 `TARGET_PRICE` 和 `STOP_LOSS` 分支。
 • “停牌/无法成交” 现在也有明确规则，而且这一轮刚修掉一个真实缺口：开仓日如果 `buy_close` 缺失或 `<= 0`，`_open_positions_for_date()` 会直接 skip，不造假成交；平仓扫描日如果 `sell_close` 缺失或 `<= 0`，仓位会继续保留，直到后续出现第一条可成交 close 再执行卖出。原先这里存在“错过 scheduled exit 后不再重试”的缺陷，现已修复，并由 focused regression `test_scheduled_exit_retries_on_next_tradeable_price_after_invalid_close` 锁住。
-• 仓位/成本参数当前确实执行，但要区分语义：`capital_fraction_per_entry` 通过 `deployable_capital = min(cash, initial_capital * capital_fraction)` 生效；fee/slippage 分别作用于买卖两侧；`max_positions` 只在 `candidate_mode='trade_score'` 时作为并发持仓上限生效，`top_n` 模式仍由 `top_n` 控制。新 regression `test_run_backtest_applies_capital_fraction_fee_and_slippage` 用 `capital_fraction_per_entry=0.25`、`fee_rate=1%`、`slippage_bps=100` 验证到单笔总买入成本约等于 `25000`，买入成交价从 `10.00` 变成 `10.10`，卖出成交价从 `11.00` 变成 `10.89`。
+• 仓位/成本参数当前确实执行，但要区分“默认真实费率”与“legacy override”两层语义：默认 backtest fee model 现在按 A 股现货费率走，买入是 `max(佣金 0.1‰, 5)` 加上 `经手费 0.0341‰ + 监管费 0.02‰ + 过户费 0.01‰`，卖出则在此基础上额外加 `印花税 0.5‰`；如果显式传 `fee_rate`，则回退到旧的对称 flat-fee override 供历史实验兼容。`capital_fraction_per_entry` 仍然通过 `deployable_capital = min(cash, initial_capital * capital_fraction)` 生效；`max_positions` 只在 `candidate_mode='trade_score'` 时作为并发持仓上限生效，`top_n` 模式仍由 `top_n` 控制。focused regressions 现在同时覆盖了默认 A 股费率（含 `5` 元最低佣金与卖出单边印花税）和 `fee_rate=1%` 的 legacy flat-fee override；后者样本里单笔总买入成本约等于 `25000`，买入成交价从 `10.00` 变成 `10.10`，卖出成交价从 `11.00` 变成 `10.89`。
 • “TP/SL 配置传下去了没有” 当前可以关闭：LightGBM / heuristic / LSTM 三条 candidate builder 都把 `target_price` / `stop_loss_price` / `trade_score` 归一到同一份 `signal_payload`，`_open_positions_for_date()` 在落 BUY 前还会调用 `_backfill_prediction_trade_decision()` 补齐缺字段。现有 regressions `test_lightgbm_top_n_stop_target_exit_uses_propagated_levels`、`test_lightgbm_top_n_applies_trade_decision_policy_to_payload`、`test_open_positions_backfills_missing_prediction_trade_decision_fields` 都覆盖了这一点。
 • “LightGBM 路径和 heuristic 路径执行逻辑是否一致” 当前未发现分叉：source-specific 差异只在 candidate/prediction payload 生成，真正的成交、持仓、TP/SL、scheduled exit、fee/slippage 都走同一个 `_open_positions_for_date()` / `_close_positions_for_date()` 执行层。上面的 LightGBM target test 和 heuristic stop-loss / invalid-entry tests 实际都落在同一执行分支。
-• “参数写进 report 但实际上没执行” 当前未观察到假生效：`entry_weekdays` / `holding_period_days` / `enable_stop_target_exit` 会写进 `run.report`；`capital_fraction_per_entry` / `fee_rate` / `slippage_bps` 虽然不回写到 `run.report`，但 `run_backtest()` 直接从 `run.parameters` 读取执行，`export_backtest_runs` 也会把它们导出到 `run_config_results.csv`。上面的 focused regressions 已经直接验证这些参数会改变成交日、成交价、手续费、和平仓原因。
+• “参数写进 report 但实际上没执行” 当前未观察到假生效：`entry_weekdays` / `holding_period_days` / `enable_stop_target_exit` 仍会写进 `run.report`；这一轮又把 `fee_model` 和 `fee_parameters` 也写进了 report，同时 BUY/SELL trade metadata 会保存 `fee_breakdown`。`capital_fraction_per_entry`、structured fee 参数、legacy `fee_rate`、以及 `slippage_bps` 仍然由 `run_backtest()` 直接读取执行，`export_backtest_runs` 也会把 fee 参数导出到 `run_config_results.csv`。上面的 focused regressions 已经直接验证这些参数会改变成交价、手续费组成、和平仓后的实际 PnL。
 
 ───
 

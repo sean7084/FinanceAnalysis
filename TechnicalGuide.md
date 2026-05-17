@@ -500,7 +500,8 @@ Primary backend/API:
 | Minimum Trade Score | `trade_score_threshold` | Minimum `trade_score` when mode is `trade_score`. |
 | Planned Holding Days | `holding_period_days` | Scheduled holding days before normal sell. |
 | Capital Allocation per Entry | `capital_fraction_per_entry` | Fraction of initial capital deployable per entry cycle. |
-| Fee Rate | `fee_rate` | Transaction fee rate. Backend default is `0.001`. |
+| Fee Model | backend default | Default CN A-share schedule: commission `0.1‰` with `5` cash minimum on both sides, transaction handling `0.0341‰`, regulatory `0.02‰`, transfer `0.01‰`, and stamp duty `0.5‰` on sells only. |
+| Legacy Flat Fee Override | `fee_rate` | Optional symmetric fee-rate override retained for older experiments; cannot be combined with the structured fee parameters. |
 | Slippage (bps) | `slippage_bps` | Per-trade slippage in basis points. Backend default is `5`. |
 | Starting Capital | `initial_capital` | Portfolio initial cash for run. |
 | Enable Macro-Aware Ranking | `use_macro_context` | Applies macro-phase multiplier to candidate ranking and writes monthly macro report. |
@@ -531,11 +532,12 @@ Primary backend/API:
 
 - Buy fill price: `close + (close * slippage_bps / 10000)`.
 - Sell fill price: `close - (close * slippage_bps / 10000)`.
-- Buy fee: `quantity * buy_price * fee_rate`.
-- Sell fee: `quantity * sell_price * fee_rate`.
+- Default buy fee: `max(buy_amount * 0.1‰, 5) + buy_amount * (0.0341‰ + 0.02‰ + 0.01‰)`.
+- Default sell fee: `max(sell_amount * 0.1‰, 5) + sell_amount * (0.0341‰ + 0.02‰ + 0.01‰ + 0.5‰)`.
+- Legacy override mode: if `fee_rate` is supplied explicitly, the engine falls back to the old symmetric `amount * fee_rate` model for both buy and sell.
 - Realized PnL: `sell_amount - sell_fee - buy_amount - buy_fee`.
 - Deployable capital per entry cycle: `min(cash, initial_capital * capital_fraction_per_entry)`.
-- Per-candidate allocation: `(deployable_capital / selected_candidate_count) / (1 + fee_rate)`.
+- Per-candidate allocation budget: `deployable_capital / selected_candidate_count`; the buy amount is solved against that budget after the applicable buy-side fee model, including the minimum commission branch when it binds.
 - `trade_score` mode enforces `max_positions` as the concurrent-position cap. In `top_n` mode, candidate count is controlled by `top_n`; the backend `_max_positions` fallback is effectively unlimited unless trade-score mode is active, while the UI still submits `max_positions` for consistency.
 
 ### Report payload highlights
@@ -548,6 +550,7 @@ Backtest run report contains:
 - `trade_score_scope`
 - `entry_weekdays`
 - `holding_period_days`
+- `fee_model`
 - `enable_stop_target_exit`
 - `macro_context_monthly` (when macro-aware ranking is enabled)
 
