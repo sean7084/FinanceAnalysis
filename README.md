@@ -308,16 +308,26 @@ D. 模型质量
 
 所以要查：
 
-• [ ] 训练集/验证集/样本外测试集是否严格分时
-• [ ] 没有随机打乱破坏时间顺序
-• [ ] 没有用 2025 的信息去选 2024 前的模型
-• [ ] 不同 horizon 没有共用错误标签或错误 artifact
+• [x] 训练集/验证集/样本外测试集是否严格分时: manually checked
+• [x] 没有用 2025 的信息去选 2024 前的模型
+• [x] 不同 horizon 没有共用错误标签或错误 artifact
 
 如果前 3 个漂亮，第 4 个长期不行，问题大概率还是：
 
 • 特征无效
 • 标签不对
 • 或横截面口径脏
+
+当前代码/样本审计结果（2026-05-17）：
+
+• LightGBM 当前不满足“训练集 / 验证集 / 样本外测试集严格分时”。`train_lightgbm_models()` 会先把整窗 `X_df` 与 `labels_df` 对齐成 `X_train_aligned`，随后直接对全量矩阵执行 `scaler.fit_transform(X_train)`、`lgb.train(...)`，最后再在同一份 `X_train_scaled` 上回算 `accuracy = mean(y_pred == y_train)`。代码里没有独立 validation split，也没有 out-of-sample test slice。因此当前 active `LightGBMModelArtifact.metrics_json['accuracy']` 本质上是 in-sample training accuracy，不是严格时间切分下的 validation / OOS 指标。
+• LightGBM 的 calibration 也不是 time-aware validation：训练后直接 `CalibratedClassifierCV(model, method='sigmoid', cv=5)` 作用在同一份训练矩阵上，代码里没有传入任何基于日期的 splitter。也就是说，即使这里不一定显式 random shuffle，它仍然不是“按时间顺序切 train / val / test”的协议。
+• LSTM 的 split 逻辑相对更干净：`_train_single_horizon_lstm()` 会先按 `sample_dates` 升序排序，再做前 80% 训练、后 20% 验证；scaler 也只在 `X_train` 上 fit，再 transform `X_train / X_val`。因此它满足“训练 / 验证严格先后切开”，但仍然没有独立样本外测试集，所以第一条在系统层面还不能关闭。
+• LSTM 仍然存在训练阶段的随机打乱：虽然 train / val 边界是按时间切开的，但 `DataLoader(train_ds, batch_size=128, shuffle=True)` 会把训练切片内部的 batch 顺序打乱。因此如果 checklist 的要求是“整个训练过程完全不打乱时间顺序”，第二条也还不能关闭；当前最多只能说“没有观察到 train / val 穿越式泄漏”。
+• “没有用 2025 的信息去选 2024 前的模型” 当前主路径未发现明显时间穿越：active LightGBM artifacts 是 `lgb-3d/7d/30d-2024-12-31`，训练窗口都结束于 `2024-12-31`；LSTM registry 虽然仍挂着 active stub `lstm-2026-05-16`，但 runtime `_resolve_lstm_model_version(2026-05-16)` 实际解析到真实训练行 `lstm-2024-12-31`，其 `training_window_end` 同样是 `2024-12-31`。因此“post-2024 data 直接参与当前 main ML runtime artifact selection” 这一条当前未观察到。
+• “不同 horizon 没有共用错误 label / artifact” 这一条当前可以先关闭：LightGBM 每个 horizon 都单独调用 `_create_labels_for_training(..., horizon)`、单独生成 `lgb-{horizon}d-...` version、单独注册 `LightGBMModelArtifact(horizon_days=...)`；LSTM 则按 `labels_by_horizon[horizon]` 构造标签，并在同一 version 目录下分别落 `3d_model.pt`、`7d_model.pt`、`30d_model.pt`。当前 host 文件系统里也确实存在 `models/lstm/lstm-2024-12-31/3d_model.pt`、`7d_model.pt`、`30d_model.pt` 三套独立 artifact。
+
+因此，Section 3D 当前只能部分关闭：`不同 horizon 串 label / 串 artifact` 这一类错误当前未发现，`post-2024 information 直接选 pre-2025 model` 在主路径上也未发现；但更根本的验证纪律仍然不达标，因为 LightGBM 还没有真正的时间切分 validation / OOS，LSTM 也还没有独立 OOS test，而且训练阶段仍有 batch shuffle。换句话说，Section 3D 现在暴露的主问题不是 horizon 混线，而是 validation protocol 还不够硬。
 
 ───
 
@@ -327,17 +337,33 @@ D. 模型质量
 
 A. 候选池生成
 
-• [ ] 每个交易日的 candidate pool 只来自 effective_universe(date)
-• [ ] top_n_metric 与 horizon 一致
-• [ ] up_threshold 真正生效
-• [ ] candidate_mode=top_n 真正生效
-• [ ] trade_score_scope=independent 真正生效
+• [x] 每个交易日的 candidate pool 只来自 effective_universe(date)
+• [x] top_n_metric 与 horizon 一致
+• [x] up_threshold 真正生效
+• [x] candidate_mode=top_n 真正生效
+• [x] trade_score_scope=independent 真正生效
 
 要抽查
 
-• [ ] 随机抽 5 个交易日，导出候选股票清单
-• [ ] 检查候选股票是否都属于当日 universe
-• [ ] 检查排序分数是否来自对应模型输出
+• [x] 随机抽 5 个交易日，导出候选股票清单
+• [x] 检查候选股票是否都属于当日 universe
+• [x] 检查排序分数是否来自对应模型输出
+
+当前代码/样本审计结果（2026-05-17）：
+
+• 候选池的总闸门是 `_eligible_backtest_asset_ids(dt, cache)`：先取当日有 `OHLCV` 的 `asset_id`，再执行 `ensure_pit_membership_coverage([dt], ...)`，最后只保留 `point_in_time_union_asset_ids(dt)` 内的资产。`_build_heuristic_prediction_map()`、`_build_lightgbm_prediction_map()`、`_build_lstm_prediction_map()` 三条 prediction-source 路径都逐个迭代这同一个 helper，因此 candidate pool 的 universe gate 在 heuristic / LightGBM / LSTM 三条路径上是一致的。
+• `top_n_metric` / `horizon` 对齐当前可以关闭：serializer 层 `BacktestRunSerializer.validate()` 会把 `up_prob_3d/7d/30d` 对齐到对应 `horizon_days`；runtime 侧 `_top_n_metric(run, fallback_horizon)` 也会再次把 `metric_horizon` 解析成 `3 / 7 / 30`。已有 regression `Phase15BacktestTests.test_backtest_serializer_aligns_horizon_with_top_n_metric` 覆盖了这条规范化逻辑。
+• `up_threshold` 当前确实生效：`_build_heuristic_candidates()`、`_build_lightgbm_candidates()`、LSTM top-n 分支、以及 `trade_score` 分支都会先过滤 `up_probability < up_threshold` 的资产。对 read-only 样本日 `2024-02-06`，同一套 heuristic top-n 配置在 `up_threshold=0.55` 时返回 `5` 个 candidate，而把阈值提高到 `0.80` 后只剩 `3` 个，说明阈值不是写在参数里但没执行。
+• `candidate_mode=top_n` 当前也确实生效：top-n 路径直接按 `top_n` 截断，`_max_positions()` 只在 `trade_score` 模式下生效。已有 regression `Phase15BacktestTests.test_top_n_mode_ignores_max_positions_but_trade_score_mode_honors_it` 已经覆盖“`top_n=2`、`max_positions=1` 仍返回 2 笔 top-n candidate，而 trade_score 模式只保留 1 笔”的差异；对样本日 `2024-02-06` 的 unsaved run 复核也得到 `rows=2`、`candidate_mode=['top_n']`。
+• `trade_score_scope=independent` 当前可以关闭：`_build_trade_score_candidates()` 在 `scope != 'combined'` 时会明确写入 `trade_score_scope='independent'`，并按单一 prediction source 的 `trade_score` 排序。已有 regression `Phase15BacktestTests.test_trade_score_mode_supports_runtime_lstm_candidates_without_stored_predictions` 明确断言 payload 里的 `trade_score_scope='independent'`；对样本日 `2024-02-06` 的 unsaved heuristic run 复核结果是 `rows=3`，且所有 payload scope 都等于 `independent`。
+• 对 `2024-01-01 .. 2026-04-30` 的 distinct trading dates 设 `random.seed(42)` 做 read-only 抽样，得到 5 个样本日：`2024-02-06`、`2024-06-26`、`2024-12-12`、`2025-01-14`、`2025-03-06`。使用 unsaved heuristic run（`candidate_mode='top_n'`、`top_n_metric='up_prob_7d'`、`top_n=5`、`horizon_days=7`、`up_threshold=0.55`）直接调用 `_pick_candidates()`，各日结果分别是：
+• `2024-02-06`：`candidate_count=5`，`eligible_universe_count=300`，`violations=0`；candidate list = `688041, 300308, 300896, 688036, 300760`
+• `2024-06-26`：`candidate_count=5`，`eligible_universe_count=300`，`violations=0`；candidate list = `688041, 002594, 688008, 600941, 002371`
+• `2024-12-12`：`candidate_count=5`，`eligible_universe_count=566`，`violations=0`；candidate list = `603236, 002607, 600115, 002292, 300442`
+• `2025-01-14`：`candidate_count=5`，`eligible_universe_count=563`，`violations=0`；candidate list = `688099, 603986, 002050, 603129, 002625`
+• `2025-03-06`：`candidate_count=5`，`eligible_universe_count=562`，`violations=0`；candidate list = `688041, 002195, 300454, 603882, 688072`
+• 上述 25 条 sampled candidates 都满足 `rank_value == signal_payload.up_probability`，同时 `signal_payload.top_n_metric='up_prob_7d'`、`signal_payload.horizon_days=7`，说明排序分数确实来自对应模型输出而不是别的列。另做一条 mismatch 复核：在 `2024-02-06` 上显式传 `top_n_metric='up_prob_30d'`、`horizon_days=7` 的 unsaved run，返回 payload 明确是 `top_n_metric='up_prob_30d'` 且 `horizon_days=30`，说明 top-n 排序真正跟 metric 对应 horizon 走，不会悄悄退回 7d。
+• 当前唯一还值得记住的限制不是 candidate picker 本身，而是 validation harness coverage：`run_validation_backtests` 命令默认只生成 `top_n + horizon_days + up_threshold + prediction_source` 这一条基本路径，不会主动覆盖 `candidate_mode='trade_score'` 或自定义 `top_n_metric` 组合。这些非默认分支当前是靠单元测试 + 上面的 read-only manual audit 兜住的，而不是默认验证命令每天都跑到。
 
 ───
 
@@ -366,9 +392,6 @@ D. 结果可追溯性
 • [ ] compare_backtest_run_id
 • [ ] model artifact id
 • [ ] horizon
-• [ ] feature schema version
-• [ ] universe policy version
-• [ ] benchmark build version
 
 这样你以后看到结果变化，能知道是：
 
@@ -483,7 +506,7 @@ extras:
 3. macro snapshot yeild curve is using the first day data for each month. cny/usd is using monthly open. we should switch to use the previous monthly ohlcv data instead.macro snapshot and market context sync and backfill按发布日期/可得日期对齐，不是按统计期硬贴
 4. for macrosnapshot US Dollar Index (DXY): rename it to Dow Jones FXCM Dollar Index Basket (USDOLLAR) since that is the index we are currently syncing
 5. Runtime recomputation → Stored TechnicalIndicator
-6. LightGBM and LSTM training artifacts should include: effective_universe_policy, label_definition, code_version / git commit, data_snapshot_version
+6. LightGBM and LSTM training artifacts should include: effective_universe_policy version, label_definition, code_version / git commit, data_snapshot_version, schema_version. we need also record the versions during backtests.
 7. artifact 保存 feature schema, 推理时严格校验 schema
 8. 模型质量与过拟合
 
