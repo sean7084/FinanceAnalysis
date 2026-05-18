@@ -337,20 +337,11 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 2. **Set up environment variables**:
    ```bash
-   # Create .envs/.local as the single local env file with:
-   DATABASE_URL=postgres://finance_analysis:finance_analysis@localhost:5432/finance_analysis
-   CELERY_BROKER_URL=redis://localhost:6379/0
-   REDIS_URL=redis://localhost:6379/1
-   DJANGO_SECRET_KEY=your-secret-key-here
-   DJANGO_DEBUG=True
-   DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0
-   DJANGO_READ_DOT_ENV_FILE=True
-   TUSHARE_TOKEN=your-tushare-token-here
-
-   # Optional helpers
-   SMOKE_USERNAME=your-smoke-test-username
-   SMOKE_PASSWORD=your-smoke-test-password
+   mkdir -p .envs
+   cp .env.example .envs/.local
    ```
+
+   Update `.envs/.local` with your local secrets and service URLs.
 
    `.envs/.local` is the only env file required for the host-native test workflow.
    Django and the helper scripts read it directly, and the Compose file also points at it if you still run containers for non-test work.
