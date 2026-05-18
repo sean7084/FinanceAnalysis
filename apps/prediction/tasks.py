@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from celery import shared_task
+from django.db import models
 from django.utils import timezone
 
 from apps.analytics.models import TechnicalIndicator
@@ -29,11 +30,23 @@ def _latest_decimal(queryset, attr='value', default=Decimal('0.5')):
     return Decimal(str(raw))
 
 
-def _resolve_context(explicit_macro_phase=None, explicit_event_tag=None):
+def _resolve_context(explicit_macro_phase=None, explicit_event_tag=None, as_of=None):
     if explicit_macro_phase or explicit_event_tag:
         return explicit_macro_phase or '', explicit_event_tag or ''
 
-    current = MarketContext.objects.filter(context_key='current', is_active=True).order_by('-starts_at', '-updated_at').first()
+    current_queryset = MarketContext.objects.filter(context_key='current', is_active=True)
+    if as_of is not None:
+        current = (
+            current_queryset.filter(starts_at__lte=as_of)
+            .filter(models.Q(ends_at__isnull=True) | models.Q(ends_at__gte=as_of))
+            .order_by('-starts_at', '-updated_at')
+            .first()
+        )
+        if current is None:
+            current = current_queryset.filter(starts_at__lte=as_of).order_by('-starts_at', '-updated_at').first()
+    else:
+        current = current_queryset.order_by('-starts_at', '-updated_at').first()
+
     if not current:
         return '', ''
     return current.macro_phase, current.event_tag or ''
@@ -172,7 +185,7 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
         as_of = timezone.now().date()
 
     horizons = horizons or [3, 7, 30]
-    ctx_macro, ctx_event = _resolve_context(macro_phase, event_tag)
+    ctx_macro, ctx_event = _resolve_context(macro_phase, event_tag, as_of=as_of)
     version = _ensure_active_ensemble_version(as_of)
 
     processed = 0
@@ -229,7 +242,7 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
 
 
 def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=None, event_tag=None):
-    ctx_macro, ctx_event = _resolve_context(macro_phase, event_tag)
+    ctx_macro, ctx_event = _resolve_context(macro_phase, event_tag, as_of=as_of)
     version = _ensure_active_ensemble_version(as_of)
 
     processed = 0

@@ -21,6 +21,7 @@ from apps.analytics.indicator_warmup import MINIMUM_HISTORY_PREFILL_CALENDAR_DAY
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.analytics.models import SignalEvent, TechnicalIndicator
+from apps.macro.models import MarketContext
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
@@ -28,7 +29,9 @@ from .tasks import generate_predictions_for_date, train_prediction_models
 from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training
 from .tasks_lstm import (
     LSTM_MISSING_VALUE_STRATEGY,
+    _build_inference_sequence,
     _fit_scaler_on_sequences,
+    _prime_lstm_inference_asset_ids,
     _resolve_lstm_model_version,
     _transform_sequences,
     generate_lstm_predictions_for_date,
@@ -324,6 +327,43 @@ class Phase14PredictionTests(TestCase):
             'missing point-in-time membership coverage',
         ):
             generate_predictions_for_date(target_date=str(d), horizons=[7])
+
+    def test_generate_predictions_task_uses_market_context_as_of_target_date(self):
+        d = timezone.datetime(2024, 1, 10).date()
+        self._seed_required_pit_membership(self.asset, d, index_codes=('000300.SH',))
+        OHLCV.objects.create(
+            asset=self.asset,
+            date=d,
+            open=Decimal('10.0'),
+            high=Decimal('10.5'),
+            low=Decimal('9.8'),
+            close=Decimal('10.2'),
+            adj_close=Decimal('10.2'),
+            volume=1000000,
+            amount=Decimal('10200000'),
+        )
+        MarketContext.objects.create(
+            context_key='current',
+            macro_phase=MarketContext.MacroPhase.RECOVERY,
+            event_tag='historical-regime',
+            is_active=True,
+            starts_at=timezone.datetime(2024, 1, 1).date(),
+            ends_at=timezone.datetime(2024, 1, 31).date(),
+        )
+        MarketContext.objects.create(
+            context_key='current',
+            macro_phase=MarketContext.MacroPhase.RECESSION,
+            event_tag='latest-regime',
+            is_active=True,
+            starts_at=timezone.datetime(2025, 1, 1).date(),
+            ends_at=None,
+        )
+
+        generate_predictions_for_date(target_date=str(d), horizons=[7])
+
+        prediction = PredictionResult.objects.get(asset=self.asset, date=d, horizon_days=7)
+        self.assertEqual(prediction.macro_phase, MarketContext.MacroPhase.RECOVERY)
+        self.assertEqual(prediction.event_tag, 'historical-regime')
 
     def test_generate_predictions_ignores_future_ohlcv_rows(self):
         d = self._seed_features()
@@ -1407,6 +1447,7 @@ class LstmTrainingRegistryTests(TestCase):
                     training_end_date='2024-12-31',
                     horizons=[3],
                     max_samples_per_horizon=2,
+                    version_tag='reg strong v1',
                 )
 
         lstm_version = ModelVersion.objects.get(model_type=ModelVersion.ModelType.LSTM, is_active=True)
@@ -1415,6 +1456,7 @@ class LstmTrainingRegistryTests(TestCase):
 
         self.assertEqual(result['status'], 'completed')
         self.assertAlmostEqual(result['aggregate_accuracy'], 0.66)
+        self.assertEqual(lstm_version.version, 'lstm-2024-12-31-reg-strong-v1')
         self.assertEqual(mock_create_feature_matrix.call_args.kwargs['missing_value_strategy'], 'native_nan')
         self.assertEqual(
             mock_build_sequences.call_args.kwargs['feature_names'],
@@ -1424,6 +1466,7 @@ class LstmTrainingRegistryTests(TestCase):
         self.assertEqual(lstm_version.training_window_end.isoformat(), '2024-12-31')
         self.assertEqual(lstm_version.feature_schema, ['feature_a', 'feature_a__is_missing'])
         self.assertEqual(lstm_version.metadata['missing_value_strategy'], LSTM_MISSING_VALUE_STRATEGY)
+        self.assertEqual(lstm_version.metadata['version_tag'], 'reg-strong-v1')
         self.assertAlmostEqual(lstm_version.metrics['accuracy'], 0.66)
         self.assertAlmostEqual(ensemble_version.metrics['lightgbm_accuracy'], 0.62)
         self.assertAlmostEqual(ensemble_version.metrics['lstm_accuracy'], 0.66)
@@ -1444,6 +1487,77 @@ class LstmTrainingRegistryTests(TestCase):
 
         self.assertTrue(np.isfinite(transformed).all())
         self.assertEqual(float(transformed[0, 1, 0]), 0.0)
+
+    @patch('apps.prediction.tasks_lstm._create_feature_matrix')
+    def test_build_inference_sequence_masks_missing_feature_columns_without_aborting(self, mock_create_feature_matrix):
+        target_date = timezone.datetime(2024, 1, 4).date()
+        feature_df = pd.DataFrame([
+            {'date': timezone.datetime(2024, 1, 2).date(), 'asset_id': self.asset.id, 'feature_a': 1.0},
+            {'date': timezone.datetime(2024, 1, 3).date(), 'asset_id': self.asset.id, 'feature_a': 2.0},
+            {'date': timezone.datetime(2024, 1, 4).date(), 'asset_id': self.asset.id, 'feature_a': 3.0},
+        ])
+        feature_df.attrs['feature_names'] = ['feature_a']
+        mock_create_feature_matrix.return_value = feature_df
+
+        sequence, snapshot = _build_inference_sequence(
+            asset_id=self.asset.id,
+            target_date=target_date,
+            feature_names=['feature_a', 'feature_a__is_missing', 'feature_b', 'feature_b__is_missing'],
+            sequence_length=3,
+            missing_value_strategy=LSTM_MISSING_VALUE_STRATEGY,
+        )
+
+        self.assertIsNotNone(sequence)
+        self.assertEqual(sequence.shape, (3, 4))
+        self.assertFalse(np.isnan(sequence[:, 0]).any())
+        self.assertTrue(np.isnan(sequence[:, 2]).all())
+        self.assertEqual(snapshot['feature_a__is_missing'], 0.0)
+        self.assertIsNone(snapshot['feature_b'])
+        self.assertEqual(snapshot['feature_b__is_missing'], 1.0)
+
+    @patch('apps.prediction.tasks_lstm._create_feature_matrix')
+    def test_build_inference_sequence_reuses_cached_feature_frame_for_primed_assets(self, mock_create_feature_matrix):
+        target_date = timezone.datetime(2024, 1, 4).date()
+        second_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600778',
+            ts_code='600778.SH',
+            name='LSTM Cache Asset',
+        )
+        feature_df = pd.DataFrame([
+            {'date': timezone.datetime(2024, 1, 2).date(), 'asset_id': self.asset.id, 'feature_a': 1.0},
+            {'date': timezone.datetime(2024, 1, 3).date(), 'asset_id': self.asset.id, 'feature_a': 2.0},
+            {'date': timezone.datetime(2024, 1, 4).date(), 'asset_id': self.asset.id, 'feature_a': 3.0},
+            {'date': timezone.datetime(2024, 1, 2).date(), 'asset_id': second_asset.id, 'feature_a': 4.0},
+            {'date': timezone.datetime(2024, 1, 3).date(), 'asset_id': second_asset.id, 'feature_a': 5.0},
+            {'date': timezone.datetime(2024, 1, 4).date(), 'asset_id': second_asset.id, 'feature_a': 6.0},
+        ])
+        feature_df.attrs['feature_names'] = ['feature_a']
+        mock_create_feature_matrix.return_value = feature_df
+
+        runtime_cache = {}
+        _prime_lstm_inference_asset_ids(runtime_cache, target_date, [self.asset.id, second_asset.id])
+
+        first_sequence, _first_snapshot = _build_inference_sequence(
+            asset_id=self.asset.id,
+            target_date=target_date,
+            feature_names=['feature_a', 'feature_a__is_missing'],
+            sequence_length=3,
+            missing_value_strategy=LSTM_MISSING_VALUE_STRATEGY,
+            cache=runtime_cache,
+        )
+        second_sequence, _second_snapshot = _build_inference_sequence(
+            asset_id=second_asset.id,
+            target_date=target_date,
+            feature_names=['feature_a', 'feature_a__is_missing'],
+            sequence_length=3,
+            missing_value_strategy=LSTM_MISSING_VALUE_STRATEGY,
+            cache=runtime_cache,
+        )
+
+        self.assertEqual(mock_create_feature_matrix.call_count, 1)
+        self.assertEqual(first_sequence.shape, (3, 2))
+        self.assertEqual(second_sequence.shape, (3, 2))
 
     def test_resolve_lstm_model_version_prefers_trained_row_over_active_stub(self):
         ModelVersion.objects.create(

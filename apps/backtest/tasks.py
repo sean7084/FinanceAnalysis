@@ -16,7 +16,7 @@ from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
 from apps.prediction.tasks_lightgbm import _extract_features_for_asset, _load_model_artifacts
-from apps.prediction.tasks_lstm import _predict_with_lstm
+from apps.prediction.tasks_lstm import _predict_with_lstm, _prime_lstm_inference_asset_ids
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from .models import BacktestRun, BacktestTrade
 
@@ -539,8 +539,12 @@ def _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy=None):
     if cache_key in cache:
         return cache[cache_key]
 
+    asset_ids = _eligible_backtest_asset_ids(dt, cache)
+    runtime_cache = cache.setdefault('lstm_runtime_cache', {})
+    _prime_lstm_inference_asset_ids(runtime_cache, dt, asset_ids)
+
     mapping = {}
-    for asset_id in _eligible_backtest_asset_ids(dt, cache):
+    for asset_id in asset_ids:
         payload = _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
         if payload is not None:
             mapping[asset_id] = payload

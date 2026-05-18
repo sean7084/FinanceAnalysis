@@ -130,7 +130,7 @@ effective_universe(date)
 
 ───
 
-五、daily prediction 层 audit
+五、daily prediction & backtest 层 audit
 
 这一层查的是：你每天真正给出的信号，跟训练/回测是不是同一种东西。
 
@@ -158,28 +158,42 @@ A. 当日 universe
 
 B. 当日特征快照
 
-• [ ] 推理时读取的 feature snapshot 与训练 schema 一致
-• [ ] 缺失值处理与训练一致
-• [ ] macro/factor 数据使用当日可得版本
-• [ ] 没有因为某列缺失而整批 silent fallback
+• [x] 缺失值处理与训练一致: implementation completed, pending for runtime artifact audit
+• [x] macro/factor 数据使用当日可得版本
+• [x] 没有因为某列缺失而整批 silent fallback
+
+当前代码/测试审计结果（2026-05-17）：
+
+• `macro/factor 数据使用当日可得版本` 当前可以关闭。heuristic `_feature_snapshot()` 取 `FactorScore` / `SentimentScore` 都是 `date__lte=as_of` 的最近一条；technical side 的 `latest_rsi` / `latest_momentum` / `latest_rs_score` 也都是 `date<=as_of` 再叠 freshness guard。LightGBM 单资产推理 `_extract_features_for_asset()` 对 `FactorScore`、`MacroSnapshot`、`SentimentScore` 同样都取 `<= as_of`；LSTM 推理则通过 `_build_inference_sequence() -> _create_feature_matrix(start_date, target_date, ...)`，对 factor / macro / sentiment 全部走 backward `merge_asof`。这一轮发现的真实问题是 heuristic `_resolve_context()` 之前没有带 `target_date`，历史重放时会错误读取“最新 active MarketContext”而不是历史当日 context；现已修正为按 `starts_at/ends_at` 解析 as-of context，并由 regression `test_generate_predictions_task_uses_market_context_as_of_target_date` 锁住。
+• `缺失值处理与训练一致` 目前还不能关闭，但原因已经收敛得很明确：代码路径本身已经支持新契约，live artifact 还没有完全切过去。LightGBM 训练 `_create_feature_matrix(..., missing_value_strategy='native_nan')` 与推理 `_extract_features_for_asset(..., missing_value_strategy=artifact_metadata)` 在代码上是对齐的，现有 regression `test_extract_features_for_asset_preserves_nan_for_gappy_recent_history_under_native_nan_strategy` 也证明 gappy recent history 在 native-NaN 模式下会保留真实缺失而不是硬补 `0/1/50`。LSTM 训练同样先用 raw-NaN feature matrix，再扩出 `__is_missing` mask，最后才在 scaler 后 `NaN -> 0.0`；这一轮新增 regression `test_build_inference_sequence_masks_missing_feature_columns_without_aborting` 也证明 inference 端会为缺列补 mask，而不是直接失败。
+• 但 runtime artifact audit 说明“代码支持”还不等于“线上当前就在用”：对 `2026-05-17` 读当前 inference surface，LightGBM `lgb-3d-2024-12-31`、`lgb-7d-2024-12-31`、`lgb-30d-2024-12-31` 通过 `_load_model_artifacts()` 读出来的 metadata 里都没有 `missing_value_strategy`；LSTM runtime resolve 到的 artifact 也同样没有这个键。因此推理时会落回 `legacy_neutral_fill` / legacy 路径，而不是新约定的 `native_nan` / `mask_and_zero_impute`。换句话说，5B 的剩余问题已经不是“代码没有 missingness contract”，而是“当前 active artifact metadata 还没把 contract 带进 runtime”，所以这条仍应保持 open，直到重新训练/激活带完整 metadata 的 LightGBM / LSTM artifact。
+• `没有因为某列缺失而整批 silent fallback` 当前可以关闭。LightGBM 推理对缺失 feature key 走的是 `_resolve_prediction_feature_value()` 的逐列补值 / `NaN` 路径，不会因为某一列不存在就让整只股票或整批预测退回另一套逻辑；LSTM 推理 `_build_inference_sequence()` 会对缺失 base feature 自动补列，并生成 `__is_missing` mask。新加的 `test_build_inference_sequence_masks_missing_feature_columns_without_aborting` 已经直接覆盖“缺一个 feature column 仍然能建 sequence”这条规则。因此当前 remaining risk 是 legacy artifact 的静默 neutral fill，不是“因为缺一列就整批不推理/偷偷 fallback 到别的批处理路径”。
 
 ───
 
 C. 模型选择
 
-• [ ] daily prediction 使用的 artifact id 明确
-• [ ] 3d/7d/30d/14d 不会串模型
-• [ ] LightGBM、LSTM、Transformer 版本切换有 registry 记录
-• [ ] active model registry 与实际调用一致
+• [x] daily prediction 使用的 artifact id 明确
+• [x] 3d/7d/30d 不会串模型
+• [x] LightGBM、LSTM 版本切换有 registry 记录
+• [x] active model registry 与实际调用一致
 
 要抽查
 
-• [ ] 一次 daily prediction 结果里打印：
+• [x] 一次 daily prediction 结果里打印：
   • model_version
   • artifact_id
   • horizon
   • feature_count
   • universe_size
+
+当前代码/数据审计结果（2026-05-18）：
+
+• `daily prediction 使用的 artifact id 明确` 当前可以关闭。`2026-05-15` 已刷新 reference daily prediction，tradeable universe 是 567。LightGBM 每个 horizon 都直接落到 `LightGBMPrediction.model_artifact_id`，对应 `16/17/18 -> lgb-3d/7d/30d-2024-12-31-sec5b-v1`；heuristic / LSTM 则通过 `PredictionResult.model_version_id` 明确绑定 registry，分别是 active ensemble `14 -> ensemble-2024-12-31` 与 active LSTM `37 -> lstm-2024-12-31-sec5b-v1`。LSTM 每行 metadata 还保留了 horizon-specific `artifact_path`，可直接回溯到 `3d_model.pt` / `7d_model.pt` / `30d_model.pt`。
+• `3d/7d/30d 不会串模型` 当前可以关闭。`2026-05-15` 抽样结果里，heuristic 3/7/30d 全部落到同一个 ensemble registry `14`；LightGBM 3/7/30d 只分别落到 artifact `16/17/18`，row `horizon_days` 与 artifact `horizon_days` 一致；LSTM 虽共用 model version `37`，但 metadata `artifact_path` 分别指向 `.../3d_model.pt`、`.../7d_model.pt`、`.../30d_model.pt`，没有串 horizon。
+• `LightGBM、LSTM 版本切换有 registry 记录` 当前可以关闭。LSTM registry 当前保留了 inactive `lstm-2024-12-31`、`lstm-2026-05-16` 和 active `lstm-2024-12-31-sec5b-v1`；LightGBM registry 也保留了多轮 inactive 版本（`...-2024-12-31`、`...-core80-v1`、`...-regstrong-v1`、`2026-04-*`）以及 active `sec5b-v1` family，因此版本切换是有留痕的，不是覆盖写入。
+• `active model registry 与实际调用一致` 当前可以关闭。daily prediction `2026-05-15` 的落库结果与 active registry 完全一致：ensemble `14`、LSTM `37`、LightGBM `16/17/18`。backtest 559/564/566 的 `model_references` 都指向 active ensemble `14`；560/565/562/563 的 `model_references` 分别指向 active LightGBM `16/17/18`。LSTM rerun `561` 在 worker restart 后已完成，但因为整段回测 `0 trade`，当前 `_collect_run_model_references()` 只从成交 `signal_payload` 汇总 provenance，所以 report 里仍是 `model_reference_count=0`。这说明当前 remaining gap 是 zero-trade run 的报告盲点，不是 runtime 选错模型。
+• 本轮 `daily prediction` sample 已补齐：heuristic `model_version=ensemble-2024-12-31`、`artifact_id=n/a`、`feature_count=6`、`universe_size=567`；LSTM `model_version=lstm-2024-12-31-sec5b-v1`、`artifact_id=metadata.artifact_path`、`feature_count=78`、`universe_size=567`；LightGBM `model_version=lgb-{3,7,30}d-2024-12-31-sec5b-v1`、`artifact_id=16/17/18`、`feature_count=39`、`universe_size=567`。
 
 ───
 

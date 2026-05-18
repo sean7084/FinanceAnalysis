@@ -63,6 +63,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Pass through to backfill_model_data to skip sentiment recomputation.',
         )
+        parser.add_argument(
+            '--version-tag',
+            default='',
+            help='Optional suffix added to the LSTM model version to preserve existing artifact families.',
+        )
 
     def _parse_date(self, value, name):
         try:
@@ -137,10 +142,12 @@ class Command(BaseCommand):
                 backfill_kwargs['skip_sentiment'] = True
             call_command('backfill_model_data', **backfill_kwargs)
 
+        version_tag = str(options.get('version_tag') or '').strip()
         self.stdout.write(
             f'Retraining LSTM horizons={horizons} sequence_length={sequence_length} '
             f'asset_chunk_size={asset_chunk_size} max_samples_per_horizon={max_samples_per_horizon} '
             f'for window {start_date.isoformat()} -> {end_date.isoformat()}...'
+            f'{" version_tag=" + version_tag if version_tag else ""}'
         )
 
         results = train_lstm_models(
@@ -150,6 +157,7 @@ class Command(BaseCommand):
             sequence_length=sequence_length,
             asset_chunk_size=asset_chunk_size,
             max_samples_per_horizon=max_samples_per_horizon,
+            version_tag=version_tag,
         )
 
         self.stdout.write(json.dumps(results, ensure_ascii=True, indent=2, sort_keys=True))

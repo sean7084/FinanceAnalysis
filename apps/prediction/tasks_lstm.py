@@ -21,6 +21,7 @@ from .tasks_lightgbm import (
     MISSING_VALUE_STRATEGY_LEGACY,
     MISSING_VALUE_STRATEGY_METADATA_KEY,
     MISSING_VALUE_STRATEGY_NATIVE_NAN,
+    _normalize_version_tag,
     _create_feature_matrix,
     _create_labels_for_training,
     _refresh_ensemble_weights,
@@ -167,6 +168,69 @@ def _prediction_label_from_index(index):
     return PredictionResult.Label.FLAT
 
 
+def _lstm_inference_asset_ids_cache_key(target_date):
+    return ('lstm_inference_asset_ids', target_date.isoformat())
+
+
+def _lstm_inference_feature_frame_cache_key(target_date, sequence_length, missing_value_strategy):
+    return (
+        'lstm_inference_feature_frame',
+        target_date.isoformat(),
+        int(sequence_length),
+        str(missing_value_strategy or ''),
+    )
+
+
+def _prime_lstm_inference_asset_ids(cache, target_date, asset_ids):
+    if cache is None:
+        return
+
+    cache[_lstm_inference_asset_ids_cache_key(target_date)] = tuple(
+        int(asset_id)
+        for asset_id in asset_ids or []
+    )
+
+
+def _resolve_lstm_inference_asset_ids(cache, target_date, fallback_asset_id):
+    if cache is not None:
+        cached_asset_ids = cache.get(_lstm_inference_asset_ids_cache_key(target_date))
+        if cached_asset_ids:
+            return [int(asset_id) for asset_id in cached_asset_ids]
+    return [int(fallback_asset_id)]
+
+
+def _get_lstm_inference_feature_frame(
+    asset_id,
+    target_date,
+    sequence_length,
+    missing_value_strategy,
+    cache=None,
+):
+    cache_key = _lstm_inference_feature_frame_cache_key(
+        target_date,
+        sequence_length,
+        missing_value_strategy,
+    )
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    lookback_days = max(120, int(sequence_length * 4))
+    start_date = target_date - timedelta(days=lookback_days)
+    feature_df = _create_feature_matrix(
+        start_date,
+        target_date,
+        asset_ids=_resolve_lstm_inference_asset_ids(cache, target_date, asset_id),
+        missing_value_strategy=(
+            MISSING_VALUE_STRATEGY_NATIVE_NAN
+            if missing_value_strategy == LSTM_MISSING_VALUE_STRATEGY
+            else MISSING_VALUE_STRATEGY_LEGACY
+        ),
+    )
+    if cache is not None:
+        cache[cache_key] = feature_df
+    return feature_df
+
+
 def _resolve_lstm_model_version(target_date):
     version = ModelVersion.objects.filter(
         model_type=ModelVersion.ModelType.LSTM,
@@ -261,18 +325,14 @@ def _build_inference_sequence(
     feature_names,
     sequence_length,
     missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+    cache=None,
 ):
-    lookback_days = max(120, int(sequence_length * 4))
-    start_date = target_date - timedelta(days=lookback_days)
-    feature_df = _create_feature_matrix(
-        start_date,
+    feature_df = _get_lstm_inference_feature_frame(
+        asset_id,
         target_date,
-        asset_ids=[int(asset_id)],
-        missing_value_strategy=(
-            MISSING_VALUE_STRATEGY_NATIVE_NAN
-            if missing_value_strategy == LSTM_MISSING_VALUE_STRATEGY
-            else MISSING_VALUE_STRATEGY_LEGACY
-        ),
+        sequence_length,
+        missing_value_strategy,
+        cache=cache,
     )
     if feature_df.empty:
         return None, None
@@ -327,6 +387,7 @@ def _predict_with_lstm(asset_id, target_date, horizon_days, model_version=None, 
         feature_names=artifact['feature_names'],
         sequence_length=artifact['sequence_length'],
         missing_value_strategy=artifact['missing_value_strategy'],
+        cache=cache,
     )
     if sequence is None:
         return None
@@ -535,6 +596,7 @@ def train_lstm_models(
     sequence_length=20,
     asset_chunk_size=60,
     max_samples_per_horizon=30000,
+    version_tag='',
 ):
     default_horizons = [3, 7, 30]
     if horizons is None:
@@ -646,7 +708,10 @@ def train_lstm_models(
         }
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    normalized_version_tag = _normalize_version_tag(version_tag)
     version = f'lstm-{training_end.isoformat()}'
+    if normalized_version_tag:
+        version = f'{version}-{normalized_version_tag}'
 
     results = {}
     for horizon in selected_horizons:
@@ -689,6 +754,7 @@ def train_lstm_models(
                 'horizons': selected_horizons,
                 'sequence_length': int(sequence_length),
                 MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
+                'version_tag': normalized_version_tag,
                 'results': results,
                 'aggregate_accuracy': aggregate_accuracy,
             },
@@ -725,6 +791,7 @@ def train_lstm_models(
                 'horizons': selected_horizons,
                 'sequence_length': int(sequence_length),
                 MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
+                'version_tag': normalized_version_tag,
                 'results': results,
                 'model_architecture': {
                     'hidden_size': 64,
@@ -776,8 +843,10 @@ def generate_lstm_predictions_for_date(target_date=None, horizons=None):
     model_version = _resolve_lstm_model_version(as_of)
     runtime_cache = {}
     processed = 0
+    assets = list(effective_universe_tradeable_assets(as_of, context=f'LSTM daily prediction for {as_of}'))
+    _prime_lstm_inference_asset_ids(runtime_cache, as_of, [asset.id for asset in assets])
 
-    for asset in effective_universe_tradeable_assets(as_of, context=f'LSTM daily prediction for {as_of}'):
+    for asset in assets:
         for horizon in selected_horizons:
             prediction = _predict_with_lstm(
                 asset_id=asset.id,
