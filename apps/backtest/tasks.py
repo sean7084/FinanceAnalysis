@@ -1236,6 +1236,39 @@ def _backfill_prediction_trade_decision(asset_id, current_date, signal_payload):
     return signal_payload
 
 
+def _selection_audit_payload(run, row, candidate_rank):
+    params = run.parameters or {}
+    signal_payload = row.get('signal_payload') or {}
+    rank_value = row.get('rank_value')
+    payload = {
+        'candidate_rank': int(candidate_rank),
+        'rank_value': float(rank_value) if rank_value is not None else None,
+        'candidate_rank_value': float(rank_value) if rank_value is not None else None,
+        'candidate_selected': True,
+    }
+
+    up_threshold = params.get('up_threshold')
+    if up_threshold is not None:
+        payload['up_threshold'] = float(up_threshold)
+        up_probability = signal_payload.get('up_probability')
+        if up_probability is None:
+            up_probability = signal_payload.get('combined_up_probability')
+        if up_probability is not None:
+            payload['passed_up_threshold'] = float(up_probability) >= float(up_threshold)
+
+    if str(signal_payload.get('candidate_mode') or '').lower() == 'trade_score':
+        trade_score_threshold = params.get('trade_score_threshold')
+        if trade_score_threshold is not None:
+            payload['trade_score_threshold'] = float(trade_score_threshold)
+            trade_score = signal_payload.get('trade_score')
+            if trade_score is None:
+                trade_score = signal_payload.get('combined_trade_score')
+            if trade_score is not None:
+                payload['passed_trade_score_threshold'] = float(trade_score) >= float(trade_score_threshold)
+
+    return payload
+
+
 def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit):
     remaining_positions = []
     for position in open_positions:
@@ -1308,10 +1341,11 @@ def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash,
         return cash
 
     allocation_budget = deployable_capital / _d(len(candidate_rows))
-    for row in candidate_rows:
+    for candidate_rank, row in enumerate(candidate_rows, start=1):
         asset_id = row['asset_id']
         signal_payload = {
             **row['signal_payload'],
+            **_selection_audit_payload(run, row, candidate_rank),
             'entry_date': current_date.isoformat(),
             'scheduled_exit_date': exit_date.isoformat(),
         }

@@ -199,19 +199,32 @@ C. 模型选择
 
 D. 输出结果与落库
 
-• [ ] 每只股票的预测分数落库
+• [x] 每只股票的预测分数落库
 • [ ] 入选 top_n 的原因可解释
 • [ ] 预测结果可回放
 • [ ] 第二天可以对照真实收益做 prediction audit
 
 最好额外保存
 
-• [ ] raw score
+• [x] raw score
 • [ ] rank
 • [ ] threshold pass/fail
 • [ ] candidate selected true/false
-• [ ] prediction timestamp
+• [x] prediction timestamp
 • [ ] input data version
+
+当前代码/数据审计结果（2026-05-18）：
+
+• `每只股票的预测分数落库` 当前可以关闭。daily prediction 三条主路径都已经把每只股票、每个 horizon 的输出写入库里：heuristic / LSTM 走 `PredictionResult`，LightGBM 走 `LightGBMPrediction`。`2026-05-15` reference refresh 已验证三套 surface 都达到 `567 * 3` rows。当前 row 级持久化内容已经包含 `up/flat/down/confidence/predicted_label`，以及 trade-decision 层的 `target_price/stop_loss_price/risk_reward_ratio/trade_score/suggested`。
+• `入选 top_n 的原因可解释` 目前还不能完全关闭，但本轮已经补上最缺的一段：对真正成交的 backtest BUY trade，`signal_payload` 现在会保存 `candidate_rank`、`candidate_rank_value/rank_value`、`candidate_selected=True`、`up_threshold/passed_up_threshold`，以及 trade-score mode 下的阈值判断，`export_backtest_runs` 也会把这些字段导出。因此“为什么这只已成交股票进了 top_n/portfolio”现在可以解释；但未成交的候选、被阈值筛掉的名字、以及 daily prediction 全量横截面排名仍没有单独的 selection snapshot，所以这一条仍应保持 open。
+• `预测结果可回放` 目前还不能关闭。storage 层已经保留了 date、horizon、model_version / model_artifact、feature snapshot 和 timestamp；heuristic 也有 regression `test_generate_predictions_ignores_future_ohlcv_rows` 锁住历史重放不读未来数据。但系统还缺一个正式的 replay/audit workflow，可以指定 historical date + model reference，重算 daily prediction 并自动对比已存 rows。现在更多是“可手工重放”，还不是“有标准 replay 流程”。
+• `第二天可以对照真实收益做 prediction audit` 目前不能关闭。代码里还没有 dedicated prediction-audit model / command / report，去把 `T` 日 prediction 与 `T+1` 或 horizon 到期后的真实收益自动 join、打标签、输出命中率 / 分层收益 / 校准结果；现在只能临时用 shell / SQL 或借 backtest 间接观察。
+• `raw score` 对 ML surfaces 当前可以关闭。LightGBM 直接存 `raw_scores` 与 `calibrated_scores`；LSTM 把 `raw_scores` / `calibrated_scores` 放在 `PredictionResult.metadata`。heuristic 是规则模型，没有同类 logit/raw score 概念。
+• `rank` 目前还不能关闭。dashboard list 会 on-the-fly 计算 `candidate_rank/candidate_rank_value`，选中的 backtest BUY trade 现在也会持久化 rank；但 daily prediction rows 没有保存全市场横截面 rank，未入选股票也没有统一的 selection snapshot。
+• `threshold pass/fail` 目前还不能关闭。已成交的 backtest BUY trade 现在会保存 `passed_up_threshold`，trade-score mode 也会保存 `passed_trade_score_threshold`；但 daily prediction rows 以及未入选股票还没有统一保存 pass/fail 状态。
+• `candidate selected true/false` 目前还不能关闭。已成交的 backtest BUY trade 现在会写 `candidate_selected=True`，但系统没有全量 candidate snapshot 去保存那些未入选或未成交股票的 `False`。
+• `prediction timestamp` 当前可以关闭。`PredictionResult` / `LightGBMPrediction` 都自带 `created_at` / `updated_at`，serializer 也已经暴露这些字段，因此每条预测都有明确落库时间。
+• `input data version` 目前还不能关闭。虽然 row 里已经保留 feature snapshot 和 model/artifact reference，但还没有把 `schema_version`、`effective_universe_policy`、`label_definition`、`data_snapshot_version`、`code_version/git_commit` 作为 prediction/backtest output metadata 的强制字段落库。
 
 ───
 

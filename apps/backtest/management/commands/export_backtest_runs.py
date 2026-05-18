@@ -50,6 +50,9 @@ METRIC_KEYS = [
 SIGNAL_KEYS = [
     'prediction_source',
     'candidate_mode',
+    'candidate_rank',
+    'candidate_rank_value',
+    'candidate_selected',
     'top_n_metric',
     'horizon_days',
     'up_probability',
@@ -65,6 +68,10 @@ SIGNAL_KEYS = [
     'model_version',
     'model_artifact_id',
     'generated_on_demand',
+    'up_threshold',
+    'passed_up_threshold',
+    'trade_score_threshold',
+    'passed_trade_score_threshold',
     'macro_multiplier',
     'rank_value',
 ]
