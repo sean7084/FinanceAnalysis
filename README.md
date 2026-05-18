@@ -108,147 +108,6 @@ Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANG
 
 ## Future Phases & Roadmap
 
-Workflow Audit Checklist
-
-先定一条总规则
-
-先把这条写进文档、代码注释、测试用例里：
-
-effective_universe(date)
-
-• overall date range: 2010-01-04 <= date < 2026-04-30
-• 2010-01-04 <= date < 2024-09-23 → CSI300 only
-• date >= 2024-09-23 → CSI300 ∪ A500
-• 一切横截面计算、训练样本过滤、回测候选池、benchmark 构建、daily prediction，都必须调用同一套 universe 规则
-• 禁止静默 fallback 到 all assets
-• 如果发生 fallback，必须：
-   • 打 warning
-
-这条是总闸门。没有它，后面都容易脏。
-
-
-
-───
-
-五、daily prediction & backtest 层 audit
-
-这一层查的是：你每天真正给出的信号，跟训练/回测是不是同一种东西。
-
-A. 当日 universe
-
-• [x] daily prediction 的输入 universe 使用 effective_universe(today)
-• [x] pre-2024-09-23 和 post-2024-09-23 逻辑一致
-• [x] 不允许 default all-assets 扩大推理池
-
-要抽查
-
-• [x] 随机选一个历史日重放 daily prediction
-• [x] 检查该日输入股票池是否与 backtest 同口径
-
-当前代码/测试审计结果（2026-05-17）：
-
-• 这一轮先确认了 ownership：heuristic `generate_predictions_for_date()`、LightGBM `generate_lightgbm_predictions_for_date()`、LSTM `generate_lstm_predictions_for_date()` 原本都直接遍历 `effective_universe_assets(as_of, ...)`，因此 membership 口径本来就走的是同一套 `effective_universe(date)` / PIT helper，不存在 default all-assets 的显式 fallback。已有 regression `test_generate_predictions_task_raises_when_required_pit_membership_is_missing` 也证明缺历史覆盖时会抛 `PITMembershipCoverageError`，不是静默放大推理池。
-• 但 5A 审计时发现了一个真实 drift：backtest candidate pool 用的是“PIT effective universe ∩ 当日有 OHLCV 可交易资产”，而 daily prediction 之前只用 membership gate，没有再扣同日可交易性，因此会比 backtest 多出少量当日无有效 OHLCV 的名字。边界抽查时，这个差异在 `2024-09-20` 是 `300 vs 298`，缺口资产为 `600837.SH`、`601211.SH`；在 `2024-09-23` 是 `566 vs 564`，仍是同两只；在 `2025-01-14` 是 `564 vs 563`，缺口资产为 `000408.SZ`。
-• 这个 drift 已在代码层修正：新增共享 helper `effective_universe_tradeable_asset_ids()` / `effective_universe_tradeable_assets()`，先走 `effective_universe(date)` 的 PIT membership guard，再与当日 `OHLCV(date)` 交集。现在 backtest `_eligible_backtest_asset_ids()` 和三条 daily prediction generator 都委托给同一套 helper，因此 daily prediction 与 backtest 已经回到同口径。
-• pre-launch / post-launch 边界逻辑当前可以关闭：read-only 抽查显示 `2024-09-20` 只要求 `000300.SH`，有效 snapshot=`2024-09-02`，member count=`300`；`2024-09-23` 起同时要求 `000300.SH + 000510.CSI`，snapshot 分别为 `2024-09-02` / `2024-09-23`，member count=`300 + 500`，union count=`566`；`2025-01-14` 则解析到 `2025-01-02` / `2024-12-31` 两个 snapshot，union count=`564`。这些数都远小于当前 `Asset` 总量 `962`，因此“默认回退到 all assets” 当前未发现。
-• “随机选一个历史日重放 daily prediction” 这一条也已补验证：在事务里对 `2025-01-14` 重放一次 heuristic daily prediction（`horizon=7`，最后 rollback），实际生成 `563` 条 prediction row；同日 `effective_universe_tradeable_asset_ids(2025-01-14)` 也是 `563`，`matches=True`。因此重放结果已经与 backtest 入口股票池一致，而不会再比 backtest 多出停牌/缺当日价格资产。
-• focused regressions 现在覆盖了这轮 5A 修复：`test_generate_predictions_task_skips_effective_universe_assets_without_same_day_ohlcv` 锁住“daily prediction 不再给当日无 OHLCV 的 PIT 成员写预测”；`test_generate_lstm_predictions_task_filters_to_point_in_time_effective_universe` 和 `test_generate_lightgbm_predictions_task_filters_to_point_in_time_effective_universe` 锁住 LSTM / LightGBM 也不会脱离同一套 PIT universe gate。配合现有的缺 coverage fail-fast test，Section 5A 当前可以先关闭。
-
-───
-
-B. 当日特征快照
-
-• [x] 缺失值处理与训练一致: implementation completed, pending for runtime artifact audit
-• [x] macro/factor 数据使用当日可得版本
-• [x] 没有因为某列缺失而整批 silent fallback
-
-当前代码/测试审计结果（2026-05-17）：
-
-• `macro/factor 数据使用当日可得版本` 当前可以关闭。heuristic `_feature_snapshot()` 取 `FactorScore` / `SentimentScore` 都是 `date__lte=as_of` 的最近一条；technical side 的 `latest_rsi` / `latest_momentum` / `latest_rs_score` 也都是 `date<=as_of` 再叠 freshness guard。LightGBM 单资产推理 `_extract_features_for_asset()` 对 `FactorScore`、`MacroSnapshot`、`SentimentScore` 同样都取 `<= as_of`；LSTM 推理则通过 `_build_inference_sequence() -> _create_feature_matrix(start_date, target_date, ...)`，对 factor / macro / sentiment 全部走 backward `merge_asof`。这一轮发现的真实问题是 heuristic `_resolve_context()` 之前没有带 `target_date`，历史重放时会错误读取“最新 active MarketContext”而不是历史当日 context；现已修正为按 `starts_at/ends_at` 解析 as-of context，并由 regression `test_generate_predictions_task_uses_market_context_as_of_target_date` 锁住。
-• `缺失值处理与训练一致` 目前还不能关闭，但原因已经收敛得很明确：代码路径本身已经支持新契约，live artifact 还没有完全切过去。LightGBM 训练 `_create_feature_matrix(..., missing_value_strategy='native_nan')` 与推理 `_extract_features_for_asset(..., missing_value_strategy=artifact_metadata)` 在代码上是对齐的，现有 regression `test_extract_features_for_asset_preserves_nan_for_gappy_recent_history_under_native_nan_strategy` 也证明 gappy recent history 在 native-NaN 模式下会保留真实缺失而不是硬补 `0/1/50`。LSTM 训练同样先用 raw-NaN feature matrix，再扩出 `__is_missing` mask，最后才在 scaler 后 `NaN -> 0.0`；这一轮新增 regression `test_build_inference_sequence_masks_missing_feature_columns_without_aborting` 也证明 inference 端会为缺列补 mask，而不是直接失败。
-• 但 runtime artifact audit 说明“代码支持”还不等于“线上当前就在用”：对 `2026-05-17` 读当前 inference surface，LightGBM `lgb-3d-2024-12-31`、`lgb-7d-2024-12-31`、`lgb-30d-2024-12-31` 通过 `_load_model_artifacts()` 读出来的 metadata 里都没有 `missing_value_strategy`；LSTM runtime resolve 到的 artifact 也同样没有这个键。因此推理时会落回 `legacy_neutral_fill` / legacy 路径，而不是新约定的 `native_nan` / `mask_and_zero_impute`。换句话说，5B 的剩余问题已经不是“代码没有 missingness contract”，而是“当前 active artifact metadata 还没把 contract 带进 runtime”，所以这条仍应保持 open，直到重新训练/激活带完整 metadata 的 LightGBM / LSTM artifact。
-• `没有因为某列缺失而整批 silent fallback` 当前可以关闭。LightGBM 推理对缺失 feature key 走的是 `_resolve_prediction_feature_value()` 的逐列补值 / `NaN` 路径，不会因为某一列不存在就让整只股票或整批预测退回另一套逻辑；LSTM 推理 `_build_inference_sequence()` 会对缺失 base feature 自动补列，并生成 `__is_missing` mask。新加的 `test_build_inference_sequence_masks_missing_feature_columns_without_aborting` 已经直接覆盖“缺一个 feature column 仍然能建 sequence”这条规则。因此当前 remaining risk 是 legacy artifact 的静默 neutral fill，不是“因为缺一列就整批不推理/偷偷 fallback 到别的批处理路径”。
-
-───
-
-C. 模型选择
-
-• [x] daily prediction 使用的 artifact id 明确
-• [x] 3d/7d/30d 不会串模型
-• [x] LightGBM、LSTM 版本切换有 registry 记录
-• [x] active model registry 与实际调用一致
-
-要抽查
-
-• [x] 一次 daily prediction 结果里打印：
-  • model_version
-  • artifact_id
-  • horizon
-  • feature_count
-  • universe_size
-
-当前代码/数据审计结果（2026-05-18）：
-
-• `daily prediction 使用的 artifact id 明确` 当前可以关闭。`2026-05-15` 已刷新 reference daily prediction，tradeable universe 是 567。LightGBM 每个 horizon 都直接落到 `LightGBMPrediction.model_artifact_id`，对应 `16/17/18 -> lgb-3d/7d/30d-2024-12-31-sec5b-v1`；heuristic / LSTM 则通过 `PredictionResult.model_version_id` 明确绑定 registry，分别是 active ensemble `14 -> ensemble-2024-12-31` 与 active LSTM `37 -> lstm-2024-12-31-sec5b-v1`。LSTM 每行 metadata 还保留了 horizon-specific `artifact_path`，可直接回溯到 `3d_model.pt` / `7d_model.pt` / `30d_model.pt`。
-• `3d/7d/30d 不会串模型` 当前可以关闭。`2026-05-15` 抽样结果里，heuristic 3/7/30d 全部落到同一个 ensemble registry `14`；LightGBM 3/7/30d 只分别落到 artifact `16/17/18`，row `horizon_days` 与 artifact `horizon_days` 一致；LSTM 虽共用 model version `37`，但 metadata `artifact_path` 分别指向 `.../3d_model.pt`、`.../7d_model.pt`、`.../30d_model.pt`，没有串 horizon。
-• `LightGBM、LSTM 版本切换有 registry 记录` 当前可以关闭。LSTM registry 当前保留了 inactive `lstm-2024-12-31`、`lstm-2026-05-16` 和 active `lstm-2024-12-31-sec5b-v1`；LightGBM registry 也保留了多轮 inactive 版本（`...-2024-12-31`、`...-core80-v1`、`...-regstrong-v1`、`2026-04-*`）以及 active `sec5b-v1` family，因此版本切换是有留痕的，不是覆盖写入。
-• `active model registry 与实际调用一致` 当前可以关闭。daily prediction `2026-05-15` 的落库结果与 active registry 完全一致：ensemble `14`、LSTM `37`、LightGBM `16/17/18`。backtest 559/564/566 的 `model_references` 都指向 active ensemble `14`；560/565/562/563 的 `model_references` 分别指向 active LightGBM `16/17/18`。LSTM rerun `561` 在 worker restart 后已完成，但因为整段回测 `0 trade`，当前 `_collect_run_model_references()` 只从成交 `signal_payload` 汇总 provenance，所以 report 里仍是 `model_reference_count=0`。这说明当前 remaining gap 是 zero-trade run 的报告盲点，不是 runtime 选错模型。
-• 本轮 `daily prediction` sample 已补齐：heuristic `model_version=ensemble-2024-12-31`、`artifact_id=n/a`、`feature_count=6`、`universe_size=567`；LSTM `model_version=lstm-2024-12-31-sec5b-v1`、`artifact_id=metadata.artifact_path`、`feature_count=78`、`universe_size=567`；LightGBM `model_version=lgb-{3,7,30}d-2024-12-31-sec5b-v1`、`artifact_id=16/17/18`、`feature_count=39`、`universe_size=567`。
-
-───
-
-D. 输出结果与落库
-
-• [x] 每只股票的预测分数落库
-• [ ] 入选 top_n 的原因可解释
-• [ ] 预测结果可回放
-• [ ] 第二天可以对照真实收益做 prediction audit
-
-最好额外保存
-
-• [x] raw score
-• [ ] rank
-• [ ] threshold pass/fail
-• [ ] candidate selected true/false
-• [x] prediction timestamp
-• [ ] input data version
-
-当前代码/数据审计结果（2026-05-18）：
-
-• `每只股票的预测分数落库` 当前可以关闭。daily prediction 三条主路径都已经把每只股票、每个 horizon 的输出写入库里：heuristic / LSTM 走 `PredictionResult`，LightGBM 走 `LightGBMPrediction`。`2026-05-15` reference refresh 已验证三套 surface 都达到 `567 * 3` rows。当前 row 级持久化内容已经包含 `up/flat/down/confidence/predicted_label`，以及 trade-decision 层的 `target_price/stop_loss_price/risk_reward_ratio/trade_score/suggested`。
-• `入选 top_n 的原因可解释` 目前还不能完全关闭，但本轮已经补上最缺的一段：对真正成交的 backtest BUY trade，`signal_payload` 现在会保存 `candidate_rank`、`candidate_rank_value/rank_value`、`candidate_selected=True`、`up_threshold/passed_up_threshold`，以及 trade-score mode 下的阈值判断，`export_backtest_runs` 也会把这些字段导出。因此“为什么这只已成交股票进了 top_n/portfolio”现在可以解释；但未成交的候选、被阈值筛掉的名字、以及 daily prediction 全量横截面排名仍没有单独的 selection snapshot，所以这一条仍应保持 open。
-• `预测结果可回放` 目前还不能关闭。storage 层已经保留了 date、horizon、model_version / model_artifact、feature snapshot 和 timestamp；heuristic 也有 regression `test_generate_predictions_ignores_future_ohlcv_rows` 锁住历史重放不读未来数据。但系统还缺一个正式的 replay/audit workflow，可以指定 historical date + model reference，重算 daily prediction 并自动对比已存 rows。现在更多是“可手工重放”，还不是“有标准 replay 流程”。
-• `第二天可以对照真实收益做 prediction audit` 目前不能关闭。代码里还没有 dedicated prediction-audit model / command / report，去把 `T` 日 prediction 与 `T+1` 或 horizon 到期后的真实收益自动 join、打标签、输出命中率 / 分层收益 / 校准结果；现在只能临时用 shell / SQL 或借 backtest 间接观察。
-• `raw score` 对 ML surfaces 当前可以关闭。LightGBM 直接存 `raw_scores` 与 `calibrated_scores`；LSTM 把 `raw_scores` / `calibrated_scores` 放在 `PredictionResult.metadata`。heuristic 是规则模型，没有同类 logit/raw score 概念。
-• `rank` 目前还不能关闭。dashboard list 会 on-the-fly 计算 `candidate_rank/candidate_rank_value`，选中的 backtest BUY trade 现在也会持久化 rank；但 daily prediction rows 没有保存全市场横截面 rank，未入选股票也没有统一的 selection snapshot。
-• `threshold pass/fail` 目前还不能关闭。已成交的 backtest BUY trade 现在会保存 `passed_up_threshold`，trade-score mode 也会保存 `passed_trade_score_threshold`；但 daily prediction rows 以及未入选股票还没有统一保存 pass/fail 状态。
-• `candidate selected true/false` 目前还不能关闭。已成交的 backtest BUY trade 现在会写 `candidate_selected=True`，但系统没有全量 candidate snapshot 去保存那些未入选或未成交股票的 `False`。
-• `prediction timestamp` 当前可以关闭。`PredictionResult` / `LightGBMPrediction` 都自带 `created_at` / `updated_at`，serializer 也已经暴露这些字段，因此每条预测都有明确落库时间。
-• `input data version` 目前还不能关闭。虽然 row 里已经保留 feature snapshot 和 model/artifact reference，但还没有把 `schema_version`、`effective_universe_policy`、`label_definition`、`data_snapshot_version`、`code_version/git_commit` 作为 prediction/backtest output metadata 的强制字段落库。
-
-───
-
-七、建议你最后产出 4 份审计结果
-
-
-
-3. audit_training_backtest_consistency.md
-
-写：
-
-• training、backtest、daily prediction 是否同口径
-• 哪些地方已经修复
-• 哪些地方还有风险
-
-4. audit_red_flags.md
-
-专门列：
-
-• 已发现问题
-• 修复状态
-• 是否影响历史结果可用性
-
-
 extras:
 1. close 实际上已经是 qfq 值，而 adj_close 现在也是同一个值，没有保留未复权原始 close。把 OHLCV 的复权语义明确下来：新增 raw_close，避免 close 和 adj_close 现在这种“值一样但名字不同”的状态
 2. 没有 limit_up / limit_down 规则. 没有按昨收去判断 10% / 20% / ST 涨跌停板. 没有按交易所制度去区分主板、创业板、科创板、北交所的不同涨跌幅限制. 也没有“超大日收益跳变”这类 return-based price anomaly 规则. 涨跌停是否被标记：否.
@@ -258,6 +117,8 @@ extras:
 6. LightGBM and LSTM training artifacts should include: effective_universe_policy version, label_definition, code_version / git commit, data_snapshot_version, schema_version. we need also record the versions during backtests.
 7. artifact 保存 feature schema, 推理时严格校验 schema
 8. 模型质量与过拟合
+9. Persist a full per-date candidate snapshot so unselected names also carry rank, pass/fail, and candidate_selected=False.
+10. Add a dedicated prediction-audit workflow that joins stored predictions to realized returns by horizon and writes a report.
 
 ###
 1. 14d model
