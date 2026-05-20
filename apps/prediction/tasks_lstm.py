@@ -413,6 +413,7 @@ def _predict_with_lstm(asset_id, target_date, horizon_days, model_version=None, 
         horizon_days=int(horizon_days),
         up_probability=up_prob,
         predicted_label=predicted_label,
+        cache=cache,
     )
 
     return {

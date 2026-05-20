@@ -195,12 +195,38 @@ def _get_recent_ohlcv_rows(asset_id, as_of, limit=30):
     )
 
 
-def _asset_trading_context(asset_id, as_of):
+def _runtime_cache_key(*parts):
+    return ('prediction_tasks_lightgbm', *parts)
+
+
+def _get_recent_ohlcv_rows(asset_id, as_of, limit=30, cache=None):
+    cache_entry = _runtime_cache_key('recent_ohlcv_rows', int(asset_id), str(as_of), int(limit))
+    if cache is not None and cache_entry in cache:
+        return cache[cache_entry]
+
+    rows = list(
+        OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
+        .order_by('-date')
+        .values('date', 'close', 'volume')[:limit]
+    )
+    if cache is not None:
+        cache[cache_entry] = rows
+    return rows
+
+
+def _asset_trading_context(asset_id, as_of, cache=None):
+    cache_entry = _runtime_cache_key('asset_trading_context', int(asset_id), str(as_of))
+    if cache is not None and cache_entry in cache:
+        return cache[cache_entry]
+
     asset = Asset.objects.select_related('market').get(id=asset_id)
     ordered_trading_dates = ordered_trading_dates_for_asset(asset, as_of)
     position_map = trading_date_positions(ordered_trading_dates)
     current_trade_date = latest_official_trade_date(ordered_trading_dates, as_of)
-    return asset, current_trade_date, position_map
+    resolved = (asset, current_trade_date, position_map)
+    if cache is not None:
+        cache[cache_entry] = resolved
+    return resolved
 
 
 def _row_value(rows, index, key, default, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
@@ -657,29 +683,36 @@ def _extract_features_for_asset(
     asset_id,
     as_of,
     missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+    cache=None,
 ):
     """Extract all available features for a single asset on a given date."""
     features = {}
     preserve_true_missing = _preserves_true_missing(missing_value_strategy)
-    _asset, current_trade_date, position_map = _asset_trading_context(asset_id, as_of)
-    recent_rows = _get_recent_ohlcv_rows(asset_id, as_of, limit=25)
+    _asset, current_trade_date, position_map = _asset_trading_context(asset_id, as_of, cache=cache)
+    recent_rows = _get_recent_ohlcv_rows(asset_id, as_of, limit=25, cache=cache)
     recent_actual_dates = [row['date'] for row in reversed(recent_rows)]
 
     # Phase 10: Technical Indicators
     features['rsi'] = _safe_float(
-        latest_rsi(asset_id, as_of, default=None if preserve_true_missing else Decimal('50')),
+        latest_rsi(asset_id, as_of, default=None if preserve_true_missing else Decimal('50'), cache=cache),
         50.0,
         missing_value_strategy=missing_value_strategy,
         preserve_missing=True,
     )
     features['mom_5d'] = _safe_float(
-        latest_momentum(asset_id, as_of, n_days=5, default=None if preserve_true_missing else Decimal('0')),
+        latest_momentum(
+            asset_id,
+            as_of,
+            n_days=5,
+            default=None if preserve_true_missing else Decimal('0'),
+            cache=cache,
+        ),
         0.0,
         missing_value_strategy=missing_value_strategy,
         preserve_missing=True,
     )
     features['rs_score'] = _safe_float(
-        latest_rs_score(asset_id, as_of, default=None if preserve_true_missing else Decimal('0.5')),
+        latest_rs_score(asset_id, as_of, default=None if preserve_true_missing else Decimal('0.5'), cache=cache),
         0.5,
         missing_value_strategy=missing_value_strategy,
         preserve_missing=True,
@@ -692,6 +725,7 @@ def _extract_features_for_asset(
                 asset_id,
                 lag_date,
                 default=None if preserve_true_missing else Decimal(str(features['rsi'])),
+                cache=cache,
             ),
             features['rsi'],
             missing_value_strategy=missing_value_strategy,
@@ -703,6 +737,7 @@ def _extract_features_for_asset(
                 lag_date,
                 n_days=5,
                 default=None if preserve_true_missing else Decimal(str(features['mom_5d'])),
+                cache=cache,
             ),
             features['mom_5d'],
             missing_value_strategy=missing_value_strategy,
@@ -713,6 +748,7 @@ def _extract_features_for_asset(
                 asset_id,
                 lag_date,
                 default=None if preserve_true_missing else Decimal(str(features['rs_score'])),
+                cache=cache,
             ),
             features['rs_score'],
             missing_value_strategy=missing_value_strategy,
@@ -973,6 +1009,30 @@ def _compute_rsi_series(close_series, period=14, fill_default=50.0):
     return rsi.fillna(fill_default)
 
 
+def _indicator_frame_from_rows(rows, value_column, *, parameter_key=None, parameter_value=None):
+    frame = pd.DataFrame.from_records(rows)
+    if frame.empty:
+        return pd.DataFrame({'asset_id': [], 'date': [], value_column: []})
+
+    if parameter_key:
+        def _parameter_score(parameters):
+            resolved = dict(parameters or {})
+            if not resolved:
+                return 1
+            return 2 if resolved.get(parameter_key) == parameter_value else -1
+
+        frame['parameter_score'] = frame['parameters'].apply(_parameter_score)
+        frame = frame[frame['parameter_score'] > 0].copy()
+        if frame.empty:
+            return pd.DataFrame({'asset_id': [], 'date': [], value_column: []})
+        frame = frame.sort_values(['asset_id', 'timestamp', 'parameter_score'])
+        frame = frame.drop_duplicates(['asset_id', 'timestamp'], keep='last')
+
+    frame['date'] = pd.to_datetime(frame['timestamp'], utc=True).dt.tz_localize(None).dt.normalize()
+    frame[value_column] = frame['value'].astype(float)
+    return frame[['asset_id', 'date', value_column]].sort_values(['asset_id', 'date'])
+
+
 def _prepare_macro_dataframe(end_date, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY):
     macro_rows = list(
         MacroSnapshot.objects.filter(date__lte=end_date)
@@ -1125,21 +1185,45 @@ def _create_feature_matrix(
         sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
         sentiment_df['sentiment_score'] = sentiment_df['sentiment_score'].astype(float)
 
+    rsi_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='RSI',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    rsi_df = _indicator_frame_from_rows(
+        rsi_rows,
+        'rsi',
+        parameter_key='timeperiod',
+        parameter_value=14,
+    )
+
+    mom_5d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='MOM_5D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    mom_5d_df = _indicator_frame_from_rows(
+        mom_5d_rows,
+        'mom_5d',
+        parameter_key='n_days',
+        parameter_value=5,
+    )
+
     rs_rows = list(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RS_SCORE',
             timestamp__date__gte=warmup_start,
             timestamp__date__lte=end_date,
-        ).values('asset_id', 'timestamp', 'value').order_by('asset_id', 'timestamp')
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
-    rs_df = pd.DataFrame.from_records(rs_rows)
-    if rs_df.empty:
-        rs_df = pd.DataFrame({'asset_id': [], 'date': [], 'rs_score': []})
-    else:
-        rs_df['date'] = pd.to_datetime(rs_df['timestamp'], utc=True).dt.tz_localize(None).dt.normalize()
-        rs_df['rs_score'] = rs_df['value'].astype(float)
-        rs_df = rs_df[['asset_id', 'date', 'rs_score']]
+    rs_df = _indicator_frame_from_rows(rs_rows, 'rs_score')
 
     preserve_true_missing = _preserves_true_missing(missing_value_strategy)
     macro_df, context_df = _prepare_macro_dataframe(
@@ -1194,20 +1278,54 @@ def _create_feature_matrix(
             max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 20}),
         )
         volatility_5d_valid = _exact_window_valid_mask(asset_df['trade_position'], 5)
+        asset_df['_rsi_window_valid'] = rsi_valid
+        asset_df['_mom_5d_window_valid'] = mom_5d_valid
 
-        asset_df['rsi'] = _compute_rsi_series(
-            asset_df['close'],
-            fill_default=None if preserve_true_missing else 50.0,
-        )
+        asset_rsi_df = rsi_df[rsi_df['asset_id'] == asset_id][['date', 'rsi']].sort_values('date')
+        if asset_rsi_df.empty:
+            asset_df['rsi'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
+        else:
+            asset_rsi_df = asset_rsi_df.rename(columns={'date': 'rsi_source_date'})
+            asset_df = pd.merge_asof(
+                asset_df.sort_values('date'),
+                asset_rsi_df,
+                left_on='date',
+                right_on='rsi_source_date',
+                direction='backward',
+            )
+            asset_df['rsi_source_position'] = asset_df['rsi_source_date'].dt.date.map(position_map).astype('float64')
+            rsi_age = asset_df['trade_position'] - asset_df['rsi_source_position']
+            rsi_age_valid = rsi_age.le(float(technical_indicator_max_gap_trading_days('RSI', {'timeperiod': 14})))
+            if preserve_true_missing:
+                asset_df['rsi'] = asset_df['rsi'].where(asset_df['_rsi_window_valid'] & rsi_age_valid)
+            else:
+                asset_df['rsi'] = asset_df['rsi'].where(asset_df['_rsi_window_valid'] & rsi_age_valid, 50.0).fillna(50.0)
+
+        asset_mom_5d_df = mom_5d_df[mom_5d_df['asset_id'] == asset_id][['date', 'mom_5d']].sort_values('date')
+        if asset_mom_5d_df.empty:
+            asset_df['mom_5d'] = _default_numeric(0.0, missing_value_strategy, preserve_missing=True)
+        else:
+            asset_mom_5d_df = asset_mom_5d_df.rename(columns={'date': 'mom_5d_source_date'})
+            asset_df = pd.merge_asof(
+                asset_df.sort_values('date'),
+                asset_mom_5d_df,
+                left_on='date',
+                right_on='mom_5d_source_date',
+                direction='backward',
+            )
+            asset_df['mom_5d_source_position'] = asset_df['mom_5d_source_date'].dt.date.map(position_map).astype('float64')
+            mom_5d_age = asset_df['trade_position'] - asset_df['mom_5d_source_position']
+            mom_5d_age_valid = mom_5d_age.eq(0.0)
+            if preserve_true_missing:
+                asset_df['mom_5d'] = asset_df['mom_5d'].where(asset_df['_mom_5d_window_valid'] & mom_5d_age_valid)
+            else:
+                asset_df['mom_5d'] = asset_df['mom_5d'].where(asset_df['_mom_5d_window_valid'] & mom_5d_age_valid, 0.0).fillna(0.0)
+
         if preserve_true_missing:
-            asset_df['rsi'] = asset_df['rsi'].where(rsi_valid)
-            asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).where(mom_5d_valid)
             asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid)
             asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid)
             asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid)
         else:
-            asset_df['rsi'] = asset_df['rsi'].where(rsi_valid, 50.0).fillna(50.0)
-            asset_df['mom_5d'] = asset_df['close'].pct_change(periods=5).where(mom_5d_valid, 0.0).fillna(0.0)
             asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid, 0.0).fillna(0.0)
             asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid, 0.0).fillna(0.0)
             asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid, 0.0).fillna(0.0)
@@ -1359,6 +1477,19 @@ def _create_feature_matrix(
             continue
         asset_df['asset_id'] = int(asset_id)
         asset_df['date'] = asset_df['date'].dt.date
+        asset_df = asset_df.drop(
+            columns=[
+                '_rsi_window_valid',
+                '_mom_5d_window_valid',
+                'rsi_source_date',
+                'rsi_source_position',
+                'mom_5d_source_date',
+                'mom_5d_source_position',
+                'rs_source_date',
+                'rs_source_position',
+            ],
+            errors='ignore',
+        )
 
         frames.append(asset_df[[
             'date', 'asset_id',
@@ -1728,20 +1859,32 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
 # LightGBM Inference
 # ============================================================================
 
-def _predict_with_lightgbm(asset_id, target_date, horizon_days):
+def _predict_with_lightgbm(asset_id, target_date, horizon_days, cache=None):
     """Generate a single LightGBM prediction for an asset on a date."""
     # Load active model
-    model_artifact = LightGBMModelArtifact.objects.filter(
-        horizon_days=horizon_days,
-        is_active=True,
-        status=LightGBMModelArtifact.Status.READY,
-    ).order_by('-trained_at').first()
+    model_cache_key = _runtime_cache_key('active_model_artifact', int(horizon_days))
+    if cache is not None and model_cache_key in cache:
+        model_artifact = cache[model_cache_key]
+    else:
+        model_artifact = LightGBMModelArtifact.objects.filter(
+            horizon_days=horizon_days,
+            is_active=True,
+            status=LightGBMModelArtifact.Status.READY,
+        ).order_by('-trained_at').first()
+        if cache is not None:
+            cache[model_cache_key] = model_artifact
 
     if not model_artifact:
         return None
 
     # Load artifacts from disk
-    artifacts = _load_model_artifacts(horizon_days, model_artifact.version)
+    artifact_cache_key = _runtime_cache_key('loaded_model_artifacts', int(horizon_days), str(model_artifact.version))
+    if cache is not None and artifact_cache_key in cache:
+        artifacts = cache[artifact_cache_key]
+    else:
+        artifacts = _load_model_artifacts(horizon_days, model_artifact.version)
+        if cache is not None:
+            cache[artifact_cache_key] = artifacts
     if not artifacts:
         return None
 
@@ -1756,6 +1899,7 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
         asset_id,
         target_date,
         missing_value_strategy=missing_value_strategy,
+        cache=cache,
     )
     feature_names = artifacts['metadata']['feature_names']
     X = np.asarray(
@@ -1787,6 +1931,7 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days):
         horizon_days=horizon_days,
         up_probability=Decimal(str(up_prob)),
         predicted_label=predicted_label,
+        cache=cache,
     )
 
     return {
@@ -1825,10 +1970,11 @@ def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
 
     horizons = horizons or [3, 7, 30]
     processed = 0
+    runtime_cache = {}
 
     for asset in effective_universe_tradeable_assets(as_of, context=f'LightGBM daily prediction for {as_of}'):
         for horizon in horizons:
-            pred = _predict_with_lightgbm(asset.id, as_of, horizon)
+            pred = _predict_with_lightgbm(asset.id, as_of, horizon, cache=runtime_cache)
 
             if pred is None:
                 continue
@@ -1873,6 +2019,7 @@ def generate_lightgbm_prediction_for_asset(asset_id, target_date=None, horizons=
 
     horizons = horizons or [3, 7, 30]
     processed = 0
+    runtime_cache = {}
 
     try:
         asset = Asset.objects.get(id=asset_id)
@@ -1880,7 +2027,7 @@ def generate_lightgbm_prediction_for_asset(asset_id, target_date=None, horizons=
         return f'Asset not found: {asset_id}'
 
     for horizon in horizons:
-        pred = _predict_with_lightgbm(asset_id, as_of, horizon)
+        pred = _predict_with_lightgbm(asset_id, as_of, horizon, cache=runtime_cache)
 
         if pred is None:
             continue

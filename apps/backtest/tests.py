@@ -517,6 +517,59 @@ class Phase15BacktestTests(TestCase):
         self.assertIsNotNone(sell_trade)
         self.assertEqual(sell_trade.metadata['exit_reason'], 'TARGET_PRICE')
 
+    @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_run_backtest_can_use_selected_inactive_lightgbm_artifact(self, mock_load_artifacts, _mock_extract_features):
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-active-artifact',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/active-artifact',
+            feature_names=['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d'],
+            is_active=True,
+        )
+        selected_artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-selected-artifact',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/selected-artifact',
+            feature_names=['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d'],
+            is_active=False,
+        )
+        mock_load_artifacts.return_value = {
+            'model': object(),
+            'scaler': IdentityScaler(),
+            'calibrator': StubCalibrator(),
+            'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d']},
+        }
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Selected Artifact Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_model_artifact_id': selected_artifact.id,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.BUY).first()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertIsNotNone(buy_trade)
+        self.assertEqual(buy_trade.signal_payload['model_artifact_id'], selected_artifact.id)
+        self.assertEqual(run.report['model_references'][0]['reference_id'], selected_artifact.id)
+        mock_load_artifacts.assert_called_with(7, selected_artifact.version)
+
     @patch('apps.backtest.tasks._pick_candidates')
     def test_scheduled_exit_prioritizes_stop_loss_when_enabled(self, mock_pick_candidates):
         OHLCV.objects.filter(asset=self.asset, date=self.d2).update(
@@ -1128,6 +1181,65 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(buy_trade.signal_payload['trade_score_scope'], 'independent')
         self.assertEqual(buy_trade.signal_payload['model_version_id'], version.id)
         self.assertTrue(buy_trade.signal_payload['generated_on_demand'])
+
+    @patch('apps.backtest.tasks._predict_with_lstm')
+    def test_run_backtest_can_use_selected_inactive_lstm_model_version(self, mock_predict_with_lstm):
+        PredictionResult.objects.all().delete()
+        ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-active-runtime-test',
+            status=ModelVersion.Status.READY,
+            is_active=True,
+            artifact_path='models/lstm/active-runtime-test',
+        )
+        selected_version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-selected-runtime-test',
+            status=ModelVersion.Status.READY,
+            is_active=False,
+            artifact_path='models/lstm/selected-runtime-test',
+        )
+        mock_predict_with_lstm.return_value = {
+            'model_version': selected_version,
+            'up_probability': 0.72,
+            'flat_probability': 0.18,
+            'down_probability': 0.10,
+            'confidence': 0.72,
+            'predicted_label': PredictionResult.Label.UP,
+            'trade_decision': {
+                'trade_score': Decimal('1.450000'),
+                'target_price': Decimal('11.400000'),
+                'stop_loss_price': Decimal('9.800000'),
+                'suggested': True,
+            },
+        }
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LSTM Selected Version Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lstm',
+                'lstm_model_version_id': selected_version.id,
+            },
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+        buy_trade = BacktestTrade.objects.filter(backtest_run=run, side=BacktestTrade.Side.BUY).first()
+
+        self.assertIn('completed', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
+        self.assertIsNotNone(buy_trade)
+        self.assertEqual(buy_trade.signal_payload['model_version_id'], selected_version.id)
+        self.assertEqual(run.report['model_references'][0]['reference_id'], selected_version.id)
+        self.assertEqual(mock_predict_with_lstm.call_args.kwargs['model_version'], selected_version)
 
     def test_backtest_trades_action_returns_rows(self):
         self._auth()

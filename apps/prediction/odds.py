@@ -4,6 +4,10 @@ from apps.markets.models import OHLCV
 from .historical_features import latest_bbands, latest_ohlcv, latest_sma
 
 
+def _cache_key(*parts):
+    return ('prediction_odds', *parts)
+
+
 def _to_decimal(value, default='0'):
     if value is None:
         return Decimal(str(default))
@@ -53,9 +57,9 @@ def _round_price_ceiling(price):
     return ((price / step).to_integral_value(rounding=ROUND_CEILING)) * step
 
 
-def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predicted_label, policy_options=None):
+def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predicted_label, policy_options=None, cache=None):
     policy = _normalize_policy_options(policy_options)
-    latest_bar = latest_ohlcv(asset_id, as_of)
+    latest_bar = latest_ohlcv(asset_id, as_of, cache=cache)
     if latest_bar is None:
         return {
             'target_price': None,
@@ -75,20 +79,26 @@ def estimate_trade_decision(asset_id, as_of, horizon_days, up_probability, predi
             'suggested': False,
         }
 
-    recent_rows = list(
-        OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
-        .order_by('-date')
-        .values('high', 'low')[:60]
-    )
+    recent_rows_cache_key = _cache_key('recent_rows', int(asset_id), str(as_of))
+    if cache is not None and recent_rows_cache_key in cache:
+        recent_rows = cache[recent_rows_cache_key]
+    else:
+        recent_rows = list(
+            OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
+            .order_by('-date')
+            .values('high', 'low')[:60]
+        )
+        if cache is not None:
+            cache[recent_rows_cache_key] = recent_rows
 
     highs_20 = [_to_decimal(row['high'], current_close) for row in recent_rows[:20]]
     highs_60 = [_to_decimal(row['high'], current_close) for row in recent_rows]
     lows_20 = [_to_decimal(row['low'], current_close) for row in recent_rows[:20]]
     lows_60 = [_to_decimal(row['low'], current_close) for row in recent_rows]
 
-    bbands = latest_bbands(asset_id, as_of)
-    sma_60 = latest_sma(asset_id, as_of, timeperiod=60)
-    sma_50 = latest_sma(asset_id, as_of, timeperiod=50)
+    bbands = latest_bbands(asset_id, as_of, cache=cache)
+    sma_60 = latest_sma(asset_id, as_of, timeperiod=60, cache=cache)
+    sma_50 = latest_sma(asset_id, as_of, timeperiod=50, cache=cache)
 
     upper_band = _to_decimal((bbands or {}).get('upper'), current_close)
     lower_band = _to_decimal((bbands or {}).get('lower'), current_close)

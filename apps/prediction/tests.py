@@ -23,6 +23,7 @@ from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership,
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.macro.models import MarketContext
 from apps.sentiment.models import SentimentScore
+from .historical_features import latest_bbands, latest_momentum, latest_rsi, latest_sma
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
 from .tasks import generate_predictions_for_date, train_prediction_models
@@ -236,6 +237,65 @@ class Phase14PredictionTests(TestCase):
 
         self.assertTrue(PredictionResult.objects.filter(asset=included_asset, date=d, horizon_days=7).exists())
         self.assertFalse(PredictionResult.objects.filter(asset=excluded_asset, date=d, horizon_days=7).exists())
+
+    def test_latest_indicator_helpers_prefer_stored_rows(self):
+        d = self._seed_features()
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time())),
+            indicator_type='RSI',
+            value=Decimal('61.25'),
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time())),
+            indicator_type='MOM_5D',
+            value=Decimal('0.12345678'),
+        )
+
+        self.assertEqual(latest_rsi(self.asset.id, d), Decimal('61.25'))
+        self.assertEqual(latest_momentum(self.asset.id, d), Decimal('0.12345678'))
+
+        bbands = latest_bbands(self.asset.id, d)
+        self.assertEqual(bbands['upper'], Decimal('10.9'))
+        self.assertEqual(bbands['middle'], Decimal('10.2'))
+        self.assertEqual(bbands['lower'], Decimal('9.7'))
+        self.assertEqual(latest_sma(self.asset.id, d, timeperiod=60), Decimal('9.9'))
+
+    def test_latest_indicator_helpers_accept_legacy_blank_parameters(self):
+        d = timezone.now().date()
+        trade_dates = [d - timezone.timedelta(days=offset) for offset in range(20)]
+        _seed_trading_calendar_dates('SSE', trade_dates)
+        self._seed_required_pit_membership(self.asset, d)
+
+        for offset, as_of in enumerate(trade_dates):
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=as_of,
+                open=Decimal('10.0'),
+                high=Decimal('10.4'),
+                low=Decimal('9.8'),
+                close=Decimal('10.1') + Decimal(offset) / Decimal('100'),
+                adj_close=Decimal('10.1') + Decimal(offset) / Decimal('100'),
+                volume=1000000,
+                amount=Decimal('10100000'),
+            )
+
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time())),
+            indicator_type='RSI',
+            value=Decimal('58.5'),
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time())),
+            indicator_type='MOM_5D',
+            value=Decimal('0.02000000'),
+        )
+
+        self.assertEqual(latest_rsi(self.asset.id, d), Decimal('58.5'))
+        self.assertEqual(latest_momentum(self.asset.id, d), Decimal('0.02000000'))
 
     def test_generate_predictions_task_skips_effective_universe_assets_without_same_day_ohlcv(self):
         included_asset = self.asset

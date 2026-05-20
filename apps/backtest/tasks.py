@@ -1,3 +1,4 @@
+import os
 from bisect import bisect_left
 from datetime import date, timedelta
 from decimal import Decimal
@@ -46,7 +47,16 @@ TOP_N_METRIC_HORIZON_MAP = {
     'up_prob_7d': 7,
     'up_prob_30d': 30,
 }
-BACKTEST_CHUNK_TRADING_DAYS = 20
+
+
+def _int_env(name, default):
+    try:
+        return max(1, int(os.getenv(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+BACKTEST_CHUNK_TRADING_DAYS = _int_env('BACKTEST_CHUNK_TRADING_DAYS', 10)
 
 
 def _to_decimal_or_none(value):
@@ -55,6 +65,15 @@ def _to_decimal_or_none(value):
     try:
         return _d(value)
     except Exception:
+        return None
+
+
+def _to_int_or_none(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return None
 
 
@@ -366,18 +385,18 @@ def _payload_trade_decision_policy(policy):
     return payload
 
 
-def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=None):
+def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=None, run=None):
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('lightgbm_prediction', int(asset_id), dt.isoformat(), int(horizon), policy_key)
     if cache_key in cache:
         return cache[cache_key]
 
-    runtime = _get_lightgbm_runtime(horizon, cache)
+    runtime = _get_lightgbm_runtime(run, horizon, cache)
     model_artifact = runtime['model_artifact']
     artifacts = runtime['artifacts']
     feature_names = runtime['feature_names']
 
-    features_dict = _extract_features_for_asset(asset_id, dt)
+    features_dict = _extract_features_for_asset(asset_id, dt, cache=cache)
     X = np.array([features_dict.get(name, 0.0) for name in feature_names]).reshape(1, -1)
     X_scaled = artifacts['scaler'].transform(X)
     calibrated_probs = artifacts['calibrator'].predict_proba(X_scaled)[0]
@@ -391,6 +410,7 @@ def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_pol
         up_probability=up_prob,
         predicted_label=predicted_label,
         policy_options=trade_decision_policy,
+        cache=cache,
     )
 
     payload = {
@@ -414,7 +434,7 @@ def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_pol
     return payload
 
 
-def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=None):
+def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=None, run=None):
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('lightgbm_prediction_map', dt.isoformat(), int(horizon), policy_key)
     if cache_key in cache:
@@ -422,7 +442,14 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
 
     mapping = {}
     for asset_id in _eligible_backtest_asset_ids(dt, cache):
-        mapping[asset_id] = _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
+        mapping[asset_id] = _predict_lightgbm_for_asset(
+            asset_id,
+            dt,
+            horizon,
+            cache,
+            trade_decision_policy,
+            run=run,
+        )
 
     cache[cache_key] = mapping
     return mapping
@@ -435,7 +462,7 @@ def _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_po
         return cache[cache_key]
 
     model_context = _get_heuristic_model_context(cache)
-    features = _feature_snapshot(asset_id, dt)
+    features = _feature_snapshot(asset_id, dt, cache=cache)
     up, flat, down = _probabilities_from_features(features, horizon, '')
     predicted_label = _predicted_label(up, flat, down)
     confidence = _confidence(up, flat, down)
@@ -446,6 +473,7 @@ def _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_po
         up_probability=up,
         predicted_label=predicted_label,
         policy_options=trade_decision_policy,
+        cache=cache,
     )
 
     payload = {
@@ -483,17 +511,19 @@ def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=No
     return mapping
 
 
-def _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=None):
+def _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=None, run=None):
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('lstm_prediction', int(asset_id), dt.isoformat(), int(horizon), policy_key)
     if cache_key in cache:
         return cache[cache_key]
 
     runtime_cache = cache.setdefault('lstm_runtime_cache', {})
+    model_version = _get_selected_lstm_model_version(run, runtime_cache)
     prediction = _predict_with_lstm(
         asset_id=asset_id,
         target_date=dt,
         horizon_days=horizon,
+        model_version=model_version,
         cache=runtime_cache,
     )
     if prediction is None:
@@ -508,6 +538,7 @@ def _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=
             up_probability=_d(prediction.get('up_probability', 0)),
             predicted_label=prediction.get('predicted_label') or '',
             policy_options=trade_decision_policy,
+            cache=cache,
         )
     else:
         trade_decision = prediction.get('trade_decision') or {}
@@ -533,7 +564,7 @@ def _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=
     return payload
 
 
-def _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy=None):
+def _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy=None, run=None):
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('lstm_prediction_map', dt.isoformat(), int(horizon), policy_key)
     if cache_key in cache:
@@ -545,7 +576,14 @@ def _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy=None):
 
     mapping = {}
     for asset_id in asset_ids:
-        payload = _predict_lstm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
+        payload = _predict_lstm_for_asset(
+            asset_id,
+            dt,
+            horizon,
+            cache,
+            trade_decision_policy,
+            run=run,
+        )
         if payload is not None:
             mapping[asset_id] = payload
 
@@ -565,8 +603,8 @@ def _build_trade_score_candidates(run, dt, horizon, up_threshold, max_positions,
         return cache[cache_key]
 
     heuristic_map = _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy)
-    lightgbm_map = _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy) if scope == 'combined' or prediction_source == 'lightgbm' else {}
-    lstm_map = _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy) if prediction_source == 'lstm' else {}
+    lightgbm_map = _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run) if scope == 'combined' or prediction_source == 'lightgbm' else {}
+    lstm_map = _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run) if prediction_source == 'lstm' else {}
     selected_rows = []
 
     if scope == 'combined':
@@ -658,9 +696,9 @@ def _build_top_n_trade_score_candidates(run, dt, horizon, up_threshold, top_n, c
         return cache[cache_key]
 
     if prediction_source == 'lightgbm':
-        source_map = _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy)
+        source_map = _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run)
     elif prediction_source == 'lstm':
-        source_map = _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy)
+        source_map = _build_lstm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run)
     else:
         source_map = _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy)
 
@@ -940,18 +978,66 @@ def _prediction_source(run):
     return str(params.get('prediction_source', 'heuristic')).lower()
 
 
-def _get_lightgbm_runtime(horizon, cache):
-    runtime_key = ('lightgbm_runtime', horizon)
-    if runtime_key in cache:
-        return cache[runtime_key]
+def _get_selected_lightgbm_artifact(run, horizon):
+    params = run.parameters or {}
+    artifact_id = _to_int_or_none(params.get('lightgbm_model_artifact_id'))
+    artifact_version = str(params.get('lightgbm_model_artifact_version') or '').strip()
 
-    model_artifact = LightGBMModelArtifact.objects.filter(
+    queryset = LightGBMModelArtifact.objects.filter(
         horizon_days=horizon,
-        is_active=True,
         status=LightGBMModelArtifact.Status.READY,
-    ).order_by('-trained_at').first()
+    )
+    if artifact_id is not None:
+        model_artifact = queryset.filter(id=artifact_id).first()
+        if model_artifact is None:
+            raise ValueError(f'Configured LightGBM artifact id {artifact_id} is not READY for horizon {horizon}.')
+        return model_artifact
+
+    if artifact_version:
+        model_artifact = queryset.filter(version=artifact_version).order_by('-trained_at').first()
+        if model_artifact is None:
+            raise ValueError(f'Configured LightGBM artifact version {artifact_version} is not READY for horizon {horizon}.')
+        return model_artifact
+
+    model_artifact = queryset.filter(is_active=True).order_by('-trained_at').first()
     if model_artifact is None:
         raise ValueError(f'No active LightGBM artifact available for horizon {horizon}.')
+    return model_artifact
+
+
+def _get_selected_lstm_model_version(run, cache):
+    params = run.parameters or {}
+    version_id = _to_int_or_none(params.get('lstm_model_version_id'))
+    version_name = str(params.get('lstm_model_version') or '').strip()
+    if version_id is None and not version_name:
+        return None
+
+    cache_key = ('selected_lstm_model_version', version_id, version_name)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    queryset = ModelVersion.objects.filter(
+        model_type=ModelVersion.ModelType.LSTM,
+        status=ModelVersion.Status.READY,
+    )
+    if version_id is not None:
+        version = queryset.filter(id=version_id).first()
+        if version is None:
+            raise ValueError(f'Configured LSTM model version id {version_id} is not READY.')
+    else:
+        version = queryset.filter(version=version_name).order_by('-trained_at', '-created_at').first()
+        if version is None:
+            raise ValueError(f'Configured LSTM model version {version_name} is not READY.')
+
+    cache[cache_key] = version
+    return version
+
+
+def _get_lightgbm_runtime(run, horizon, cache):
+    model_artifact = _get_selected_lightgbm_artifact(run, horizon)
+    runtime_key = ('lightgbm_runtime', horizon, model_artifact.id)
+    if runtime_key in cache:
+        return cache[runtime_key]
 
     artifacts = _load_model_artifacts(horizon, model_artifact.version)
     if not artifacts:
@@ -1019,9 +1105,9 @@ def _build_heuristic_candidates(dt, horizon, up_threshold, top_n, cache, trade_d
     return rows[:top_n]
 
 
-def _build_lightgbm_candidates(dt, horizon, up_threshold, top_n, cache, trade_decision_policy=None):
+def _build_lightgbm_candidates(dt, horizon, up_threshold, top_n, cache, trade_decision_policy=None, run=None):
     rows = []
-    for asset_id, payload in _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy).items():
+    for asset_id, payload in _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run).items():
         up_prob = _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0
         if up_prob < up_threshold:
             continue
@@ -1125,14 +1211,14 @@ def _pick_candidates(run, dt, cache):
         rows = _build_top_n_trade_score_candidates(run, dt, metric_horizon, up_threshold, top_n, cache)
         cache[cache_key] = rows
     elif prediction_source == 'lightgbm':
-        rows = _build_lightgbm_candidates(dt, metric_horizon, up_threshold, top_n, cache, trade_decision_policy)
+        rows = _build_lightgbm_candidates(dt, metric_horizon, up_threshold, top_n, cache, trade_decision_policy, run=run)
         for row in rows:
             row['signal_payload']['top_n_metric'] = top_n_metric
             row['signal_payload']['candidate_mode'] = 'top_n'
         cache[cache_key] = rows
     elif prediction_source == 'lstm':
         rows = []
-        for asset_id, payload in _build_lstm_prediction_map(dt, metric_horizon, cache, trade_decision_policy).items():
+        for asset_id, payload in _build_lstm_prediction_map(dt, metric_horizon, cache, trade_decision_policy, run=run).items():
             rank_value = _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0
             if rank_value < up_threshold:
                 continue
@@ -1193,7 +1279,7 @@ def _pick_candidates(run, dt, cache):
     return adjusted_rows[:top_n]
 
 
-def _backfill_prediction_trade_decision(asset_id, current_date, signal_payload):
+def _backfill_prediction_trade_decision(asset_id, current_date, signal_payload, cache=None):
     if signal_payload.get('strategy') != BacktestRun.StrategyType.PREDICTION_THRESHOLD:
         return signal_payload
     if signal_payload.get('prediction_source') not in PREDICTION_PAYLOAD_SOURCES:
@@ -1225,6 +1311,7 @@ def _backfill_prediction_trade_decision(asset_id, current_date, signal_payload):
         up_probability=up_probability,
         predicted_label=predicted_label,
         policy_options=signal_payload.get('trade_decision_policy'),
+        cache=cache,
     )
 
     for field in ('trade_score', 'target_price', 'stop_loss_price'):
@@ -1326,7 +1413,21 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
     return cash, remaining_positions
 
 
-def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash, initial_capital, capital_fraction, price_map, fee_config, slippage_bps, open_positions, max_positions):
+def _open_positions_for_date(
+    run,
+    current_date,
+    exit_date,
+    candidate_rows,
+    cash,
+    initial_capital,
+    capital_fraction,
+    price_map,
+    fee_config,
+    slippage_bps,
+    open_positions,
+    max_positions,
+    runtime_cache=None,
+):
     if not candidate_rows:
         return cash
 
@@ -1352,7 +1453,12 @@ def _open_positions_for_date(run, current_date, exit_date, candidate_rows, cash,
         buy_close = price_map.get((asset_id, current_date))
         if not buy_close or buy_close <= 0:
             continue
-        signal_payload = _backfill_prediction_trade_decision(asset_id, current_date, signal_payload)
+        signal_payload = _backfill_prediction_trade_decision(
+            asset_id,
+            current_date,
+            signal_payload,
+            cache=runtime_cache,
+        )
 
         slippage_buy = buy_close * slippage_bps / DECIMAL_100 / DECIMAL_100
         buy_price = buy_close + slippage_buy
@@ -1608,6 +1714,7 @@ def run_backtest(backtest_run_id):
                         slippage_bps,
                         open_positions,
                         max_positions,
+                        runtime_cache=candidate_cache,
                     )
 
             equity_curve.append(_portfolio_equity(current_date, cash, open_positions, price_map))

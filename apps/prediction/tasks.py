@@ -52,7 +52,7 @@ def _resolve_context(explicit_macro_phase=None, explicit_event_tag=None, as_of=N
     return current.macro_phase, current.event_tag or ''
 
 
-def _feature_snapshot(asset_id, as_of):
+def _feature_snapshot(asset_id, as_of, cache=None):
     factor = FactorScore.objects.filter(
         asset_id=asset_id,
         date__lte=as_of,
@@ -65,9 +65,9 @@ def _feature_snapshot(asset_id, as_of):
         score_type=SentimentScore.ScoreType.ASSET_7D,
     ).order_by('-date').first()
 
-    rsi = latest_rsi(asset_id, as_of, default=Decimal('50'))
-    mom_5d = latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0'))
-    rs_score = latest_rs_score(asset_id, as_of, default=Decimal('0.5'))
+    rsi = latest_rsi(asset_id, as_of, default=Decimal('50'), cache=cache)
+    mom_5d = latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0'), cache=cache)
+    rs_score = latest_rs_score(asset_id, as_of, default=Decimal('0.5'), cache=cache)
 
     return {
         'factor_composite': Decimal(str(getattr(factor, 'composite_score', Decimal('0.5')))),
@@ -190,7 +190,8 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
 
     processed = 0
     for asset in effective_universe_tradeable_assets(as_of, context=f'Daily prediction for {as_of}'):
-        features = _feature_snapshot(asset.id, as_of)
+        runtime_cache = {}
+        features = _feature_snapshot(asset.id, as_of, cache=runtime_cache)
         for horizon in horizons:
             up, flat, down = _probabilities_from_features(features, int(horizon), ctx_macro)
             label = _predicted_label(up, flat, down)
@@ -201,6 +202,7 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
                 horizon_days=int(horizon),
                 up_probability=up,
                 predicted_label=label,
+                cache=runtime_cache,
             )
 
             PredictionResult.objects.update_or_create(
@@ -246,7 +248,8 @@ def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=N
     version = _ensure_active_ensemble_version(as_of)
 
     processed = 0
-    features = _feature_snapshot(asset.id, as_of)
+    runtime_cache = {}
+    features = _feature_snapshot(asset.id, as_of, cache=runtime_cache)
     for horizon in horizons:
         up, flat, down = _probabilities_from_features(features, int(horizon), ctx_macro)
         label = _predicted_label(up, flat, down)
@@ -257,6 +260,7 @@ def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=N
             horizon_days=int(horizon),
             up_probability=up,
             predicted_label=label,
+            cache=runtime_cache,
         )
 
         PredictionResult.objects.update_or_create(

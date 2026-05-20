@@ -108,6 +108,11 @@ Detailed version-by-version release notes are maintained in [CHANGELOG.md](CHANG
 
 ## Future Phases & Roadmap
 
+2. If you want, I can next diff one asset/date across heuristic, LightGBM, and LSTM to show exactly which stored features caused the model outputs to move.
+
+[celery-worker] [2026-05-19 04:48:32,333: INFO/ForkPoolWorker-4] Task apps.backtest.tasks.run_backtest[7afce689-76ec-46f3-8d02-b1aac82c2dd4] succeeded in 2061.959317232s: 'Backtest failed for run_id=578: SoftTimeLimitExceeded()'
+
+
 extras:
 1. close 实际上已经是 qfq 值，而 adj_close 现在也是同一个值，没有保留未复权原始 close。把 OHLCV 的复权语义明确下来：新增 raw_close，避免 close 和 adj_close 现在这种“值一样但名字不同”的状态
 2. 没有 limit_up / limit_down 规则. 没有按昨收去判断 10% / 20% / ST 涨跌停板. 没有按交易所制度去区分主板、创业板、科创板、北交所的不同涨跌幅限制. 也没有“超大日收益跳变”这类 return-based price anomaly 规则. 涨跌停是否被标记：否.

@@ -402,15 +402,29 @@ class Command(BaseCommand):
             ))
 
         if 'BBANDS' in indicator_types:
-            _upper, middle, _lower = talib.BBANDS(df['close'], timeperiod=20, nbdevup=2, nbdevdn=2)
-            rows.extend(self._series_rows(
-                asset,
-                pd.Series(middle, index=df.index),
-                'BBANDS',
-                {'timeperiod': 20, 'nbdevup': 2, 'nbdevdn': 2},
-                start_date,
-                end_date,
-            ))
+            upper, middle, lower = talib.BBANDS(df['close'], timeperiod=20, nbdevup=2, nbdevdn=2)
+            for trading_date in df.index:
+                if trading_date < start_date or trading_date > end_date:
+                    continue
+                middle_value = _safe_decimal(middle.get(trading_date))
+                upper_value = _safe_decimal(upper.get(trading_date))
+                lower_value = _safe_decimal(lower.get(trading_date))
+                if middle_value is None or upper_value is None or lower_value is None:
+                    continue
+                rows.append(TechnicalIndicator(
+                    asset=asset,
+                    timestamp=_make_timestamp(trading_date),
+                    indicator_type='BBANDS',
+                    value=middle_value,
+                    parameters={
+                        'timeperiod': 20,
+                        'nbdevup': 2,
+                        'nbdevdn': 2,
+                        'upper': float(upper_value),
+                        'middle': float(middle_value),
+                        'lower': float(lower_value),
+                    },
+                ))
 
         if 'SMA' in indicator_types:
             for period in SMA_PERIODS:

@@ -1063,6 +1063,17 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
             {self.start_date + datetime.timedelta(days=offset) for offset in range(5)},
         )
 
+        bbands = TechnicalIndicator.objects.filter(
+            asset=self.asset,
+            indicator_type='BBANDS',
+            timestamp__date=self.end_date,
+        ).first()
+        self.assertIsNotNone(bbands)
+        self.assertIn('upper', bbands.parameters)
+        self.assertIn('middle', bbands.parameters)
+        self.assertIn('lower', bbands.parameters)
+        self.assertEqual(Decimal(str(bbands.parameters['middle'])), bbands.value)
+
     def test_backfill_technical_indicators_supports_large_obv_values(self):
         large_volume_asset = Asset.objects.create(
             market=self.market,

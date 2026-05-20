@@ -1,0 +1,14 @@
+{
+  "horizon_days": 7,
+  "version": "lstm-2024-12-31-stored-ti-v1",
+  "sequence_length": 20,
+  "training_samples": 24000,
+  "validation_samples": 6000,
+  "accuracy": 0.4145,
+  "epochs": 8,
+  "hidden_size": 64,
+  "num_layers": 2,
+  "dropout": 0.2,
+  "missing_value_strategy": "mask_and_zero_impute",
+  "trained_at": "2026-05-18T14:01:20.043746+00:00"
+}
