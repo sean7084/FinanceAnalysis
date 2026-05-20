@@ -392,6 +392,7 @@ These items improve model quality and signal usefulness, but they depend on the 
    ```
 
    The existing `.sh` launchers are still available if you prefer to work from Git Bash.
+   On Windows, `run_celery_worker.ps1` defaults to Celery's `solo` pool to avoid `billiard` handle errors; set `CELERY_WORKER_POOL` and optionally `CELERY_WORKER_CONCURRENCY` if you need a different local worker mode.
 
 8. **Run tests locally**:
    ```bash
