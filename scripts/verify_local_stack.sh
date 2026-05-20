@@ -10,9 +10,15 @@ echo "Project root: $PROJECT_ROOT"
 echo "Python: $PYTHON_BIN"
 echo "Django settings: $DJANGO_SETTINGS_MODULE"
 
+readarray -t database_endpoint < <(
+  "$PYTHON_BIN" -c "from urllib.parse import urlparse; import os; parsed = urlparse(os.environ.get('DATABASE_URL', 'postgres://localhost:5432')); print(parsed.hostname or 'localhost'); print(parsed.port or 5432)"
+)
+DB_HOST="${database_endpoint[0]:-localhost}"
+DB_PORT="${database_endpoint[1]:-5432}"
+
 if command -v pg_isready >/dev/null 2>&1; then
-  if ! pg_isready -h localhost -p 5432 >/dev/null; then
-    echo "PostgreSQL is not ready on localhost:5432" >&2
+  if ! pg_isready -h "$DB_HOST" -p "$DB_PORT" >/dev/null; then
+    echo "PostgreSQL is not ready on ${DB_HOST}:${DB_PORT}" >&2
     status=1
   else
     echo "PostgreSQL: ready"

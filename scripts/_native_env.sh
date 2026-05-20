@@ -2,12 +2,31 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_BIN="${VENV_BIN:-$PROJECT_ROOT/.venv/bin}"
+if [[ -d "$PROJECT_ROOT/.venv/Scripts" ]]; then
+  DEFAULT_VENV_BIN="$PROJECT_ROOT/.venv/Scripts"
+else
+  DEFAULT_VENV_BIN="$PROJECT_ROOT/.venv/bin"
+fi
+
+VENV_BIN="${VENV_BIN:-$DEFAULT_VENV_BIN}"
 PYTHON_BIN="${PYTHON_BIN:-$VENV_BIN/python}"
 CELERY_BIN="${CELERY_BIN:-$VENV_BIN/celery}"
 
+if [[ ! -x "$PYTHON_BIN" && -x "$VENV_BIN/python.exe" ]]; then
+  PYTHON_BIN="$VENV_BIN/python.exe"
+fi
+
+if [[ ! -x "$CELERY_BIN" && -x "$VENV_BIN/celery.exe" ]]; then
+  CELERY_BIN="$VENV_BIN/celery.exe"
+fi
+
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python runtime not found at $PYTHON_BIN. Create or activate .venv first." >&2
+  exit 1
+fi
+
+if ! "$PYTHON_BIN" --version >/dev/null 2>&1; then
+  echo "Python runtime at $PYTHON_BIN is not usable. The virtual environment may have been copied from Linux; recreate .venv on Windows or set PYTHON_BIN explicitly." >&2
   exit 1
 fi
 

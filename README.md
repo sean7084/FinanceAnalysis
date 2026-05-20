@@ -324,13 +324,13 @@ These items improve model quality and signal usefulness, but they depend on the 
 ## 🚦 Getting Started
 
 ### Prerequisites
-- Linux
-- Python 3.12 with `venv`
-- PostgreSQL 15 running on `localhost:5432`
-- Redis 7 running on `localhost:6379`
+- Windows 11 with PowerShell 7 for the primary local workflow
+- Python 3.14 with `venv`
+- PostgreSQL 15 reachable at the host configured in `.envs/.local` (current shared dev host: `192.168.31.8:5432`)
+- Redis 7 reachable at the host configured in `.envs/.local` (current shared dev host: `192.168.31.8:6379`)
 - Node.js and npm
 - TA-Lib system library installed on the host
-- Git
+- Git for Windows
 
 ### Installation
 
@@ -342,11 +342,12 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 2. **Set up environment variables**:
    ```bash
-   mkdir -p .envs
-   cp .env.example .envs/.local
+   New-Item -ItemType Directory -Force .envs | Out-Null
+   Copy-Item .env.example .envs/.local
    ```
 
    Update `.envs/.local` with your local secrets and service URLs.
+   The checked-in example uses the current shared PostgreSQL/Redis host at `192.168.31.8`; replace those URLs if your services live elsewhere.
 
    `.envs/.local` is the only env file required for the host-native test workflow.
    Django and the helper scripts read it directly, and the Compose file also points at it if you still run containers for non-test work.
@@ -354,10 +355,12 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 3. **Create and activate the virtual environment**:
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
    pip install -r requirements/local.txt
    ```
+
+   Recreate `.venv` on Windows. Do not reuse a virtual environment copied from the old Ubuntu VM, because the embedded interpreter path will still point at the Linux host.
 
 4. **Install frontend dependencies**:
    ```bash
@@ -368,7 +371,7 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 5. **Verify the native stack**:
    ```bash
-   ./scripts/verify_local_stack.sh
+   pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_local_stack.ps1
    ```
 
 6. **Run migrations and create a superuser**:
@@ -379,10 +382,16 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 7. **Start local services**:
    ```bash
-   ./scripts/run_backend.sh
-   ./scripts/run_celery_worker.sh
-   ./scripts/run_celery_beat.sh
+   # Preferred: VS Code task -> Run local stack
+
+   # Or run the services in separate PowerShell terminals:
+   pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_backend.ps1
+   pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_celery_worker.ps1
+   pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_celery_beat.ps1
+   pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_frontend.ps1
    ```
+
+   The existing `.sh` launchers are still available if you prefer to work from Git Bash.
 
 8. **Run tests locally**:
    ```bash

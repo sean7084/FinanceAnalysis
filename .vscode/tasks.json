@@ -2,17 +2,106 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Run local stack",
+      "label": "Run backend",
       "type": "shell",
-      "command": "bash ./scripts/run_local_stack.sh",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\run_backend.ps1"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
+      "isBackground": true,
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
+        "group": "local-stack",
         "clear": true
       },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run celery worker",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\run_celery_worker.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "local-stack",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run celery beat",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\run_celery_beat.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "local-stack",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run frontend",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\run_frontend.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "local-stack",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run local stack",
+      "dependsOrder": "parallel",
+      "dependsOn": [
+        "Run backend",
+        "Run celery worker",
+        "Run celery beat",
+        "Run frontend"
+      ],
       "problemMatcher": []
     }
   ]
