@@ -91,6 +91,31 @@ function fmtMaybeNumber(value: unknown, digits = 2): string {
   return '--'
 }
 
+function formatWinRateWithCounts(winRate: number | null, winningTrades: number, totalTrades: number): string {
+  if (winRate === null) {
+    return '--'
+  }
+  return `${(Number(winRate) * 100).toFixed(2)}% ${winningTrades}/${totalTrades}`
+}
+
+function formatBacktestDuration(startedAt: string | null, completedAt: string | null): string {
+  if (!startedAt || !completedAt) {
+    return '--'
+  }
+
+  const startedAtMs = Date.parse(startedAt)
+  const completedAtMs = Date.parse(completedAt)
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) {
+    return '--'
+  }
+
+  const totalSeconds = Math.floor((completedAtMs - startedAtMs) / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
+}
+
 function parseFiniteNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value
@@ -999,26 +1024,6 @@ export function BacktestWorkbenchPage() {
         </div>
         {runnerMessage ? <p className="status">{runnerMessage}</p> : null}
       </div>
-      {selectedRun && (
-        <div className="metric-grid">
-          <article className="card metric-card">
-            <span>{t('backtest.selectedRun')}</span>
-            <strong>#{selectedRun.id} {selectedRun.name}</strong>
-          </article>
-          <article className="card metric-card">
-            <span>{t('backtest.predictionSource')}</span>
-            <strong>{predictionSource}</strong>
-          </article>
-          <article className="card metric-card">
-            <span>{t('backtest.totalTrades')}</span>
-            <strong>{selectedRun.total_trades}</strong>
-          </article>
-          <article className="card metric-card">
-            <span>{t('backtest.benchmarkReturn')}</span>
-            <strong>{typeof benchmark.total_return === 'number' ? `${(benchmark.total_return * 100).toFixed(2)}%` : '--'}</strong>
-          </article>
-        </div>
-      )}
       <div className="card">
         {loading && <p className="status">{t('common.loading')}</p>}
         {error && <p className="status disconnected">{error}</p>}
@@ -1190,15 +1195,11 @@ export function BacktestWorkbenchPage() {
             </article>
             <article className="metric-card">
               <span>{t('backtest.winRate')}</span>
-              <strong>{selectedRun.win_rate !== null ? `${(Number(selectedRun.win_rate) * 100).toFixed(2)}%` : '--'}</strong>
+              <strong>{formatWinRateWithCounts(selectedRun.win_rate, selectedRun.winning_trades, selectedRun.total_trades)}</strong>
             </article>
             <article className="metric-card">
-              <span>{t('backtest.totalTrades')}</span>
-              <strong>{selectedRun.total_trades}</strong>
-            </article>
-            <article className="metric-card">
-              <span>{t('backtest.winningTrades')}</span>
-              <strong>{selectedRun.winning_trades ?? '--'}</strong>
+              <span>{t('backtest.runtime')}</span>
+              <strong>{formatBacktestDuration(selectedRun.started_at, selectedRun.completed_at)}</strong>
             </article>
             <article className="metric-card">
               <span>{t('backtest.benchmarkReturn')}</span>

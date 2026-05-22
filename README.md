@@ -460,7 +460,7 @@ Key fixes from the older block:
 - `backfill_technical_indicators` does not support `RS_SCORE`; `RS_SCORE` is backfilled through `backfill_model_data`.
 - The correct trainer command name is `rebuild_lightgbm_pipeline`.
 
-#### recommended run order
+#### backfill commands and recommended run order
 
 1. Universe and market foundation:
    ```bash

@@ -837,9 +837,9 @@ describe('BacktestWorkbenchPage runner controls', () => {
     })
 
     await waitFor(() => {
-      const selectedRunCard = screen.getByText('Selected Run').closest('article')
-      expect(selectedRunCard).not.toBeNull()
-      expect(within(selectedRunCard as HTMLElement).getByText('#77 Running Control Run')).toBeInTheDocument()
+      const replacementRow = screen.getByText('Running Control Run').closest('tr')
+      expect(replacementRow).not.toBeNull()
+      expect(replacementRow).toHaveClass('row-selected')
     })
 
     expect(screen.getByText('Removed backtest #84 Validation-lightgbm-2023-01-01-2024-12-31.')).toBeInTheDocument()
@@ -867,6 +867,23 @@ describe('BacktestWorkbenchPage runner controls', () => {
 
     expect(screen.getAllByText('TUE, THU').length).toBeGreaterThan(0)
     expect(screen.queryByText('1, 3')).not.toBeInTheDocument()
+  })
+
+  it('shows count-aware win rate and hh:mm:ss runtime in trade details without the removed summary cards', async () => {
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Trade Details')).toBeInTheDocument()
+    })
+
+    const tradeDetailsCard = screen.getByText('Trade Details').closest('.card')
+    expect(tradeDetailsCard).not.toBeNull()
+
+    expect(screen.queryByText('Selected Run')).not.toBeInTheDocument()
+    expect(screen.getByText('55.00% 6/10')).toBeInTheDocument()
+    expect(screen.getByText('00:30:00')).toBeInTheDocument()
+    expect(within(tradeDetailsCard as HTMLElement).queryByText('Winning Trades')).not.toBeInTheDocument()
+    expect(within(tradeDetailsCard as HTMLElement).queryByText('Closed Trades')).not.toBeInTheDocument()
   })
 
   it('navigates to the dashboard with the reused backtest config encoded in the URL', async () => {
