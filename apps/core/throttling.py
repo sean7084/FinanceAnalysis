@@ -1,5 +1,17 @@
-from rest_framework.throttling import UserRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from apps.users.models import SubscriptionTier
+
+
+class AuthEndpointRateThrottle(AnonRateThrottle):
+    """
+    Dedicated rate throttle for anonymous JWT auth endpoints.
+
+    This keeps login/refresh traffic independent from the global anonymous API
+    rate so local development can relax auth limits without weakening the rest
+    of the API surface.
+    """
+
+    scope = 'auth'
 
 
 class TierBasedRateThrottle(UserRateThrottle):

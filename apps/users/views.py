@@ -2,6 +2,11 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+    TokenVerifyView,
+)
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.conf import settings
@@ -21,6 +26,19 @@ from .serializers import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
 )
+from apps.core.throttling import AuthEndpointRateThrottle
+
+
+class ScopedTokenObtainPairView(TokenObtainPairView):
+    throttle_classes = [AuthEndpointRateThrottle]
+
+
+class ScopedTokenRefreshView(TokenRefreshView):
+    throttle_classes = [AuthEndpointRateThrottle]
+
+
+class ScopedTokenVerifyView(TokenVerifyView):
+    throttle_classes = [AuthEndpointRateThrottle]
 
 
 class UserRegistrationView(APIView):

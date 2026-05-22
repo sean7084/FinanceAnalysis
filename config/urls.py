@@ -7,11 +7,6 @@ The `urlpatterns` list routes URLs to views. For more information please see:
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-    TokenVerifyView,
-)
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
@@ -29,6 +24,9 @@ from apps.analytics.views import (
     SignalEventViewSet,
 )
 from apps.users.views import (
+    ScopedTokenObtainPairView,
+    ScopedTokenRefreshView,
+    ScopedTokenVerifyView,
     UserRegistrationView,
     EmailVerificationView,
     PasswordResetRequestView,
@@ -118,9 +116,9 @@ urlpatterns = [
     path('api/v1/users/password-reset/', PasswordResetRequestView.as_view(), name='password_reset'),
     path('api/v1/users/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     # JWT authentication
-    path('api/v1/auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/v1/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('api/v1/auth/token/verify/', TokenVerifyView.as_view(), name='token_verify'),
+    path('api/v1/auth/token/', ScopedTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/v1/auth/token/refresh/', ScopedTokenRefreshView.as_view(), name='token_refresh'),
+    path('api/v1/auth/token/verify/', ScopedTokenVerifyView.as_view(), name='token_verify'),
     # Browsable API authentication
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     # OpenAPI schema endpoints (drf-spectacular)

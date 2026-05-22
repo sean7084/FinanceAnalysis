@@ -17,3 +17,11 @@ ALLOWED_HOSTS = env.list(
 EMAIL_BACKEND = env(
     "DJANGO_EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend"
 )
+
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    'DEFAULT_THROTTLE_RATES': {
+        **REST_FRAMEWORK.get('DEFAULT_THROTTLE_RATES', {}),
+        'auth': env('DJANGO_LOCAL_AUTH_THROTTLE_RATE', default='1000/hour'),
+    },
+}

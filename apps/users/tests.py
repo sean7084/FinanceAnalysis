@@ -1,13 +1,18 @@
+from django.conf import settings
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
 from django.urls import reverse
 from django.utils import timezone
 from datetime import timedelta
+from functools import wraps
 
 from rest_framework.test import APIClient
 from rest_framework import status
+from rest_framework.settings import reload_api_settings
 
 from .models import UserProfile, Subscription, APIUsage, SubscriptionTier
+from apps.core.throttling import AuthEndpointRateThrottle
 
 
 def make_user(username='testuser', email='test@example.com', password='TestPass123!'):
@@ -21,6 +26,7 @@ def make_user(username='testuser', email='test@example.com', password='TestPass1
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
 class UserRegistrationTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.url = '/api/v1/users/register/'
         self.valid_data = {
@@ -59,6 +65,7 @@ class UserRegistrationTests(TestCase):
 
 class EmailVerificationTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.url = '/api/v1/users/verify-email/'
         self.user = User.objects.create_user(
@@ -89,6 +96,7 @@ class EmailVerificationTests(TestCase):
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
 class PasswordResetTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.user = make_user()
 
@@ -144,8 +152,70 @@ class PasswordResetTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+def with_throttle_rates(**rate_overrides):
+    overridden_rest_framework = {
+        **settings.REST_FRAMEWORK,
+        'DEFAULT_THROTTLE_RATES': {
+            **settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'],
+            **rate_overrides,
+        },
+    }
+
+    def decorator(func):
+        @wraps(func)
+        def inner(*args, **kwargs):
+            try:
+                with override_settings(REST_FRAMEWORK=overridden_rest_framework):
+                    reload_api_settings(setting='REST_FRAMEWORK', value=overridden_rest_framework)
+                    cache.clear()
+                    return func(*args, **kwargs)
+            finally:
+                cache.clear()
+                reload_api_settings(setting='REST_FRAMEWORK', value=settings.REST_FRAMEWORK)
+
+        return inner
+
+    return decorator
+
+
+class AuthThrottleTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = make_user(username='authuser', email='auth@example.com', password='TestPass123!')
+        self.url = '/api/v1/auth/token/'
+        self.credentials = {
+            'username': 'authuser',
+            'password': 'TestPass123!',
+        }
+
+    @with_throttle_rates(anon='1/day', auth='5/day')
+    def test_token_endpoint_uses_dedicated_auth_scope_not_global_anon_limit(self):
+        first = self.client.post(self.url, self.credentials, format='json')
+        second = self.client.post(self.url, self.credentials, format='json')
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+
+    def test_token_endpoint_respects_auth_scope_limit(self):
+        original_rate = getattr(AuthEndpointRateThrottle, 'rate', None)
+        AuthEndpointRateThrottle.rate = '1/day'
+
+        try:
+            cache.clear()
+            first = self.client.post(self.url, self.credentials, format='json')
+            second = self.client.post(self.url, self.credentials, format='json')
+
+            self.assertEqual(first.status_code, status.HTTP_200_OK)
+            self.assertEqual(second.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        finally:
+            AuthEndpointRateThrottle.rate = original_rate
+            cache.clear()
+
+
 class UserProfileTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.user = make_user()
         self.client.force_authenticate(user=self.user)
@@ -177,6 +247,7 @@ class UserProfileTests(TestCase):
 
 class SubscriptionTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.user = make_user()
         self.client.force_authenticate(user=self.user)
@@ -224,6 +295,7 @@ class SubscriptionTests(TestCase):
 
 class APIUsageStatsTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.user = make_user()
         self.client.force_authenticate(user=self.user)
@@ -273,6 +345,7 @@ class APIUsageStatsTests(TestCase):
 
 class SubscriptionTierPropertyTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.user = make_user()
 
     def test_is_pro_true_with_active_pro_subscription(self):

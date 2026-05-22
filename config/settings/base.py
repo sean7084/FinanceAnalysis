@@ -280,6 +280,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/day',      # Anonymous users
+        'auth': '100/day',      # JWT auth endpoints
         'free': '100/day',      # Free tier users
         'pro': '1000/day',      # Pro tier users
         'premium': '10000/day', # Premium tier users
