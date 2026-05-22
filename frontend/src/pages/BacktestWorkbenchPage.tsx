@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createBacktestRun,
@@ -29,6 +29,7 @@ import { useI18n } from '../i18n'
 type WeekdayLabel = (typeof WEEKDAY_LABELS)[number]
 const RUN_HISTORY_PAGE_SIZE_DEFAULT = 5
 const TRADE_HISTORY_PAGE_SIZE = 10
+const BACKTEST_AUTO_REFRESH_INTERVAL_MS = 10_000
 
 function storedWeekdayToLabel(value: unknown): WeekdayLabel | null {
   if (typeof value === 'string') {
@@ -90,6 +91,16 @@ function fmtMaybeNumber(value: unknown, digits = 2): string {
   return '--'
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return Number(value)
+  }
+  return null
+}
+
 function parsePositiveRunId(value: unknown): number | null {
   const numericValue = typeof value === 'number'
     ? value
@@ -148,15 +159,55 @@ function pendingControlMessage(action: BacktestPendingControlAction, t: (key: st
   return ''
 }
 
+function formatTradingDayCompletion(run: BacktestRunDto): string | null {
+  if (run.status !== 'RUNNING') {
+    return null
+  }
+
+  const progress = run.report?.progress
+  const processedTradingDays = parseFiniteNumber(progress?.processed_trading_days)
+  const totalTradingDays = parseFiniteNumber(progress?.total_trading_days)
+  if (processedTradingDays === null || totalTradingDays === null || totalTradingDays <= 0) {
+    return null
+  }
+
+  const completionPercent = Math.min(100, Math.max(0, (processedTradingDays / totalTradingDays) * 100))
+  const roundedCompletionPercent = Math.round(completionPercent * 10) / 10
+  return Number.isInteger(roundedCompletionPercent)
+    ? `${roundedCompletionPercent.toFixed(0)}%`
+    : `${roundedCompletionPercent.toFixed(1)}%`
+}
+
 function formatBacktestRunStatus(run: BacktestRunDto, t: (key: string) => string): string {
   const pendingAction = normalizePendingControlAction(run.pending_control_action)
-  if (run.has_stale_task_owner) {
-    return `${run.status} (${t('backtest.statusDead')})`
+  const statusDetails: string[] = []
+  const tradingDayCompletion = formatTradingDayCompletion(run)
+
+  if (tradingDayCompletion) {
+    statusDetails.push(tradingDayCompletion)
   }
-  if (pendingAction === 'NONE') {
+  if (run.has_stale_task_owner) {
+    statusDetails.push(t('backtest.statusDead'))
+  }
+  if (pendingAction !== 'NONE') {
+    statusDetails.push(pendingControlMessage(pendingAction, t))
+  }
+
+  if (!statusDetails.length) {
     return run.status
   }
-  return `${run.status} (${pendingControlMessage(pendingAction, t)})`
+  return `${run.status} (${statusDetails.join(' · ')})`
+}
+
+type LoadRunsOptions = {
+  preferredRunId?: number | null
+  resetPage?: boolean
+  showLoading?: boolean
+}
+
+type LoadTradesOptions = {
+  resetPage?: boolean
+  showLoading?: boolean
 }
 
 export function BacktestWorkbenchPage() {
@@ -183,6 +234,9 @@ export function BacktestWorkbenchPage() {
   const [runActionMessage, setRunActionMessage] = useState<string | null>(null)
   const [runActionError, setRunActionError] = useState<string | null>(null)
   const [reuseRunId, setReuseRunId] = useState<string>('')
+  const isMountedRef = useRef(true)
+  const runRequestIdRef = useRef(0)
+  const tradeRequestIdRef = useRef(0)
   const [runnerForm, setRunnerForm] = useState({
     mode: 'single' as 'single' | 'batch',
     namePrefix: 'Validation',
@@ -243,51 +297,90 @@ export function BacktestWorkbenchPage() {
     setRunnerMessage(`Loaded config from run #${run.id}`)
   }
 
-  const loadRuns = async (preferredRunId: number | null = null) => {
-    setLoading(true)
+  const loadRuns = async ({ preferredRunId = null, resetPage = false, showLoading = true }: LoadRunsOptions = {}) => {
+    const requestId = ++runRequestIdRef.current
+    if (showLoading) {
+      setLoading(true)
+    }
+
     try {
       const data = await fetchBacktestRuns(100)
+      if (!isMountedRef.current || requestId !== runRequestIdRef.current) {
+        return []
+      }
+
       setRuns(data)
-      setRunPage(1)
+      if (resetPage) {
+        setRunPage(1)
+      }
       setSelectedRunId((current) => resolveSelectedRunId(data, current, preferredRunId))
       setError(null)
       return data
     } catch {
-      setRuns([])
-      setRunPage(1)
-      setSelectedRunId(null)
-      setError(hasAnyAuthCredential() ? t('backtest.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
+      if (!isMountedRef.current || requestId !== runRequestIdRef.current) {
+        return []
+      }
+
+      if (showLoading) {
+        setRuns([])
+        if (resetPage) {
+          setRunPage(1)
+        }
+        setSelectedRunId(null)
+        setError(hasAnyAuthCredential() ? t('backtest.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
+      }
       return []
     } finally {
-      setLoading(false)
+      if (showLoading && isMountedRef.current && requestId === runRequestIdRef.current) {
+        setLoading(false)
+      }
+    }
+  }
+
+  const loadTrades = async (runId: number, { resetPage = true, showLoading = true }: LoadTradesOptions = {}) => {
+    const requestId = ++tradeRequestIdRef.current
+    if (showLoading) {
+      setTradeLoading(true)
+    }
+
+    try {
+      const data = await fetchBacktestTrades(runId)
+      if (!isMountedRef.current || requestId !== tradeRequestIdRef.current) {
+        return
+      }
+
+      setTrades(data)
+      if (resetPage) {
+        setTradePage(1)
+      }
+    } catch {
+      if (!isMountedRef.current || requestId !== tradeRequestIdRef.current) {
+        return
+      }
+
+      if (showLoading) {
+        setTrades([])
+        if (resetPage) {
+          setTradePage(1)
+        }
+      }
+    } finally {
+      if (showLoading && isMountedRef.current && requestId === tradeRequestIdRef.current) {
+        setTradeLoading(false)
+      }
     }
   }
 
   useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const data = await fetchBacktestRuns(100)
-        if (alive) {
-          setRuns(data)
-          setRunPage(1)
-          setSelectedRunId((current) => resolveSelectedRunId(data, current))
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('backtest.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-    })()
+    isMountedRef.current = true
+    void loadRuns({ resetPage: true, showLoading: true })
+    const intervalId = window.setInterval(() => {
+      void loadRuns({ showLoading: false })
+    }, BACKTEST_AUTO_REFRESH_INTERVAL_MS)
 
     return () => {
-      alive = false
+      isMountedRef.current = false
+      window.clearInterval(intervalId)
     }
   }, [])
 
@@ -360,7 +453,7 @@ export function BacktestWorkbenchPage() {
       const runName = `${runnerForm.namePrefix}-${source}-${runnerForm.startDate}-${runnerForm.endDate}`
       await createBacktestRun(toRunPayload(runName, runnerForm.startDate, runnerForm.endDate, source, syncedCompareRun?.id))
     }
-    await loadRuns()
+    await loadRuns({ resetPage: true, showLoading: true })
     setRunnerMessage(t('backtest.runnerSingleSuccess'))
   }
 
@@ -377,7 +470,7 @@ export function BacktestWorkbenchPage() {
       }
       cursor = addDays(cursor, runnerForm.stepDays)
     }
-    await loadRuns()
+    await loadRuns({ resetPage: true, showLoading: true })
     setRunnerMessage(t('backtest.runnerBatchSuccess').replace('{count}', String(created)))
   }
 
@@ -438,7 +531,7 @@ export function BacktestWorkbenchPage() {
         message = response?.message ?? t('backtest.actionRemoveDone').replace('{run}', runLabel)
       }
 
-      await loadRuns(run.id)
+      await loadRuns({ preferredRunId: run.id, showLoading: true })
       setRunActionMessage(message)
     } catch (actionError) {
       const detail = actionError instanceof Error ? actionError.message : t('backtest.loadError')
@@ -449,38 +542,26 @@ export function BacktestWorkbenchPage() {
   }
 
   useEffect(() => {
-    let alive = true
     if (!selectedRunId) {
+      tradeRequestIdRef.current += 1
       setTrades([])
+      setTradePage(1)
+      setTradeLoading(false)
       return
     }
 
-    ;(async () => {
-      try {
-        setTradeLoading(true)
-        const data = await fetchBacktestTrades(selectedRunId)
-        if (alive) {
-          setTrades(data)
-          setTradePage(1)
-        }
-      } catch {
-        if (alive) {
-          setTrades([])
-          setTradePage(1)
-        }
-      } finally {
-        if (alive) {
-          setTradeLoading(false)
-        }
-      }
-    })()
+    void loadTrades(selectedRunId, { resetPage: true, showLoading: true })
+    const intervalId = window.setInterval(() => {
+      void loadTrades(selectedRunId, { resetPage: false, showLoading: false })
+    }, BACKTEST_AUTO_REFRESH_INTERVAL_MS)
 
     return () => {
-      alive = false
+      window.clearInterval(intervalId)
     }
   }, [selectedRunId])
 
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? null
+  const selectedCompletedRunId = selectedRun?.status === 'COMPLETED' ? selectedRun.id : null
   const selectedRunCompareTargetId = parsePositiveRunId(selectedRun?.parameters?.compare_backtest_run_id)
   const extraComparisonOptions = selectedRun
     ? runs
@@ -506,9 +587,8 @@ export function BacktestWorkbenchPage() {
 
   useEffect(() => {
     let alive = true
-    const run = selectedRun
 
-    if (!run || run.status !== 'COMPLETED') {
+    if (!selectedCompletedRunId) {
       setComparisonPayload(null)
       setComparisonError(null)
       setComparisonLoading(false)
@@ -518,7 +598,7 @@ export function BacktestWorkbenchPage() {
     ;(async () => {
       try {
         setComparisonLoading(true)
-        const payload = await fetchBacktestComparisonCurve(run.id, extraComparisonRunIds)
+        const payload = await fetchBacktestComparisonCurve(selectedCompletedRunId, extraComparisonRunIds)
         if (alive) {
           setComparisonPayload(payload)
           setComparisonError(null)
@@ -538,7 +618,7 @@ export function BacktestWorkbenchPage() {
     return () => {
       alive = false
     }
-  }, [extraComparisonRunIds, selectedRun, t])
+  }, [extraComparisonRunIds, selectedCompletedRunId, t])
 
   const reusableRuns = runs
     .filter((run) => run.strategy_type === 'PREDICTION_THRESHOLD')
@@ -910,7 +990,7 @@ export function BacktestWorkbenchPage() {
           <button type="button" disabled={runnerBusy} onClick={onSubmitRunner}>
             {runnerBusy ? t('common.loading') : t('backtest.runnerSubmit')}
           </button>
-          <button type="button" disabled={runnerBusy} onClick={loadRuns}>
+          <button type="button" disabled={runnerBusy} onClick={() => { void loadRuns({ showLoading: true }) }}>
             {t('backtest.runnerRefresh')}
           </button>
           <button type="button" disabled={runnerBusy} onClick={openDashboardWithCurrentConfig}>

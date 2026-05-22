@@ -9,6 +9,7 @@ import {
   deleteBacktestRun,
   fetchBacktestComparisonCurve,
   fetchBacktestRuns,
+  fetchBacktestTrades,
   pauseBacktestRun,
   restartBacktestRun,
   resumeBacktestRun,
@@ -128,6 +129,10 @@ vi.mock('../lib/api', async () => {
           prediction_source: 'heuristic',
           entry_weekdays: [1, 3],
           holding_period_days: 10,
+          progress: {
+            processed_trading_days: 3,
+            total_trading_days: 12,
+          },
         },
         error_message: '',
         started_at: '2026-04-23T12:00:00Z',
@@ -331,6 +336,7 @@ vi.mock('../lib/api', async () => {
 
 const mockFetchBacktestComparisonCurve = vi.mocked(fetchBacktestComparisonCurve)
 const mockFetchBacktestRuns = vi.mocked(fetchBacktestRuns)
+const mockFetchBacktestTrades = vi.mocked(fetchBacktestTrades)
 const mockCreateBacktestRun = vi.mocked(createBacktestRun)
 const mockPauseBacktestRun = vi.mocked(pauseBacktestRun)
 const mockResumeBacktestRun = vi.mocked(resumeBacktestRun)
@@ -408,6 +414,7 @@ function renderWorkbench() {
 describe('BacktestWorkbenchPage runner controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useRealTimers()
     localStorage.setItem('finance_locale', 'en-US')
   })
 
@@ -514,6 +521,18 @@ describe('BacktestWorkbenchPage runner controls', () => {
     })
 
     expect(screen.getByText('Backtest pause requested. It will pause after the current chunk.')).toBeInTheDocument()
+  })
+
+  it('shows trading-day completion percent for running rows', async () => {
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Running Control Run')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Running Control Run').closest('tr')
+    expect(row).not.toBeNull()
+    expect(within(row as HTMLTableRowElement).getByText('RUNNING (25%)')).toBeInTheDocument()
   })
 
   it('resumes a paused run from the table actions', async () => {
@@ -639,7 +658,7 @@ describe('BacktestWorkbenchPage runner controls', () => {
 
     const row = screen.getByText('Stale Delete Run').closest('tr')
     expect(row).not.toBeNull()
-    expect(within(row as HTMLTableRowElement).getByText('RUNNING (dead)')).toBeInTheDocument()
+    expect(within(row as HTMLTableRowElement).getByText('RUNNING (dead · Removal requested)')).toBeInTheDocument()
     expect(within(row as HTMLTableRowElement).getByText('Dead task owner detected · Removal requested')).toBeInTheDocument()
 
     const removeButton = within(row as HTMLTableRowElement).getByRole('button', { name: 'Remove' })
@@ -654,6 +673,115 @@ describe('BacktestWorkbenchPage runner controls', () => {
 
     expect(screen.getByText('Removed backtest #623 Stale Delete Run.')).toBeInTheDocument()
     confirmSpy.mockRestore()
+  })
+
+  it('auto-refreshes the run list and selected trade list', async () => {
+    const intervalCallbacks: Array<() => void> = []
+    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler) => {
+      if (typeof handler === 'function') {
+        intervalCallbacks.push(handler as () => void)
+      }
+      return intervalCallbacks.length as unknown as number
+    }) as typeof window.setInterval)
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => {})
+
+    try {
+      mockFetchBacktestRuns.mockResolvedValueOnce([
+        buildBacktestRun({ id: 84, name: 'Validation-lightgbm-2023-01-01-2024-12-31', status: 'COMPLETED' }),
+        buildBacktestRun({
+          id: 77,
+          name: 'Running Control Run',
+          status: 'RUNNING',
+          report: {
+            prediction_source: 'heuristic',
+            entry_weekdays: [1, 3],
+            holding_period_days: 10,
+            progress: {
+              processed_trading_days: 3,
+              total_trading_days: 12,
+            },
+          },
+          parameters: {
+            prediction_source: 'heuristic',
+            top_n: 4,
+            horizon_days: 7,
+            up_threshold: 0.48,
+            entry_weekdays: ['TUE', 'THU'],
+            holding_period_days: 10,
+            capital_fraction_per_entry: 0.2,
+            candidate_mode: 'top_n',
+            top_n_metric: 'up_prob_7d',
+            trade_score_scope: 'independent',
+            trade_score_threshold: 1,
+            max_positions: 4,
+            use_macro_context: true,
+            enable_stop_target_exit: true,
+          },
+        }),
+      ]).mockResolvedValueOnce([
+        buildBacktestRun({ id: 84, name: 'Validation-lightgbm-2023-01-01-2024-12-31', status: 'COMPLETED' }),
+        buildBacktestRun({
+          id: 77,
+          name: 'Running Control Run',
+          status: 'RUNNING',
+          report: {
+            prediction_source: 'heuristic',
+            entry_weekdays: [1, 3],
+            holding_period_days: 10,
+            progress: {
+              processed_trading_days: 3,
+              total_trading_days: 12,
+            },
+          },
+          parameters: {
+            prediction_source: 'heuristic',
+            top_n: 4,
+            horizon_days: 7,
+            up_threshold: 0.48,
+            entry_weekdays: ['TUE', 'THU'],
+            holding_period_days: 10,
+            capital_fraction_per_entry: 0.2,
+            candidate_mode: 'top_n',
+            top_n_metric: 'up_prob_7d',
+            trade_score_scope: 'independent',
+            trade_score_threshold: 1,
+            max_positions: 4,
+            use_macro_context: true,
+            enable_stop_target_exit: true,
+          },
+        }),
+      ])
+      mockFetchBacktestTrades.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+
+      renderWorkbench()
+
+      await waitFor(() => {
+        expect(screen.getByText('Validation-lightgbm-2023-01-01-2024-12-31')).toBeInTheDocument()
+      })
+
+      await waitFor(() => {
+        expect(mockFetchBacktestRuns).toHaveBeenCalledTimes(1)
+        expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(1)
+        expect(mockFetchBacktestTrades).toHaveBeenCalledWith(84)
+        expect(mockFetchBacktestComparisonCurve).toHaveBeenCalledTimes(1)
+        expect(mockFetchBacktestComparisonCurve).toHaveBeenCalledWith(84, [])
+      })
+
+      expect(intervalCallbacks.length).toBeGreaterThanOrEqual(2)
+
+      for (const callback of intervalCallbacks) {
+        callback()
+      }
+
+      await waitFor(() => {
+        expect(mockFetchBacktestRuns).toHaveBeenCalledTimes(2)
+        expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(2)
+        expect(mockFetchBacktestComparisonCurve).toHaveBeenCalledTimes(1)
+      })
+    } finally {
+      setIntervalSpy.mockRestore()
+      clearIntervalSpy.mockRestore()
+    }
   })
 
   it('removes a run and selects the next available row after refresh', async () => {
