@@ -35,6 +35,7 @@ class BacktestRunSerializer(serializers.ModelSerializer):
         model = BacktestRun
         fields = [
             'id', 'user', 'user_username', 'name', 'strategy_type', 'status',
+            'pending_control_action',
             'start_date', 'end_date', 'initial_capital', 'cash', 'final_value',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',
             'win_rate', 'total_trades', 'winning_trades', 'parameters', 'report',
@@ -42,7 +43,7 @@ class BacktestRunSerializer(serializers.ModelSerializer):
             'trades_count',
         ]
         read_only_fields = [
-            'status', 'cash', 'final_value', 'total_return', 'annualized_return',
+            'status', 'pending_control_action', 'cash', 'final_value', 'total_return', 'annualized_return',
             'max_drawdown', 'sharpe_ratio', 'win_rate', 'total_trades',
             'winning_trades', 'report', 'error_message', 'started_at', 'completed_at',
             'created_at', 'updated_at', 'trades_count',

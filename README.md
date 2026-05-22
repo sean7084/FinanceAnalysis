@@ -125,6 +125,12 @@ extras:
 9. Persist a full per-date candidate snapshot so unselected names also carry rank, pass/fail, and candidate_selected=False.
 10. Add a dedicated prediction-audit workflow that joins stored predictions to realized returns by horizon and writes a report.
 
+number of concurrent backtests
+
+1. for running backtasks, show % of trading days completed in the status field alongside with running
+2. enable auto refresh for page http://localhost:5173/backtest for trade list and backtest trade list
+3. we are currently running backtests sequentially, is that due to windows solo worker?
+
 ###
 1. 14d model
 2. replace lstm with transformer
@@ -403,7 +409,7 @@ These items improve model quality and signal usefulness, but they depend on the 
    ```
 
    Use plain `python manage.py test ...` from the activated `.venv`; Docker is no longer part of the default test path.
-
+>>
 9. **Import benchmark constituents and dispatch market syncs**:
    ```bash
    python manage.py shell

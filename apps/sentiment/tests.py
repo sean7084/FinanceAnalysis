@@ -280,3 +280,23 @@ class Phase13SentimentTests(TestCase):
 
         self.assertIn('Historical backfill deferred for tushare_major', message)
         self.assertIn('provider quota', message)
+
+    @patch('apps.sentiment.tasks.fetch_normalized_news_items')
+    def test_hourly_historical_backfill_returns_tushare_frequency_limit_message(self, mock_fetch):
+        NewsArticle.objects.create(
+            source=NewsArticle.Source.SINA,
+            title='Current boundary',
+            summary='Boundary row',
+            content='Boundary row',
+            url='https://example.com/boundary-news-3',
+            published_at=timezone.make_aware(timezone.datetime(2026, 4, 7)),
+        )
+        mock_fetch.side_effect = Exception(
+            '抱歉，您访问接口(major_news)频率超限(6次/天)，具体频次详情：https://tushare.pro/document/1?doc_id=108。'
+        )
+
+        message = run_hourly_historical_news_backfill()
+
+        self.assertIn('Historical backfill deferred for tushare_major', message)
+        self.assertIn('provider quota', message)
+        self.assertIn('频率超限', message)

@@ -22,6 +22,17 @@ POSITIVE_WORDS = {
     '增长', '利好', '突破', '看涨', '回升', '改善', '超预期', '盈利',
     'buy', 'bullish', 'upgrade', 'outperform',
 }
+
+
+def _is_provider_quota_error(message):
+    normalized = str(message or '')
+    return any(
+        marker in normalized
+        for marker in (
+            '最多访问该接口',
+            '频率超限',
+        )
+    )
 NEGATIVE_WORDS = {
     '下滑', '利空', '下跌', '看跌', '风险', '亏损', '恶化', '裁员',
     'sell', 'bearish', 'downgrade', 'underperform',
@@ -334,7 +345,7 @@ def run_hourly_historical_news_backfill():
         )
     except Exception as exc:
         message = str(exc)
-        if '最多访问该接口' in message:
+        if _is_provider_quota_error(message):
             return (
                 f'Historical backfill deferred for {provider} '
                 f'({start_at} -> {end_at}) due to provider quota: {message}'

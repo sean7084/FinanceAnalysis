@@ -14,8 +14,15 @@ class BacktestRun(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', _('Pending')
         RUNNING = 'RUNNING', _('Running')
+        PAUSED = 'PAUSED', _('Paused')
         COMPLETED = 'COMPLETED', _('Completed')
         FAILED = 'FAILED', _('Failed')
+
+    class ControlAction(models.TextChoices):
+        NONE = 'NONE', _('None')
+        PAUSE = 'PAUSE', _('Pause')
+        RESTART = 'RESTART', _('Restart')
+        DELETE = 'DELETE', _('Delete')
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -59,6 +66,14 @@ class BacktestRun(models.Model):
     parameters = models.JSONField(_('Parameters'), default=dict, blank=True)
     report = models.JSONField(_('Report'), default=dict, blank=True)
     error_message = models.TextField(_('Error Message'), blank=True)
+    current_task_id = models.CharField(_('Current Task ID'), max_length=255, blank=True)
+    pending_control_action = models.CharField(
+        _('Pending Control Action'),
+        max_length=20,
+        choices=ControlAction.choices,
+        default=ControlAction.NONE,
+        db_index=True,
+    )
 
     started_at = models.DateTimeField(_('Started At'), null=True, blank=True)
     completed_at = models.DateTimeField(_('Completed At'), null=True, blank=True)

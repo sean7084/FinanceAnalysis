@@ -4,7 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 
 import { I18nProvider } from '../i18n'
-import { createBacktestRun, fetchBacktestComparisonCurve } from '../lib/api'
+import {
+  createBacktestRun,
+  deleteBacktestRun,
+  fetchBacktestComparisonCurve,
+  fetchBacktestRuns,
+  pauseBacktestRun,
+  restartBacktestRun,
+  resumeBacktestRun,
+  type BacktestRunDto,
+} from '../lib/api'
 import { BacktestWorkbenchPage } from './BacktestWorkbenchPage'
 
 vi.stubGlobal(
@@ -21,12 +30,26 @@ vi.mock('../lib/api', async () => {
   return {
     ...actual,
     createBacktestRun: vi.fn(async () => ({ id: 1 })),
+    pauseBacktestRun: vi.fn(async (runId: number) => ({
+      id: runId,
+      message: 'Backtest pause requested. It will pause after the current chunk.',
+    })),
+    resumeBacktestRun: vi.fn(async (runId: number) => ({
+      id: runId,
+      message: 'Backtest resume queued.',
+    })),
+    restartBacktestRun: vi.fn(async (runId: number) => ({
+      id: runId,
+      message: 'Backtest restart queued.',
+    })),
+    deleteBacktestRun: vi.fn(async () => null),
     fetchBacktestRuns: vi.fn(async () => [
       {
         id: 84,
         name: 'Validation-lightgbm-2023-01-01-2024-12-31',
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'COMPLETED',
+        pending_control_action: 'NONE',
         start_date: '2023-01-01',
         end_date: '2024-12-31',
         initial_capital: 200000,
@@ -55,16 +78,107 @@ vi.mock('../lib/api', async () => {
           enable_stop_target_exit: true,
         },
         report: {
+          prediction_source: 'lightgbm',
           entry_weekdays: [1, 3],
           holding_period_days: 14,
         },
+        error_message: '',
+        started_at: '2026-04-24T00:00:00Z',
+        completed_at: '2026-04-24T00:30:00Z',
         created_at: '2026-04-24T00:00:00Z',
+      },
+      {
+        id: 77,
+        name: 'Running Control Run',
+        strategy_type: 'PREDICTION_THRESHOLD',
+        status: 'RUNNING',
+        pending_control_action: 'NONE',
+        start_date: '2023-06-01',
+        end_date: '2024-06-01',
+        initial_capital: 190000,
+        final_value: null,
+        total_return: null,
+        annualized_return: null,
+        max_drawdown: null,
+        sharpe_ratio: null,
+        win_rate: null,
+        total_trades: 0,
+        winning_trades: 0,
+        parameters: {
+          prediction_source: 'heuristic',
+          top_n: 4,
+          horizon_days: 7,
+          up_threshold: 0.48,
+          entry_weekdays: ['TUE', 'THU'],
+          holding_period_days: 10,
+          capital_fraction_per_entry: 0.2,
+          candidate_mode: 'top_n',
+          top_n_metric: 'up_prob_7d',
+          trade_score_scope: 'independent',
+          trade_score_threshold: 1,
+          max_positions: 4,
+          use_macro_context: true,
+          enable_stop_target_exit: true,
+        },
+        report: {
+          prediction_source: 'heuristic',
+          entry_weekdays: [1, 3],
+          holding_period_days: 10,
+        },
+        error_message: '',
+        started_at: '2026-04-23T12:00:00Z',
+        completed_at: null,
+        created_at: '2026-04-23T12:00:00Z',
+      },
+      {
+        id: 70,
+        name: 'Paused Control Run',
+        strategy_type: 'PREDICTION_THRESHOLD',
+        status: 'PAUSED',
+        pending_control_action: 'NONE',
+        start_date: '2023-05-01',
+        end_date: '2024-05-01',
+        initial_capital: 175000,
+        final_value: null,
+        total_return: null,
+        annualized_return: null,
+        max_drawdown: null,
+        sharpe_ratio: null,
+        win_rate: null,
+        total_trades: 0,
+        winning_trades: 0,
+        parameters: {
+          prediction_source: 'heuristic',
+          top_n: 3,
+          horizon_days: 7,
+          up_threshold: 0.46,
+          entry_weekdays: ['MON', 'WED'],
+          holding_period_days: 8,
+          capital_fraction_per_entry: 0.15,
+          candidate_mode: 'top_n',
+          top_n_metric: 'up_prob_7d',
+          trade_score_scope: 'independent',
+          trade_score_threshold: 1,
+          max_positions: 3,
+          use_macro_context: true,
+          enable_stop_target_exit: true,
+        },
+        report: {
+          prediction_source: 'heuristic',
+          entry_weekdays: [0, 2],
+          holding_period_days: 8,
+        },
+        error_message: 'Paused after the current chunk.',
+        started_at: '2026-04-22T10:00:00Z',
+        completed_at: null,
+        created_at: '2026-04-22T10:00:00Z',
       },
       {
         id: 60,
         name: 'Validation-lstm-2023-01-01-2024-12-31',
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'COMPLETED',
+        pending_control_action: 'NONE',
         start_date: '2023-01-01',
         end_date: '2024-12-31',
         initial_capital: 180000,
@@ -97,6 +211,9 @@ vi.mock('../lib/api', async () => {
           entry_weekdays: [0, 2],
           holding_period_days: 10,
         },
+        error_message: '',
+        started_at: '2026-04-23T00:00:00Z',
+        completed_at: '2026-04-23T00:30:00Z',
         created_at: '2026-04-23T00:00:00Z',
       },
       {
@@ -104,6 +221,7 @@ vi.mock('../lib/api', async () => {
         name: 'Previous LightGBM',
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'COMPLETED',
+        pending_control_action: 'NONE',
         start_date: '2022-01-01',
         end_date: '2023-12-31',
         initial_capital: 150000,
@@ -136,6 +254,9 @@ vi.mock('../lib/api', async () => {
           entry_weekdays: [1, 4],
           holding_period_days: 12,
         },
+        error_message: '',
+        started_at: '2026-04-22T00:00:00Z',
+        completed_at: '2026-04-22T00:30:00Z',
         created_at: '2026-04-22T00:00:00Z',
       },
     ]),
@@ -199,7 +320,59 @@ vi.mock('../lib/api', async () => {
 })
 
 const mockFetchBacktestComparisonCurve = vi.mocked(fetchBacktestComparisonCurve)
+const mockFetchBacktestRuns = vi.mocked(fetchBacktestRuns)
 const mockCreateBacktestRun = vi.mocked(createBacktestRun)
+const mockPauseBacktestRun = vi.mocked(pauseBacktestRun)
+const mockResumeBacktestRun = vi.mocked(resumeBacktestRun)
+const mockRestartBacktestRun = vi.mocked(restartBacktestRun)
+const mockDeleteBacktestRun = vi.mocked(deleteBacktestRun)
+
+function buildBacktestRun(overrides: Partial<BacktestRunDto> & Pick<BacktestRunDto, 'id' | 'name' | 'status'>): BacktestRunDto {
+  return {
+    id: overrides.id,
+    name: overrides.name,
+    strategy_type: 'PREDICTION_THRESHOLD',
+    status: overrides.status,
+    pending_control_action: 'NONE',
+    start_date: '2023-01-01',
+    end_date: '2024-12-31',
+    initial_capital: 200000,
+    final_value: overrides.status === 'COMPLETED' ? 210000 : null,
+    total_return: overrides.status === 'COMPLETED' ? 0.05 : null,
+    annualized_return: overrides.status === 'COMPLETED' ? 0.03 : null,
+    max_drawdown: overrides.status === 'COMPLETED' ? -0.08 : null,
+    sharpe_ratio: overrides.status === 'COMPLETED' ? 1.2 : null,
+    win_rate: overrides.status === 'COMPLETED' ? 0.55 : null,
+    total_trades: overrides.status === 'COMPLETED' ? 10 : 0,
+    winning_trades: overrides.status === 'COMPLETED' ? 6 : 0,
+    parameters: {
+      prediction_source: 'lightgbm',
+      top_n: 5,
+      horizon_days: 7,
+      up_threshold: 0.5,
+      entry_weekdays: ['TUE', 'THU'],
+      holding_period_days: 14,
+      capital_fraction_per_entry: 0.2,
+      candidate_mode: 'top_n',
+      top_n_metric: 'up_prob_7d',
+      trade_score_scope: 'independent',
+      trade_score_threshold: 1,
+      max_positions: 5,
+      use_macro_context: true,
+      enable_stop_target_exit: true,
+    },
+    report: {
+      prediction_source: 'lightgbm',
+      entry_weekdays: [1, 3],
+      holding_period_days: 14,
+    },
+    error_message: '',
+    started_at: overrides.status === 'PENDING' ? null : '2026-04-24T00:00:00Z',
+    completed_at: overrides.status === 'COMPLETED' ? '2026-04-24T00:30:00Z' : null,
+    created_at: '2026-04-24T00:00:00Z',
+    ...overrides,
+  }
+}
 
 function LocationDisplay() {
   const location = useLocation()
@@ -308,6 +481,181 @@ describe('BacktestWorkbenchPage runner controls', () => {
         }),
       }))
     })
+  })
+
+  it('pauses a running run from the table actions', async () => {
+    const user = userEvent.setup()
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Running Control Run')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Running Control Run').closest('tr')
+    expect(row).not.toBeNull()
+
+    await user.click(within(row as HTMLTableRowElement).getByRole('button', { name: 'Pause' }))
+
+    await waitFor(() => {
+      expect(mockPauseBacktestRun).toHaveBeenCalledWith(77)
+    })
+
+    expect(screen.getByText('Backtest pause requested. It will pause after the current chunk.')).toBeInTheDocument()
+  })
+
+  it('resumes a paused run from the table actions', async () => {
+    const user = userEvent.setup()
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Paused Control Run')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Paused Control Run').closest('tr')
+    expect(row).not.toBeNull()
+
+    await user.click(within(row as HTMLTableRowElement).getByRole('button', { name: 'Resume' }))
+
+    await waitFor(() => {
+      expect(mockResumeBacktestRun).toHaveBeenCalledWith(70)
+    })
+
+    expect(screen.getByText('Backtest resume queued.')).toBeInTheDocument()
+  })
+
+  it('restarts a run after confirmation', async () => {
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Validation-lightgbm-2023-01-01-2024-12-31')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Validation-lightgbm-2023-01-01-2024-12-31').closest('tr')
+    expect(row).not.toBeNull()
+
+    await user.click(within(row as HTMLTableRowElement).getByRole('button', { name: 'Restart' }))
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith('Restart #84 Validation-lightgbm-2023-01-01-2024-12-31? This clears the existing trades and metrics.')
+      expect(mockRestartBacktestRun).toHaveBeenCalledWith(84)
+    })
+
+    expect(screen.getByText('Backtest restart queued.')).toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('removes a run even when restart is already pending', async () => {
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const restartingRun = buildBacktestRun({
+      id: 623,
+      name: 'Restart Pending Run',
+      status: 'RUNNING',
+      pending_control_action: 'RESTART',
+      final_value: null,
+      total_return: null,
+      annualized_return: null,
+      max_drawdown: null,
+      sharpe_ratio: null,
+      win_rate: null,
+      total_trades: 0,
+      winning_trades: 0,
+    })
+
+    mockFetchBacktestRuns.mockResolvedValueOnce([restartingRun]).mockResolvedValueOnce([])
+    mockDeleteBacktestRun.mockResolvedValueOnce({
+      id: 623,
+      message: 'Backtest removal requested. It will be removed after the current chunk.',
+    })
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Restart Pending Run')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Restart Pending Run').closest('tr')
+    expect(row).not.toBeNull()
+
+    const removeButton = within(row as HTMLTableRowElement).getByRole('button', { name: 'Remove' })
+    expect(removeButton).toBeEnabled()
+
+    await user.click(removeButton)
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith('Remove #623 Restart Pending Run? This deletes the run list entry and stored data.')
+      expect(mockDeleteBacktestRun).toHaveBeenCalledWith(623)
+    })
+
+    expect(screen.getByText('Backtest removal requested. It will be removed after the current chunk.')).toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('removes a run and selects the next available row after refresh', async () => {
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const initialRuns = [
+      buildBacktestRun({ id: 84, name: 'Validation-lightgbm-2023-01-01-2024-12-31', status: 'COMPLETED' }),
+      buildBacktestRun({
+        id: 77,
+        name: 'Running Control Run',
+        status: 'RUNNING',
+        parameters: {
+          prediction_source: 'heuristic',
+          top_n: 4,
+          horizon_days: 7,
+          up_threshold: 0.48,
+          entry_weekdays: ['TUE', 'THU'],
+          holding_period_days: 10,
+          capital_fraction_per_entry: 0.2,
+          candidate_mode: 'top_n',
+          top_n_metric: 'up_prob_7d',
+          trade_score_scope: 'independent',
+          trade_score_threshold: 1,
+          max_positions: 4,
+          use_macro_context: true,
+          enable_stop_target_exit: true,
+        },
+        report: {
+          prediction_source: 'heuristic',
+          entry_weekdays: [1, 3],
+          holding_period_days: 10,
+        },
+      }),
+    ]
+    const remainingRuns = initialRuns.filter((run) => run.id !== 84)
+
+    mockFetchBacktestRuns.mockResolvedValueOnce(initialRuns).mockResolvedValueOnce(remainingRuns)
+    mockDeleteBacktestRun.mockResolvedValueOnce(null)
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Validation-lightgbm-2023-01-01-2024-12-31')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Validation-lightgbm-2023-01-01-2024-12-31').closest('tr')
+    expect(row).not.toBeNull()
+
+    await user.click(within(row as HTMLTableRowElement).getByRole('button', { name: 'Remove' }))
+
+    await waitFor(() => {
+      expect(mockDeleteBacktestRun).toHaveBeenCalledWith(84)
+    })
+
+    await waitFor(() => {
+      const selectedRunCard = screen.getByText('Selected Run').closest('article')
+      expect(selectedRunCard).not.toBeNull()
+      expect(within(selectedRunCard as HTMLElement).getByText('#77 Running Control Run')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('Removed backtest #84 Validation-lightgbm-2023-01-01-2024-12-31.')).toBeInTheDocument()
+    confirmSpy.mockRestore()
   })
 
   it('hides trade-score-only config cards for top-n runs in the details view', async () => {

@@ -2,10 +2,14 @@ import { useEffect, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createBacktestRun,
+  deleteBacktestRun,
   fetchBacktestComparisonCurve,
   fetchBacktestRuns,
   fetchBacktestTrades,
   hasAnyAuthCredential,
+  pauseBacktestRun,
+  restartBacktestRun,
+  resumeBacktestRun,
   type BacktestComparisonPayloadDto,
   type BacktestCreatePayload,
   type BacktestRunDto,
@@ -107,6 +111,51 @@ function formatBacktestRunLabel(run: BacktestRunDto): string {
   return `#${run.id} ${run.name}`
 }
 
+type BacktestPendingControlAction = 'NONE' | 'PAUSE' | 'RESTART' | 'DELETE'
+type RunControlType = 'pause' | 'resume' | 'restart' | 'remove'
+
+function normalizePendingControlAction(value: unknown): BacktestPendingControlAction {
+  const normalized = typeof value === 'string' ? value.trim().toUpperCase() : 'NONE'
+  if (normalized === 'PAUSE' || normalized === 'RESTART' || normalized === 'DELETE') {
+    return normalized
+  }
+  return 'NONE'
+}
+
+function resolveSelectedRunId(
+  nextRuns: BacktestRunDto[],
+  currentRunId: number | null,
+  preferredRunId: number | null = null,
+): number | null {
+  for (const candidateRunId of [preferredRunId, currentRunId]) {
+    if (candidateRunId && nextRuns.some((run) => run.id === candidateRunId)) {
+      return candidateRunId
+    }
+  }
+  return nextRuns[0]?.id ?? null
+}
+
+function pendingControlMessage(action: BacktestPendingControlAction, t: (key: string) => string): string {
+  if (action === 'PAUSE') {
+    return t('backtest.actionPendingPause')
+  }
+  if (action === 'RESTART') {
+    return t('backtest.actionPendingRestart')
+  }
+  if (action === 'DELETE') {
+    return t('backtest.actionPendingRemove')
+  }
+  return ''
+}
+
+function formatBacktestRunStatus(run: BacktestRunDto, t: (key: string) => string): string {
+  const pendingAction = normalizePendingControlAction(run.pending_control_action)
+  if (pendingAction === 'NONE') {
+    return run.status
+  }
+  return `${run.status} (${pendingControlMessage(pendingAction, t)})`
+}
+
 export function BacktestWorkbenchPage() {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -127,6 +176,9 @@ export function BacktestWorkbenchPage() {
   const [tradePage, setTradePage] = useState(1)
   const [runnerBusy, setRunnerBusy] = useState(false)
   const [runnerMessage, setRunnerMessage] = useState<string>('')
+  const [runActionBusyId, setRunActionBusyId] = useState<number | null>(null)
+  const [runActionMessage, setRunActionMessage] = useState<string | null>(null)
+  const [runActionError, setRunActionError] = useState<string | null>(null)
   const [reuseRunId, setReuseRunId] = useState<string>('')
   const [runnerForm, setRunnerForm] = useState({
     mode: 'single' as 'single' | 'batch',
@@ -188,14 +240,24 @@ export function BacktestWorkbenchPage() {
     setRunnerMessage(`Loaded config from run #${run.id}`)
   }
 
-  const loadRuns = async () => {
+  const loadRuns = async (preferredRunId: number | null = null) => {
     setLoading(true)
-    const data = await fetchBacktestRuns(100)
-    setRuns(data)
-    setRunPage(1)
-    setSelectedRunId((current) => current ?? data[0]?.id ?? null)
-    setError(null)
-    setLoading(false)
+    try {
+      const data = await fetchBacktestRuns(100)
+      setRuns(data)
+      setRunPage(1)
+      setSelectedRunId((current) => resolveSelectedRunId(data, current, preferredRunId))
+      setError(null)
+      return data
+    } catch {
+      setRuns([])
+      setRunPage(1)
+      setSelectedRunId(null)
+      setError(hasAnyAuthCredential() ? t('backtest.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
+      return []
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -207,7 +269,7 @@ export function BacktestWorkbenchPage() {
         if (alive) {
           setRuns(data)
           setRunPage(1)
-          setSelectedRunId((current) => current ?? data[0]?.id ?? null)
+          setSelectedRunId((current) => resolveSelectedRunId(data, current))
           setError(null)
         }
       } catch {
@@ -334,6 +396,52 @@ export function BacktestWorkbenchPage() {
       setRunnerMessage(`${t('backtest.runnerError')}: ${detail}`)
     } finally {
       setRunnerBusy(false)
+    }
+  }
+
+  const handleRunControl = async (run: BacktestRunDto, action: RunControlType) => {
+    const runLabel = formatBacktestRunLabel(run)
+    if (action === 'restart') {
+      const confirmed = window.confirm(t('backtest.confirmRestart').replace('{run}', runLabel))
+      if (!confirmed) {
+        return
+      }
+    }
+    if (action === 'remove') {
+      const confirmed = window.confirm(t('backtest.confirmRemove').replace('{run}', runLabel))
+      if (!confirmed) {
+        return
+      }
+    }
+
+    setSelectedRunId(run.id)
+    setRunActionBusyId(run.id)
+    setRunActionMessage(null)
+    setRunActionError(null)
+
+    try {
+      let message = ''
+      if (action === 'pause') {
+        const response = await pauseBacktestRun(run.id)
+        message = response.message
+      } else if (action === 'resume') {
+        const response = await resumeBacktestRun(run.id)
+        message = response.message
+      } else if (action === 'restart') {
+        const response = await restartBacktestRun(run.id)
+        message = response.message
+      } else {
+        const response = await deleteBacktestRun(run.id)
+        message = response?.message ?? t('backtest.actionRemoveDone').replace('{run}', runLabel)
+      }
+
+      await loadRuns(run.id)
+      setRunActionMessage(message)
+    } catch (actionError) {
+      const detail = actionError instanceof Error ? actionError.message : t('backtest.loadError')
+      setRunActionError(`${t('backtest.controlError')}: ${detail}`)
+    } finally {
+      setRunActionBusyId(null)
     }
   }
 
@@ -831,6 +939,8 @@ export function BacktestWorkbenchPage() {
       <div className="card">
         {loading && <p className="status">{t('common.loading')}</p>}
         {error && <p className="status disconnected">{error}</p>}
+        {runActionError && <p className="status disconnected">{runActionError}</p>}
+        {runActionMessage && <p className="status">{runActionMessage}</p>}
         <table className="data-table">
           <thead>
             <tr>
@@ -844,23 +954,88 @@ export function BacktestWorkbenchPage() {
               <th>{t('backtest.winRate')}</th>
               <th>{t('backtest.sharpe')}</th>
               <th>{t('backtest.totalTrades')}</th>
+              <th>{t('backtest.actions')}</th>
             </tr>
           </thead>
           <tbody>
-            {displayedRuns.map((run) => (
-              <tr key={run.id} className={selectedRunId === run.id ? 'row-selected' : ''} onClick={() => setSelectedRunId(run.id)}>
-                <td>#{run.id}</td>
-                <td>{run.name}</td>
-                <td>{run.strategy_type}</td>
-                <td>{String(run.report?.prediction_source ?? run.parameters?.prediction_source ?? '--')}</td>
-                <td>{run.status}</td>
-                <td>{run.status === 'COMPLETED' && run.total_return !== null ? `${(Number(run.total_return) * 100).toFixed(2)}%` : '--'}</td>
-                <td>{run.status === 'COMPLETED' && run.max_drawdown !== null ? `${(Number(run.max_drawdown) * 100).toFixed(2)}%` : '--'}</td>
-                <td>{run.status === 'COMPLETED' && run.win_rate !== null ? `${(Number(run.win_rate) * 100).toFixed(2)}%` : '--'}</td>
-                <td>{run.status === 'COMPLETED' && run.sharpe_ratio !== null ? Number(run.sharpe_ratio).toFixed(2) : '--'}</td>
-                <td>{run.total_trades}</td>
-              </tr>
-            ))}
+            {displayedRuns.map((run) => {
+              const pendingAction = normalizePendingControlAction(run.pending_control_action)
+              const hasPendingControl = pendingAction !== 'NONE'
+              const rowActionBusy = runActionBusyId === run.id
+              const canPause = (run.status === 'PENDING' || run.status === 'RUNNING') && !hasPendingControl
+              const canResume = run.status === 'PAUSED' && !hasPendingControl
+              const canRestart = !hasPendingControl
+              const canRemove = pendingAction !== 'DELETE'
+
+              return (
+                <tr key={run.id} className={selectedRunId === run.id ? 'row-selected' : ''} onClick={() => setSelectedRunId(run.id)}>
+                  <td>#{run.id}</td>
+                  <td>{run.name}</td>
+                  <td>{run.strategy_type}</td>
+                  <td>{String(run.report?.prediction_source ?? run.parameters?.prediction_source ?? '--')}</td>
+                  <td>{formatBacktestRunStatus(run, t)}</td>
+                  <td>{run.status === 'COMPLETED' && run.total_return !== null ? `${(Number(run.total_return) * 100).toFixed(2)}%` : '--'}</td>
+                  <td>{run.status === 'COMPLETED' && run.max_drawdown !== null ? `${(Number(run.max_drawdown) * 100).toFixed(2)}%` : '--'}</td>
+                  <td>{run.status === 'COMPLETED' && run.win_rate !== null ? `${(Number(run.win_rate) * 100).toFixed(2)}%` : '--'}</td>
+                  <td>{run.status === 'COMPLETED' && run.sharpe_ratio !== null ? Number(run.sharpe_ratio).toFixed(2) : '--'}</td>
+                  <td>{run.total_trades}</td>
+                  <td onClick={(event) => event.stopPropagation()}>
+                    <div className="runner-weekday-chips">
+                      {canPause ? (
+                        <button
+                          type="button"
+                          className="chip"
+                          disabled={rowActionBusy}
+                          onClick={async (event) => {
+                            event.stopPropagation()
+                            await handleRunControl(run, 'pause')
+                          }}
+                        >
+                          {t('backtest.actionPause')}
+                        </button>
+                      ) : null}
+                      {canResume ? (
+                        <button
+                          type="button"
+                          className="chip"
+                          disabled={rowActionBusy}
+                          onClick={async (event) => {
+                            event.stopPropagation()
+                            await handleRunControl(run, 'resume')
+                          }}
+                        >
+                          {t('backtest.actionResume')}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="chip"
+                        disabled={rowActionBusy || !canRestart}
+                        onClick={async (event) => {
+                          event.stopPropagation()
+                          await handleRunControl(run, 'restart')
+                        }}
+                      >
+                        {t('backtest.actionRestart')}
+                      </button>
+                      <button
+                        type="button"
+                        className="chip"
+                        disabled={rowActionBusy || !canRemove}
+                        onClick={async (event) => {
+                          event.stopPropagation()
+                          await handleRunControl(run, 'remove')
+                        }}
+                      >
+                        {t('backtest.actionRemove')}
+                      </button>
+                    </div>
+                    {rowActionBusy ? <span className="status">{t('common.loading')}</span> : null}
+                    {!rowActionBusy && hasPendingControl ? <span className="status">{pendingControlMessage(pendingAction, t)}</span> : null}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
         <div className="table-pagination">

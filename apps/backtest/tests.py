@@ -20,6 +20,7 @@ from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
+from . import tasks as backtest_tasks
 from .models import BacktestRun, BacktestTrade
 from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backtest
 
@@ -146,6 +147,23 @@ class Phase15BacktestTests(TestCase):
     def _auth(self):
         self.client.force_authenticate(user=self.user)
 
+    def _create_run(self, **overrides):
+        payload = {
+            'user': self.user,
+            'name': 'P15 Lifecycle Test Run',
+            'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            'start_date': self.d1,
+            'end_date': self.d2,
+            'initial_capital': Decimal('100000.00'),
+            'parameters': {
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+            },
+        }
+        payload.update(overrides)
+        return BacktestRun.objects.create(**payload)
+
     def test_backtest_endpoint_requires_auth(self):
         response = self.client.get('/api/v1/backtest/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -173,6 +191,105 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(BacktestRun.objects.count(), 1)
         mock_delay.assert_called_once()
+
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_pause_pending_backtest_marks_run_paused(self, mock_revoke):
+        self._auth()
+        run = self._create_run(current_task_id='task-pending')
+
+        response = self.client.post(f'/api/v1/backtest/{run.id}/pause/')
+
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(run.status, BacktestRun.Status.PAUSED)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.NONE)
+        mock_revoke.assert_called_once_with(run, terminate=False)
+
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_pause_running_backtest_marks_pending_pause(self, mock_revoke):
+        self._auth()
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-running',
+        )
+
+        response = self.client.post(f'/api/v1/backtest/{run.id}/pause/')
+
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(run.status, BacktestRun.Status.RUNNING)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.PAUSE)
+        mock_revoke.assert_called_once_with(run, terminate=False)
+
+    @patch('apps.backtest.views.queue_backtest_run')
+    def test_resume_paused_backtest_requeues_run(self, mock_queue):
+        self._auth()
+        run = self._create_run(
+            status=BacktestRun.Status.PAUSED,
+            pending_control_action=BacktestRun.ControlAction.PAUSE,
+            error_message='paused on chunk boundary',
+            completed_at=timezone.now(),
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(f'/api/v1/backtest/{run.id}/resume/')
+
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(run.status, BacktestRun.Status.PENDING)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.NONE)
+        self.assertEqual(run.error_message, '')
+        self.assertIsNone(run.completed_at)
+        mock_queue.assert_called_once_with(run)
+
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_restart_running_backtest_marks_pending_restart(self, mock_revoke):
+        self._auth()
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-running',
+        )
+
+        response = self.client.post(f'/api/v1/backtest/{run.id}/restart/')
+
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(run.status, BacktestRun.Status.RUNNING)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.RESTART)
+        self.assertEqual(run.error_message, '')
+        mock_revoke.assert_called_once_with(run, terminate=True)
+
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_destroy_running_backtest_marks_pending_delete(self, mock_revoke):
+        self._auth()
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-running',
+        )
+
+        response = self.client.delete(f'/api/v1/backtest/{run.id}/')
+
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.DELETE)
+        self.assertTrue(BacktestRun.objects.filter(id=run.id).exists())
+        mock_revoke.assert_called_once_with(run, terminate=True)
+
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_destroy_paused_backtest_deletes_immediately(self, mock_revoke):
+        self._auth()
+        run = self._create_run(status=BacktestRun.Status.PAUSED)
+
+        response = self.client.delete(f'/api/v1/backtest/{run.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(BacktestRun.objects.filter(id=run.id).exists())
+        mock_revoke.assert_called_once()
 
     def test_run_backtest_task_completes_and_creates_trades(self):
         run = BacktestRun.objects.create(
@@ -1785,6 +1902,54 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(trades[1].trade_date, trading_dates[2])
         self.assertNotIn('runtime_state', run.report)
         self.assertNotIn('progress', run.report)
+
+    @patch('apps.backtest.tasks.BACKTEST_CHUNK_TRADING_DAYS', 1)
+    def test_run_backtest_pauses_at_chunk_boundary_when_requested(self):
+        run = self._create_run(pending_control_action=BacktestRun.ControlAction.PAUSE)
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+
+        self.assertIn('paused', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.PAUSED)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.NONE)
+        self.assertEqual(run.current_task_id, '')
+        self.assertIn('runtime_state', run.report)
+        self.assertIn('progress', run.report)
+
+    @patch('apps.backtest.tasks.queue_backtest_run')
+    @patch('apps.backtest.tasks.BACKTEST_CHUNK_TRADING_DAYS', 1)
+    def test_run_backtest_restarts_at_chunk_boundary_when_requested(self, mock_queue):
+        run = self._create_run(pending_control_action=BacktestRun.ControlAction.RESTART)
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+
+        self.assertIn('restart queued', result.lower())
+        self.assertEqual(run.status, BacktestRun.Status.PENDING)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.NONE)
+        self.assertEqual(run.current_task_id, '')
+        self.assertEqual(run.trades.count(), 0)
+        self.assertNotIn('runtime_state', run.report)
+        self.assertNotIn('progress', run.report)
+        mock_queue.assert_called_once()
+
+    @patch('apps.backtest.tasks.BACKTEST_CHUNK_TRADING_DAYS', 1)
+    def test_run_backtest_deletes_at_chunk_boundary_when_requested(self):
+        run = self._create_run()
+        original_save_runtime_state = backtest_tasks._save_runtime_state
+
+        def _mark_delete_after_chunk(*args, **kwargs):
+            original_save_runtime_state(*args, **kwargs)
+            BacktestRun.objects.filter(id=run.id).update(
+                pending_control_action=BacktestRun.ControlAction.DELETE,
+            )
+
+        with patch('apps.backtest.tasks._save_runtime_state', side_effect=_mark_delete_after_chunk):
+            result = run_backtest(run.id)
+
+        self.assertIn('deleted', result.lower())
+        self.assertFalse(BacktestRun.objects.filter(id=run.id).exists())
 
     @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
     @patch('apps.backtest.tasks._load_model_artifacts')

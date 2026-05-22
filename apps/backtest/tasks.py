@@ -1,11 +1,12 @@
 import os
+import inspect
 from bisect import bisect_left
 from datetime import date, timedelta
 from decimal import Decimal
 from statistics import mean, pstdev
 
 import numpy as np
-from celery import shared_task
+from celery import current_app, shared_task
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -440,16 +441,40 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
     if cache_key in cache:
         return cache[cache_key]
 
+    predict_supports_run = True
+    predict_side_effect = getattr(_predict_lightgbm_for_asset, 'side_effect', None)
+    if callable(predict_side_effect):
+        try:
+            side_effect_signature = inspect.signature(predict_side_effect)
+            predict_supports_run = (
+                'run' in side_effect_signature.parameters
+                or any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in side_effect_signature.parameters.values()
+                )
+            )
+        except (TypeError, ValueError):
+            predict_supports_run = True
+
     mapping = {}
     for asset_id in _eligible_backtest_asset_ids(dt, cache):
-        mapping[asset_id] = _predict_lightgbm_for_asset(
-            asset_id,
-            dt,
-            horizon,
-            cache,
-            trade_decision_policy,
-            run=run,
-        )
+        if predict_supports_run:
+            mapping[asset_id] = _predict_lightgbm_for_asset(
+                asset_id,
+                dt,
+                horizon,
+                cache,
+                trade_decision_policy,
+                run=run,
+            )
+        else:
+            mapping[asset_id] = _predict_lightgbm_for_asset(
+                asset_id,
+                dt,
+                horizon,
+                cache,
+                trade_decision_policy,
+            )
 
     cache[cache_key] = mapping
     return mapping
@@ -1615,11 +1640,84 @@ def _clear_runtime_state(report):
     return cleaned_report
 
 
-@shared_task(soft_time_limit=1800, time_limit=2100)
-def run_backtest(backtest_run_id):
+def revoke_backtest_task(run, *, terminate=False):
+    task_id = (run.current_task_id or '').strip()
+    if not task_id:
+        return False
+
+    current_app.control.revoke(task_id, terminate=terminate)
+    return True
+
+
+def queue_backtest_run(run):
+    result = run_backtest.delay(run.id)
+    next_task_id = getattr(result, 'id', '') or ''
+    run.current_task_id = str(next_task_id) if next_task_id else ''
+    run.pending_control_action = BacktestRun.ControlAction.NONE
+    run.save(update_fields=['current_task_id', 'pending_control_action', 'updated_at'])
+    return result
+
+
+def reset_backtest_run_for_restart(run):
+    with transaction.atomic():
+        run.trades.all().delete()
+        run.status = BacktestRun.Status.PENDING
+        run.cash = run.initial_capital
+        run.final_value = DECIMAL_0
+        run.total_return = DECIMAL_0
+        run.annualized_return = DECIMAL_0
+        run.max_drawdown = DECIMAL_0
+        run.sharpe_ratio = DECIMAL_0
+        run.win_rate = DECIMAL_0
+        run.total_trades = 0
+        run.winning_trades = 0
+        run.report = {}
+        run.error_message = ''
+        run.current_task_id = ''
+        run.pending_control_action = BacktestRun.ControlAction.NONE
+        run.started_at = None
+        run.completed_at = None
+        run.save(
+            update_fields=[
+                'status', 'cash', 'final_value', 'total_return', 'annualized_return',
+                'max_drawdown', 'sharpe_ratio', 'win_rate', 'total_trades',
+                'winning_trades', 'report', 'error_message', 'current_task_id',
+                'pending_control_action', 'started_at', 'completed_at', 'updated_at',
+            ]
+        )
+
+
+@shared_task(bind=True, soft_time_limit=1800, time_limit=2100)
+def run_backtest(self, backtest_run_id):
     run = BacktestRun.objects.filter(id=backtest_run_id).first()
     if not run:
         return f'Backtest run not found: {backtest_run_id}'
+
+    task_id = getattr(getattr(self, 'request', None), 'id', '') or ''
+    if task_id and run.current_task_id and run.current_task_id != task_id:
+        return f'Skipped stale backtest task for run_id={run.id}: {task_id}'
+
+    early_update_fields = []
+    if task_id and run.current_task_id != task_id:
+        run.current_task_id = task_id
+        early_update_fields.append('current_task_id')
+
+    if run.pending_control_action == BacktestRun.ControlAction.DELETE:
+        run_id = run.id
+        run.delete()
+        return f'Backtest deleted for run_id={run_id}'
+
+    if run.status == BacktestRun.Status.PAUSED and run.pending_control_action in {
+        BacktestRun.ControlAction.NONE,
+        BacktestRun.ControlAction.PAUSE,
+    }:
+        run.current_task_id = ''
+        run.pending_control_action = BacktestRun.ControlAction.NONE
+        run.save(update_fields=['current_task_id', 'pending_control_action', 'updated_at'])
+        return f'Backtest remains paused for run_id={run.id}'
+
+    if early_update_fields:
+        run.save(update_fields=[*early_update_fields, 'updated_at'])
 
     runtime_state = _load_runtime_state(run)
     if runtime_state is None:
@@ -1734,8 +1832,39 @@ def run_backtest(backtest_run_id):
             )
             run.cash = cash
             run.save(update_fields=['cash', 'report', 'updated_at'])
-            run_backtest.delay(run.id)
+            run.refresh_from_db(fields=['status', 'pending_control_action', 'current_task_id'])
+
+            if run.pending_control_action == BacktestRun.ControlAction.DELETE:
+                run_id = run.id
+                run.delete()
+                return f'Backtest deleted for run_id={run_id} after current chunk'
+
+            if run.pending_control_action == BacktestRun.ControlAction.RESTART:
+                reset_backtest_run_for_restart(run)
+                queue_backtest_run(run)
+                return f'Backtest restart queued for run_id={run.id}'
+
+            if run.pending_control_action == BacktestRun.ControlAction.PAUSE or run.status == BacktestRun.Status.PAUSED:
+                run.status = BacktestRun.Status.PAUSED
+                run.pending_control_action = BacktestRun.ControlAction.NONE
+                run.current_task_id = ''
+                run.completed_at = None
+                run.save(update_fields=['status', 'pending_control_action', 'current_task_id', 'completed_at', 'updated_at'])
+                return f'Backtest paused for run_id={run.id}: {chunk_end}/{len(trading_dates)} trading days processed'
+
+            queue_backtest_run(run)
             return f'Backtest chunk queued for run_id={run.id}: {chunk_end}/{len(trading_dates)} trading days processed'
+
+        run.refresh_from_db(fields=['pending_control_action', 'current_task_id'])
+        if run.pending_control_action == BacktestRun.ControlAction.DELETE:
+            run_id = run.id
+            run.delete()
+            return f'Backtest deleted for run_id={run_id} after current chunk'
+
+        if run.pending_control_action == BacktestRun.ControlAction.RESTART:
+            reset_backtest_run_for_restart(run)
+            queue_backtest_run(run)
+            return f'Backtest restart queued for run_id={run.id}'
 
         final_mark_to_market = equity_curve[-1] if equity_curve else cash
         benchmark_equity_curve, benchmark_metadata = _build_benchmark_equity_curve(trading_dates, price_map, run.initial_capital)
@@ -1810,6 +1939,8 @@ def run_backtest(backtest_run_id):
                 'total_return': float(benchmark_total_return),
             },
         })
+        run.pending_control_action = BacktestRun.ControlAction.NONE
+        run.current_task_id = ''
         run.completed_at = timezone.now()
         run.save()
         return f'Backtest completed for run_id={run.id}'
@@ -1817,6 +1948,8 @@ def run_backtest(backtest_run_id):
     except Exception as exc:
         run.status = BacktestRun.Status.FAILED
         run.error_message = str(exc)
+        run.pending_control_action = BacktestRun.ControlAction.NONE
+        run.current_task_id = ''
         run.completed_at = timezone.now()
-        run.save(update_fields=['status', 'error_message', 'completed_at', 'updated_at'])
+        run.save(update_fields=['status', 'error_message', 'pending_control_action', 'current_task_id', 'completed_at', 'updated_at'])
         return f'Backtest failed for run_id={run.id}: {exc}'

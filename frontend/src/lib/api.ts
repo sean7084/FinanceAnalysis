@@ -281,6 +281,7 @@ export interface BacktestRunDto {
   name: string
   strategy_type: string
   status: string
+  pending_control_action: string
   start_date: string
   end_date: string
   initial_capital: number
@@ -294,7 +295,15 @@ export interface BacktestRunDto {
   winning_trades: number
   parameters: Record<string, unknown>
   report: Record<string, unknown>
+  error_message: string
+  started_at: string | null
+  completed_at: string | null
   created_at: string
+}
+
+export interface BacktestRunActionResponseDto {
+  id: number
+  message: string
 }
 
 export interface BacktestTradeDto {
@@ -646,6 +655,28 @@ export async function apiPost<T>(path: string, body: object): Promise<T> {
   return response.json() as Promise<T>
 }
 
+export async function apiDelete<T>(path: string): Promise<T | null> {
+  const response = await fetchWithAuthRefresh(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  })
+
+  if (!response.ok) {
+    throw await toApiRequestError(response, `DELETE ${path} failed`)
+  }
+
+  if (response.status === 204) {
+    return null
+  }
+
+  const text = await response.text()
+  if (!text.trim()) {
+    return null
+  }
+
+  return JSON.parse(text) as T
+}
+
 async function apiGetSafe<T>(path: string, fallback: T): Promise<T> {
   try {
     return await apiGet<T>(path)
@@ -779,6 +810,22 @@ export async function fetchBacktestComparisonCurve(
 
 export async function createBacktestRun(payload: BacktestCreatePayload): Promise<BacktestRunDto> {
   return await apiPost<BacktestRunDto>('/backtest/', payload)
+}
+
+export async function pauseBacktestRun(runId: number): Promise<BacktestRunActionResponseDto> {
+  return await apiPost<BacktestRunActionResponseDto>(`/backtest/${runId}/pause/`, {})
+}
+
+export async function resumeBacktestRun(runId: number): Promise<BacktestRunActionResponseDto> {
+  return await apiPost<BacktestRunActionResponseDto>(`/backtest/${runId}/resume/`, {})
+}
+
+export async function restartBacktestRun(runId: number): Promise<BacktestRunActionResponseDto> {
+  return await apiPost<BacktestRunActionResponseDto>(`/backtest/${runId}/restart/`, {})
+}
+
+export async function deleteBacktestRun(runId: number): Promise<BacktestRunActionResponseDto | null> {
+  return await apiDelete<BacktestRunActionResponseDto>(`/backtest/${runId}/`)
 }
 
 export async function fetchAssetBySymbol(symbol: string): Promise<AssetDto | null> {
