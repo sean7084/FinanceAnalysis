@@ -1012,13 +1012,13 @@ export function BacktestWorkbenchPage() {
           </div>
         </div>
         <div className="runner-actions">
-          <button type="button" disabled={runnerBusy} onClick={onSubmitRunner}>
+          <button type="button" className={"chip"} disabled={runnerBusy} onClick={onSubmitRunner}>
             {runnerBusy ? t('common.loading') : t('backtest.runnerSubmit')}
           </button>
-          <button type="button" disabled={runnerBusy} onClick={() => { void loadRuns({ showLoading: true }) }}>
+          <button type="button" className={"chip"} disabled={runnerBusy} onClick={() => { void loadRuns({ showLoading: true }) }}>
             {t('backtest.runnerRefresh')}
           </button>
-          <button type="button" disabled={runnerBusy} onClick={openDashboardWithCurrentConfig}>
+          <button type="button" className={"chip"} disabled={runnerBusy} onClick={openDashboardWithCurrentConfig}>
             {t('backtest.runnerOpenDashboard')}
           </button>
         </div>
