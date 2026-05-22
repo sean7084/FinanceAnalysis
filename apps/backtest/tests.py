@@ -22,6 +22,7 @@ from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
 from . import tasks as backtest_tasks
 from .models import BacktestRun, BacktestTrade
+from .serializers import BacktestRunSerializer
 from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backtest
 
 
@@ -284,6 +285,69 @@ class Phase15BacktestTests(TestCase):
     def test_destroy_paused_backtest_deletes_immediately(self, mock_revoke):
         self._auth()
         run = self._create_run(status=BacktestRun.Status.PAUSED)
+
+        response = self.client.delete(f'/api/v1/backtest/{run.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(BacktestRun.objects.filter(id=run.id).exists())
+        mock_revoke.assert_called_once()
+
+    @patch('apps.backtest.serializers.get_backtest_run_task_owner_state', return_value={
+        'task_state': 'PENDING',
+        'task_age_seconds': 9999,
+        'has_stale_task_owner': True,
+    })
+    def test_backtest_serializer_reports_stale_task_owner(self, _mock_task_owner_state):
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-stale',
+        )
+
+        data = BacktestRunSerializer(run).data
+
+        self.assertEqual(data['task_state'], 'PENDING')
+        self.assertTrue(data['has_stale_task_owner'])
+
+    @patch('apps.backtest.views.get_backtest_run_task_owner_state', return_value={
+        'task_state': 'PENDING',
+        'task_age_seconds': 9999,
+        'has_stale_task_owner': True,
+    })
+    @patch('apps.backtest.views.queue_backtest_run')
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_restart_stale_running_backtest_requeues_immediately(self, mock_revoke, mock_queue, _mock_task_owner_state):
+        self._auth()
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-stale',
+            pending_control_action=BacktestRun.ControlAction.DELETE,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(f'/api/v1/backtest/{run.id}/restart/')
+
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(run.status, BacktestRun.Status.PENDING)
+        self.assertEqual(run.pending_control_action, BacktestRun.ControlAction.NONE)
+        self.assertEqual(run.current_task_id, '')
+        mock_revoke.assert_called_once_with(run, terminate=True)
+        mock_queue.assert_called_once_with(run)
+
+    @patch('apps.backtest.views.get_backtest_run_task_owner_state', return_value={
+        'task_state': 'PENDING',
+        'task_age_seconds': 9999,
+        'has_stale_task_owner': True,
+    })
+    @patch('apps.backtest.views.revoke_backtest_task')
+    def test_destroy_stale_running_backtest_deletes_immediately(self, mock_revoke, _mock_task_owner_state):
+        self._auth()
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-stale',
+            pending_control_action=BacktestRun.ControlAction.DELETE,
+        )
 
         response = self.client.delete(f'/api/v1/backtest/{run.id}/')
 

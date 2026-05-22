@@ -150,6 +150,9 @@ function pendingControlMessage(action: BacktestPendingControlAction, t: (key: st
 
 function formatBacktestRunStatus(run: BacktestRunDto, t: (key: string) => string): string {
   const pendingAction = normalizePendingControlAction(run.pending_control_action)
+  if (run.has_stale_task_owner) {
+    return `${run.status} (${t('backtest.statusDead')})`
+  }
   if (pendingAction === 'NONE') {
     return run.status
   }
@@ -961,11 +964,20 @@ export function BacktestWorkbenchPage() {
             {displayedRuns.map((run) => {
               const pendingAction = normalizePendingControlAction(run.pending_control_action)
               const hasPendingControl = pendingAction !== 'NONE'
+              const hasStaleTaskOwner = Boolean(run.has_stale_task_owner)
               const rowActionBusy = runActionBusyId === run.id
-              const canPause = (run.status === 'PENDING' || run.status === 'RUNNING') && !hasPendingControl
+              const hasBlockingPendingControl = hasPendingControl && !hasStaleTaskOwner
+              const canPause = (run.status === 'PENDING' || run.status === 'RUNNING') && !hasBlockingPendingControl
               const canResume = run.status === 'PAUSED' && !hasPendingControl
-              const canRestart = !hasPendingControl
-              const canRemove = pendingAction !== 'DELETE'
+              const canRestart = !hasBlockingPendingControl
+              const canRemove = pendingAction !== 'DELETE' || hasStaleTaskOwner
+              const rowStatusMessages = []
+              if (hasStaleTaskOwner) {
+                rowStatusMessages.push(t('backtest.deadTaskHint'))
+              }
+              if (hasPendingControl) {
+                rowStatusMessages.push(pendingControlMessage(pendingAction, t))
+              }
 
               return (
                 <tr key={run.id} className={selectedRunId === run.id ? 'row-selected' : ''} onClick={() => setSelectedRunId(run.id)}>
@@ -1031,7 +1043,9 @@ export function BacktestWorkbenchPage() {
                       </button>
                     </div>
                     {rowActionBusy ? <span className="status">{t('common.loading')}</span> : null}
-                    {!rowActionBusy && hasPendingControl ? <span className="status">{pendingControlMessage(pendingAction, t)}</span> : null}
+                    {!rowActionBusy && rowStatusMessages.length ? (
+                      <span className={hasStaleTaskOwner ? 'status disconnected' : 'status'}>{rowStatusMessages.join(' · ')}</span>
+                    ) : null}
                   </td>
                 </tr>
               )

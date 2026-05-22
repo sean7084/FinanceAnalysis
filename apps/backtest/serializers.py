@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import BacktestRun, BacktestTrade
+from .task_health import get_backtest_run_task_owner_state
 
 
 VALID_ENTRY_WEEKDAYS = {'MON', 'TUE', 'WED', 'THU', 'FRI'}
@@ -30,12 +31,27 @@ class BacktestTradeSerializer(serializers.ModelSerializer):
 class BacktestRunSerializer(serializers.ModelSerializer):
     user_username = serializers.CharField(source='user.username', read_only=True)
     trades_count = serializers.IntegerField(source='trades.count', read_only=True)
+    task_state = serializers.SerializerMethodField()
+    has_stale_task_owner = serializers.SerializerMethodField()
+
+    def _get_task_owner_state(self, obj):
+        state = getattr(obj, '_backtest_task_owner_state', None)
+        if state is None:
+            state = get_backtest_run_task_owner_state(obj)
+            obj._backtest_task_owner_state = state
+        return state
+
+    def get_task_state(self, obj):
+        return self._get_task_owner_state(obj)['task_state']
+
+    def get_has_stale_task_owner(self, obj):
+        return self._get_task_owner_state(obj)['has_stale_task_owner']
 
     class Meta:
         model = BacktestRun
         fields = [
             'id', 'user', 'user_username', 'name', 'strategy_type', 'status',
-            'pending_control_action',
+            'pending_control_action', 'task_state', 'has_stale_task_owner',
             'start_date', 'end_date', 'initial_capital', 'cash', 'final_value',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',
             'win_rate', 'total_trades', 'winning_trades', 'parameters', 'report',
@@ -43,7 +59,8 @@ class BacktestRunSerializer(serializers.ModelSerializer):
             'trades_count',
         ]
         read_only_fields = [
-            'status', 'pending_control_action', 'cash', 'final_value', 'total_return', 'annualized_return',
+            'status', 'pending_control_action', 'task_state', 'has_stale_task_owner',
+            'cash', 'final_value', 'total_return', 'annualized_return',
             'max_drawdown', 'sharpe_ratio', 'win_rate', 'total_trades',
             'winning_trades', 'report', 'error_message', 'started_at', 'completed_at',
             'created_at', 'updated_at', 'trades_count',

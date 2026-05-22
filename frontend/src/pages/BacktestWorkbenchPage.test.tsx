@@ -50,6 +50,8 @@ vi.mock('../lib/api', async () => {
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'COMPLETED',
         pending_control_action: 'NONE',
+        task_state: '',
+        has_stale_task_owner: false,
         start_date: '2023-01-01',
         end_date: '2024-12-31',
         initial_capital: 200000,
@@ -93,6 +95,8 @@ vi.mock('../lib/api', async () => {
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'RUNNING',
         pending_control_action: 'NONE',
+        task_state: 'PENDING',
+        has_stale_task_owner: false,
         start_date: '2023-06-01',
         end_date: '2024-06-01',
         initial_capital: 190000,
@@ -136,6 +140,8 @@ vi.mock('../lib/api', async () => {
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'PAUSED',
         pending_control_action: 'NONE',
+        task_state: '',
+        has_stale_task_owner: false,
         start_date: '2023-05-01',
         end_date: '2024-05-01',
         initial_capital: 175000,
@@ -179,6 +185,8 @@ vi.mock('../lib/api', async () => {
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'COMPLETED',
         pending_control_action: 'NONE',
+        task_state: '',
+        has_stale_task_owner: false,
         start_date: '2023-01-01',
         end_date: '2024-12-31',
         initial_capital: 180000,
@@ -222,6 +230,8 @@ vi.mock('../lib/api', async () => {
         strategy_type: 'PREDICTION_THRESHOLD',
         status: 'COMPLETED',
         pending_control_action: 'NONE',
+        task_state: '',
+        has_stale_task_owner: false,
         start_date: '2022-01-01',
         end_date: '2023-12-31',
         initial_capital: 150000,
@@ -334,6 +344,8 @@ function buildBacktestRun(overrides: Partial<BacktestRunDto> & Pick<BacktestRunD
     strategy_type: 'PREDICTION_THRESHOLD',
     status: overrides.status,
     pending_control_action: 'NONE',
+    task_state: '',
+    has_stale_task_owner: false,
     start_date: '2023-01-01',
     end_date: '2024-12-31',
     initial_capital: 200000,
@@ -593,6 +605,54 @@ describe('BacktestWorkbenchPage runner controls', () => {
     })
 
     expect(screen.getByText('Backtest removal requested. It will be removed after the current chunk.')).toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('shows dead status and allows removing a stale running row', async () => {
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const staleRun = buildBacktestRun({
+      id: 623,
+      name: 'Stale Delete Run',
+      status: 'RUNNING',
+      pending_control_action: 'DELETE',
+      task_state: 'PENDING',
+      has_stale_task_owner: true,
+      final_value: null,
+      total_return: null,
+      annualized_return: null,
+      max_drawdown: null,
+      sharpe_ratio: null,
+      win_rate: null,
+      total_trades: 0,
+      winning_trades: 0,
+    })
+
+    mockFetchBacktestRuns.mockResolvedValueOnce([staleRun]).mockResolvedValueOnce([])
+    mockDeleteBacktestRun.mockResolvedValueOnce(null)
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Stale Delete Run')).toBeInTheDocument()
+    })
+
+    const row = screen.getByText('Stale Delete Run').closest('tr')
+    expect(row).not.toBeNull()
+    expect(within(row as HTMLTableRowElement).getByText('RUNNING (dead)')).toBeInTheDocument()
+    expect(within(row as HTMLTableRowElement).getByText('Dead task owner detected · Removal requested')).toBeInTheDocument()
+
+    const removeButton = within(row as HTMLTableRowElement).getByRole('button', { name: 'Remove' })
+    expect(removeButton).toBeEnabled()
+
+    await user.click(removeButton)
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith('Remove #623 Stale Delete Run? This deletes the run list entry and stored data.')
+      expect(mockDeleteBacktestRun).toHaveBeenCalledWith(623)
+    })
+
+    expect(screen.getByText('Removed backtest #623 Stale Delete Run.')).toBeInTheDocument()
     confirmSpy.mockRestore()
   })
 

@@ -7,6 +7,7 @@ from django.utils import timezone
 from .comparison import build_backtest_comparison_payload
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer, BacktestTradeSerializer
+from .task_health import get_backtest_run_task_owner_state
 from .tasks import reset_backtest_run_for_restart, revoke_backtest_task, run_backtest
 
 
@@ -41,6 +42,10 @@ def _parse_extra_compare_run_ids(query_params):
     return parsed_ids
 
 
+def _has_stale_task_owner(run):
+    return get_backtest_run_task_owner_state(run)['has_stale_task_owner']
+
+
 class BacktestRunViewSet(viewsets.ModelViewSet):
     serializer_class = BacktestRunSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -68,9 +73,10 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         transaction.on_commit(lambda: queue_backtest_run(run))
 
     def _restart_run(self, run):
+        stale_task_owner = run.status == BacktestRun.Status.RUNNING and _has_stale_task_owner(run)
         revoke_backtest_task(run, terminate=True)
 
-        if run.status == BacktestRun.Status.RUNNING:
+        if run.status == BacktestRun.Status.RUNNING and not stale_task_owner:
             run.pending_control_action = BacktestRun.ControlAction.RESTART
             run.error_message = ''
             run.save(update_fields=['pending_control_action', 'error_message', 'updated_at'])
@@ -81,6 +87,11 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
 
         reset_backtest_run_for_restart(run)
         self._queue_existing_run(run)
+        if stale_task_owner:
+            return Response(
+                {'message': 'Backtest restart queued after recovering dead task ownership.', 'id': run.id},
+                status=status.HTTP_202_ACCEPTED,
+            )
         return Response({'message': 'Backtest restart queued.', 'id': run.id}, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['post'])
@@ -96,14 +107,26 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def pause(self, request, pk=None):
         run = self.get_object()
+        stale_task_owner = run.status == BacktestRun.Status.RUNNING and _has_stale_task_owner(run)
         if run.status not in {BacktestRun.Status.PENDING, BacktestRun.Status.RUNNING}:
             return Response({'message': 'Only pending or running backtests can be paused.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if run.status == BacktestRun.Status.PENDING:
+        if run.status == BacktestRun.Status.PENDING or stale_task_owner:
             run.status = BacktestRun.Status.PAUSED
             run.pending_control_action = BacktestRun.ControlAction.NONE
-            run.save(update_fields=['status', 'pending_control_action', 'updated_at'])
+            update_fields = ['status', 'pending_control_action', 'updated_at']
+            if stale_task_owner:
+                run.current_task_id = ''
+                run.completed_at = None
+                run.error_message = ''
+                update_fields.extend(['current_task_id', 'completed_at', 'error_message'])
+            run.save(update_fields=update_fields)
             revoke_backtest_task(run, terminate=False)
+            if stale_task_owner:
+                return Response(
+                    {'message': 'Backtest paused after recovering dead task ownership.', 'id': run.id},
+                    status=status.HTTP_202_ACCEPTED,
+                )
             return Response({'message': 'Backtest paused.', 'id': run.id}, status=status.HTTP_202_ACCEPTED)
 
         run.pending_control_action = BacktestRun.ControlAction.PAUSE
@@ -130,8 +153,9 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         run = self.get_object()
+        stale_task_owner = run.status == BacktestRun.Status.RUNNING and _has_stale_task_owner(run)
 
-        if run.status == BacktestRun.Status.RUNNING:
+        if run.status == BacktestRun.Status.RUNNING and not stale_task_owner:
             run.pending_control_action = BacktestRun.ControlAction.DELETE
             run.save(update_fields=['pending_control_action', 'updated_at'])
             revoke_backtest_task(run, terminate=True)

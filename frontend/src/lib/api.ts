@@ -282,6 +282,8 @@ export interface BacktestRunDto {
   strategy_type: string
   status: string
   pending_control_action: string
+  task_state: string
+  has_stale_task_owner: boolean
   start_date: string
   end_date: string
   initial_capital: number
