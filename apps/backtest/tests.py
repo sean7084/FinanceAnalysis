@@ -14,12 +14,15 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.markets.models import Asset, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
+from apps.prediction.tasks_lightgbm import _create_feature_matrix
+from apps.sentiment.models import SentimentScore
 from . import tasks as backtest_tasks
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer
@@ -28,6 +31,15 @@ from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backte
 
 class IdentityScaler:
     def transform(self, matrix):
+        return matrix
+
+
+class CapturingScaler:
+    def __init__(self):
+        self.last_matrix = None
+
+    def transform(self, matrix):
+        self.last_matrix = matrix.copy()
         return matrix
 
 
@@ -649,6 +661,147 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(run.report['model_references'][0]['horizon_days'], 7)
         self.assertIsNotNone(sell_trade)
         self.assertEqual(sell_trade.metadata['exit_reason'], 'SCHEDULED')
+
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_backtest_lightgbm_runtime_features_match_training_matrix_for_stored_lagged_features(self, mock_load_artifacts):
+        d = date(2024, 2, 5)
+        trade_dates = []
+        current_date = d
+        while len(trade_dates) < 30:
+            if current_date.weekday() < 5:
+                trade_dates.append(current_date)
+            current_date -= timedelta(days=1)
+
+        ExchangeTradingCalendar.objects.bulk_create([
+            ExchangeTradingCalendar(exchange_code='SSE', trade_date=trade_date, is_open=True)
+            for trade_date in trade_dates
+        ], ignore_conflicts=True)
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=self.asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=trade_date,
+                weight=Decimal('4.200000'),
+            )
+            for trade_date in trade_dates
+        ])
+
+        FactorScore.objects.create(
+            asset=self.asset,
+            date=d,
+            mode=FactorScore.FactorMode.COMPOSITE,
+            pe_ttm_percentile_score=Decimal('0.3'),
+            pb_percentile_score=Decimal('0.4'),
+            roe_trend_score=Decimal('0.6'),
+            main_force_flow_score=Decimal('0.55'),
+            margin_flow_score=Decimal('0.45'),
+            technical_reversal_score=Decimal('0.7'),
+            sentiment_score=Decimal('0.35'),
+            fundamental_score=Decimal('0.4'),
+            capital_flow_score=Decimal('0.5'),
+            technical_score=Decimal('0.65'),
+            composite_score=Decimal('0.52'),
+            bottom_probability_score=Decimal('0.52'),
+        )
+        SentimentScore.objects.create(
+            article=None,
+            asset=self.asset,
+            date=d,
+            score_type=SentimentScore.ScoreType.ASSET_7D,
+            positive_score=Decimal('0.55'),
+            neutral_score=Decimal('0.25'),
+            negative_score=Decimal('0.2'),
+            sentiment_score=Decimal('0.35'),
+            sentiment_label=SentimentScore.Label.POSITIVE,
+        )
+
+        for offset, as_of in enumerate(trade_dates):
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=as_of,
+                open=Decimal('10') + Decimal(offset) / Decimal('10'),
+                high=Decimal('11') + Decimal(offset) / Decimal('10'),
+                low=Decimal('9') + Decimal(offset) / Decimal('10'),
+                close=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                adj_close=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                volume=Decimal('100000') + Decimal(offset * 5000),
+                amount=Decimal('2500000') + Decimal(offset * 10000),
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='RSI',
+                value=Decimal('45') + Decimal(offset),
+                timestamp=timezone.make_aware(timezone.datetime.combine(as_of, timezone.datetime.min.time())),
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='MOM_5D',
+                value=Decimal('0.02') + Decimal(offset) / Decimal('1000'),
+                timestamp=timezone.make_aware(timezone.datetime.combine(as_of, timezone.datetime.min.time())),
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='RS_SCORE',
+                value=Decimal('0.50') + Decimal(offset) / Decimal('100'),
+                timestamp=timezone.make_aware(timezone.datetime.combine(as_of, timezone.datetime.min.time())),
+            )
+
+        feature_names = [
+            'rsi',
+            'mom_5d',
+            'rs_score',
+            'rsi_lag_3d',
+            'rsi_delta_3d',
+            'mom_5d_delta_3d',
+            'rs_score_delta_3d',
+            'rsi_lag_5d',
+            'rsi_delta_5d',
+            'mom_5d_delta_5d',
+            'rs_score_delta_5d',
+            'rsi_lag_10d',
+            'rsi_delta_10d',
+            'mom_5d_delta_10d',
+            'rs_score_delta_10d',
+        ]
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-bt-feature-parity',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/bt-feature-parity',
+            feature_names=feature_names,
+            is_active=True,
+        )
+        scaler = CapturingScaler()
+        mock_load_artifacts.return_value = {
+            'model': object(),
+            'scaler': scaler,
+            'calibrator': StubCalibrator(),
+            'metadata': {'feature_names': feature_names},
+        }
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Feature Parity Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=d,
+            end_date=d,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'prediction_source': 'lightgbm',
+                'horizon_days': 7,
+                'top_n': 1,
+                'up_threshold': 0.55,
+            },
+        )
+
+        payload = backtest_tasks._predict_lightgbm_for_asset(self.asset.id, d, 7, {}, run=run)
+        training_row = _create_feature_matrix(d, d, asset_ids=[self.asset.id]).iloc[0]
+
+        self.assertEqual(payload['model_artifact_id'], artifact.id)
+        self.assertIsNotNone(scaler.last_matrix)
+        for index, feature_name in enumerate(feature_names):
+            self.assertAlmostEqual(float(scaler.last_matrix[0][index]), float(training_row[feature_name]))
 
     @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
     @patch('apps.backtest.tasks._load_model_artifacts')

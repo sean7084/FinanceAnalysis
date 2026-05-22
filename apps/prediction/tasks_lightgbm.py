@@ -719,14 +719,18 @@ def _extract_features_for_asset(
     )
 
     for lag_window in LAG_WINDOWS:
-        lag_date = as_of - timedelta(days=lag_window)
+        lag_date = None
+        if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, lag_window):
+            lag_index = len(recent_actual_dates) - 1 - lag_window
+            if lag_index >= 0:
+                lag_date = recent_actual_dates[lag_index]
         lagged_rsi = _safe_float(
             latest_rsi(
                 asset_id,
                 lag_date,
                 default=None if preserve_true_missing else Decimal(str(features['rsi'])),
                 cache=cache,
-            ),
+            ) if lag_date is not None else None,
             features['rsi'],
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
@@ -738,7 +742,7 @@ def _extract_features_for_asset(
                 n_days=5,
                 default=None if preserve_true_missing else Decimal(str(features['mom_5d'])),
                 cache=cache,
-            ),
+            ) if lag_date is not None else None,
             features['mom_5d'],
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
@@ -749,7 +753,7 @@ def _extract_features_for_asset(
                 lag_date,
                 default=None if preserve_true_missing else Decimal(str(features['rs_score'])),
                 cache=cache,
-            ),
+            ) if lag_date is not None else None,
             features['rs_score'],
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
