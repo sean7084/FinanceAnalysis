@@ -18,6 +18,7 @@ from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, Ensemble
 from .tasks_lightgbm import (
     MISSING_VALUE_STRATEGY_NATIVE_NAN,
     _build_lightgbm_model_version,
+    _register_lightgbm_model_version,
     _build_snapshot_feature_pruning_plan,
     _create_feature_matrix,
     _extract_features_for_asset,
@@ -479,6 +480,64 @@ class LightGBMPredictionTests(TestCase):
             _build_lightgbm_model_version(7, d, 'reg strong v1'),
             'lgb-7d-2024-12-31-reg-strong-v1',
         )
+
+    def test_register_lightgbm_model_version_keeps_other_horizons_active(self):
+        d = timezone.datetime(2024, 12, 31).date()
+        training_start = d - timezone.timedelta(days=30)
+
+        first_3d = _register_lightgbm_model_version(
+            3,
+            'lgb-3d-2024-12-31-first',
+            training_start,
+            d,
+            metrics={'accuracy': 0.51},
+            feature_names=['rsi'],
+            metadata={'artifact_id': 1},
+        )
+        first_7d = _register_lightgbm_model_version(
+            7,
+            'lgb-7d-2024-12-31-first',
+            training_start,
+            d,
+            metrics={'accuracy': 0.52},
+            feature_names=['rsi'],
+            metadata={'artifact_id': 2},
+        )
+
+        active_versions = set(
+            ModelVersion.objects.filter(
+                model_type=ModelVersion.ModelType.LIGHTGBM,
+                is_active=True,
+            ).values_list('version', flat=True)
+        )
+        self.assertSetEqual(
+            active_versions,
+            {'lgb-3d-2024-12-31-first', 'lgb-7d-2024-12-31-first'},
+        )
+
+        replacement_3d = _register_lightgbm_model_version(
+            3,
+            'lgb-3d-2024-12-31-second',
+            training_start,
+            d,
+            metrics={'accuracy': 0.53},
+            feature_names=['rsi'],
+            metadata={'artifact_id': 3},
+        )
+
+        active_versions = set(
+            ModelVersion.objects.filter(
+                model_type=ModelVersion.ModelType.LIGHTGBM,
+                is_active=True,
+            ).values_list('version', flat=True)
+        )
+        self.assertSetEqual(
+            active_versions,
+            {'lgb-3d-2024-12-31-second', 'lgb-7d-2024-12-31-first'},
+        )
+        self.assertFalse(ModelVersion.objects.get(id=first_3d.id).is_active)
+        self.assertTrue(ModelVersion.objects.get(id=first_7d.id).is_active)
+        self.assertTrue(ModelVersion.objects.get(id=replacement_3d.id).is_active)
 
     def _create_importance_source_artifact(self, horizon_days, feature_names, importance_scores):
         artifact = LightGBMModelArtifact.objects.create(

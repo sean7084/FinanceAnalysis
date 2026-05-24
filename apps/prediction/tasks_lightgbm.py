@@ -464,9 +464,11 @@ def _get_pruned_feature_names(horizon_days, feature_names):
 
 
 def _register_lightgbm_model_version(horizon_days, model_version, training_start, training_end, metrics, feature_names, metadata):
+    horizon_prefix = f'lgb-{int(horizon_days)}d-'
     ModelVersion.objects.filter(
         model_type=ModelVersion.ModelType.LIGHTGBM,
         is_active=True,
+        version__startswith=horizon_prefix,
     ).exclude(version=model_version).update(is_active=False)
 
     version_row, _ = ModelVersion.objects.update_or_create(
