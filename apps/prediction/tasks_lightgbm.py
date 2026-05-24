@@ -1728,7 +1728,7 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
 def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None, version_tag='', use_snapshot_pruning=False):
     """
     Train LightGBM models for 3, 7, 30-day horizons.
-    Runs weekly via Celery Beat.
+    Invoke manually or from an explicit operational workflow.
     """
     default_horizons = [3, 7, 30]
     if horizons is None:

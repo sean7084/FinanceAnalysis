@@ -228,14 +228,6 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.prediction.tasks.generate_predictions_for_date',
         'schedule': crontab(hour='18', minute='0'),
     },
-    'train-prediction-models-weekly': {
-        'task': 'apps.prediction.tasks.train_prediction_models',
-        'schedule': crontab(day_of_week='sat', hour='4', minute='0'),
-    },
-    'train-lightgbm-models-weekly': {
-        'task': 'apps.prediction.tasks_lightgbm.train_lightgbm_models',
-        'schedule': crontab(day_of_week='sun', hour='5', minute='0'),  # Day after heuristic training
-    },
     'generate-lightgbm-predictions-daily': {
         'task': 'apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date',
         'schedule': crontab(hour='18', minute='30'),  # 30 min after heuristic predictions
