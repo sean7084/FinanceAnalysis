@@ -20,12 +20,13 @@ Universe operations now use `sync_index_constituents` for CSI 300 + CSI A500 mem
 | CNY/USD | TuShare `fx_daily` | `macro_macrosnapshot.cny_usd` | `171` non-null rows, `2012-02-01` to `2026-04-01` | API/admin only; not consumed by `Heuristic`, `LightGBM`, `LSTM`, or backtest runtime today. | No direct model/backtest effect today; reduces FX inspection completeness only. |
 | Market Context History | Derived from monthly macro snapshots | `macro_marketcontext` | `263` rows, `2005-01-01` to `2026-04-01` | Used by `Heuristic` macro adjustments, `LightGBM`/`LSTM` `macro_phase`, and macro-aware backtest ranking/reporting. | Missing rows fall back to recovery/neutral behavior and weaken macro-aware ranking. |
 | Technical Indicator: RS_SCORE | Stored cross-sectional relative strength | `analytics_technicalindicator` | `1,128,982` rows, `300` assets, `2001-08-21` to `2026-04-26` | Direct input for `Heuristic`, `LightGBM`, `LSTM`, and runtime backtest candidate generation. | Missing rows fall back to neutral `0.5` and weaken relative-strength signal quality. |
-| Technical Indicator: RSI | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `300` rows, `300` assets, `2026-04-14` only | API/dashboard inspection only; runtime `Heuristic` and `LightGBM` recompute RSI from OHLCV when needed. | No direct runtime model/backtest effect today; only stored indicator history becomes sparse. |
+| Technical Indicator: RSI | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | Coverage depends on the latest `backfill_technical_indicators` run. | Direct input for `Heuristic`, `LightGBM`, `LSTM`, and runtime backtests through shared stored-indicator readers with freshness guards. | Missing rows fall back to neutral RSI defaults and weaken cross-model parity/signal quality. |
 | Technical Indicator: MACD | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `300` rows, `300` assets, `2026-04-14` only | API/dashboard inspection only. | No direct runtime model/backtest effect today; only stored indicator history becomes sparse. |
-| Technical Indicator: BBANDS | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `300` rows, `300` assets, `2026-04-14` only | API/dashboard inspection only; TP/SL logic uses runtime Bollinger helpers from OHLCV, not this store. | No direct runtime TP/SL/backtest effect today; only stored indicator history becomes sparse. |
-| Technical Indicator: SMA | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `1,500` rows, `300` assets, `2026-04-14` only | API/dashboard inspection only; TP/SL support uses runtime SMA helpers from OHLCV, not this store. | No direct runtime TP/SL/backtest effect today; only stored indicator history becomes sparse. |
+| Technical Indicator: BBANDS | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | Coverage depends on the latest `backfill_technical_indicators` run. | API/dashboard inspection plus stored Bollinger-band reads used by TP/SL helper logic. | Missing rows weaken stored TP/SL context and API inspection coverage. |
+| Technical Indicator: SMA | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | Coverage depends on the latest `backfill_technical_indicators` run. | API/dashboard inspection plus stored SMA reads used by TP/SL helper logic. | Missing rows weaken stored TP/SL context and API inspection coverage. |
 | Technical Indicator: EMA | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `1,500` rows, `300` assets, `2026-04-14` only | API/dashboard inspection only. | No direct model/backtest effect today; only stored indicator history becomes sparse. |
-| Technical Indicator: Momentum Store | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `MOM_5D` `2,538`, `MOM_10D` `2,538`, `MOM_20D` `2,538` rows; `300` assets; `2026-04-14` to `2026-04-24` | API/dashboard inspection only; runtime momentum features are recomputed from OHLCV for `Heuristic`, `LightGBM`, and backtests. | No direct runtime model/backtest effect today; only stored indicator history becomes sparse. |
+| Technical Indicator: Momentum Store | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | Coverage depends on the latest `backfill_technical_indicators` run. | Direct input for `Heuristic`, `LightGBM`, `LSTM`, and runtime backtests via stored `MOM_*D` rows. | Missing rows fall back to neutral momentum defaults and weaken shared model/runtime signal quality. |
+| Technical Indicator: Stored Model Metrics | Stored OHLCV-derived returns, volume ratios, and realized volatility | `analytics_technicalindicator` | `RETURN_3D/5D/10D`, `RELATIVE_VOLUME_5D/20D`, and `REALIZED_VOLATILITY_5D` are populated by `backfill_technical_indicators`. | Direct input for `LightGBM` and `LSTM` training, daily inference, and runtime backtests through the shared stored-metric path. | Missing rows fall back to neutral defaults or `NaN` under native-missing mode, reducing feature quality while preserving contracts. |
 | Technical Indicator: Other Inspection Store | Stored analytics snapshot from OHLCV | `analytics_technicalindicator` | `ADX` `300`, `OBV` `297`, `STOCH` `300`, `FIB_RET` `300` rows; `2026-04-14` only | API/dashboard inspection only; not consumed by `Heuristic`, `LightGBM`, `LSTM`, or backtest runtime today. | No direct model/backtest effect today; only stored indicator history becomes sparse. |
 | Signal Events | Calculated from technical indicators and OHLCV patterns | `analytics_signalevent` | `2,855` rows, `294` assets, `2026-04-14` to `2026-04-26` | Used by factor reversal confirmation and signal APIs/dashboard. | Missing rows reduce reversal confirmation strength, but OHLCV-based fallback logic still runs. |
 | News Articles | Multi-provider sentiment ingestion | `sentiment_newsarticle` | `44,468` rows, `2026-01-29T19:48:37` to `2026-04-27T00:34:24` | Raw text source for article scoring, `ASSET_7D`, `MARKET_7D`, concept heat, and sentiment dashboards. | Missing articles weaken downstream sentiment/concept signals and can push outputs toward neutral backfill. |
@@ -77,17 +78,16 @@ In the current implementation, heuristic, LightGBM, and LSTM backtest candidate 
 
 ### stored analytics vs runtime-computed features
 
-Stored analytics rows are primarily for API, dashboard, and inspection surfaces.
+Stored analytics rows now serve both inspection surfaces and the shared model/runtime feature path where storage-backed inputs exist.
 
-- `analytics_technicalindicator` serves the stored indicator history exposed by the technical-indicator API.
-- Those stored rows are not the sole source of truth for model/runtime feature extraction.
-- Current heuristic and LightGBM runtime paths recompute several features directly from OHLCV when needed, including RSI, momentum, returns, volume ratios, realized volatility, and Bollinger-band-derived checks.
-- `RS_SCORE` remains a stored analytics dependency and is still read from `analytics_technicalindicator`.
-- `FactorScore` remains a stored dependency for heuristic and LightGBM factor features.
+- `analytics_technicalindicator` remains the stored indicator history exposed by the technical-indicator API.
+- `Heuristic`, `LightGBM`, `LSTM`, and runtime backtests now share stored reads for `RSI`, `MOM_*D`, `RS_SCORE`, and the stored OHLCV-derived model metrics (`RETURN_*`, `RELATIVE_VOLUME_*`, `REALIZED_VOLATILITY_5D`) wherever those rows are available.
+- Stored `BBANDS` and `SMA` rows are also consumed by TP/SL helper logic instead of being treated as inspection-only history.
+- `FactorScore` remains the stored dependency for shared factor features.
 
 Implication:
-- Sparse stored RSI/MACD/BBANDS rows do not by themselves break runtime backtests or runtime LightGBM inference.
-- Stale or missing `RS_SCORE` / `FactorScore` rows still affect model behavior.
+- Backfill completeness for `analytics_technicalindicator` now directly affects runtime parity across prediction, training, and backtest paths.
+- Stale or missing stored indicator/factor rows still degrade behavior, but the null/default contracts remain explicit and consistent across the shared paths.
 
 ### technical stale-guard policy
 

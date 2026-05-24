@@ -1753,6 +1753,49 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
             continuity_rows = [row for row in rows if row['issue_type'] == 'continuity_gap']
             self.assertEqual(continuity_rows, [])
 
+    def test_technical_indicator_continuity_report_recognizes_parameterized_precomputed_metrics(self):
+        market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        trade_dates = [timezone.datetime(2024, 1, 2).date() + datetime.timedelta(days=index) for index in range(25)]
+        asset = Asset.objects.create(
+            market=market,
+            symbol='600190',
+            ts_code='600190.SH',
+            name='Parameterized Indicator Asset',
+            list_date=trade_dates[0],
+        )
+        self._create_calendar('SSE', trade_dates)
+        self._create_ohlcv_series(asset, trade_dates)
+
+        rows = self._build_indicator_rows(
+            asset,
+            trade_dates[0],
+            trade_dates[-1],
+            (
+                'RETURN_3D',
+                'RETURN_5D',
+                'RETURN_10D',
+                'RELATIVE_VOLUME_5D',
+                'RELATIVE_VOLUME_20D',
+                'REALIZED_VOLATILITY_5D',
+            ),
+        )
+        TechnicalIndicator.objects.bulk_create(rows)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_command(
+                'validate_data_quality',
+                start_date=trade_dates[0].isoformat(),
+                end_date=trade_dates[-1].isoformat(),
+                output_dir=temp_dir,
+                symbols=asset.ts_code,
+                technical_indicators='RETURN_3D,RETURN_5D,RETURN_10D,RELATIVE_VOLUME_5D,RELATIVE_VOLUME_20D,REALIZED_VOLATILITY_5D',
+                only_report='technical_indicator_snapshot_continuity_gaps.csv',
+            )
+
+            rows = read_csv(Path(temp_dir) / 'technical_indicator_snapshot_continuity_gaps.csv')
+            continuity_rows = [row for row in rows if row['issue_type'] == 'continuity_gap']
+            self.assertEqual(continuity_rows, [])
+
     def test_technical_indicator_continuity_report_flags_out_of_range_rsi(self):
         market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
         trade_date = timezone.datetime(2024, 2, 5).date()

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.core.management import call_command, CommandError
 from django.contrib.auth.models import User
+from django.db.utils import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -17,7 +18,7 @@ from pathlib import Path
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
-from .management.commands.backfill_technical_indicators import DEFAULT_TECHNICAL_INDICATORS
+from .management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand, DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.models_lightgbm import LightGBMModelArtifact, LightGBMPrediction
@@ -1028,7 +1029,9 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
 
         expected_indicator_types = {
             'ADX', 'BBANDS', 'EMA', 'FIB_RET', 'MACD', 'MOM_10D',
-            'MOM_20D', 'MOM_5D', 'OBV', 'RSI', 'SMA', 'STOCH',
+            'MOM_20D', 'MOM_5D', 'OBV', 'REALIZED_VOLATILITY_5D',
+            'RELATIVE_VOLUME_20D', 'RELATIVE_VOLUME_5D', 'RETURN_10D',
+            'RETURN_3D', 'RETURN_5D', 'RSI', 'SMA', 'STOCH',
         }
         self.assertEqual(
             set(
@@ -1061,6 +1064,51 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
                 ).values_list('timestamp__date', flat=True)
             ),
             {self.start_date + datetime.timedelta(days=offset) for offset in range(5)},
+        )
+
+    def test_backfill_technical_indicators_persists_precomputed_metric_rows(self):
+        call_command(
+            'backfill_technical_indicators',
+            start_date=self.start_date.isoformat(),
+            end_date=self.end_date.isoformat(),
+            symbols=self.asset.symbol,
+        )
+
+        closes = [
+            float(value)
+            for value in OHLCV.objects.filter(asset=self.asset).order_by('date').values_list('close', flat=True)
+        ]
+        returns = [((closes[index] / closes[index - 1]) - 1.0) for index in range(1, len(closes))]
+        expected_return_3d = (closes[-1] / closes[-4]) - 1.0
+        expected_return_5d = (closes[-1] / closes[-6]) - 1.0
+        expected_return_10d = (closes[-1] / closes[-11]) - 1.0
+        expected_realized_volatility_5d = (
+            sum((value - (sum(returns[-5:]) / 5.0)) ** 2 for value in returns[-5:]) / 5.0
+        ) ** 0.5
+
+        self.assertAlmostEqual(
+            float(TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RETURN_3D', timestamp__date=self.end_date).value),
+            expected_return_3d,
+        )
+        self.assertAlmostEqual(
+            float(TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RETURN_5D', timestamp__date=self.end_date).value),
+            expected_return_5d,
+        )
+        self.assertAlmostEqual(
+            float(TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RETURN_10D', timestamp__date=self.end_date).value),
+            expected_return_10d,
+        )
+        self.assertAlmostEqual(
+            float(TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RELATIVE_VOLUME_5D', timestamp__date=self.end_date).value),
+            1.0,
+        )
+        self.assertAlmostEqual(
+            float(TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RELATIVE_VOLUME_20D', timestamp__date=self.end_date).value),
+            1.0,
+        )
+        self.assertAlmostEqual(
+            float(TechnicalIndicator.objects.get(asset=self.asset, indicator_type='REALIZED_VOLATILITY_5D', timestamp__date=self.end_date).value),
+            expected_realized_volatility_5d,
         )
 
         bbands = TechnicalIndicator.objects.filter(
@@ -1220,6 +1268,60 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
                 ).count(),
                 5,
             )
+
+    def test_backfill_technical_indicators_checkpoint_write_retries_transient_permission_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / 'technical_indicator_backfill_checkpoint.json'
+            command = TechnicalIndicatorBackfillCommand()
+            command._checkpoint_path = checkpoint_path
+            command._checkpoint = {
+                'command': 'backfill_technical_indicators',
+                'version': 1,
+                'assets': {},
+            }
+
+            replace_call_count = {'value': 0}
+            original_replace = Path.replace
+
+            def flaky_replace(path_obj, target):
+                if path_obj.name.startswith(checkpoint_path.name) and replace_call_count['value'] == 0:
+                    replace_call_count['value'] += 1
+                    raise PermissionError('checkpoint temporarily locked')
+                return original_replace(path_obj, target)
+
+            with patch('apps.analytics.management.commands.backfill_technical_indicators.time.sleep') as mock_sleep:
+                with patch('pathlib.Path.replace', new=flaky_replace):
+                    command._write_checkpoint()
+
+            checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+            self.assertEqual(checkpoint['command'], 'backfill_technical_indicators')
+            self.assertEqual(replace_call_count['value'], 1)
+            mock_sleep.assert_called_once()
+
+    def test_backfill_technical_indicators_retries_transient_database_operational_error(self):
+        command = TechnicalIndicatorBackfillCommand()
+        error_output = StringIO()
+        command.stderr = error_output
+        operation_call_count = {'value': 0}
+
+        def flaky_operation():
+            if operation_call_count['value'] == 0:
+                operation_call_count['value'] += 1
+                raise OperationalError('SSL connection has been closed unexpectedly')
+            return 'ok'
+
+        with patch('apps.analytics.management.commands.backfill_technical_indicators.connections.close_all') as mock_close_all:
+            with patch('apps.analytics.management.commands.backfill_technical_indicators.time.sleep') as mock_sleep:
+                result = command._run_with_database_retry(
+                    flaky_operation,
+                    action='writing indicator chunk for 600123.SH 2024-04-26..2024-04-27',
+                )
+
+        self.assertEqual(result, 'ok')
+        self.assertIn('Database operation failed during writing indicator chunk', error_output.getvalue())
+        self.assertEqual(operation_call_count['value'], 1)
+        mock_close_all.assert_called_once()
+        mock_sleep.assert_called_once()
 
     def test_backfill_technical_indicators_rejects_rs_score(self):
         with self.assertRaises(CommandError):

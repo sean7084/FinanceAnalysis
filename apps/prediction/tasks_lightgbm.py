@@ -5,7 +5,6 @@ import re
 from bisect import bisect_left
 from datetime import date, timedelta
 from decimal import Decimal
-from statistics import pstdev
 
 import numpy as np
 import pandas as pd
@@ -37,9 +36,15 @@ from apps.analytics.technical_staleness import (
     ordered_trading_dates_for_exchange,
     technical_indicator_max_gap_trading_days,
     trading_date_positions,
-    trailing_indicator_window_is_fresh,
 )
-from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
+from apps.prediction.historical_features import (
+    latest_momentum,
+    latest_realized_volatility,
+    latest_relative_volume,
+    latest_return,
+    latest_rs_score,
+    latest_rsi,
+)
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 from .odds import estimate_trade_decision
@@ -227,84 +232,6 @@ def _asset_trading_context(asset_id, as_of, cache=None):
     if cache is not None:
         cache[cache_entry] = resolved
     return resolved
-
-
-def _row_value(rows, index, key, default, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
-    if index >= len(rows):
-        return _default_numeric(
-            default,
-            missing_value_strategy=missing_value_strategy,
-            preserve_missing=preserve_missing,
-        )
-    return _safe_float(
-        rows[index].get(key),
-        default,
-        missing_value_strategy=missing_value_strategy,
-        preserve_missing=preserve_missing,
-    )
-
-
-def _compute_return(rows, periods, default=0.0, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
-    fallback = _default_numeric(
-        default,
-        missing_value_strategy=missing_value_strategy,
-        preserve_missing=preserve_missing,
-    )
-    if len(rows) <= periods:
-        return fallback
-    current_close = _row_value(
-        rows,
-        0,
-        'close',
-        0.0,
-        missing_value_strategy=missing_value_strategy,
-        preserve_missing=preserve_missing,
-    )
-    historical_close = _row_value(
-        rows,
-        periods,
-        'close',
-        0.0,
-        missing_value_strategy=missing_value_strategy,
-        preserve_missing=preserve_missing,
-    )
-    if _is_nan_like(current_close) or _is_nan_like(historical_close) or not historical_close:
-        return fallback
-    return (current_close - historical_close) / historical_close
-
-
-def _compute_realized_volatility(rows, window=5, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY, preserve_missing=False):
-    fallback = _default_numeric(
-        0.0,
-        missing_value_strategy=missing_value_strategy,
-        preserve_missing=preserve_missing,
-    )
-    if len(rows) <= window:
-        return fallback
-    closes = [
-        _row_value(
-            rows,
-            idx,
-            'close',
-            0.0,
-            missing_value_strategy=missing_value_strategy,
-            preserve_missing=preserve_missing,
-        )
-        for idx in range(window + 1)
-    ]
-    closes = list(reversed([
-        close for close in closes
-        if not _is_nan_like(close) and close
-    ]))
-    if len(closes) <= 1:
-        return fallback
-    returns = []
-    for previous_close, current_close in zip(closes, closes[1:]):
-        if previous_close:
-            returns.append((current_close - previous_close) / previous_close)
-    if len(returns) <= 1:
-        return fallback
-    return float(pstdev(returns))
 
 
 def _rolling_gap_valid_mask(trade_positions, required_points, max_gap):
@@ -769,9 +696,15 @@ def _extract_features_for_asset(
         preserve_missing=True,
     )
     features['return_3d'] = (
-        _compute_return(
-            recent_rows,
-            3,
+        _safe_float(
+            latest_return(
+                asset_id,
+                as_of,
+                n_days=3,
+                default=None if preserve_true_missing else Decimal('0'),
+                cache=cache,
+            ),
+            0.0,
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
         )
@@ -779,9 +712,15 @@ def _extract_features_for_asset(
         else missing_numeric
     )
     features['return_5d'] = (
-        _compute_return(
-            recent_rows,
-            5,
+        _safe_float(
+            latest_return(
+                asset_id,
+                as_of,
+                n_days=5,
+                default=None if preserve_true_missing else Decimal('0'),
+                cache=cache,
+            ),
+            0.0,
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
         )
@@ -789,75 +728,65 @@ def _extract_features_for_asset(
         else missing_numeric
     )
     features['return_10d'] = (
-        _compute_return(
-            recent_rows,
-            10,
+        _safe_float(
+            latest_return(
+                asset_id,
+                as_of,
+                n_days=10,
+                default=None if preserve_true_missing else Decimal('0'),
+                cache=cache,
+            ),
+            0.0,
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
         )
         if exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 10)
         else missing_numeric
     )
-    current_volume = _row_value(
-        recent_rows,
-        0,
-        'volume',
-        0.0,
-        missing_value_strategy=missing_value_strategy,
-        preserve_missing=True,
-    )
-    volume_samples_5 = [
-        _row_value(
-            recent_rows,
-            index,
-            'volume',
-            0.0,
-            missing_value_strategy=missing_value_strategy,
-            preserve_missing=True,
-        )
-        for index in range(min(5, len(recent_rows)))
-    ]
-    volume_samples_20 = [
-        _row_value(
-            recent_rows,
-            index,
-            'volume',
-            0.0,
-            missing_value_strategy=missing_value_strategy,
-            preserve_missing=True,
-        )
-        for index in range(min(20, len(recent_rows)))
-    ]
-    average_volume_5 = float(np.mean(volume_samples_5)) if volume_samples_5 else 0.0
-    average_volume_20 = float(np.mean(volume_samples_20)) if volume_samples_20 else 0.0
-    volume_5_fresh = trailing_indicator_window_is_fresh(
-        recent_actual_dates,
-        current_trade_date,
-        position_map,
-        required_points=5,
-        max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 5}),
-    )
-    volume_20_fresh = trailing_indicator_window_is_fresh(
-        recent_actual_dates,
-        current_trade_date,
-        position_map,
-        required_points=20,
-        max_gap=technical_indicator_max_gap_trading_days('SMA', {'timeperiod': 20}),
-    )
+    volume_5_fresh = exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 4)
+    volume_20_fresh = exact_trading_window_available(recent_actual_dates, current_trade_date, position_map, 19)
     features['relative_volume_5d'] = (
-        current_volume / average_volume_5
-        if volume_5_fresh and average_volume_5 and not _is_nan_like(current_volume)
+        _safe_float(
+            latest_relative_volume(
+                asset_id,
+                as_of,
+                n_days=5,
+                default=None if preserve_true_missing else Decimal('1'),
+                cache=cache,
+            ),
+            1.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if volume_5_fresh
         else _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
     )
     features['relative_volume_20d'] = (
-        current_volume / average_volume_20
-        if volume_20_fresh and average_volume_20 and not _is_nan_like(current_volume)
+        _safe_float(
+            latest_relative_volume(
+                asset_id,
+                as_of,
+                n_days=20,
+                default=None if preserve_true_missing else Decimal('1'),
+                cache=cache,
+            ),
+            1.0,
+            missing_value_strategy=missing_value_strategy,
+            preserve_missing=True,
+        )
+        if volume_20_fresh
         else _default_numeric(1.0, missing_value_strategy, preserve_missing=True)
     )
     features['realized_volatility_5d'] = (
-        _compute_realized_volatility(
-            recent_rows,
-            window=5,
+        _safe_float(
+            latest_realized_volatility(
+                asset_id,
+                as_of,
+                window=5,
+                default=None if preserve_true_missing else Decimal('0'),
+                cache=cache,
+            ),
+            0.0,
             missing_value_strategy=missing_value_strategy,
             preserve_missing=True,
         )
@@ -1000,19 +929,6 @@ def _extract_features_for_asset(
     return _augment_single_asset_features(features)
 
 
-def _compute_rsi_series(close_series, period=14, fill_default=50.0):
-    delta = close_series.diff()
-    gains = delta.clip(lower=0)
-    losses = -delta.clip(upper=0)
-    avg_gain = gains.rolling(window=period, min_periods=period).mean()
-    avg_loss = losses.rolling(window=period, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    if fill_default is None:
-        return rsi
-    return rsi.fillna(fill_default)
-
-
 def _indicator_frame_from_rows(rows, value_column, *, parameter_key=None, parameter_value=None):
     frame = pd.DataFrame.from_records(rows)
     if frame.empty:
@@ -1035,6 +951,48 @@ def _indicator_frame_from_rows(rows, value_column, *, parameter_key=None, parame
     frame['date'] = pd.to_datetime(frame['timestamp'], utc=True).dt.tz_localize(None).dt.normalize()
     frame[value_column] = frame['value'].astype(float)
     return frame[['asset_id', 'date', value_column]].sort_values(['asset_id', 'date'])
+
+
+def _merge_same_day_indicator_frame(
+    asset_df,
+    indicator_df,
+    feature_name,
+    source_prefix,
+    position_map,
+    valid_mask,
+    default_value,
+    missing_value_strategy,
+    preserve_true_missing,
+):
+    resolved_valid_mask = pd.Series(valid_mask, index=asset_df.index)
+    if indicator_df.empty:
+        asset_df[feature_name] = _default_numeric(
+            default_value,
+            missing_value_strategy,
+            preserve_missing=True,
+        )
+        return asset_df
+
+    source_date_column = f'{source_prefix}_source_date'
+    source_position_column = f'{source_prefix}_source_position'
+    indicator_frame = indicator_df.rename(columns={'date': source_date_column})
+    asset_df = pd.merge_asof(
+        asset_df.sort_values('date'),
+        indicator_frame.sort_values(source_date_column),
+        left_on='date',
+        right_on=source_date_column,
+        direction='backward',
+    )
+    asset_df[source_position_column] = asset_df[source_date_column].dt.date.map(position_map).astype('float64')
+    age_valid = (asset_df['trade_position'] - asset_df[source_position_column]).eq(0.0)
+    if preserve_true_missing:
+        asset_df[feature_name] = asset_df[feature_name].where(resolved_valid_mask & age_valid)
+    else:
+        asset_df[feature_name] = asset_df[feature_name].where(
+            resolved_valid_mask & age_valid,
+            default_value,
+        ).fillna(default_value)
+    return asset_df
 
 
 def _prepare_macro_dataframe(end_date, missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY):
@@ -1088,7 +1046,7 @@ def _create_feature_matrix(
     """
     Create a feature matrix for all assets over a date range.
     Used for training.
-    
+
     Returns:
         DataFrame with shape (n_samples, n_features)
         Index: (date, asset_id)
@@ -1229,6 +1187,96 @@ def _create_feature_matrix(
     )
     rs_df = _indicator_frame_from_rows(rs_rows, 'rs_score')
 
+    return_3d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='RETURN_3D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    return_3d_df = _indicator_frame_from_rows(
+        return_3d_rows,
+        'return_3d',
+        parameter_key='n_days',
+        parameter_value=3,
+    )
+
+    return_5d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='RETURN_5D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    return_5d_df = _indicator_frame_from_rows(
+        return_5d_rows,
+        'return_5d',
+        parameter_key='n_days',
+        parameter_value=5,
+    )
+
+    return_10d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='RETURN_10D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    return_10d_df = _indicator_frame_from_rows(
+        return_10d_rows,
+        'return_10d',
+        parameter_key='n_days',
+        parameter_value=10,
+    )
+
+    relative_volume_5d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='RELATIVE_VOLUME_5D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    relative_volume_5d_df = _indicator_frame_from_rows(
+        relative_volume_5d_rows,
+        'relative_volume_5d',
+        parameter_key='n_days',
+        parameter_value=5,
+    )
+
+    relative_volume_20d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='RELATIVE_VOLUME_20D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    relative_volume_20d_df = _indicator_frame_from_rows(
+        relative_volume_20d_rows,
+        'relative_volume_20d',
+        parameter_key='n_days',
+        parameter_value=20,
+    )
+
+    realized_volatility_5d_rows = list(
+        TechnicalIndicator.objects.filter(
+            asset_id__in=eligible_asset_ids,
+            indicator_type='REALIZED_VOLATILITY_5D',
+            timestamp__date__gte=warmup_start,
+            timestamp__date__lte=end_date,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+    )
+    realized_volatility_5d_df = _indicator_frame_from_rows(
+        realized_volatility_5d_rows,
+        'realized_volatility_5d',
+        parameter_key='window',
+        parameter_value=5,
+    )
+
     preserve_true_missing = _preserves_true_missing(missing_value_strategy)
     macro_df, context_df = _prepare_macro_dataframe(
         end_date,
@@ -1325,32 +1373,89 @@ def _create_feature_matrix(
             else:
                 asset_df['mom_5d'] = asset_df['mom_5d'].where(asset_df['_mom_5d_window_valid'] & mom_5d_age_valid, 0.0).fillna(0.0)
 
-        if preserve_true_missing:
-            asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid)
-            asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid)
-            asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid)
-        else:
-            asset_df['return_3d'] = asset_df['close'].pct_change(periods=3).where(return_3d_valid, 0.0).fillna(0.0)
-            asset_df['return_5d'] = asset_df['close'].pct_change(periods=5).where(return_5d_valid, 0.0).fillna(0.0)
-            asset_df['return_10d'] = asset_df['close'].pct_change(periods=10).where(return_10d_valid, 0.0).fillna(0.0)
-        relative_volume_5d = (
-            asset_df['volume'] / asset_df['volume'].rolling(window=5, min_periods=5).mean()
-        ).replace([np.inf, -np.inf], np.nan)
-        relative_volume_20d = (
-            asset_df['volume'] / asset_df['volume'].rolling(window=20, min_periods=20).mean()
-        ).replace([np.inf, -np.inf], np.nan)
-        if preserve_true_missing:
-            asset_df['relative_volume_5d'] = relative_volume_5d.where(relative_volume_5d_valid)
-            asset_df['relative_volume_20d'] = relative_volume_20d.where(relative_volume_20d_valid)
-        else:
-            asset_df['relative_volume_5d'] = relative_volume_5d.where(relative_volume_5d_valid, 1.0).fillna(1.0)
-            asset_df['relative_volume_20d'] = relative_volume_20d.where(relative_volume_20d_valid, 1.0).fillna(1.0)
-        close_returns = asset_df['close'].pct_change()
-        realized_volatility_5d = close_returns.rolling(window=5, min_periods=5).std(ddof=0)
-        if preserve_true_missing:
-            asset_df['realized_volatility_5d'] = realized_volatility_5d.where(volatility_5d_valid)
-        else:
-            asset_df['realized_volatility_5d'] = realized_volatility_5d.where(volatility_5d_valid, 0.0).fillna(0.0)
+        asset_return_3d_df = return_3d_df[return_3d_df['asset_id'] == asset_id][['date', 'return_3d']].sort_values('date')
+        asset_df = _merge_same_day_indicator_frame(
+            asset_df,
+            asset_return_3d_df,
+            'return_3d',
+            'return_3d',
+            position_map,
+            return_3d_valid,
+            0.0,
+            missing_value_strategy,
+            preserve_true_missing,
+        )
+
+        asset_return_5d_df = return_5d_df[return_5d_df['asset_id'] == asset_id][['date', 'return_5d']].sort_values('date')
+        asset_df = _merge_same_day_indicator_frame(
+            asset_df,
+            asset_return_5d_df,
+            'return_5d',
+            'return_5d',
+            position_map,
+            return_5d_valid,
+            0.0,
+            missing_value_strategy,
+            preserve_true_missing,
+        )
+
+        asset_return_10d_df = return_10d_df[return_10d_df['asset_id'] == asset_id][['date', 'return_10d']].sort_values('date')
+        asset_df = _merge_same_day_indicator_frame(
+            asset_df,
+            asset_return_10d_df,
+            'return_10d',
+            'return_10d',
+            position_map,
+            return_10d_valid,
+            0.0,
+            missing_value_strategy,
+            preserve_true_missing,
+        )
+
+        asset_relative_volume_5d_df = relative_volume_5d_df[
+            relative_volume_5d_df['asset_id'] == asset_id
+        ][['date', 'relative_volume_5d']].sort_values('date')
+        asset_df = _merge_same_day_indicator_frame(
+            asset_df,
+            asset_relative_volume_5d_df,
+            'relative_volume_5d',
+            'relative_volume_5d',
+            position_map,
+            relative_volume_5d_valid,
+            1.0,
+            missing_value_strategy,
+            preserve_true_missing,
+        )
+
+        asset_relative_volume_20d_df = relative_volume_20d_df[
+            relative_volume_20d_df['asset_id'] == asset_id
+        ][['date', 'relative_volume_20d']].sort_values('date')
+        asset_df = _merge_same_day_indicator_frame(
+            asset_df,
+            asset_relative_volume_20d_df,
+            'relative_volume_20d',
+            'relative_volume_20d',
+            position_map,
+            relative_volume_20d_valid,
+            1.0,
+            missing_value_strategy,
+            preserve_true_missing,
+        )
+
+        asset_realized_volatility_5d_df = realized_volatility_5d_df[
+            realized_volatility_5d_df['asset_id'] == asset_id
+        ][['date', 'realized_volatility_5d']].sort_values('date')
+        asset_df = _merge_same_day_indicator_frame(
+            asset_df,
+            asset_realized_volatility_5d_df,
+            'realized_volatility_5d',
+            'realized_volatility_5d',
+            position_map,
+            volatility_5d_valid,
+            0.0,
+            missing_value_strategy,
+            preserve_true_missing,
+        )
 
         asset_rs_df = rs_df[rs_df['asset_id'] == asset_id][['date', 'rs_score']].sort_values('date')
         if asset_rs_df.empty:
@@ -1491,6 +1596,18 @@ def _create_feature_matrix(
                 'mom_5d_source_position',
                 'rs_source_date',
                 'rs_source_position',
+                'return_3d_source_date',
+                'return_3d_source_position',
+                'return_5d_source_date',
+                'return_5d_source_position',
+                'return_10d_source_date',
+                'return_10d_source_position',
+                'relative_volume_5d_source_date',
+                'relative_volume_5d_source_position',
+                'relative_volume_20d_source_date',
+                'relative_volume_20d_source_position',
+                'realized_volatility_5d_source_date',
+                'realized_volatility_5d_source_position',
             ],
             errors='ignore',
         )

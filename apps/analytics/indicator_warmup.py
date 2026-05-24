@@ -11,6 +11,12 @@ TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS = {
     'MOM_20D': 20,
     'MOM_5D': 5,
     'OBV': 1,
+    'REALIZED_VOLATILITY_5D': 5,
+    'RELATIVE_VOLUME_20D': 19,
+    'RELATIVE_VOLUME_5D': 4,
+    'RETURN_10D': 10,
+    'RETURN_3D': 3,
+    'RETURN_5D': 5,
     'RSI': 14,
     'SMA': 4,
     'STOCH': 17,
@@ -51,6 +57,22 @@ def technical_indicator_variant_warmup_lookback(indicator_type, parameters=None)
         return _resolve_positive_int_parameter(parameters, 'timeperiod', 14)
     if resolved_indicator_type in {'FIB_RET', 'OBV'}:
         return 1
+    if resolved_indicator_type.startswith('RETURN_'):
+        return _resolve_positive_int_parameter(
+            parameters,
+            'n_days',
+            TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS.get(resolved_indicator_type, 0),
+        )
+    if resolved_indicator_type.startswith('RELATIVE_VOLUME_'):
+        default_lookback = TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS.get(resolved_indicator_type, 0)
+        default_window = default_lookback + 1 if default_lookback > 0 else 0
+        return max(_resolve_positive_int_parameter(parameters, 'n_days', default_window) - 1, 0)
+    if resolved_indicator_type.startswith('REALIZED_VOLATILITY_'):
+        return _resolve_positive_int_parameter(
+            parameters,
+            'window',
+            TECHNICAL_INDICATOR_WARMUP_LOOKBACK_TRADING_DAYS.get(resolved_indicator_type, 0),
+        )
     if resolved_indicator_type.startswith('MOM_'):
         return _resolve_positive_int_parameter(
             parameters,

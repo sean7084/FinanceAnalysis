@@ -1,16 +1,12 @@
 from decimal import Decimal
 
-import pandas as pd
-import talib
 from django.db import models
 
 from apps.analytics.technical_staleness import (
-    exact_trading_window_available,
     latest_official_trade_date,
     ordered_trading_dates_for_asset,
     stored_indicator_is_fresh,
     trading_date_positions,
-    trailing_indicator_window_is_fresh,
 )
 from apps.analytics.models import TechnicalIndicator
 from apps.markets.models import Asset, OHLCV
@@ -142,26 +138,45 @@ def _matching_indicator_rows(
         cache[cache_entry] = rows
     return rows
 
-def _ohlcv_rows(asset_id, as_of, limit):
-    rows = list(
-        OHLCV.objects.filter(asset_id=asset_id, date__lte=as_of)
-        .order_by('-date')
-        .values('date', 'open', 'high', 'low', 'close', 'volume')[:limit]
+
+def _latest_indicator_value(
+    asset_id,
+    as_of,
+    indicator_type,
+    *,
+    default=None,
+    expected_parameters=None,
+    required_keys=(),
+    parameter_key=None,
+    parameter_value=None,
+    max_gap=None,
+    cache=None,
+):
+    _asset, current_trade_date, position_map = _asset_trading_context(asset_id, as_of, cache=cache)
+    indicators = _matching_indicator_rows(
+        asset_id,
+        as_of,
+        indicator_type,
+        expected_parameters=expected_parameters,
+        required_keys=required_keys,
+        parameter_key=parameter_key,
+        parameter_value=parameter_value,
+        limit=1,
+        cache=cache,
     )
-    rows.reverse()
-    return rows
+    if not indicators:
+        return None if default is None else _to_decimal(default, default)
 
-
-def _ohlcv_frame(asset_id, as_of, limit):
-    rows = _ohlcv_rows(asset_id, as_of, limit)
-    if not rows:
-        return pd.DataFrame()
-
-    frame = pd.DataFrame.from_records(rows)
-    frame.set_index('date', inplace=True)
-    for column in ['open', 'high', 'low', 'close', 'volume']:
-        frame[column] = frame[column].astype(float)
-    return frame
+    if not stored_indicator_is_fresh(
+        indicators[0].timestamp.date(),
+        current_trade_date,
+        position_map,
+        indicator_type=indicator_type,
+        parameters=expected_parameters,
+        max_gap=max_gap,
+    ):
+        return None if default is None else _to_decimal(default, default)
+    return _to_decimal(getattr(indicators[0], 'value', default), default)
 
 
 def latest_ohlcv(asset_id, as_of, max_gap_trading_days=0, cache=None):
@@ -331,3 +346,51 @@ def latest_rs_score(asset_id, as_of, default=Decimal('0.5'), cache=None):
     ):
         return _to_decimal(default, default)
     return _to_decimal(getattr(indicator, 'value', default), default)
+
+
+def latest_return(asset_id, as_of, n_days=3, default=Decimal('0'), cache=None):
+    resolved_days = int(n_days)
+    return _latest_indicator_value(
+        asset_id,
+        as_of,
+        f'RETURN_{resolved_days}D',
+        default=default,
+        expected_parameters={'n_days': resolved_days},
+        required_keys=('n_days',),
+        parameter_key='n_days',
+        parameter_value=resolved_days,
+        max_gap=0,
+        cache=cache,
+    )
+
+
+def latest_relative_volume(asset_id, as_of, n_days=5, default=Decimal('1'), cache=None):
+    resolved_days = int(n_days)
+    return _latest_indicator_value(
+        asset_id,
+        as_of,
+        f'RELATIVE_VOLUME_{resolved_days}D',
+        default=default,
+        expected_parameters={'n_days': resolved_days},
+        required_keys=('n_days',),
+        parameter_key='n_days',
+        parameter_value=resolved_days,
+        max_gap=0,
+        cache=cache,
+    )
+
+
+def latest_realized_volatility(asset_id, as_of, window=5, default=Decimal('0'), cache=None):
+    resolved_window = int(window)
+    return _latest_indicator_value(
+        asset_id,
+        as_of,
+        f'REALIZED_VOLATILITY_{resolved_window}D',
+        default=default,
+        expected_parameters={'window': resolved_window},
+        required_keys=('window',),
+        parameter_key='window',
+        parameter_value=resolved_window,
+        max_gap=0,
+        cache=cache,
+    )

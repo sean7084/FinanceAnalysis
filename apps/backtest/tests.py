@@ -7,6 +7,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+import torch
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase
@@ -21,6 +23,8 @@ from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
+from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
+from apps.prediction.tasks_lstm import LSTM_MISSING_VALUE_STRATEGY, _predict_with_lstm
 from apps.prediction.tasks_lightgbm import _create_feature_matrix
 from apps.sentiment.models import SentimentScore
 from . import tasks as backtest_tasks
@@ -47,6 +51,11 @@ class StubCalibrator:
     def predict_proba(self, matrix):
         import numpy as np
         return np.array([[0.1, 0.2, 0.7]])
+
+
+class StaticLstmModel:
+    def __call__(self, tensor):
+        return torch.tensor([[0.15, 0.35, 0.50]], dtype=torch.float32)
 
 
 class Phase15BacktestTests(TestCase):
@@ -593,6 +602,51 @@ class Phase15BacktestTests(TestCase):
         self.assertIsNotNone(buy_trade)
         self.assertEqual(buy_trade.signal_payload['prediction_source'], 'heuristic')
         self.assertTrue(buy_trade.signal_payload['generated_on_demand'])
+
+    def test_backtest_heuristic_runtime_matches_prediction_feature_snapshot(self):
+        indicator_timestamp = timezone.make_aware(timezone.datetime.combine(self.d1, timezone.datetime.min.time()))
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=indicator_timestamp,
+            indicator_type='RSI',
+            value=Decimal('59.25'),
+            parameters={'timeperiod': 14},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=indicator_timestamp,
+            indicator_type='MOM_5D',
+            value=Decimal('0.11250000'),
+            parameters={'n_days': 5},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=indicator_timestamp,
+            indicator_type='RS_SCORE',
+            value=Decimal('0.72000000'),
+        )
+        SentimentScore.objects.create(
+            article=None,
+            asset=self.asset,
+            date=self.d1,
+            score_type=SentimentScore.ScoreType.ASSET_7D,
+            positive_score=Decimal('0.5'),
+            neutral_score=Decimal('0.3'),
+            negative_score=Decimal('0.2'),
+            sentiment_score=Decimal('0.22'),
+            sentiment_label=SentimentScore.Label.POSITIVE,
+        )
+
+        features = _feature_snapshot(self.asset.id, self.d1, cache={})
+        expected_up, expected_flat, expected_down = _probabilities_from_features(features, 7, '')
+        payload = backtest_tasks._predict_heuristic_for_asset(self.asset.id, self.d1, 7, cache={})
+
+        self.assertAlmostEqual(float(payload['up_probability']), float(expected_up))
+        self.assertAlmostEqual(float(payload['flat_probability']), float(expected_flat))
+        self.assertAlmostEqual(float(payload['down_probability']), float(expected_down))
+        self.assertEqual(payload['predicted_label'], _predicted_label(expected_up, expected_flat, expected_down))
+        self.assertAlmostEqual(float(payload['confidence']), float(_confidence(expected_up, expected_flat, expected_down)))
+        self.assertTrue(payload['generated_on_demand'])
 
     @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
     @patch('apps.backtest.tasks._load_model_artifacts')
@@ -1574,6 +1628,146 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(buy_trade.signal_payload['model_version_id'], selected_version.id)
         self.assertEqual(run.report['model_references'][0]['reference_id'], selected_version.id)
         self.assertEqual(mock_predict_with_lstm.call_args.kwargs['model_version'], selected_version)
+
+    @patch('apps.prediction.tasks_lstm._load_lstm_artifact')
+    def test_backtest_lstm_runtime_matches_direct_prediction_helper(self, mock_load_lstm_artifact):
+        version = ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM,
+            version='lstm-backtest-parity',
+            status=ModelVersion.Status.READY,
+            is_active=True,
+            artifact_path='models/lstm/backtest-parity',
+        )
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LSTM Parity Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lstm',
+                'lstm_model_version_id': version.id,
+            },
+        )
+        feature_names = [
+            'rsi', 'rsi__is_missing',
+            'mom_5d', 'mom_5d__is_missing',
+            'rs_score', 'rs_score__is_missing',
+            'factor_composite', 'factor_composite__is_missing',
+            'sentiment_7d', 'sentiment_7d__is_missing',
+        ]
+        mock_load_lstm_artifact.return_value = {
+            'model': StaticLstmModel(),
+            'feature_names': feature_names,
+            'sequence_length': 5,
+            'scaler_mean': np.zeros(len(feature_names), dtype=np.float32),
+            'scaler_scale': np.ones(len(feature_names), dtype=np.float32),
+            'file_path': 'models/lstm/backtest-parity/7d_model.pt',
+            'missing_value_strategy': LSTM_MISSING_VALUE_STRATEGY,
+        }
+
+        trade_dates = [self.d2 - timedelta(days=offset) for offset in range(5)]
+        for offset, trade_date in enumerate(reversed(trade_dates)):
+            ExchangeTradingCalendar.objects.get_or_create(
+                exchange_code='SSE',
+                trade_date=trade_date,
+                defaults={'is_open': True},
+            )
+            for index_code, index_name in (
+                ('000300.SH', 'CSI 300'),
+                ('000510.CSI', 'CSI A500'),
+            ):
+                IndexMembership.objects.get_or_create(
+                    asset=self.asset,
+                    index_code=index_code,
+                    index_name=index_name,
+                    trade_date=trade_date,
+                    defaults={'weight': Decimal('1.000000')},
+                )
+            OHLCV.objects.update_or_create(
+                asset=self.asset,
+                date=trade_date,
+                defaults={
+                    'open': Decimal('10.0') + Decimal(offset) / Decimal('10'),
+                    'high': Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                    'low': Decimal('9.8') + Decimal(offset) / Decimal('10'),
+                    'close': Decimal('10.2') + Decimal(offset) / Decimal('20'),
+                    'adj_close': Decimal('10.2') + Decimal(offset) / Decimal('20'),
+                    'volume': 1000000 + offset * 10000,
+                    'amount': Decimal('10200000') + Decimal(offset * 100000),
+                },
+            )
+            FactorScore.objects.update_or_create(
+                asset=self.asset,
+                date=trade_date,
+                mode=FactorScore.FactorMode.COMPOSITE,
+                defaults={
+                    'fundamental_score': Decimal('0.55') + Decimal(offset) / Decimal('100'),
+                    'capital_flow_score': Decimal('0.56') + Decimal(offset) / Decimal('100'),
+                    'technical_score': Decimal('0.57') + Decimal(offset) / Decimal('100'),
+                    'composite_score': Decimal('0.58') + Decimal(offset) / Decimal('100'),
+                    'bottom_probability_score': Decimal('0.45') + Decimal(offset) / Decimal('100'),
+                },
+            )
+            SentimentScore.objects.create(
+                article=None,
+                asset=self.asset,
+                date=trade_date,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+                positive_score=Decimal('0.5'),
+                neutral_score=Decimal('0.3'),
+                negative_score=Decimal('0.2'),
+                sentiment_score=Decimal('0.10') + Decimal(offset) / Decimal('100'),
+                sentiment_label=SentimentScore.Label.POSITIVE,
+            )
+            indicator_timestamp = timezone.make_aware(timezone.datetime.combine(trade_date, timezone.datetime.min.time()))
+            TechnicalIndicator.objects.update_or_create(
+                asset=self.asset,
+                timestamp=indicator_timestamp,
+                indicator_type='RSI',
+                defaults={'value': Decimal('55.0') + Decimal(offset), 'parameters': {'timeperiod': 14}},
+            )
+            TechnicalIndicator.objects.update_or_create(
+                asset=self.asset,
+                timestamp=indicator_timestamp,
+                indicator_type='MOM_5D',
+                defaults={'value': Decimal('0.01000000') + Decimal(offset) / Decimal('1000'), 'parameters': {'n_days': 5}},
+            )
+            TechnicalIndicator.objects.update_or_create(
+                asset=self.asset,
+                timestamp=indicator_timestamp,
+                indicator_type='RS_SCORE',
+                defaults={'value': Decimal('0.60000000') + Decimal(offset) / Decimal('100'), 'parameters': {}},
+            )
+
+        expected = _predict_with_lstm(
+            asset_id=self.asset.id,
+            target_date=self.d2,
+            horizon_days=7,
+            model_version=version,
+            cache={},
+        )
+        payload = backtest_tasks._predict_lstm_for_asset(
+            self.asset.id,
+            self.d2,
+            7,
+            cache={},
+            run=run,
+        )
+
+        self.assertIsNotNone(expected)
+        self.assertAlmostEqual(float(payload['up_probability']), float(expected['up_probability']))
+        self.assertAlmostEqual(float(payload['flat_probability']), float(expected['flat_probability']))
+        self.assertAlmostEqual(float(payload['down_probability']), float(expected['down_probability']))
+        self.assertAlmostEqual(float(payload['confidence']), float(expected['confidence']))
+        self.assertEqual(payload['predicted_label'], expected['predicted_label'])
+        self.assertEqual(payload['model_version_id'], version.id)
+        self.assertEqual(payload['model_version'], version.version)
+        self.assertTrue(payload['generated_on_demand'])
 
     def test_backtest_trades_action_returns_rows(self):
         self._auth()

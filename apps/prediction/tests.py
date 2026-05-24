@@ -26,10 +26,12 @@ from apps.sentiment.models import SentimentScore
 from .historical_features import latest_bbands, latest_momentum, latest_rsi, latest_sma
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
-from .tasks import generate_predictions_for_date, train_prediction_models
-from .tasks_lightgbm import _create_feature_matrix, _create_labels_for_training
+from .tasks import _feature_snapshot, generate_predictions_for_date, train_prediction_models
+from .tasks_lightgbm import MISSING_VALUE_STRATEGY_NATIVE_NAN, _create_feature_matrix, _create_labels_for_training
 from .tasks_lstm import (
     LSTM_MISSING_VALUE_STRATEGY,
+    _augment_lstm_missingness_features,
+    _base_lstm_feature_names,
     _build_inference_sequence,
     _fit_scaler_on_sequences,
     _prime_lstm_inference_asset_ids,
@@ -296,6 +298,41 @@ class Phase14PredictionTests(TestCase):
 
         self.assertEqual(latest_rsi(self.asset.id, d), Decimal('58.5'))
         self.assertEqual(latest_momentum(self.asset.id, d), Decimal('0.02000000'))
+
+    def test_heuristic_feature_snapshot_matches_shared_matrix_for_stored_features(self):
+        d = self._seed_features()
+        indicator_timestamp = timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time()))
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=indicator_timestamp,
+            indicator_type='RSI',
+            value=Decimal('61.25'),
+            parameters={'timeperiod': 14},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=indicator_timestamp,
+            indicator_type='MOM_5D',
+            value=Decimal('0.12345678'),
+            parameters={'n_days': 5},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            timestamp=indicator_timestamp,
+            indicator_type='RS_SCORE',
+            value=Decimal('0.64000000'),
+        )
+
+        runtime_features = _feature_snapshot(self.asset.id, d)
+        training_row = _create_feature_matrix(d, d, asset_ids=[self.asset.id]).iloc[0]
+
+        self.assertEqual(runtime_features['factor_composite'], Decimal('0.57'))
+        self.assertEqual(runtime_features['factor_bottom_prob'], Decimal('0.57'))
+        self.assertAlmostEqual(float(runtime_features['factor_composite']), float(training_row['factor_composite']))
+        self.assertAlmostEqual(float(runtime_features['sentiment_score']), float(training_row['sentiment_7d']))
+        self.assertAlmostEqual(float(runtime_features['rsi']), float(training_row['rsi']))
+        self.assertAlmostEqual(float(runtime_features['mom_5d']), float(training_row['mom_5d']))
+        self.assertAlmostEqual(float(runtime_features['rs_score']), float(training_row['rs_score']))
 
     def test_generate_predictions_task_skips_effective_universe_assets_without_same_day_ohlcv(self):
         included_asset = self.asset
@@ -1618,6 +1655,124 @@ class LstmTrainingRegistryTests(TestCase):
         self.assertEqual(mock_create_feature_matrix.call_count, 1)
         self.assertEqual(first_sequence.shape, (3, 2))
         self.assertEqual(second_sequence.shape, (3, 2))
+
+    def test_build_inference_sequence_matches_shared_matrix_tail_for_stored_features(self):
+        target_date = timezone.now().date()
+        trade_dates = [target_date - timezone.timedelta(days=offset) for offset in range(8)]
+        _seed_trading_calendar_dates('SSE', trade_dates)
+
+        ordered_trade_dates = list(reversed(trade_dates))
+        for offset, trade_date in enumerate(ordered_trade_dates):
+            IndexMembership.objects.bulk_create([
+                IndexMembership(
+                    asset=self.asset,
+                    index_code='000300.SH',
+                    index_name='CSI 300',
+                    trade_date=trade_date,
+                    weight=Decimal('1.000000'),
+                ),
+                IndexMembership(
+                    asset=self.asset,
+                    index_code='000510.CSI',
+                    index_name='CSI A500',
+                    trade_date=trade_date,
+                    weight=Decimal('1.000000'),
+                ),
+            ])
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=trade_date,
+                open=Decimal('10.0') + Decimal(offset) / Decimal('10'),
+                high=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                low=Decimal('9.8') + Decimal(offset) / Decimal('10'),
+                close=Decimal('10.2') + Decimal(offset) / Decimal('20'),
+                adj_close=Decimal('10.2') + Decimal(offset) / Decimal('20'),
+                volume=1000000 + offset * 10000,
+                amount=Decimal('10200000') + Decimal(offset * 100000),
+            )
+            FactorScore.objects.create(
+                asset=self.asset,
+                date=trade_date,
+                mode=FactorScore.FactorMode.COMPOSITE,
+                fundamental_score=Decimal('0.55') + Decimal(offset) / Decimal('100'),
+                capital_flow_score=Decimal('0.56') + Decimal(offset) / Decimal('100'),
+                technical_score=Decimal('0.57') + Decimal(offset) / Decimal('100'),
+                composite_score=Decimal('0.58') + Decimal(offset) / Decimal('100'),
+                bottom_probability_score=Decimal('0.45') + Decimal(offset) / Decimal('100'),
+            )
+            SentimentScore.objects.create(
+                article=None,
+                asset=self.asset,
+                date=trade_date,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+                positive_score=Decimal('0.5'),
+                neutral_score=Decimal('0.3'),
+                negative_score=Decimal('0.2'),
+                sentiment_score=Decimal('0.10') + Decimal(offset) / Decimal('100'),
+                sentiment_label=SentimentScore.Label.POSITIVE,
+            )
+            indicator_timestamp = timezone.make_aware(timezone.datetime.combine(trade_date, timezone.datetime.min.time()))
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                timestamp=indicator_timestamp,
+                indicator_type='RSI',
+                value=Decimal('55.0') + Decimal(offset),
+                parameters={'timeperiod': 14},
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                timestamp=indicator_timestamp,
+                indicator_type='MOM_5D',
+                value=Decimal('0.01000000') + Decimal(offset) / Decimal('1000'),
+                parameters={'n_days': 5},
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                timestamp=indicator_timestamp,
+                indicator_type='RS_SCORE',
+                value=Decimal('0.60000000') + Decimal(offset) / Decimal('100'),
+            )
+
+        feature_names = [
+            'rsi', 'rsi__is_missing',
+            'mom_5d', 'mom_5d__is_missing',
+            'rs_score', 'rs_score__is_missing',
+            'factor_composite', 'factor_composite__is_missing',
+            'sentiment_7d', 'sentiment_7d__is_missing',
+        ]
+        runtime_cache = {}
+        _prime_lstm_inference_asset_ids(runtime_cache, target_date, [self.asset.id])
+
+        sequence, snapshot = _build_inference_sequence(
+            asset_id=self.asset.id,
+            target_date=target_date,
+            feature_names=feature_names,
+            sequence_length=5,
+            missing_value_strategy=LSTM_MISSING_VALUE_STRATEGY,
+            cache=runtime_cache,
+        )
+
+        training_frame = _create_feature_matrix(
+            target_date - timezone.timedelta(days=7),
+            target_date,
+            asset_ids=[self.asset.id],
+            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+        )
+        expected_rows = training_frame[training_frame['asset_id'] == self.asset.id].sort_values('date').tail(5).copy()
+        expected_rows, resolved_feature_names = _augment_lstm_missingness_features(
+            expected_rows,
+            _base_lstm_feature_names(feature_names),
+        )
+        expected_sequence = expected_rows[resolved_feature_names].astype(np.float32).to_numpy()
+        expected_snapshot = {
+            feature_name: None if np.isnan(value) else float(value)
+            for feature_name, value in zip(resolved_feature_names, expected_sequence[-1])
+        }
+
+        self.assertIsNotNone(sequence)
+        self.assertEqual(sequence.shape, expected_sequence.shape)
+        np.testing.assert_allclose(sequence, expected_sequence, equal_nan=True)
+        self.assertEqual(snapshot, expected_snapshot)
 
     def test_resolve_lstm_model_version_prefers_trained_row_over_active_stub(self):
         ModelVersion.objects.create(

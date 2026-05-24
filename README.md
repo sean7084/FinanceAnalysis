@@ -118,12 +118,14 @@ extras:
 2. 没有 limit_up / limit_down 规则. 没有按昨收去判断 10% / 20% / ST 涨跌停板. 没有按交易所制度去区分主板、创业板、科创板、北交所的不同涨跌幅限制. 也没有“超大日收益跳变”这类 return-based price anomaly 规则. 涨跌停是否被标记：否.
 3. macro snapshot yeild curve is using the first day data for each month. cny/usd is using monthly open. we should switch to use the previous monthly ohlcv data instead.macro snapshot and market context sync and backfill按发布日期/可得日期对齐，不是按统计期硬贴
 4. for macrosnapshot US Dollar Index (DXY): rename it to Dow Jones FXCM Dollar Index Basket (USDOLLAR) since that is the index we are currently syncing
-5. Runtime recomputation → Stored TechnicalIndicator
+5. 
 6. LightGBM and LSTM training artifacts should include: effective_universe_policy version, label_definition, code_version / git commit, data_snapshot_version, schema_version. we need also record the versions during backtests.
 7. artifact 保存 feature schema, 推理时严格校验 schema
 8. 模型质量与过拟合
 9. Persist a full per-date candidate snapshot so unselected names also carry rank, pass/fail, and candidate_selected=False.
 10. Add a dedicated prediction-audit workflow that joins stored predictions to realized returns by horizon and writes a report.
+11. **in session dev general** for commit 10e6309d078f13b2a3904a6fd800fc51d509777e, we temporarily patch local throttling so the auth endpoint is less aggressive. we should find out what caused 429 Too Many Requests on POST /api/v1/auth/token/ (possibly due to previously implemented auto refresh for backtest run lists and backtest trade lists) and fix the underlying issue rather than just patching the symptom. we may also reverse the patch once we solved the root cause.
+12. for model rebuild process, should we remove backfill workflow and make it a separate step that only runs during data validation processes?
 
 ###
 1. 14d model
@@ -457,7 +459,7 @@ Key fixes from the older block:
 
 - `backfill_news` is the missing news ingester for `NewsArticle`; use `--run-pipeline` if you also want `SentimentScore` and `ConceptHeat` refreshed after ingest.
 - `sync_index_constituents`, `sync_benchmark_index_history`, and `build_pit_union_benchmark` should be included in the benchmark-universe workflow.
-- `backfill_technical_indicators` does not support `RS_SCORE`; `RS_SCORE` is backfilled through `backfill_model_data`.
+- `backfill_technical_indicators` backfills non-RS stored technical/model metrics from OHLCV, including `RETURN_3D/5D/10D`, `RELATIVE_VOLUME_5D/20D`, and `REALIZED_VOLATILITY_5D`; `RS_SCORE` still comes from `backfill_model_data`.
 - The correct trainer command name is `rebuild_lightgbm_pipeline`.
 
 #### backfill commands and recommended run order
@@ -487,9 +489,10 @@ Key fixes from the older block:
    python manage.py backfill_market_context --start-date 2010-01-04 --end-date 2026-04-30
    python manage.py backfill_signal_events --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/signal_event_backfill_20260514_2.json
    python manage.py backfill_technical_indicators --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/technical_indicator_backfill_20260513.json
-   python manage.py backfill_signal_events --start-date 2010-01-04 --end-date 2026-04-30 --chunk-size-days 120 --checkpoint-file reports/ops_logs/signal_event_backfill_20260514.json
    python manage.py backfill_model_data --start-date 2010-01-04 --end-date 2026-04-30 --checkpoint-file reports/ops_logs/backfill_model_data_20260510_1.json
    ```
+
+   `backfill_technical_indicators` is now the storage surface for the shared OHLCV-derived model metrics used by LightGBM/LSTM/runtime parity: RSI, MOM variants, BBANDS, SMA, `RETURN_3D/5D/10D`, `RELATIVE_VOLUME_5D/20D`, and `REALIZED_VOLATILITY_5D`.
 
 4. Validation, audits, and benchmark checks:
    ```bash
@@ -534,7 +537,7 @@ Key fixes from the older block:
 
 | Command | Purpose | Handles |
 | --- | --- | --- |
-| `backfill_technical_indicators` | Backfill non-RS technical indicators from OHLCV | `--start-date`, `--end-date`, `--symbols`, `--limit-assets`, `--technical-indicators` |
+| `backfill_technical_indicators` | Backfill non-RS technical indicators and stored OHLCV-derived model metrics from OHLCV | `--start-date`, `--end-date`, `--symbols`, `--limit-assets`, `--technical-indicators`, `--chunk-size-days`, `--checkpoint-file`, `--resume-from-checkpoint` |
 | `backfill_signal_events` | Backfill non-RS historical `SignalEvent` families from OHLCV | `--start-date`, `--end-date`, `--symbols`, `--limit-assets`, `--signal-types`, `--chunk-size-days`, `--checkpoint-file`, `--resume-from-checkpoint` |
 | `backfill_model_data` | Backfill `SentimentScore`, `RS_SCORE`, and `FactorScore` inputs for training/inference | `--start-date`, `--end-date`, `--sentiment-weight`, `--skip-sentiment`, `--checkpoint-file`, `--resume-from-checkpoint` |
 

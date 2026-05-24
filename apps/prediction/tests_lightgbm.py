@@ -298,6 +298,109 @@ class LightGBMPredictionTests(TestCase):
         ):
             self.assertAlmostEqual(runtime_features[feature_name], float(training_row[feature_name]))
 
+    def test_extract_features_for_asset_and_training_matrix_use_stored_metric_values(self):
+        d = timezone.datetime(2024, 2, 5).date()
+        trade_dates = []
+        current_date = d
+        while len(trade_dates) < 30:
+            if current_date.weekday() < 5:
+                trade_dates.append(current_date)
+            current_date -= timezone.timedelta(days=1)
+
+        _seed_trading_calendar_dates('SSE', trade_dates)
+        self._seed_pit_membership(self.asset, trade_dates)
+
+        for offset, as_of in enumerate(trade_dates):
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=as_of,
+                open=Decimal('10') + Decimal(offset) / Decimal('10'),
+                high=Decimal('11') + Decimal(offset) / Decimal('10'),
+                low=Decimal('9') + Decimal(offset) / Decimal('10'),
+                close=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                adj_close=Decimal('10.5') + Decimal(offset) / Decimal('10'),
+                volume=Decimal('100000') + Decimal(offset * 5000),
+                amount=Decimal('2500000') + Decimal(offset * 10000),
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='RSI',
+                value=Decimal('45') + Decimal(offset),
+                timestamp=timezone.make_aware(timezone.datetime.combine(as_of, timezone.datetime.min.time())),
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='MOM_5D',
+                value=Decimal('0.02') + Decimal(offset) / Decimal('1000'),
+                timestamp=timezone.make_aware(timezone.datetime.combine(as_of, timezone.datetime.min.time())),
+                parameters={'n_days': 5},
+            )
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='RS_SCORE',
+                value=Decimal('0.50') + Decimal(offset) / Decimal('100'),
+                timestamp=timezone.make_aware(timezone.datetime.combine(as_of, timezone.datetime.min.time())),
+            )
+
+        indicator_timestamp = timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time()))
+        stored_metric_values = {
+            'return_3d': Decimal('0.33333333'),
+            'return_5d': Decimal('0.44444444'),
+            'return_10d': Decimal('0.55555555'),
+            'relative_volume_5d': Decimal('1.23456789'),
+            'relative_volume_20d': Decimal('2.34567890'),
+            'realized_volatility_5d': Decimal('0.11111111'),
+        }
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            indicator_type='RETURN_3D',
+            value=stored_metric_values['return_3d'],
+            timestamp=indicator_timestamp,
+            parameters={'n_days': 3},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            indicator_type='RETURN_5D',
+            value=stored_metric_values['return_5d'],
+            timestamp=indicator_timestamp,
+            parameters={'n_days': 5},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            indicator_type='RETURN_10D',
+            value=stored_metric_values['return_10d'],
+            timestamp=indicator_timestamp,
+            parameters={'n_days': 10},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            indicator_type='RELATIVE_VOLUME_5D',
+            value=stored_metric_values['relative_volume_5d'],
+            timestamp=indicator_timestamp,
+            parameters={'n_days': 5},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            indicator_type='RELATIVE_VOLUME_20D',
+            value=stored_metric_values['relative_volume_20d'],
+            timestamp=indicator_timestamp,
+            parameters={'n_days': 20},
+        )
+        TechnicalIndicator.objects.create(
+            asset=self.asset,
+            indicator_type='REALIZED_VOLATILITY_5D',
+            value=stored_metric_values['realized_volatility_5d'],
+            timestamp=indicator_timestamp,
+            parameters={'window': 5},
+        )
+
+        runtime_features = _extract_features_for_asset(self.asset.id, d)
+        training_row = _create_feature_matrix(d, d, asset_ids=[self.asset.id]).iloc[0]
+
+        for feature_name, expected_value in stored_metric_values.items():
+            self.assertAlmostEqual(runtime_features[feature_name], float(expected_value))
+            self.assertAlmostEqual(float(training_row[feature_name]), float(expected_value))
+
     def test_extract_features_for_asset_defaults_engineered_features_for_gappy_recent_history(self):
         d = self._seed_features()
         OHLCV.objects.filter(

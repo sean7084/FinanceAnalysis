@@ -1,14 +1,17 @@
 import json
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 import talib
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import connections, transaction
 from django.db.models import Q
+from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.analytics.models import TechnicalIndicator
@@ -22,10 +25,16 @@ DEFAULT_TECHNICAL_INDICATORS = (
     'EMA',
     'FIB_RET',
     'MACD',
+    'REALIZED_VOLATILITY_5D',
+    'RELATIVE_VOLUME_20D',
+    'RELATIVE_VOLUME_5D',
     'MOM_10D',
     'MOM_20D',
     'MOM_5D',
     'OBV',
+    'RETURN_10D',
+    'RETURN_3D',
+    'RETURN_5D',
     'RSI',
     'SMA',
     'STOCH',
@@ -83,6 +92,10 @@ def _safe_decimal(value):
 class Command(BaseCommand):
     help = 'Backfill historical TechnicalIndicator rows from OHLCV history for non-RS indicators.'
     CHECKPOINT_VERSION = 1
+    CHECKPOINT_WRITE_RETRIES = 5
+    CHECKPOINT_WRITE_RETRY_DELAY_SECONDS = 0.05
+    DATABASE_OPERATION_RETRIES = 8
+    DATABASE_OPERATION_RETRY_DELAY_SECONDS = 5.0
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
@@ -140,7 +153,10 @@ class Command(BaseCommand):
         inserted_rows = 0
 
         for asset_index, asset in enumerate(assets, start=1):
-            df = self._load_ohlcv_df(asset.id, end_date)
+            df = self._run_with_database_retry(
+                lambda: self._load_ohlcv_df(asset.id, end_date),
+                action=f'loading OHLCV history for {asset.ts_code}',
+            )
             if df.empty or df.index[-1] < start_date:
                 skipped_assets += 1
                 self._mark_asset_progress(
@@ -168,22 +184,20 @@ class Command(BaseCommand):
             total_asset_chunks = len(chunk_windows)
             for chunk_start, chunk_end in remaining_chunk_windows:
                 rows = self._build_rows(asset, df, chunk_start, chunk_end, indicator_types)
-                with transaction.atomic():
-                    deleted_count, _ = TechnicalIndicator.objects.filter(
-                        asset=asset,
-                        timestamp__date__gte=chunk_start,
-                        timestamp__date__lte=chunk_end,
-                        indicator_type__in=indicator_types,
-                    ).delete()
-                    if rows:
-                        TechnicalIndicator.objects.bulk_create(rows, batch_size=2000)
+                deleted_count, inserted_count = self._run_with_database_retry(
+                    lambda: self._replace_chunk_rows(asset, chunk_start, chunk_end, indicator_types, rows),
+                    action=(
+                        f'writing indicator chunk for {asset.ts_code} '
+                        f'{chunk_start}..{chunk_end}'
+                    ),
+                )
 
                 asset_deleted_rows += deleted_count
-                asset_inserted_rows += len(rows)
+                asset_inserted_rows += inserted_count
                 asset_completed_chunks += 1
                 processed_chunks += 1
                 deleted_rows += deleted_count
-                inserted_rows += len(rows)
+                inserted_rows += inserted_count
 
                 self._mark_asset_progress(
                     asset,
@@ -198,7 +212,7 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f'[{asset_index}/{len(assets)}] {asset.ts_code} '
                     f'chunk {asset_completed_chunks}/{total_asset_chunks} '
-                    f'{chunk_start}..{chunk_end}: deleted={deleted_count} inserted={len(rows)}'
+                    f'{chunk_start}..{chunk_end}: deleted={deleted_count} inserted={inserted_count}'
                 )
 
             processed_assets += 1
@@ -311,10 +325,25 @@ class Command(BaseCommand):
             return
         self._checkpoint['updated_at'] = timezone.now().isoformat()
         self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        self._checkpoint_path.write_text(
-            json.dumps(self._checkpoint, ensure_ascii=True, indent=2, sort_keys=True),
-            encoding='utf-8',
-        )
+        payload = json.dumps(self._checkpoint, ensure_ascii=True, indent=2, sort_keys=True)
+        last_error = None
+        for attempt in range(self.CHECKPOINT_WRITE_RETRIES):
+            temp_path = self._checkpoint_path.with_name(f'{self._checkpoint_path.name}.{uuid4().hex}.tmp')
+            try:
+                temp_path.write_text(payload, encoding='utf-8')
+                temp_path.replace(self._checkpoint_path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+                if attempt + 1 >= self.CHECKPOINT_WRITE_RETRIES:
+                    raise
+                time.sleep(self.CHECKPOINT_WRITE_RETRY_DELAY_SECONDS * (attempt + 1))
+        if last_error is not None:
+            raise last_error
 
     def _asset_checkpoint_key(self, asset):
         return str(asset.ts_code or asset.symbol or asset.id)
@@ -362,6 +391,38 @@ class Command(BaseCommand):
                 f'  {asset.ts_code}: checkpoint already covers the requested range through {last_completed_date}'
             )
         return remaining_windows
+
+    def _run_with_database_retry(self, operation, *, action):
+        last_error = None
+        for attempt in range(self.DATABASE_OPERATION_RETRIES):
+            try:
+                return operation()
+            except (OperationalError, InterfaceError) as exc:
+                last_error = exc
+                connections.close_all()
+                if attempt + 1 >= self.DATABASE_OPERATION_RETRIES:
+                    raise
+                delay_seconds = self.DATABASE_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
+                self.stderr.write(
+                    f'Database operation failed during {action}: {exc}. '
+                    f'Retrying in {delay_seconds:.1f}s '
+                    f'({attempt + 1}/{self.DATABASE_OPERATION_RETRIES - 1}).'
+                )
+                time.sleep(delay_seconds)
+        if last_error is not None:
+            raise last_error
+
+    def _replace_chunk_rows(self, asset, chunk_start, chunk_end, indicator_types, rows):
+        with transaction.atomic():
+            deleted_count, _ = TechnicalIndicator.objects.filter(
+                asset=asset,
+                timestamp__date__gte=chunk_start,
+                timestamp__date__lte=chunk_end,
+                indicator_type__in=indicator_types,
+            ).delete()
+            if rows:
+                TechnicalIndicator.objects.bulk_create(rows, batch_size=2000)
+        return deleted_count, len(rows)
 
     def _load_ohlcv_df(self, asset_id, end_date):
         rows = list(
@@ -516,6 +577,51 @@ class Command(BaseCommand):
                 df['close'].pct_change(periods=periods),
                 indicator_type,
                 {'n_days': periods},
+                start_date,
+                end_date,
+            ))
+
+        for indicator_type, periods in (
+            ('RETURN_3D', 3),
+            ('RETURN_5D', 5),
+            ('RETURN_10D', 10),
+        ):
+            if indicator_type not in indicator_types:
+                continue
+            rows.extend(self._series_rows(
+                asset,
+                df['close'].pct_change(periods=periods),
+                indicator_type,
+                {'n_days': periods},
+                start_date,
+                end_date,
+            ))
+
+        for indicator_type, periods in (
+            ('RELATIVE_VOLUME_5D', 5),
+            ('RELATIVE_VOLUME_20D', 20),
+        ):
+            if indicator_type not in indicator_types:
+                continue
+            relative_volume = (
+                df['volume'] / df['volume'].rolling(window=periods, min_periods=periods).mean()
+            ).replace([np.inf, -np.inf], np.nan)
+            rows.extend(self._series_rows(
+                asset,
+                relative_volume,
+                indicator_type,
+                {'n_days': periods},
+                start_date,
+                end_date,
+            ))
+
+        if 'REALIZED_VOLATILITY_5D' in indicator_types:
+            close_returns = df['close'].pct_change()
+            rows.extend(self._series_rows(
+                asset,
+                close_returns.rolling(window=5, min_periods=5).std(ddof=0),
+                'REALIZED_VOLATILITY_5D',
+                {'window': 5},
                 start_date,
                 end_date,
             ))

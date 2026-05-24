@@ -1025,6 +1025,7 @@ export function BacktestWorkbenchPage() {
         {runnerMessage ? <p className="status">{runnerMessage}</p> : null}
       </div>
       <div className="card">
+        <h3>{t('backtest.runList')}</h3>
         {loading && <p className="status">{t('common.loading')}</p>}
         {error && <p className="status disconnected">{error}</p>}
         {runActionError && <p className="status disconnected">{runActionError}</p>}
