@@ -6,6 +6,8 @@ const JWT_KEY = 'finance_jwt'
 const JWT_REFRESH_KEY = 'finance_jwt_refresh'
 const API_KEY = 'finance_api_key'
 
+let jwtRefreshPromise: Promise<string | null> | null = null
+
 export class ApiRequestError extends Error {
   status: number
   detail?: string
@@ -504,21 +506,24 @@ export function saveAuthSettings(token: string, apiKey: string, mode: AuthPersis
 }
 
 export function clearAuthSettings(): void {
+  clearStoredJwtTokens()
+  localStorage.removeItem(API_KEY)
+  sessionStorage.removeItem(API_KEY)
+}
+
+function clearStoredJwtTokens(): void {
   localStorage.removeItem(JWT_KEY)
   localStorage.removeItem(JWT_REFRESH_KEY)
-  localStorage.removeItem(API_KEY)
   sessionStorage.removeItem(JWT_KEY)
   sessionStorage.removeItem(JWT_REFRESH_KEY)
-  sessionStorage.removeItem(API_KEY)
 }
 
 export function hasAnyAuthCredential(): boolean {
   return Boolean(readAuthToken() || readApiKey())
 }
 
-function persistAccessToken(accessToken: string): void {
+function persistJwtTokens(accessToken: string, refreshToken: string): void {
   const mode = readAuthPersistenceMode()
-  const refreshToken = readRefreshToken()
   const apiKey = readApiKey()
   saveAuthSettings(accessToken, apiKey, mode, refreshToken)
 }
@@ -527,23 +532,38 @@ async function refreshJwtAccessToken(): Promise<string | null> {
   const refreshToken = readRefreshToken()
   if (!refreshToken) return null
 
-  const response = await fetch(`${API_BASE}/auth/token/refresh/`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ refresh: refreshToken }),
-  })
-
-  if (!response.ok) {
-    return null
+  if (jwtRefreshPromise) {
+    return jwtRefreshPromise
   }
 
-  const payload = (await response.json()) as { access?: string }
-  const access = payload.access?.trim()
-  if (!access) return null
-  persistAccessToken(access)
-  return access
+  jwtRefreshPromise = (async () => {
+    const response = await fetch(`${API_BASE}/auth/token/refresh/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refresh: refreshToken }),
+    })
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        clearStoredJwtTokens()
+      }
+      return null
+    }
+
+    const payload = (await response.json()) as { access?: string; refresh?: string }
+    const access = payload.access?.trim()
+    if (!access) return null
+
+    const rotatedRefreshToken = payload.refresh?.trim() || refreshToken
+    persistJwtTokens(access, rotatedRefreshToken)
+    return access
+  })().finally(() => {
+    jwtRefreshPromise = null
+  })
+
+  return jwtRefreshPromise
 }
 
 async function fetchWithAuthRefresh(url: string, init: RequestInit): Promise<Response> {

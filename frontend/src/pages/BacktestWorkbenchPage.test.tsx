@@ -10,6 +10,7 @@ import {
   fetchBacktestComparisonCurve,
   fetchBacktestRuns,
   fetchBacktestTrades,
+  hasAnyAuthCredential,
   pauseBacktestRun,
   restartBacktestRun,
   resumeBacktestRun,
@@ -338,6 +339,7 @@ const mockFetchBacktestComparisonCurve = vi.mocked(fetchBacktestComparisonCurve)
 const mockFetchBacktestRuns = vi.mocked(fetchBacktestRuns)
 const mockFetchBacktestTrades = vi.mocked(fetchBacktestTrades)
 const mockCreateBacktestRun = vi.mocked(createBacktestRun)
+const mockHasAnyAuthCredential = vi.mocked(hasAnyAuthCredential)
 const mockPauseBacktestRun = vi.mocked(pauseBacktestRun)
 const mockResumeBacktestRun = vi.mocked(resumeBacktestRun)
 const mockRestartBacktestRun = vi.mocked(restartBacktestRun)
@@ -415,6 +417,7 @@ describe('BacktestWorkbenchPage runner controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useRealTimers()
+    mockHasAnyAuthCredential.mockReturnValue(true)
     localStorage.setItem('finance_locale', 'en-US')
   })
 
@@ -466,11 +469,11 @@ describe('BacktestWorkbenchPage runner controls', () => {
     renderWorkbench()
 
     await waitFor(() => {
-      const reuseSelect = screen.getByLabelText('Reuse Previous Backtest Config')
+      const reuseSelect = screen.getByLabelText('Backtest Rerun')
       expect(within(reuseSelect).getByRole('option', { name: /84\s+Validation-lightgbm-2023-01-01-2024-12-31/ })).toBeInTheDocument()
     })
 
-    await user.selectOptions(screen.getByLabelText('Reuse Previous Backtest Config'), '84')
+    await user.selectOptions(screen.getByLabelText('Backtest Rerun'), '84')
 
     expect((screen.getByLabelText('Run Name Prefix') as HTMLInputElement).value).toBe('rerun#84')
     expect((screen.getByLabelText('Prediction Source') as HTMLSelectElement).value).toBe('lightgbm')
@@ -486,10 +489,10 @@ describe('BacktestWorkbenchPage runner controls', () => {
     renderWorkbench()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Reuse Previous Backtest Config')).toBeInTheDocument()
+      expect(screen.getByLabelText('Backtest Rerun')).toBeInTheDocument()
     })
 
-    await user.selectOptions(screen.getByLabelText('Reuse Previous Backtest Config'), '84')
+    await user.selectOptions(screen.getByLabelText('Backtest Rerun'), '84')
     await user.click(screen.getByRole('button', { name: 'Submit Backtest Jobs' }))
 
     await waitFor(() => {
@@ -784,6 +787,45 @@ describe('BacktestWorkbenchPage runner controls', () => {
     }
   })
 
+  it('stops background polling when auth credentials are unavailable', async () => {
+    const intervalCallbacks: Array<() => void> = []
+    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler) => {
+      if (typeof handler === 'function') {
+        intervalCallbacks.push(handler as () => void)
+      }
+      return intervalCallbacks.length as unknown as number
+    }) as typeof window.setInterval)
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => {})
+
+    try {
+      mockFetchBacktestRuns.mockResolvedValueOnce([
+        buildBacktestRun({ id: 84, name: 'Validation-lightgbm-2023-01-01-2024-12-31', status: 'COMPLETED' }),
+      ])
+      mockFetchBacktestTrades.mockResolvedValueOnce([])
+
+      renderWorkbench()
+
+      await waitFor(() => {
+        expect(mockFetchBacktestRuns).toHaveBeenCalledTimes(1)
+        expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(1)
+      })
+
+      mockHasAnyAuthCredential.mockReturnValue(false)
+
+      for (const callback of intervalCallbacks) {
+        callback()
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(mockFetchBacktestRuns).toHaveBeenCalledTimes(1)
+      expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(1)
+    } finally {
+      setIntervalSpy.mockRestore()
+      clearIntervalSpy.mockRestore()
+    }
+  })
+
   it('removes a run and selects the next available row after refresh', async () => {
     const user = userEvent.setup()
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
@@ -892,11 +934,11 @@ describe('BacktestWorkbenchPage runner controls', () => {
     renderWorkbench()
 
     await waitFor(() => {
-      const reuseSelect = screen.getByLabelText('Reuse Previous Backtest Config')
+      const reuseSelect = screen.getByLabelText('Backtest Rerun')
       expect(within(reuseSelect).getByRole('option', { name: /84\s+Validation-lightgbm-2023-01-01-2024-12-31/ })).toBeInTheDocument()
     })
 
-    await user.selectOptions(screen.getByLabelText('Reuse Previous Backtest Config'), '84')
+    await user.selectOptions(screen.getByLabelText('Backtest Rerun'), '84')
     await user.click(screen.getByRole('button', { name: 'Open Dashboard With Current Config' }))
 
     await waitFor(() => {

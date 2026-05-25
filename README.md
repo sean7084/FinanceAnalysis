@@ -124,7 +124,7 @@ extras:
 8. 模型质量与过拟合
 9. Persist a full per-date candidate snapshot so unselected names also carry rank, pass/fail, and candidate_selected=False.
 10. Add a dedicated prediction-audit workflow that joins stored predictions to realized returns by horizon and writes a report.
-11. **in session dev general** for commit 10e6309d078f13b2a3904a6fd800fc51d509777e, we temporarily patch local throttling so the auth endpoint is less aggressive. we should find out what caused 429 Too Many Requests on POST /api/v1/auth/token/ (possibly due to previously implemented auto refresh for backtest run lists and backtest trade lists) and fix the underlying issue rather than just patching the symptom. we may also reverse the patch once we solved the root cause.
+11. **in session dev general** 
 12. for model rebuild process, should we remove backfill workflow and make it a separate step that only runs during data validation processes?
 
 ###

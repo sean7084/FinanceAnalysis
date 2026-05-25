@@ -400,6 +400,9 @@ export function BacktestWorkbenchPage() {
     isMountedRef.current = true
     void loadRuns({ resetPage: true, showLoading: true })
     const intervalId = window.setInterval(() => {
+      if (!hasAnyAuthCredential()) {
+        return
+      }
       void loadRuns({ showLoading: false })
     }, BACKTEST_AUTO_REFRESH_INTERVAL_MS)
 
@@ -577,6 +580,9 @@ export function BacktestWorkbenchPage() {
 
     void loadTrades(selectedRunId, { resetPage: true, showLoading: true })
     const intervalId = window.setInterval(() => {
+      if (!hasAnyAuthCredential()) {
+        return
+      }
       void loadTrades(selectedRunId, { resetPage: false, showLoading: false })
     }, BACKTEST_AUTO_REFRESH_INTERVAL_MS)
 
