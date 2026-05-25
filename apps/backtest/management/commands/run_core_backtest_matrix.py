@@ -1,4 +1,4 @@
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue --output-dir
 import json
 from datetime import date
 from pathlib import Path
@@ -49,6 +49,14 @@ VARIANT_DEFINITIONS = {
         'trade_score_scope': 'independent',
         'trade_score_threshold': 1.0,
     },
+        'trade-score-limit-weekdays': {
+        'short_name': 'ts-limit-mon-fri',
+        'entry_weekdays': ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+        'candidate_mode': 'trade_score',
+        'top_n_metric': 'trade_score',
+        'trade_score_scope': 'independent',
+        'trade_score_threshold': 1.0,
+    },
 }
 
 VALID_SOURCES = {'heuristic', 'lightgbm'}
@@ -76,8 +84,8 @@ class Command(BaseCommand):
         parser.add_argument('--end-date', required=True, help='Backtest end date (YYYY-MM-DD).')
         parser.add_argument(
             '--variants',
-            default='original,weekdays,trade-score-limit',
-            help='Comma-separated matrix variants: original,weekdays,trade-score-limit.',
+            default='original,weekdays,trade-score-limit,trade-score-limit-weekdays',
+            help='Comma-separated matrix variants: original,weekdays,trade-score-limit,trade-score-limit-weekdays.',
         )
         parser.add_argument(
             '--sources',
@@ -232,7 +240,7 @@ class Command(BaseCommand):
                 strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
                 start_date=spec['start_date'],
                 end_date=spec['end_date'],
-                initial_capital=100000.00,
+                initial_capital=200000.00,
                 status=BacktestRun.Status.PENDING,
                 parameters=spec['parameters'],
             )
