@@ -30,6 +30,7 @@ from apps.sentiment.models import SentimentScore
 from . import tasks as backtest_tasks
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer
+from .task_health import get_backtest_run_task_owner_state
 from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backtest
 
 
@@ -190,6 +191,18 @@ class Phase15BacktestTests(TestCase):
         response = self.client.get('/api/v1/backtest/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_backtest_list_returns_up_to_100_runs_for_workbench(self):
+        self._auth()
+
+        for index in range(120):
+            self._create_run(name=f'P15 Pagination Run {index}')
+
+        response = self.client.get('/api/v1/backtest/?page_size=100')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 120)
+        self.assertEqual(len(response.data['results']), 100)
+
     @patch('apps.backtest.views.run_backtest.delay')
     def test_create_backtest_queues_task(self, mock_delay):
         self._auth()
@@ -328,6 +341,39 @@ class Phase15BacktestTests(TestCase):
 
         self.assertEqual(data['task_state'], 'PENDING')
         self.assertTrue(data['has_stale_task_owner'])
+
+    @patch('apps.backtest.task_health.AsyncResult')
+    def test_task_owner_state_does_not_mark_pending_continuation_chunk_as_stale(self, mock_async_result):
+        mock_async_result.return_value.state = 'PENDING'
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-queued-next-chunk',
+            report={'progress': {'current_index': 30, 'total': 120}},
+        )
+        stale_dt = timezone.now() - timedelta(hours=2)
+        BacktestRun.objects.filter(id=run.id).update(updated_at=stale_dt, started_at=stale_dt)
+        run.refresh_from_db()
+
+        state = get_backtest_run_task_owner_state(run)
+
+        self.assertEqual(state['task_state'], 'PENDING')
+        self.assertFalse(state['has_stale_task_owner'])
+
+    @patch('apps.backtest.task_health.AsyncResult')
+    def test_task_owner_state_marks_old_pending_run_without_progress_as_stale(self, mock_async_result):
+        mock_async_result.return_value.state = 'PENDING'
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-stuck-before-first-progress',
+        )
+        stale_dt = timezone.now() - timedelta(hours=2)
+        BacktestRun.objects.filter(id=run.id).update(updated_at=stale_dt, started_at=stale_dt)
+        run.refresh_from_db()
+
+        state = get_backtest_run_task_owner_state(run)
+
+        self.assertEqual(state['task_state'], 'PENDING')
+        self.assertTrue(state['has_stale_task_owner'])
 
     @patch('apps.backtest.views.get_backtest_run_task_owner_state', return_value={
         'task_state': 'PENDING',
@@ -2540,6 +2586,46 @@ class BacktestManagementCommandTests(TestCase):
                 ['heuristic', 'lstm'],
             )
             self.assertIn('Reference benchmark suite exported to', output.getvalue())
+
+    @patch('apps.backtest.management.commands.run_core_backtest_matrix.queue_backtest_run')
+    def test_run_core_backtest_matrix_exports_compact_bundle(self, mock_queue_backtest_run):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / 'matrix_bundle'
+            output = StringIO()
+
+            call_command(
+                'run_core_backtest_matrix',
+                start_date='2026-01-01',
+                end_date='2026-12-31',
+                variants='original',
+                sources='heuristic',
+                name_prefix='matrixcmd',
+                output_dir=str(output_dir),
+                queue=True,
+                stdout=output,
+            )
+
+            self.assertEqual(mock_queue_backtest_run.call_count, 9)
+            self.assertTrue((output_dir / 'run_summary.csv').exists())
+            self.assertTrue((output_dir / 'run_config_results.csv').exists())
+            self.assertTrue((output_dir / 'model_references.csv').exists())
+            self.assertTrue((output_dir / 'matrix_manifest.json').exists())
+
+            manifest = json.loads((output_dir / 'matrix_manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(manifest['variants'], ['original'])
+            self.assertEqual(manifest['sources'], ['heuristic'])
+            self.assertTrue(manifest['queued'])
+            self.assertEqual(len(manifest['run_ids']), 9)
+
+            with (output_dir / 'run_config_results.csv').open(newline='', encoding='utf-8') as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual(len(rows), 9)
+            self.assertCountEqual(
+                [row['prediction_source'] for row in rows],
+                ['heuristic'] * 9,
+            )
+            self.assertIn('Core matrix exported to', output.getvalue())
 
     def test_export_backtest_runs_includes_compare_backtest_run_id(self):
         compare_run = BacktestRun.objects.create(

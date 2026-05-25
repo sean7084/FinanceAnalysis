@@ -1,5 +1,6 @@
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from django.db import transaction
 from django.utils import timezone
@@ -46,9 +47,16 @@ def _has_stale_task_owner(run):
     return get_backtest_run_task_owner_state(run)['has_stale_task_owner']
 
 
+class BacktestRunPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
 class BacktestRunViewSet(viewsets.ModelViewSet):
     serializer_class = BacktestRunSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = BacktestRunPagination
 
     def get_queryset(self):
         qs = BacktestRun.objects.select_related('user').all().order_by('-created_at')
