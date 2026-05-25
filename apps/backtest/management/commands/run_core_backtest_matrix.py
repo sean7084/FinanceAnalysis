@@ -1,3 +1,4 @@
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue
 from datetime import date
 
 from django.contrib.auth import get_user_model
