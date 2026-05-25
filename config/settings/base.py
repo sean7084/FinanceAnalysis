@@ -244,7 +244,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # DJANGO REST FRAMEWORK
 # ------------------------------------------------------------------------------
 REST_FRAMEWORK = {
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_PAGINATION_CLASS': 'apps.core.pagination.ApiPageNumberPagination',
     'PAGE_SIZE': 50,
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',

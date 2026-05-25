@@ -864,7 +864,8 @@ export async function fetchAssets(limit = 200, search = ''): Promise<AssetDto[]>
 
 export async function fetchOhlcvByAsset(assetId: number, limit = 120): Promise<OhlcvDto[]> {
   const rows: OhlcvDto[] = []
-  let nextUrl: string | null = `${API_BASE}/ohlcv/?asset=${assetId}&ordering=-date`
+  const pageSize = Math.min(Math.max(limit, 1), 1000)
+  let nextUrl: string | null = `${API_BASE}/ohlcv/?asset=${assetId}&ordering=-date&page_size=${pageSize}`
 
   while (nextUrl && rows.length < limit) {
     const response = await fetchWithAuthRefresh(nextUrl, { headers: getHeaders() })

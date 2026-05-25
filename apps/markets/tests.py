@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 from django.core.management import call_command
 from django.test import TestCase
+from rest_framework.test import APIClient
 
 from .admin import AssetAdmin
 from apps.analytics.indicator_warmup import (
@@ -20,6 +21,52 @@ from apps.analytics.technical_staleness import ordered_trading_dates_for_exchang
 from .benchmarking import PITMembershipCoverageError, build_point_in_time_union_benchmark_rows, ensure_pit_membership_coverage, point_in_time_union_asset_ids, refresh_latest_point_in_time_union_benchmark, refresh_point_in_time_union_benchmark, required_pit_index_codes_for_date, resolve_point_in_time_union_membership
 from .models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
 from .tasks import run_post_sync_universal_refresh, sync_asset_suspensions, sync_benchmark_index_history, sync_daily_a_shares, sync_exchange_trading_calendar, sync_monthly_index_memberships
+
+
+class MarketApiPaginationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='600001',
+            ts_code='600001.SH',
+            name='Alpha Asset',
+        )
+
+        for index in range(3):
+            OHLCV.objects.create(
+                asset=self.asset,
+                date=date(2024, 1, index + 1),
+                open=Decimal('10.00'),
+                high=Decimal('11.00'),
+                low=Decimal('9.00'),
+                close=Decimal('10.50'),
+                adj_close=Decimal('10.50'),
+                volume=1000 + index,
+                amount=Decimal('10500.00'),
+            )
+
+    def test_asset_list_honors_page_size_query_param(self):
+        Asset.objects.create(
+            market=self.market,
+            symbol='600002',
+            ts_code='600002.SH',
+            name='Beta Asset',
+        )
+
+        response = self.client.get('/api/v1/assets/?page_size=1')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()['results']), 1)
+
+    def test_ohlcv_list_honors_page_size_query_param(self):
+        response = self.client.get(f'/api/v1/ohlcv/?asset={self.asset.id}&ordering=-date&page_size=2')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload['results']), 2)
+        self.assertIsNotNone(payload['next'])
 
 
 class MarketAdminAndBackfillTests(TestCase):

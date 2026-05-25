@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   apiGet,
   clearAuthSettings,
+  fetchOhlcvByAsset,
   getSocketAuthToken,
   readApiKey,
   readAuthToken,
@@ -100,5 +101,31 @@ describe('api auth refresh handling', () => {
     expect(readAuthToken()).toBe('')
     expect(readRefreshToken()).toBe('')
     expect(readApiKey()).toBe('persisted-api-key')
+  })
+
+  it('requests larger OHLCV pages to avoid excessive stock-detail request fan-out', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(200, {
+        count: 3,
+        next: '/api/v1/ohlcv/?asset=7&ordering=-date&page=2&page_size=3',
+        previous: null,
+        results: [
+          { date: '2024-01-03', open: '3', high: '4', low: '2', close: '3.5', volume: '100' },
+          { date: '2024-01-02', open: '2', high: '3', low: '1', close: '2.5', volume: '100' },
+        ],
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        count: 3,
+        next: null,
+        previous: '/api/v1/ohlcv/?asset=7&ordering=-date&page_size=3',
+        results: [
+          { date: '2024-01-01', open: '1', high: '2', low: '0.5', close: '1.5', volume: '100' },
+        ],
+      }))
+
+    const rows = await fetchOhlcvByAsset(7, 3)
+
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('/api/v1/ohlcv/?asset=7&ordering=-date&page_size=3')
+    expect(rows).toHaveLength(3)
   })
 })
