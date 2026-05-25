@@ -54,7 +54,15 @@ def get_backtest_run_task_owner_state(run):
     has_stale_task_owner = False
     if task_state in TERMINAL_TASK_STATES:
         has_stale_task_owner = True
-    elif task_state == 'PENDING' and age_seconds is not None and age_seconds >= _stale_task_max_age_seconds():
+    # Chunked backtests queue the next task id before a worker owns it, so a
+    # long-running suite can legitimately leave the next owner in PENDING while
+    # earlier runs are still consuming worker slots.
+    elif (
+        task_state == 'PENDING'
+        and not has_runtime_progress
+        and age_seconds is not None
+        and age_seconds >= _stale_task_max_age_seconds()
+    ):
         has_stale_task_owner = True
 
     return {

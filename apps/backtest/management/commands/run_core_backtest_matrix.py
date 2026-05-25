@@ -1,11 +1,15 @@
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue
+import json
 from datetime import date
+from pathlib import Path
 
+from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from apps.backtest.models import BacktestRun
-from apps.backtest.tasks import run_backtest
+from apps.backtest.tasks import queue_backtest_run, run_backtest
 
 
 CORE_PROFILES = {
@@ -100,6 +104,16 @@ class Command(BaseCommand):
             action='store_true',
             help='Print the planned matrix without creating BacktestRun rows.',
         )
+        parser.add_argument(
+            '--output-dir',
+            default='',
+            help='Optional compact export directory. Defaults to reports/<name-prefix>-<timestamp>.',
+        )
+        parser.add_argument(
+            '--include-active-lightgbm-artifacts',
+            action='store_true',
+            help='Also export active LightGBM artifact metadata in the compact bundle.',
+        )
 
     def _resolve_user(self, user_email):
         user_model = get_user_model()
@@ -167,6 +181,8 @@ class Command(BaseCommand):
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
 
+        matrix_started_at = timezone.now()
+
         variant_names = _parse_csv_tokens(options['variants'], 'variants')
         invalid_variants = [name for name in variant_names if name not in VARIANT_DEFINITIONS]
         if invalid_variants:
@@ -223,7 +239,7 @@ class Command(BaseCommand):
             created_run_ids.append(run.id)
 
             if options['queue']:
-                run_backtest.delay(run.id)
+                queue_backtest_run(run)
                 launch_mode = 'queued'
             else:
                 run_backtest(run.id)
@@ -234,4 +250,34 @@ class Command(BaseCommand):
                 f'run_id={run.id} ({launch_mode})'
             )
 
+        timestamp_token = matrix_started_at.strftime('%Y%m%d_%H%M%S')
+        output_dir = Path(options['output_dir']) if options['output_dir'] else Path('reports') / f"{options['name_prefix']}-{timestamp_token}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        call_command(
+            'export_backtest_runs',
+            start_id=min(created_run_ids),
+            end_id=max(created_run_ids),
+            output_dir=str(output_dir),
+            detail_export=False,
+            include_active_lightgbm_artifacts=options['include_active_lightgbm_artifacts'],
+            stdout=self.stdout,
+        )
+
+        manifest = {
+            'name_prefix': str(options['name_prefix'] or '').strip() or 'core18',
+            'output_dir': str(output_dir),
+            'run_ids': created_run_ids,
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'variants': variant_names,
+            'sources': source_names,
+            'queued': bool(options['queue']),
+        }
+        (output_dir / 'matrix_manifest.json').write_text(
+            json.dumps(manifest, indent=2, sort_keys=True),
+            encoding='utf-8',
+        )
+
         self.stdout.write(self.style.SUCCESS(f'Created {len(created_run_ids)} matrix runs.'))
+        self.stdout.write(self.style.SUCCESS(f'Core matrix exported to {output_dir}'))
