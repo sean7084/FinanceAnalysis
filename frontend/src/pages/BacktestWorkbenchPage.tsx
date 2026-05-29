@@ -674,7 +674,6 @@ export function BacktestWorkbenchPage() {
 
   const selectedReport = (selectedRun?.report ?? {}) as Record<string, unknown>
   const selectedParameters = (selectedRun?.parameters ?? {}) as Record<string, unknown>
-  const benchmark = (selectedReport.benchmark ?? {}) as Record<string, unknown>
   const entryWeekdays = Array.isArray(selectedReport.entry_weekdays)
     ? formatStoredWeekdays(selectedReport.entry_weekdays)
     : Array.isArray(selectedParameters.entry_weekdays)
@@ -1207,10 +1206,6 @@ export function BacktestWorkbenchPage() {
             <article className="metric-card">
               <span>{t('backtest.runtime')}</span>
               <strong>{formatBacktestDuration(selectedRun.started_at, selectedRun.completed_at)}</strong>
-            </article>
-            <article className="metric-card">
-              <span>{t('backtest.benchmarkReturn')}</span>
-              <strong>{typeof benchmark.total_return === 'number' ? `${(benchmark.total_return * 100).toFixed(2)}%` : '--'}</strong>
             </article>
           </div>
           <h4>{t('backtest.runnerConfig')}</h4>

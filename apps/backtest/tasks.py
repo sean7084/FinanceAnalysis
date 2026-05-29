@@ -1,18 +1,20 @@
 import os
 import inspect
 from bisect import bisect_left
+from collections import OrderedDict
 from datetime import date, timedelta
 from decimal import Decimal
 from statistics import mean, pstdev
 
 import numpy as np
 from celery import current_app, shared_task
-from django.db import models, transaction
+from django.db import connections, models, transaction
+from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import PIT_UNION_BENCHMARK_CODE, effective_universe_tradeable_asset_ids
-from apps.markets.models import OHLCV, PointInTimeBenchmarkDaily
+from apps.markets.benchmarking import effective_universe_tradeable_asset_ids
+from apps.markets.models import OHLCV
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
@@ -58,6 +60,70 @@ def _int_env(name, default):
 
 
 BACKTEST_CHUNK_TRADING_DAYS = _int_env('BACKTEST_CHUNK_TRADING_DAYS', 10)
+BACKTEST_RANGE_CACHE_MAX_ENTRIES = _int_env('BACKTEST_RANGE_CACHE_MAX_ENTRIES', 4)
+BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES = _int_env('BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES', 2048)
+
+_TRADING_DATES_CACHE = OrderedDict()
+_PRICE_MAP_CACHE = OrderedDict()
+_MATRIX_SIGNAL_CACHE = OrderedDict()
+
+
+def _bounded_cache_get(cache, key):
+    if key not in cache:
+        return None
+    cache.move_to_end(key)
+    return cache[key]
+
+
+def _bounded_cache_set(cache, key, value, max_entries):
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > max_entries:
+        cache.popitem(last=False)
+    return value
+
+
+def _matrix_signal_scope(run):
+    return str((run.parameters or {}).get('matrix_signal_cache_key') or '').strip()
+
+
+def _matrix_signal_cache_get(key):
+    return _bounded_cache_get(_MATRIX_SIGNAL_CACHE, key)
+
+
+def _matrix_signal_cache_set(key, value):
+    return _bounded_cache_set(
+        _MATRIX_SIGNAL_CACHE,
+        key,
+        value,
+        BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES,
+    )
+
+
+def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity, policy_key):
+    scope = _matrix_signal_scope(run)
+    if not scope:
+        return None
+    return (
+        'matrix_signal_surface',
+        scope,
+        prediction_source,
+        dt.isoformat(),
+        int(horizon),
+        model_identity,
+        tuple(policy_key or ()),
+    )
+
+
+def _backtest_chunk_trading_days(run):
+    params = run.parameters or {}
+    raw_value = params.get('chunk_trading_days', params.get('backtest_chunk_trading_days'))
+    if raw_value in (None, ''):
+        return BACKTEST_CHUNK_TRADING_DAYS
+    try:
+        return max(1, int(raw_value))
+    except (TypeError, ValueError):
+        return BACKTEST_CHUNK_TRADING_DAYS
 
 
 def _to_decimal_or_none(value):
@@ -245,18 +311,46 @@ def _max_buy_amount_for_budget(total_budget, fee_config):
     return max(DECIMAL_0, (total_budget - fee_config['commission_min']) / fixed_denom)
 
 
+def _ohlcv_range_signature(start_date, end_date):
+    aggregate = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).aggregate(
+        row_count=models.Count('id'),
+        latest_row_id=models.Max('id'),
+        asset_id_sum=models.Sum('asset_id'),
+        close_sum=models.Sum('close'),
+    )
+    return (
+        int(aggregate['row_count'] or 0),
+        int(aggregate['latest_row_id'] or 0),
+        str(aggregate['asset_id_sum'] or 0),
+        str(aggregate['close_sum'] or 0),
+    )
+
+
 def _get_trading_dates(start_date, end_date):
-    return list(
+    cache_key = (start_date.isoformat(), end_date.isoformat(), _ohlcv_range_signature(start_date, end_date))
+    cached_dates = _bounded_cache_get(_TRADING_DATES_CACHE, cache_key)
+    if cached_dates is not None:
+        return list(cached_dates)
+
+    dates = tuple(
         OHLCV.objects.filter(date__gte=start_date, date__lte=end_date)
         .values_list('date', flat=True)
         .distinct()
         .order_by('date')
     )
+    _bounded_cache_set(_TRADING_DATES_CACHE, cache_key, dates, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
+    return list(dates)
 
 
 def _build_price_map(start_date, end_date):
+    cache_key = (start_date.isoformat(), end_date.isoformat(), _ohlcv_range_signature(start_date, end_date))
+    cached_price_map = _bounded_cache_get(_PRICE_MAP_CACHE, cache_key)
+    if cached_price_map is not None:
+        return cached_price_map
+
     rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list('asset_id', 'date', 'close')
-    return {(asset_id, dt): _d(close) for asset_id, dt, close in rows}
+    price_map = {(asset_id, dt): _d(close) for asset_id, dt, close in rows}
+    return _bounded_cache_set(_PRICE_MAP_CACHE, cache_key, price_map, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
 
 
 def _eligible_backtest_asset_ids(dt, cache):
@@ -441,6 +535,23 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
     if cache_key in cache:
         return cache[cache_key]
 
+    matrix_cache_key = None
+    if run is not None and _matrix_signal_scope(run):
+        runtime = _get_lightgbm_runtime(run, horizon, cache)
+        model_artifact = runtime['model_artifact']
+        matrix_cache_key = _matrix_signal_cache_key(
+            run,
+            'lightgbm',
+            dt,
+            horizon,
+            ('LightGBMModelArtifact', model_artifact.id, model_artifact.version),
+            policy_key,
+        )
+        cached_mapping = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
+        if cached_mapping is not None:
+            cache[cache_key] = cached_mapping
+            return cached_mapping
+
     predict_supports_run = True
     predict_side_effect = getattr(_predict_lightgbm_for_asset, 'side_effect', None)
     if callable(predict_side_effect):
@@ -477,6 +588,8 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             )
 
     cache[cache_key] = mapping
+    if matrix_cache_key:
+        _matrix_signal_cache_set(matrix_cache_key, mapping)
     return mapping
 
 
@@ -528,11 +641,30 @@ def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=No
     if cache_key in cache:
         return cache[cache_key]
 
+    model_context = _get_heuristic_model_context(cache)
+    matrix_cache_key = None
+    scope_run = cache.get('matrix_signal_scope_run')
+    if scope_run is not None:
+        matrix_cache_key = _matrix_signal_cache_key(
+            scope_run,
+            'heuristic',
+            dt,
+            horizon,
+            ('ModelVersion', model_context.get('model_version_id'), model_context.get('model_version')),
+            policy_key,
+        )
+        cached_mapping = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
+        if cached_mapping is not None:
+            cache[cache_key] = cached_mapping
+            return cached_mapping
+
     mapping = {}
     for asset_id in _eligible_backtest_asset_ids(dt, cache):
         mapping[asset_id] = _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
 
     cache[cache_key] = mapping
+    if matrix_cache_key:
+        _matrix_signal_cache_set(matrix_cache_key, mapping)
     return mapping
 
 
@@ -837,60 +969,6 @@ def _resolve_exit_date(trading_dates, entry_date, holding_period_days):
     if position >= len(trading_dates):
         return None
     return trading_dates[position]
-
-
-def _build_equal_weight_benchmark_equity_curve(trading_dates, price_map, initial_capital):
-    benchmark_equity_curve = [_d(initial_capital)]
-    benchmark_value = _d(initial_capital)
-    for idx in range(1, len(trading_dates)):
-        previous_date = trading_dates[idx - 1]
-        current_date = trading_dates[idx]
-        returns = []
-        for (asset_id, dt), close in price_map.items():
-            if dt != previous_date:
-                continue
-            next_close = price_map.get((asset_id, current_date))
-            if next_close is None or close <= 0:
-                continue
-            returns.append((next_close - close) / close)
-        if returns:
-            average_return = sum(returns, DECIMAL_0) / _d(len(returns))
-            benchmark_value *= (DECIMAL_1 + average_return)
-        benchmark_equity_curve.append(benchmark_value)
-    return benchmark_equity_curve
-
-
-def _build_benchmark_equity_curve(trading_dates, price_map, initial_capital):
-    pit_rows = list(
-        PointInTimeBenchmarkDaily.objects.filter(
-            benchmark_code=PIT_UNION_BENCHMARK_CODE,
-            trade_date__in=trading_dates,
-        )
-        .order_by('trade_date')
-        .values('trade_date', 'nav', 'weighting_method', 'metadata')
-    )
-
-    pit_dates = [row['trade_date'] for row in pit_rows]
-    if pit_rows and pit_dates == list(trading_dates):
-        base_nav = _d(pit_rows[0]['nav']) if pit_rows[0]['nav'] is not None else DECIMAL_0
-        scale = (_d(initial_capital) / base_nav) if base_nav > 0 else DECIMAL_1
-        return [
-            _d(row['nav']) * scale
-            for row in pit_rows
-        ], {
-            'strategy': 'point_in_time_union_benchmark',
-            'benchmark_code': PIT_UNION_BENCHMARK_CODE,
-            'weighting_method': pit_rows[0]['weighting_method'] or 'free_float_market_cap',
-            'source': 'precomputed_point_in_time_benchmark',
-            'coverage_status': 'complete',
-            'trade_dates': [dt.isoformat() for dt in pit_dates],
-        }
-
-    return _build_equal_weight_benchmark_equity_curve(trading_dates, price_map, initial_capital), {
-        'strategy': 'equal_weight_universe_daily_return',
-        'source': 'runtime_fallback_equal_weight',
-        'coverage_status': 'missing_or_incomplete_point_in_time_benchmark',
-    }
 
 
 def _serialize_provenance_value(value):
@@ -1381,7 +1459,20 @@ def _selection_audit_payload(run, row, candidate_rank):
     return payload
 
 
-def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit):
+def _append_or_create_trade(trade_buffer, **trade_kwargs):
+    if trade_buffer is None:
+        BacktestTrade.objects.create(**trade_kwargs)
+        return
+    trade_buffer.append(BacktestTrade(**trade_kwargs))
+
+
+def _flush_trade_buffer(trade_buffer):
+    if trade_buffer:
+        BacktestTrade.objects.bulk_create(trade_buffer)
+        trade_buffer.clear()
+
+
+def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit, trade_buffer=None):
     remaining_positions = []
     for position in open_positions:
         sell_close = price_map.get((position['asset_id'], current_date))
@@ -1416,7 +1507,8 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
         cash += sell_amount - sell_fee
         closed_pnls.append(pnl)
 
-        BacktestTrade.objects.create(
+        _append_or_create_trade(
+            trade_buffer,
             backtest_run=run,
             asset_id=position['asset_id'],
             trade_date=current_date,
@@ -1452,6 +1544,7 @@ def _open_positions_for_date(
     open_positions,
     max_positions,
     runtime_cache=None,
+    trade_buffer=None,
 ):
     if not candidate_rows:
         return cash
@@ -1514,7 +1607,8 @@ def _open_positions_for_date(
             'stop_loss_price': _to_decimal_or_none(signal_payload.get('stop_loss_price')),
         })
 
-        BacktestTrade.objects.create(
+        _append_or_create_trade(
+            trade_buffer,
             backtest_run=run,
             asset_id=asset_id,
             trade_date=current_date,
@@ -1687,6 +1781,30 @@ def reset_backtest_run_for_restart(run):
         )
 
 
+def _mark_backtest_run_failed(backtest_run_id, error_message):
+    last_error = None
+    for attempt in range(2):
+        try:
+            run = BacktestRun.objects.filter(id=backtest_run_id).first()
+            if run is None:
+                return False
+            run.status = BacktestRun.Status.FAILED
+            run.error_message = str(error_message)
+            run.pending_control_action = BacktestRun.ControlAction.NONE
+            run.current_task_id = ''
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'error_message', 'pending_control_action', 'current_task_id', 'completed_at', 'updated_at'])
+            return True
+        except (OperationalError, InterfaceError) as exc:
+            last_error = exc
+            connections.close_all()
+            if attempt == 1:
+                raise
+    if last_error is not None:
+        raise last_error
+    return False
+
+
 @shared_task(bind=True, soft_time_limit=1800, time_limit=2100)
 def run_backtest(self, backtest_run_id):
     run = BacktestRun.objects.filter(id=backtest_run_id).first()
@@ -1748,8 +1866,11 @@ def run_backtest(self, backtest_run_id):
         capital_fraction = _capital_fraction_per_entry(run, entry_weekdays)
         max_positions = _max_positions(run)
         candidate_cache = {}
+        if _matrix_signal_scope(run):
+            candidate_cache['matrix_signal_scope_run'] = run
         macro_monthly_report = {}
         stop_target_exit_enabled = _enable_stop_target_exit(run)
+        trade_buffer = []
 
         if runtime_state is None:
             current_index = 0
@@ -1765,7 +1886,8 @@ def run_backtest(self, backtest_run_id):
             open_positions = runtime_state['open_positions']
             macro_monthly_report = runtime_state['macro_monthly_report']
 
-        chunk_end = min(current_index + BACKTEST_CHUNK_TRADING_DAYS, len(trading_dates))
+        chunk_trading_days = _backtest_chunk_trading_days(run)
+        chunk_end = min(current_index + chunk_trading_days, len(trading_dates))
 
         for current_date in trading_dates[current_index:chunk_end]:
             cash, open_positions = _close_positions_for_date(
@@ -1778,6 +1900,7 @@ def run_backtest(self, backtest_run_id):
                 slippage_bps,
                 closed_pnls,
                 stop_target_exit_enabled,
+                trade_buffer=trade_buffer,
             )
 
             if _should_enter_position(current_date, entry_weekdays):
@@ -1813,9 +1936,12 @@ def run_backtest(self, backtest_run_id):
                         open_positions,
                         max_positions,
                         runtime_cache=candidate_cache,
+                        trade_buffer=trade_buffer,
                     )
 
             equity_curve.append(_portfolio_equity(current_date, cash, open_positions, price_map))
+
+        _flush_trade_buffer(trade_buffer)
 
         if chunk_end < len(trading_dates):
             _save_runtime_state(
@@ -1867,8 +1993,6 @@ def run_backtest(self, backtest_run_id):
             return f'Backtest restart queued for run_id={run.id}'
 
         final_mark_to_market = equity_curve[-1] if equity_curve else cash
-        benchmark_equity_curve, benchmark_metadata = _build_benchmark_equity_curve(trading_dates, price_map, run.initial_capital)
-
         final_value = final_mark_to_market
         total_return = (final_value - _d(run.initial_capital)) / _d(run.initial_capital) if run.initial_capital else DECIMAL_0
 
@@ -1882,12 +2006,6 @@ def run_backtest(self, backtest_run_id):
             if prev > 0:
                 daily_returns.append(float((equity_curve[i] - prev) / prev))
         sharpe = _calc_sharpe(daily_returns)
-
-        benchmark_total_return = (
-            (benchmark_equity_curve[-1] - _d(run.initial_capital)) / _d(run.initial_capital)
-            if benchmark_equity_curve and run.initial_capital
-            else DECIMAL_0
-        )
 
         total_trades = len(closed_pnls)
         winning = len([p for p in closed_pnls if p > 0])
@@ -1933,11 +2051,6 @@ def run_backtest(self, backtest_run_id):
                 }
                 for month, payload in sorted(macro_monthly_report.items())
             ],
-            'benchmark': {
-                **benchmark_metadata,
-                'equity_curve': [float(v) for v in benchmark_equity_curve],
-                'total_return': float(benchmark_total_return),
-            },
         })
         run.pending_control_action = BacktestRun.ControlAction.NONE
         run.current_task_id = ''
@@ -1946,10 +2059,8 @@ def run_backtest(self, backtest_run_id):
         return f'Backtest completed for run_id={run.id}'
 
     except Exception as exc:
-        run.status = BacktestRun.Status.FAILED
-        run.error_message = str(exc)
-        run.pending_control_action = BacktestRun.ControlAction.NONE
-        run.current_task_id = ''
-        run.completed_at = timezone.now()
-        run.save(update_fields=['status', 'error_message', 'pending_control_action', 'current_task_id', 'completed_at', 'updated_at'])
+        try:
+            _mark_backtest_run_failed(run.id, str(exc))
+        except Exception as failure_exc:
+            return f'Backtest failed for run_id={run.id}: {exc}; failed to persist failure state: {failure_exc}'
         return f'Backtest failed for run_id={run.id}: {exc}'

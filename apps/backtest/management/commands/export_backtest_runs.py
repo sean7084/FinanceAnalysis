@@ -35,6 +35,10 @@ PARAMETER_KEYS = [
     'slippage_bps',
     'use_macro_context',
     'enable_stop_target_exit',
+    'chunk_trading_days',
+    'matrix_signal_cache_key',
+    'lightgbm_model_artifact_id',
+    'lightgbm_model_artifact_version',
 ]
 
 METRIC_KEYS = [
@@ -93,18 +97,6 @@ def _json_cell(value):
     if value in (None, ''):
         return ''
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
-def _benchmark_summary(report):
-    benchmark = report.get('benchmark') if isinstance(report, dict) else None
-    if not isinstance(benchmark, dict):
-        return {}
-    equity_curve = benchmark.get('equity_curve') or []
-    return {
-        'benchmark_total_return': benchmark.get('total_return'),
-        'benchmark_equity_final': equity_curve[-1] if equity_curve else '',
-        'benchmark_strategy': benchmark.get('strategy'),
-    }
 
 
 def _write_csv(path, fieldnames, rows):
@@ -212,7 +204,6 @@ class Command(BaseCommand):
         }
         for metric_key in METRIC_KEYS:
             row[metric_key] = getattr(run, metric_key)
-        row.update(_benchmark_summary(report))
         return row
 
     def _export_run_summary(self, output_dir, runs, requested_ids):
@@ -221,7 +212,6 @@ class Command(BaseCommand):
             'start_date', 'end_date', 'initial_capital', 'cash', 'final_value',
             *METRIC_KEYS,
             'num_trading_days', 'trade_row_count',
-            'benchmark_total_return', 'benchmark_equity_final', 'benchmark_strategy',
             'created_at', 'updated_at', 'started_at', 'completed_at', 'error_message',
         ]
         runs_by_id = {run.id: run for run in runs}
@@ -236,7 +226,7 @@ class Command(BaseCommand):
             'run_id', 'name', 'status', 'strategy_type', 'start_date', 'end_date',
             'initial_capital', 'cash', 'final_value', *METRIC_KEYS,
             *PARAMETER_KEYS,
-            'num_trading_days', 'benchmark_total_return', 'benchmark_equity_final',
+            'num_trading_days',
             'parameters_json', 'report_keys', 'created_at', 'completed_at', 'error_message',
         ]
         rows = []

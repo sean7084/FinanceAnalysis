@@ -3,6 +3,7 @@ import os
 import pickle
 import re
 from bisect import bisect_left
+from collections import OrderedDict
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -57,6 +58,17 @@ from .odds import estimate_trade_decision
 MODELS_DIR = os.path.join(settings.BASE_DIR, 'models', 'lightgbm')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
+
+def _positive_int_env(name, default):
+    try:
+        return max(1, int(os.getenv(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+LIGHTGBM_ARTIFACT_CACHE_MAX_ENTRIES = _positive_int_env('LIGHTGBM_ARTIFACT_CACHE_MAX_ENTRIES', 12)
+_LIGHTGBM_ARTIFACT_CACHE = OrderedDict()
+
 PRUNING_RULE_LATEST_SNAPSHOT_CORE80 = 'latest_snapshot_cumulative_80_core20_25'
 PRUNING_TARGET_CUMULATIVE_IMPORTANCE = 0.80
 PRUNING_MIN_RETAINED_FEATURES = 20
@@ -108,6 +120,11 @@ def _save_model_artifacts(model_dict, horizon_days, version, extra_metadata=None
 
 def _load_model_artifacts(horizon_days, version):
     """Load trained model, scaler, calibrator from disk."""
+    cache_key = (int(horizon_days), str(version))
+    if cache_key in _LIGHTGBM_ARTIFACT_CACHE:
+        _LIGHTGBM_ARTIFACT_CACHE.move_to_end(cache_key)
+        return _LIGHTGBM_ARTIFACT_CACHE[cache_key]
+
     path = _get_model_path(horizon_days, version)
 
     if not os.path.exists(path):
@@ -123,12 +140,17 @@ def _load_model_artifacts(horizon_days, version):
         with open(os.path.join(path, 'metadata.json'), 'r') as f:
             metadata = json.load(f)
 
-        return {
+        artifacts = {
             'model': model,
             'scaler': scaler,
             'calibrator': calibrator,
             'metadata': metadata,
         }
+        _LIGHTGBM_ARTIFACT_CACHE[cache_key] = artifacts
+        _LIGHTGBM_ARTIFACT_CACHE.move_to_end(cache_key)
+        while len(_LIGHTGBM_ARTIFACT_CACHE) > LIGHTGBM_ARTIFACT_CACHE_MAX_ENTRIES:
+            _LIGHTGBM_ARTIFACT_CACHE.popitem(last=False)
+        return artifacts
     except Exception as e:
         print(f'Error loading model artifacts: {e}')
         return None

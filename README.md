@@ -126,16 +126,19 @@ extras:
 10. Add a dedicated prediction-audit workflow that joins stored predictions to realized returns by horizon and writes a report.
 11. **in session dev general** 
 12. for model rebuild process, should we remove backfill workflow and make it a separate step that only runs during data validation processes?
+13. performance boosts for windows:
+- Run multiple worker processes, not one. On your current Windows setup, Celery is intentionally using solo with concurrency 1, so you are serialized at the task level. On this hardware, a practical starting point is 3-4 separate solo worker processes for backtests. Do not do this without thread caps, or each worker will try to use all cores internally and you will just oversubscribe the CPU.
+- Cap native library threads per worker. Set OMP_NUM_THREADS=1, MKL_NUM_THREADS=1, OPENBLAS_NUM_THREADS=1, and NUMEXPR_NUM_THREADS=1 for backtest workers. Right now one “single” worker is still spreading across many native threads. If you want several workers, each worker needs to behave like a small CPU consumer, not like “use the whole machine.”
+
+
+
+$23.7 / 0.2257 \approx 105$
 
 ###
 1. 14d model
 2. replace lstm with transformer
 3. 什么是建议的入场时间，我目前暂时定在周二周四，是否合理？
 4. 我们是否要考虑加入历史分钟数据来确定我们的入场成本.
-
-### performance optimization
-1.
-2. are we using cpu or gpu for the backfill tasks and backrun tasks? for the sake of performance, should be use which one for which task?
 
 ###
 buy price currently depends on close price
@@ -549,6 +552,7 @@ Key fixes from the older block:
 | `audit_model_data_quality` | Quick audit of default/null buckets in model-data tables | `--start-date`, `--end-date`, `--symbol`, `--sample-size` |
 | `run_validation_backtests` | Rolling heuristic/LightGBM/LSTM validation runs | `--start-date`, `--end-date`, `--window-days`, `--step-days`, `--sources`, `--top-n`, `--horizon-days`, `--entry-weekdays`, `--holding-period-days`, `--capital-fraction-per-entry`, `--min-up-probability`, `--name-prefix`, `--user-email`, `--queue` |
 | `run_reference_benchmark_suite` | Wrap validation runs plus export a benchmark/report bundle under `reports/` | `--start-date`, `--end-date`, `--window-days`, `--step-days`, `--sources`, `--top-n`, `--horizon-days`, `--entry-weekdays`, `--holding-period-days`, `--capital-fraction-per-entry`, `--min-up-probability`, `--name-prefix`, `--user-email`, `--queue`, `--output-dir`, `--suite-name`, `--include-active-lightgbm-artifacts` |
+| `run_core_backtest_matrix` | Create/export the core heuristic/LightGBM matrix; fastest local path is inline execution with matrix-scoped signal caching | `--start-date`, `--end-date`, `--variants`, `--sources`, `--name-prefix`, `--user-email`, `--queue`, `--execute-inline`, `--chunk-trading-days`, `--dry-run`, `--output-dir`, `--include-active-lightgbm-artifacts` |
 | `reconcile_suspension_ohlcv_overlaps` | Verify and optionally delete OHLCV rows that overlap full-day suspensions | `--csv-file`, `--symbols`, `--output-file`, `--baidu-cookie`, `--execute` |
 | `purge_pre_floor_historical_data` | Dry-run or delete rows before the configured historical floor | `--before-date`, `--execute` |
 
@@ -565,6 +569,7 @@ Notes:
 - `backfill_technical_indicators` should not be used for `RS_SCORE`; use `backfill_model_data` instead.
 - `rebuild_lightgbm_pipeline` and `rebuild_lstm_pipeline` will call `backfill_model_data` internally unless `--skip-backfill` is set.
 - `run_reference_benchmark_suite` is the easiest way to produce validation bundles under `reports/` after retraining.
+- For large local matrix runs, prefer `run_core_backtest_matrix --execute-inline --chunk-trading-days 60`; this keeps daily heuristic/LightGBM signal surfaces in the command process, alternates queued chunks across the matrix, and avoids per-run benchmark generation. Official CSI comparison remains available through the backtest comparison API.
 
 ## 📡 API Documentation
 

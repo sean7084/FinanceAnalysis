@@ -1,15 +1,20 @@
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue --output-dir
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit,trade-score-limit-weekdays --sources heuristic,lightgbm --name-prefix core18-2025 --queue --output-dir
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit,trade-score-limit-weekdays --sources heuristic,lightgbm --name-prefix core18-2025-20260526 --execute-inline --chunk-trading-days 60 --output-dir reports/core18-2025-inline-20250526
 import json
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connections
+from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.backtest.models import BacktestRun
 from apps.backtest.tasks import queue_backtest_run, run_backtest
+from apps.prediction.models_lightgbm import LightGBMModelArtifact
 
 
 CORE_PROFILES = {
@@ -49,7 +54,7 @@ VARIANT_DEFINITIONS = {
         'trade_score_scope': 'independent',
         'trade_score_threshold': 1.0,
     },
-        'trade-score-limit-weekdays': {
+    'trade-score-limit-weekdays': {
         'short_name': 'ts-limit-mon-fri',
         'entry_weekdays': ['MON', 'TUE', 'WED', 'THU', 'FRI'],
         'candidate_mode': 'trade_score',
@@ -74,6 +79,11 @@ def _parse_csv_tokens(raw_value, name):
     if not values:
         raise CommandError(f'{name} must contain at least one value.')
     return values
+
+
+class _InlineDelayResult:
+    def __init__(self, task_id):
+        self.id = task_id
 
 
 class Command(BaseCommand):
@@ -106,6 +116,17 @@ class Command(BaseCommand):
             '--queue',
             action='store_true',
             help='Queue created runs asynchronously instead of executing the first chunk inline.',
+        )
+        parser.add_argument(
+            '--execute-inline',
+            action='store_true',
+            help='Execute all matrix runs to completion in this process, round-robin by queued chunk while preserving the in-memory matrix signal cache.',
+        )
+        parser.add_argument(
+            '--chunk-trading-days',
+            type=int,
+            default=60,
+            help='Per-run chunk size stamped into matrix BacktestRun parameters. Defaults to 60.',
         )
         parser.add_argument(
             '--dry-run',
@@ -183,11 +204,69 @@ class Command(BaseCommand):
                         })
         return specs
 
+    def _active_lightgbm_artifacts_by_horizon(self, specs):
+        required_horizons = sorted({spec['horizon_days'] for spec in specs if spec['source'] == 'lightgbm'})
+        if not required_horizons:
+            return {}
+
+        artifacts = {}
+        for horizon_days in required_horizons:
+            artifact = (
+                LightGBMModelArtifact.objects.filter(
+                    horizon_days=horizon_days,
+                    status=LightGBMModelArtifact.Status.READY,
+                    is_active=True,
+                )
+                .order_by('-trained_at', '-created_at')
+                .first()
+            )
+            if artifact is None:
+                raise CommandError(f'No active READY LightGBM artifact found for horizon {horizon_days}.')
+            artifacts[horizon_days] = artifact
+        return artifacts
+
+    def _apply_matrix_runtime_parameters(self, specs, matrix_cache_key, chunk_trading_days, lightgbm_artifacts):
+        for spec in specs:
+            params = dict(spec['parameters'])
+            params['matrix_signal_cache_key'] = matrix_cache_key
+            params['chunk_trading_days'] = int(chunk_trading_days)
+            if spec['source'] == 'lightgbm' and lightgbm_artifacts:
+                artifact = lightgbm_artifacts[spec['horizon_days']]
+                params['lightgbm_model_artifact_id'] = artifact.id
+                params['lightgbm_model_artifact_version'] = artifact.version
+            spec['parameters'] = params
+
+    def _run_backtests_inline_to_completion(self, root_run_ids):
+        pending_run_ids = [int(run_id) for run_id in root_run_ids]
+        queued_count = 0
+
+        def _enqueue(run_id):
+            nonlocal queued_count
+            queued_count += 1
+            pending_run_ids.append(int(run_id))
+            return _InlineDelayResult(f'inline-matrix-{queued_count}')
+
+        with patch('apps.backtest.tasks.run_backtest.delay', side_effect=_enqueue):
+            while pending_run_ids:
+                current_run_id = pending_run_ids.pop(0)
+                for attempt in range(2):
+                    try:
+                        run_backtest(current_run_id)
+                        break
+                    except (OperationalError, InterfaceError):
+                        connections.close_all()
+                        if attempt == 1:
+                            raise
+
     def handle(self, *args, **options):
         start_date = _parse_date(options['start_date'], 'start-date')
         end_date = _parse_date(options['end_date'], 'end-date')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
+        if options['queue'] and options['execute_inline']:
+            raise CommandError('--queue and --execute-inline cannot be used together.')
+        if int(options['chunk_trading_days']) <= 0:
+            raise CommandError('--chunk-trading-days must be greater than 0.')
 
         matrix_started_at = timezone.now()
 
@@ -216,6 +295,18 @@ class Command(BaseCommand):
         )
         if not specs:
             raise CommandError('No backtest specifications were generated.')
+
+        name_prefix = str(options['name_prefix'] or '').strip() or 'core18'
+        matrix_cache_key = (
+            f"{name_prefix}:{matrix_started_at.strftime('%Y%m%d%H%M%S')}:{start_date.isoformat()}:{end_date.isoformat()}"
+        )
+        lightgbm_artifacts = {} if options['dry_run'] else self._active_lightgbm_artifacts_by_horizon(specs)
+        self._apply_matrix_runtime_parameters(
+            specs,
+            matrix_cache_key,
+            int(options['chunk_trading_days']),
+            lightgbm_artifacts,
+        )
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -249,17 +340,23 @@ class Command(BaseCommand):
             if options['queue']:
                 queue_backtest_run(run)
                 launch_mode = 'queued'
+            elif options['execute_inline']:
+                launch_mode = 'prepared-inline'
             else:
                 run_backtest(run.id)
-                launch_mode = 'executed'
+                launch_mode = 'executed-first-chunk'
 
             self.stdout.write(
                 f"[{spec['variant']}] [{spec['source']}] [{spec['horizon_days']}d/{spec['profile']}] "
                 f'run_id={run.id} ({launch_mode})'
             )
 
+        if options['execute_inline']:
+            self._run_backtests_inline_to_completion(created_run_ids)
+            self.stdout.write(self.style.SUCCESS('Executed inline matrix to completion.'))
+
         timestamp_token = matrix_started_at.strftime('%Y%m%d_%H%M%S')
-        output_dir = Path(options['output_dir']) if options['output_dir'] else Path('reports') / f"{options['name_prefix']}-{timestamp_token}"
+        output_dir = Path(options['output_dir']) if options['output_dir'] else Path('reports') / f"{name_prefix}-{timestamp_token}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         call_command(
@@ -273,7 +370,7 @@ class Command(BaseCommand):
         )
 
         manifest = {
-            'name_prefix': str(options['name_prefix'] or '').strip() or 'core18',
+            'name_prefix': name_prefix,
             'output_dir': str(output_dir),
             'run_ids': created_run_ids,
             'start_date': start_date.isoformat(),
@@ -281,6 +378,9 @@ class Command(BaseCommand):
             'variants': variant_names,
             'sources': source_names,
             'queued': bool(options['queue']),
+            'execute_inline': bool(options['execute_inline']),
+            'chunk_trading_days': int(options['chunk_trading_days']),
+            'matrix_signal_cache_key': matrix_cache_key,
         }
         (output_dir / 'matrix_manifest.json').write_text(
             json.dumps(manifest, indent=2, sort_keys=True),

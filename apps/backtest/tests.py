@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from django.contrib.auth.models import User
 from django.core.management import call_command
+from django.db.utils import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -18,7 +19,7 @@ from rest_framework.test import APIClient
 
 from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
-from apps.markets.models import Asset, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
+from apps.markets.models import Asset, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
@@ -442,33 +443,10 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(run.total_trades, 1)
         self.assertEqual(BacktestTrade.objects.filter(backtest_run=run).count(), 2)
 
-    def test_run_backtest_uses_precomputed_point_in_time_benchmark_when_available(self):
-        PointInTimeBenchmarkDaily.objects.bulk_create([
-            PointInTimeBenchmarkDaily(
-                benchmark_code='CSI300_CSIA500_PIT_UNION',
-                benchmark_name='CSI300 + CSI A500 PIT Union',
-                trade_date=self.d1,
-                daily_return=Decimal('0'),
-                nav=Decimal('100000.00000000'),
-                constituent_count=1,
-                overlap_count=0,
-                metadata={'snapshot_dates': {'000300.SH': self.d1.isoformat()}},
-            ),
-            PointInTimeBenchmarkDaily(
-                benchmark_code='CSI300_CSIA500_PIT_UNION',
-                benchmark_name='CSI300 + CSI A500 PIT Union',
-                trade_date=self.d2,
-                daily_return=Decimal('0.02000000'),
-                nav=Decimal('102000.00000000'),
-                constituent_count=1,
-                overlap_count=0,
-                metadata={'snapshot_dates': {'000300.SH': self.d2.isoformat()}},
-            ),
-        ])
-
+    def test_run_backtest_does_not_store_runtime_benchmark_payload(self):
         run = BacktestRun.objects.create(
             user=self.user,
-            name='P15 PIT Benchmark Run',
+            name='P15 No Runtime Benchmark Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
             end_date=self.d2,
@@ -479,11 +457,7 @@ class Phase15BacktestTests(TestCase):
         run_backtest(run.id)
         run.refresh_from_db()
 
-        self.assertEqual(run.report['benchmark']['strategy'], 'point_in_time_union_benchmark')
-        self.assertEqual(run.report['benchmark']['benchmark_code'], 'CSI300_CSIA500_PIT_UNION')
-        self.assertEqual(run.report['benchmark']['source'], 'precomputed_point_in_time_benchmark')
-        self.assertEqual(run.report['benchmark']['equity_curve'], [200000.0, 204000.0])
-        self.assertAlmostEqual(run.report['benchmark']['total_return'], 0.02, places=8)
+        self.assertNotIn('benchmark', run.report)
 
     def test_pick_candidates_filters_bottom_candidate_scores_to_point_in_time_union(self):
         excluded_asset = Asset.objects.create(
@@ -619,6 +593,26 @@ class Phase15BacktestTests(TestCase):
         self.assertIn('failed', result.lower())
         self.assertEqual(run.status, BacktestRun.Status.FAILED)
         self.assertIn('missing point-in-time membership coverage', run.error_message)
+
+    @patch('apps.backtest.tasks._pick_candidates', side_effect=OperationalError('database connection dropped'))
+    def test_run_backtest_persists_failure_after_database_error(self, _mock_pick_candidates):
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 Database Error Failure Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={'top_n': 1, 'horizon_days': 7, 'up_threshold': 0.55},
+        )
+
+        result = run_backtest(run.id)
+        run.refresh_from_db()
+
+        self.assertIn('Backtest failed', result)
+        self.assertEqual(run.status, BacktestRun.Status.FAILED)
+        self.assertEqual(run.current_task_id, '')
+        self.assertIn('database connection dropped', run.error_message)
         self.assertEqual(BacktestTrade.objects.filter(backtest_run=run).count(), 0)
 
     def test_run_backtest_uses_on_demand_heuristic_candidates_without_stored_predictions(self):
@@ -2515,7 +2509,7 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(run.report['prediction_source'], 'lightgbm')
         self.assertEqual(trades[0].signal_payload['model_artifact_id'], artifact.id)
         self.assertTrue(trades[0].signal_payload['generated_on_demand'])
-        self.assertIn('benchmark', run.report)
+        self.assertNotIn('benchmark', run.report)
 
 
 class BacktestManagementCommandTests(TestCase):
@@ -2615,6 +2609,9 @@ class BacktestManagementCommandTests(TestCase):
             self.assertEqual(manifest['variants'], ['original'])
             self.assertEqual(manifest['sources'], ['heuristic'])
             self.assertTrue(manifest['queued'])
+            self.assertFalse(manifest['execute_inline'])
+            self.assertEqual(manifest['chunk_trading_days'], 60)
+            self.assertTrue(manifest['matrix_signal_cache_key'])
             self.assertEqual(len(manifest['run_ids']), 9)
 
             with (output_dir / 'run_config_results.csv').open(newline='', encoding='utf-8') as handle:
@@ -2625,7 +2622,60 @@ class BacktestManagementCommandTests(TestCase):
                 [row['prediction_source'] for row in rows],
                 ['heuristic'] * 9,
             )
+            self.assertTrue(all(row['chunk_trading_days'] == '60' for row in rows))
+            self.assertTrue(all(row['matrix_signal_cache_key'] for row in rows))
             self.assertIn('Core matrix exported to', output.getvalue())
+
+    def test_run_core_backtest_matrix_inline_scheduler_round_robins_continuations(self):
+        from apps.backtest.management.commands.run_core_backtest_matrix import Command
+
+        command = Command()
+        calls = []
+        continuation_counts = {101: 0, 102: 0}
+
+        def _fake_run_backtest(run_id):
+            calls.append(run_id)
+            if continuation_counts[run_id] == 0:
+                continuation_counts[run_id] += 1
+                backtest_tasks.run_backtest.delay(run_id)
+
+        with patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest', side_effect=_fake_run_backtest):
+            command._run_backtests_inline_to_completion([101, 102])
+
+        self.assertEqual(calls, [101, 102, 101, 102])
+
+    @patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest')
+    def test_run_core_backtest_matrix_execute_inline_creates_all_runs_before_execution(self, mock_run_backtest):
+        counts_at_execution = []
+
+        def _fake_run_backtest(_run_id):
+            counts_at_execution.append(BacktestRun.objects.count())
+
+        mock_run_backtest.side_effect = _fake_run_backtest
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / 'matrix_inline_bundle'
+            output = StringIO()
+
+            call_command(
+                'run_core_backtest_matrix',
+                start_date='2026-01-01',
+                end_date='2026-12-31',
+                variants='original',
+                sources='heuristic',
+                name_prefix='matrixinline',
+                output_dir=str(output_dir),
+                execute_inline=True,
+                stdout=output,
+            )
+
+            manifest = json.loads((output_dir / 'matrix_manifest.json').read_text(encoding='utf-8'))
+
+        self.assertEqual(mock_run_backtest.call_count, 9)
+        self.assertEqual(counts_at_execution, [9] * 9)
+        self.assertFalse(manifest['queued'])
+        self.assertTrue(manifest['execute_inline'])
+        self.assertIn('Executed inline matrix to completion.', output.getvalue())
 
     def test_export_backtest_runs_includes_compare_backtest_run_id(self):
         compare_run = BacktestRun.objects.create(
