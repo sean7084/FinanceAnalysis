@@ -19,7 +19,6 @@ import { BacktestComparisonChart } from '../components/charts/BacktestComparison
 import {
   buildDashboardFilterBundleFromRunnerConfig,
   buildDashboardSearchParams,
-  isoWeekdayToLabel,
   WEEKDAY_LABELS,
   type PredictionSource,
   type TopNMetric,
@@ -50,16 +49,16 @@ function storedWeekdayToLabel(value: unknown): WeekdayLabel | null {
   return null
 }
 
-function formatStoredWeekdays(values: unknown): string {
+function formatStoredWeekdays(values: unknown): string | null {
   if (!Array.isArray(values)) {
-    return '--'
+    return null
   }
 
   const labels = values
     .map((value) => storedWeekdayToLabel(value))
     .filter((value): value is WeekdayLabel => value !== null)
 
-  return labels.length ? labels.join(', ') : '--'
+  return labels.length ? labels.join(', ') : null
 }
 
 function addDays(isoDate: string, days: number): string {
@@ -278,7 +277,6 @@ export function BacktestWorkbenchPage() {
     maxPositions: 5,
     useMacroContext: true,
     enableStopTargetExit: true,
-    entryWeekdays: [2, 4] as number[],
     holdingPeriodDays: 14,
     capitalFractionPerEntry: 0.2,
     initialCapital: '200000.00',
@@ -290,12 +288,6 @@ export function BacktestWorkbenchPage() {
     const params = (run.parameters ?? {}) as Record<string, unknown>
     const predictionSource = String(params.prediction_source ?? 'heuristic').toLowerCase() as Exclude<PredictionSource, 'all'>
     const topNMetric = String(params.top_n_metric ?? 'up_prob_7d').toLowerCase() as TopNMetric
-    const entryWeekdays = Array.isArray(params.entry_weekdays)
-      ? (params.entry_weekdays as unknown[])
-          .map((value) => String(value).toUpperCase())
-          .map((value) => WEEKDAY_LABELS.indexOf(value as (typeof WEEKDAY_LABELS)[number]) + 1)
-          .filter((value): value is number => value >= 1 && value <= 5)
-      : [2, 4]
 
     setRunnerForm((current) => ({
       ...current,
@@ -314,7 +306,6 @@ export function BacktestWorkbenchPage() {
       maxPositions: Number(params.max_positions ?? params.top_n ?? current.maxPositions),
       useMacroContext: Boolean(params.use_macro_context ?? current.useMacroContext),
       enableStopTargetExit: Boolean(params.enable_stop_target_exit ?? current.enableStopTargetExit),
-      entryWeekdays: entryWeekdays.length ? entryWeekdays : current.entryWeekdays,
       holdingPeriodDays: Number(params.holding_period_days ?? current.holdingPeriodDays),
       capitalFractionPerEntry: Number(params.capital_fraction_per_entry ?? current.capitalFractionPerEntry),
       initialCapital: String(run.initial_capital),
@@ -412,21 +403,6 @@ export function BacktestWorkbenchPage() {
     }
   }, [])
 
-  const toggleWeekday = (day: number) => {
-    setRunnerForm((current) => {
-      if (current.entryWeekdays.includes(day)) {
-        return {
-          ...current,
-          entryWeekdays: current.entryWeekdays.filter((value) => value !== day),
-        }
-      }
-      return {
-        ...current,
-        entryWeekdays: [...current.entryWeekdays, day].sort((a, b) => a - b),
-      }
-    })
-  }
-
   const applyQuickRange = (days: number) => {
     const endDate = runnerForm.endDate
     const startDate = addDays(endDate, -(days - 1))
@@ -447,9 +423,6 @@ export function BacktestWorkbenchPage() {
     predictionSource: Exclude<PredictionSource, 'all'>,
     compareRunId?: number,
   ): BacktestCreatePayload => {
-    const weekdayLabels = runnerForm.entryWeekdays
-      .map((day) => isoWeekdayToLabel(day))
-      .filter((value): value is 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' => value !== null)
     return {
       name,
       strategy_type: 'PREDICTION_THRESHOLD',
@@ -469,7 +442,6 @@ export function BacktestWorkbenchPage() {
         use_macro_context: runnerForm.useMacroContext,
         enable_stop_target_exit: runnerForm.enableStopTargetExit,
         ...(compareRunId ? { compare_backtest_run_id: compareRunId } : {}),
-        entry_weekdays: weekdayLabels,
         holding_period_days: runnerForm.holdingPeriodDays,
         capital_fraction_per_entry: runnerForm.capitalFractionPerEntry,
       },
@@ -503,10 +475,6 @@ export function BacktestWorkbenchPage() {
   }
 
   const onSubmitRunner = async () => {
-    if (!runnerForm.entryWeekdays.length) {
-      setRunnerMessage(t('backtest.runnerWeekdayError'))
-      return
-    }
     setRunnerBusy(true)
     setRunnerMessage('')
     try {
@@ -674,11 +642,12 @@ export function BacktestWorkbenchPage() {
 
   const selectedReport = (selectedRun?.report ?? {}) as Record<string, unknown>
   const selectedParameters = (selectedRun?.parameters ?? {}) as Record<string, unknown>
-  const entryWeekdays = Array.isArray(selectedReport.entry_weekdays)
+  const storedEntryWeekdays = Array.isArray(selectedReport.entry_weekdays)
     ? formatStoredWeekdays(selectedReport.entry_weekdays)
     : Array.isArray(selectedParameters.entry_weekdays)
       ? formatStoredWeekdays(selectedParameters.entry_weekdays)
-      : '--'
+      : null
+  const entryWeekdays = storedEntryWeekdays ?? t('backtest.runnerAllTradingDays')
   const predictionSource = String(selectedReport.prediction_source ?? selectedParameters.prediction_source ?? '--')
   const candidateMode = String(selectedParameters.candidate_mode ?? selectedReport.candidate_mode ?? 'top_n')
   const candidateModeLabel = candidateMode === 'trade_score' ? t('backtest.runnerCandidateModeTradeScore') : t('backtest.runnerCandidateModeTopN')
@@ -722,7 +691,6 @@ export function BacktestWorkbenchPage() {
         enableStopTargetExit: runnerForm.enableStopTargetExit,
         capitalFractionPerEntry: runnerForm.capitalFractionPerEntry,
         initialCapital: runnerForm.initialCapital,
-        entryWeekdays: runnerForm.entryWeekdays,
       },
       reusedRun ? { sourceRunId: reusedRun.id, sourceRunName: reusedRun.name } : {},
     )
@@ -997,25 +965,6 @@ export function BacktestWorkbenchPage() {
           )}
         </div>
         {syncedCompareRun ? <p className="subtitle">{t('backtest.compareTarget')}: #{syncedCompareRun.id} {syncedCompareRun.name}</p> : null}
-        <div className="runner-weekdays">
-          <span>{t('backtest.runnerWeekdays')}</span>
-          <div className="runner-weekday-chips">
-            {WEEKDAY_LABELS.map((label, index) => {
-              const day = index + 1
-              const selected = runnerForm.entryWeekdays.includes(day)
-              return (
-                <button
-                  key={label}
-                  type="button"
-                  className={selected ? 'chip selected' : 'chip'}
-                  onClick={() => toggleWeekday(day)}
-                >
-                  {label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
         <div className="runner-actions">
           <button type="button" className={"chip"} disabled={runnerBusy} onClick={onSubmitRunner}>
             {runnerBusy ? t('common.loading') : t('backtest.runnerSubmit')}

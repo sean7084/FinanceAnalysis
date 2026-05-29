@@ -483,6 +483,16 @@ describe('BacktestWorkbenchPage runner controls', () => {
     expect(screen.getByText('Compare Target: #84 Validation-lightgbm-2023-01-01-2024-12-31')).toBeInTheDocument()
   })
 
+  it('does not render the runner weekday selector for new submissions', async () => {
+    const view = renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Backtest Runner')).toBeInTheDocument()
+    })
+
+    expect(view.container.querySelector('.runner-weekdays')).toBeNull()
+  })
+
   it('submits the reused run itself as the hidden compare target', async () => {
     const user = userEvent.setup()
 
@@ -503,6 +513,9 @@ describe('BacktestWorkbenchPage runner controls', () => {
         }),
       }))
     })
+
+    const payload = mockCreateBacktestRun.mock.calls[0]?.[0]
+    expect(payload?.parameters).not.toHaveProperty('entry_weekdays')
   })
 
   it('pauses a running run from the table actions', async () => {
@@ -909,6 +922,43 @@ describe('BacktestWorkbenchPage runner controls', () => {
 
     expect(screen.getAllByText('TUE, THU').length).toBeGreaterThan(0)
     expect(screen.queryByText('1, 3')).not.toBeInTheDocument()
+  })
+
+  it('shows all trading days when a run does not store entry weekdays', async () => {
+    mockFetchBacktestRuns.mockResolvedValueOnce([
+      buildBacktestRun({
+        id: 91,
+        name: 'All Trading Days Run',
+        status: 'COMPLETED',
+        parameters: {
+          prediction_source: 'lightgbm',
+          top_n: 5,
+          horizon_days: 7,
+          up_threshold: 0.5,
+          holding_period_days: 14,
+          capital_fraction_per_entry: 0.2,
+          candidate_mode: 'top_n',
+          top_n_metric: 'up_prob_7d',
+          trade_score_scope: 'independent',
+          trade_score_threshold: 1,
+          max_positions: 5,
+          use_macro_context: true,
+          enable_stop_target_exit: true,
+        },
+        report: {
+          prediction_source: 'lightgbm',
+          holding_period_days: 14,
+        },
+      }),
+    ])
+
+    renderWorkbench()
+
+    await waitFor(() => {
+      expect(screen.getByText('Trade Details')).toBeInTheDocument()
+    })
+
+    expect(screen.getAllByText('All trading days').length).toBeGreaterThan(0)
   })
 
   it('shows count-aware win rate and hh:mm:ss runtime in trade details without the removed summary cards', async () => {

@@ -1,5 +1,5 @@
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit,trade-score-limit-weekdays --sources heuristic,lightgbm --name-prefix core18-2025 --queue --output-dir
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants original,weekdays,trade-score-limit,trade-score-limit-weekdays --sources heuristic,lightgbm --name-prefix core18-2025-20260526 --execute-inline --chunk-trading-days 60 --output-dir reports/core18-2025-inline-20250526
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue --output-dir
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025-20260526 --execute-inline --chunk-trading-days 60 --output-dir reports/core18-2025-inline-20250526
 import json
 from datetime import date
 from pathlib import Path
@@ -36,27 +36,12 @@ CORE_PROFILES = {
 }
 
 VARIANT_DEFINITIONS = {
-    'original': {
-        'short_name': 'orig',
-        'entry_weekdays': ['TUE', 'THU'],
-        'candidate_mode': 'top_n',
-    },
-    'weekdays': {
-        'short_name': 'mon-fri',
-        'entry_weekdays': ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+    'top-n': {
+        'short_name': 'top-n',
         'candidate_mode': 'top_n',
     },
     'trade-score-limit': {
         'short_name': 'ts-limit',
-        'entry_weekdays': ['TUE', 'THU'],
-        'candidate_mode': 'trade_score',
-        'top_n_metric': 'trade_score',
-        'trade_score_scope': 'independent',
-        'trade_score_threshold': 1.0,
-    },
-    'trade-score-limit-weekdays': {
-        'short_name': 'ts-limit-mon-fri',
-        'entry_weekdays': ['MON', 'TUE', 'WED', 'THU', 'FRI'],
         'candidate_mode': 'trade_score',
         'top_n_metric': 'trade_score',
         'trade_score_scope': 'independent',
@@ -87,15 +72,15 @@ class _InlineDelayResult:
 
 
 class Command(BaseCommand):
-    help = 'Create and optionally queue the core 18-run heuristic/lightgbm backtest matrix across selected variants.'
+    help = 'Create and optionally queue the heuristic/lightgbm core-profile backtest matrix across selected variants.'
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', required=True, help='Backtest start date (YYYY-MM-DD).')
         parser.add_argument('--end-date', required=True, help='Backtest end date (YYYY-MM-DD).')
         parser.add_argument(
             '--variants',
-            default='original,weekdays,trade-score-limit,trade-score-limit-weekdays',
-            help='Comma-separated matrix variants: original,weekdays,trade-score-limit,trade-score-limit-weekdays.',
+            default='top-n,trade-score-limit',
+            help='Comma-separated matrix variants: top-n,trade-score-limit.',
         )
         parser.add_argument(
             '--sources',
@@ -171,7 +156,6 @@ class Command(BaseCommand):
                             'horizon_days': int(horizon_days),
                             'up_threshold': float(profile['up_threshold']),
                             'prediction_source': source,
-                            'entry_weekdays': list(variant['entry_weekdays']),
                             'holding_period_days': int(profile['holding_period_days']),
                             'capital_fraction_per_entry': 0.2,
                             'use_macro_context': True,

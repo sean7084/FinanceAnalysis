@@ -419,13 +419,6 @@ nav {
   color: #a9bed3;
 }
 
-.runner-weekdays {
-  margin-top: 0.85rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
 .runner-weekday-chips {
   display: flex;
   flex-wrap: wrap;

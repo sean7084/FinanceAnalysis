@@ -37,7 +37,6 @@ class Command(BaseCommand):
         parser.add_argument('--benchmark-sources', default='heuristic,lightgbm,lstm')
         parser.add_argument('--benchmark-top-n', type=int, default=3)
         parser.add_argument('--benchmark-horizon-days', type=int, default=7)
-        parser.add_argument('--benchmark-entry-weekdays', default='1,3')
         parser.add_argument('--benchmark-holding-period-days', type=int, default=7)
         parser.add_argument('--benchmark-capital-fraction-per-entry', type=float, default=0.5)
         parser.add_argument('--benchmark-min-up-probability', type=float, default=0.0)
@@ -95,7 +94,6 @@ class Command(BaseCommand):
             sources=options['benchmark_sources'],
             top_n=options['benchmark_top_n'],
             horizon_days=options['benchmark_horizon_days'],
-            entry_weekdays=options['benchmark_entry_weekdays'],
             holding_period_days=options['benchmark_holding_period_days'],
             capital_fraction_per_entry=options['benchmark_capital_fraction_per_entry'],
             min_up_probability=options['benchmark_min_up_probability'],

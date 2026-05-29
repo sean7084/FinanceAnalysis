@@ -1650,6 +1650,9 @@ class UniverseOnboardingCommandTests(TestCase):
         self.assertTrue(sync_kwargs['skip_sync_dispatch'])
         self.assertEqual(sync_kwargs['index_codes'], '000300.SH,000510.CSI')
 
+        self.assertNotIn('entry_weekdays', mock_call_command.call_args_list[0].kwargs)
+        self.assertNotIn('entry_weekdays', mock_call_command.call_args_list[-1].kwargs)
+
         targeted_ohlcv_kwargs = mock_call_command.call_args_list[2].kwargs
         self.assertEqual(targeted_ohlcv_kwargs['symbols'], '000001')
         self.assertTrue(targeted_ohlcv_kwargs['technical_indicator_warmup'])
@@ -1723,6 +1726,9 @@ class SafeUniverseRolloutCommandTests(TestCase):
         self.assertTrue(onboarding_kwargs['skip_retrain'])
         self.assertTrue(onboarding_kwargs['skip_post_benchmarks'])
         self.assertEqual(onboarding_kwargs['report_label'], 'onboarding')
+
+        for call_args in mock_call_command.call_args_list[3:]:
+            self.assertNotIn('entry_weekdays', call_args.kwargs)
 
         lightgbm_kwargs = mock_call_command.call_args_list[1].kwargs
         self.assertEqual(lightgbm_kwargs['start_date'], '2016-06-01')

@@ -51,7 +51,6 @@ export interface RunnerConfigLike {
   enableStopTargetExit: boolean
   capitalFractionPerEntry: number
   initialCapital: string
-  entryWeekdays: number[]
 }
 
 function parseNumber(value: string | null, fallback: number): number {
@@ -165,10 +164,6 @@ export function buildDashboardFilterBundleFromRunnerConfig(
     return null
   }
 
-  const entryWeekdays = config.entryWeekdays
-    .map((day) => isoWeekdayToLabel(day))
-    .filter((value): value is WeekdayLabel => value !== null)
-
   return {
     filters: {
       predictionSource: config.predictionSource,
@@ -187,7 +182,6 @@ export function buildDashboardFilterBundleFromRunnerConfig(
       enableStopTargetExit: config.enableStopTargetExit,
       capitalFractionPerEntry: config.capitalFractionPerEntry,
       initialCapital: config.initialCapital,
-      entryWeekdays: entryWeekdays.length ? entryWeekdays : undefined,
       ...reminders,
     },
   }

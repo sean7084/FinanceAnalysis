@@ -947,8 +947,6 @@ def _capital_fraction_per_entry(run, entry_weekdays):
     raw_value = params.get('capital_fraction_per_entry')
     if raw_value is not None:
         fraction = _d(raw_value)
-    elif entry_weekdays:
-        fraction = DECIMAL_1 / _d(len(entry_weekdays))
     else:
         fraction = DECIMAL_1
 
@@ -957,10 +955,8 @@ def _capital_fraction_per_entry(run, entry_weekdays):
     return min(fraction, DECIMAL_1)
 
 
-def _should_enter_position(dt, entry_weekdays):
-    if not entry_weekdays:
-        return True
-    return dt.weekday() in entry_weekdays
+def _should_enter_position(_dt, _entry_weekdays):
+    return True
 
 
 def _resolve_exit_date(trading_dates, entry_date, holding_period_days):

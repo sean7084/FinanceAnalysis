@@ -14,19 +14,6 @@ def _parse_date(value, name):
         raise CommandError(f'Invalid {name}: {value}. Expected YYYY-MM-DD.') from exc
 
 
-def _parse_csv_ints(value, name):
-    items = []
-    for raw in (value or '').split(','):
-        token = raw.strip()
-        if not token:
-            continue
-        try:
-            items.append(int(token))
-        except ValueError as exc:
-            raise CommandError(f'Invalid integer in {name}: {token}') from exc
-    return items
-
-
 class Command(BaseCommand):
     help = 'Run systematic backtest validations over rolling windows for heuristic, LightGBM, and LSTM sources.'
 
@@ -38,7 +25,6 @@ class Command(BaseCommand):
         parser.add_argument('--sources', default='heuristic,lightgbm,lstm', help='Comma-separated sources: heuristic,lightgbm,lstm.')
         parser.add_argument('--top-n', type=int, default=3, help='Number of picks per entry cohort.')
         parser.add_argument('--horizon-days', type=int, default=7, help='Prediction horizon in days (3, 7, or 30).')
-        parser.add_argument('--entry-weekdays', default='1,3', help='Comma-separated ISO weekdays (1=Mon .. 7=Sun).')
         parser.add_argument('--holding-period-days', type=int, default=7, help='Holding period in calendar days.')
         parser.add_argument('--capital-fraction-per-entry', type=float, default=0.5, help='Capital fraction used for each entry cohort.')
         parser.add_argument('--min-up-probability', type=float, default=0.0, help='Minimum up probability threshold.')
@@ -85,12 +71,6 @@ class Command(BaseCommand):
         if not sources or any(source not in allowed_sources for source in sources):
             raise CommandError('sources must be a comma-separated subset of: heuristic,lightgbm,lstm')
 
-        entry_weekdays = _parse_csv_ints(options['entry_weekdays'], 'entry-weekdays')
-        if not entry_weekdays:
-            raise CommandError('entry-weekdays must contain at least one ISO weekday integer.')
-        if any(day < 1 or day > 7 for day in entry_weekdays):
-            raise CommandError('entry-weekdays must use ISO values 1..7.')
-
         horizon_days = int(options['horizon_days'])
         if horizon_days not in {3, 7, 30}:
             raise CommandError('horizon-days must be one of 3, 7, or 30.')
@@ -123,7 +103,6 @@ class Command(BaseCommand):
                         'horizon_days': horizon_days,
                         'up_threshold': options['min_up_probability'],
                         'prediction_source': source,
-                        'entry_weekdays': entry_weekdays,
                         'holding_period_days': options['holding_period_days'],
                         'capital_fraction_per_entry': options['capital_fraction_per_entry'],
                     },

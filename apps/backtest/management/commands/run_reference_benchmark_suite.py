@@ -20,7 +20,6 @@ class Command(BaseCommand):
         parser.add_argument('--sources', default='heuristic,lightgbm,lstm', help='Comma-separated sources: heuristic,lightgbm,lstm.')
         parser.add_argument('--top-n', type=int, default=3, help='Number of picks per entry cohort.')
         parser.add_argument('--horizon-days', type=int, default=7, help='Prediction horizon in days (3, 7, or 30).')
-        parser.add_argument('--entry-weekdays', default='1,3', help='Comma-separated ISO weekdays (1=Mon .. 7=Sun).')
         parser.add_argument('--holding-period-days', type=int, default=7, help='Holding period in calendar days.')
         parser.add_argument('--capital-fraction-per-entry', type=float, default=0.5, help='Capital fraction used for each entry cohort.')
         parser.add_argument('--min-up-probability', type=float, default=0.0, help='Minimum up probability threshold.')
@@ -51,7 +50,6 @@ class Command(BaseCommand):
             sources=options['sources'],
             top_n=options['top_n'],
             horizon_days=options['horizon_days'],
-            entry_weekdays=options['entry_weekdays'],
             holding_period_days=options['holding_period_days'],
             capital_fraction_per_entry=options['capital_fraction_per_entry'],
             min_up_probability=options['min_up_probability'],
@@ -94,7 +92,6 @@ class Command(BaseCommand):
             'step_days': options['step_days'],
             'top_n': options['top_n'],
             'horizon_days': options['horizon_days'],
-            'entry_weekdays': options['entry_weekdays'],
             'holding_period_days': options['holding_period_days'],
             'capital_fraction_per_entry': options['capital_fraction_per_entry'],
             'min_up_probability': options['min_up_probability'],

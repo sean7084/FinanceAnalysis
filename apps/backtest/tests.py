@@ -2402,9 +2402,24 @@ class Phase15BacktestTests(TestCase):
         self.assertIn('deleted', result.lower())
         self.assertFalse(BacktestRun.objects.filter(id=run.id).exists())
 
+    def test_capital_fraction_defaults_to_full_allocation_even_with_entry_weekdays(self):
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='Weekday Legacy Config',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.today,
+            end_date=self.today,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'entry_weekdays': ['TUE', 'THU'],
+            },
+        )
+
+        self.assertEqual(backtest_tasks._capital_fraction_per_entry(run, [1, 3]), Decimal('1'))
+
     @patch('apps.backtest.tasks._extract_features_for_asset', return_value={'rsi': 50.0, 'mom_5d': 0.1, 'rs_score': 0.9, 'factor_composite': 0.8, 'sentiment_7d': 0.0})
     @patch('apps.backtest.tasks._load_model_artifacts')
-    def test_backtest_supports_tuesday_thursday_top3_seven_day_hold(self, mock_load_artifacts, _mock_extract_features):
+    def test_backtest_ignores_entry_weekdays_and_uses_all_trading_days(self, mock_load_artifacts, _mock_extract_features):
         artifact = LightGBMModelArtifact.objects.create(
             horizon_days=7,
             version='lgb-schedule-test',
@@ -2502,8 +2517,8 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(run.status, BacktestRun.Status.COMPLETED)
         self.assertEqual(run.total_trades, 6)
         self.assertEqual(len(trades), 12)
-        self.assertEqual(buy_dates, ['2026-04-07', '2026-04-09'])
-        self.assertEqual(sell_dates, ['2026-04-14', '2026-04-16'])
+        self.assertEqual(buy_dates, ['2026-04-06', '2026-04-07'])
+        self.assertEqual(sell_dates, ['2026-04-13', '2026-04-14'])
         self.assertEqual(run.report['entry_weekdays'], [1, 3])
         self.assertEqual(run.report['holding_period_days'], 7)
         self.assertEqual(run.report['prediction_source'], 'lightgbm')
@@ -2541,6 +2556,7 @@ class BacktestManagementCommandTests(TestCase):
             [run.parameters.get('prediction_source') for run in runs],
             ['heuristic', 'lstm'],
         )
+        self.assertTrue(all('entry_weekdays' not in run.parameters for run in runs))
         self.assertEqual(mock_run_backtest.call_count, 2)
         self.assertIn('Created 2 validation runs.', output.getvalue())
 
@@ -2570,6 +2586,7 @@ class BacktestManagementCommandTests(TestCase):
 
             manifest = json.loads((output_dir / 'suite_manifest.json').read_text(encoding='utf-8'))
             self.assertEqual(sorted(manifest['run_ids']), sorted(BacktestRun.objects.values_list('id', flat=True)))
+            self.assertNotIn('entry_weekdays', manifest)
 
             with (output_dir / 'run_config_results.csv').open(newline='', encoding='utf-8') as handle:
                 rows = list(csv.DictReader(handle))
@@ -2579,6 +2596,7 @@ class BacktestManagementCommandTests(TestCase):
                 [row['prediction_source'] for row in rows],
                 ['heuristic', 'lstm'],
             )
+            self.assertTrue(all(not row['entry_weekdays'] for row in rows))
             self.assertIn('Reference benchmark suite exported to', output.getvalue())
 
     @patch('apps.backtest.management.commands.run_core_backtest_matrix.queue_backtest_run')
@@ -2591,7 +2609,7 @@ class BacktestManagementCommandTests(TestCase):
                 'run_core_backtest_matrix',
                 start_date='2026-01-01',
                 end_date='2026-12-31',
-                variants='original',
+                variants='top-n',
                 sources='heuristic',
                 name_prefix='matrixcmd',
                 output_dir=str(output_dir),
@@ -2606,7 +2624,7 @@ class BacktestManagementCommandTests(TestCase):
             self.assertTrue((output_dir / 'matrix_manifest.json').exists())
 
             manifest = json.loads((output_dir / 'matrix_manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(manifest['variants'], ['original'])
+            self.assertEqual(manifest['variants'], ['top-n'])
             self.assertEqual(manifest['sources'], ['heuristic'])
             self.assertTrue(manifest['queued'])
             self.assertFalse(manifest['execute_inline'])
@@ -2622,6 +2640,7 @@ class BacktestManagementCommandTests(TestCase):
                 [row['prediction_source'] for row in rows],
                 ['heuristic'] * 9,
             )
+            self.assertTrue(all(not row['entry_weekdays'] for row in rows))
             self.assertTrue(all(row['chunk_trading_days'] == '60' for row in rows))
             self.assertTrue(all(row['matrix_signal_cache_key'] for row in rows))
             self.assertIn('Core matrix exported to', output.getvalue())
@@ -2661,7 +2680,7 @@ class BacktestManagementCommandTests(TestCase):
                 'run_core_backtest_matrix',
                 start_date='2026-01-01',
                 end_date='2026-12-31',
-                variants='original',
+                variants='top-n',
                 sources='heuristic',
                 name_prefix='matrixinline',
                 output_dir=str(output_dir),
