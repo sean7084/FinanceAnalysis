@@ -1,5 +1,8 @@
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025 --queue --output-dir
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n,trade-score-limit --sources heuristic,lightgbm --name-prefix core18-2025-20260526 --execute-inline --chunk-trading-days 60 --output-dir reports/core18-2025-inline-20250526
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowsgpuqueue --queue --lightgbm-inference-backend windows_gpu
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuqueue --queue --lightgbm-inference-backend cpu_serial
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowsgpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu --output-dir reports/20260601-windowsgpuinline
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu --output-dir reports/20260601-windowscpuinline
+import json
 import json
 from datetime import date
 from pathlib import Path
@@ -50,7 +53,7 @@ VARIANT_DEFINITIONS = {
 }
 
 VALID_SOURCES = {'heuristic', 'lightgbm'}
-
+VALID_LIGHTGBM_INFERENCE_BACKENDS = {'auto', 'cpu_serial', 'cpu_batched', 'windows_gpu'}
 
 def _parse_date(value, name):
     try:
@@ -112,6 +115,17 @@ class Command(BaseCommand):
             type=int,
             default=60,
             help='Per-run chunk size stamped into matrix BacktestRun parameters. Defaults to 60.',
+        )
+        parser.add_argument(
+            '--lightgbm-inference-backend',
+            default='auto',
+            help='LightGBM-only inference backend stamped into created runs. Supported: auto,cpu_serial,cpu_batched,windows_gpu.',
+        )
+        parser.add_argument(
+            '--lightgbm-batch-size',
+            type=int,
+            default=256,
+            help='LightGBM-only inference batch size stamped into created runs. Defaults to 256.',
         )
         parser.add_argument(
             '--dry-run',
@@ -209,7 +223,15 @@ class Command(BaseCommand):
             artifacts[horizon_days] = artifact
         return artifacts
 
-    def _apply_matrix_runtime_parameters(self, specs, matrix_cache_key, chunk_trading_days, lightgbm_artifacts):
+    def _apply_matrix_runtime_parameters(
+        self,
+        specs,
+        matrix_cache_key,
+        chunk_trading_days,
+        lightgbm_artifacts,
+        lightgbm_inference_backend,
+        lightgbm_batch_size,
+    ):
         for spec in specs:
             params = dict(spec['parameters'])
             params['matrix_signal_cache_key'] = matrix_cache_key
@@ -218,6 +240,8 @@ class Command(BaseCommand):
                 artifact = lightgbm_artifacts[spec['horizon_days']]
                 params['lightgbm_model_artifact_id'] = artifact.id
                 params['lightgbm_model_artifact_version'] = artifact.version
+                params['lightgbm_inference_backend'] = str(lightgbm_inference_backend)
+                params['lightgbm_batch_size'] = int(lightgbm_batch_size)
             spec['parameters'] = params
 
     def _run_backtests_inline_to_completion(self, root_run_ids):
@@ -251,6 +275,8 @@ class Command(BaseCommand):
             raise CommandError('--queue and --execute-inline cannot be used together.')
         if int(options['chunk_trading_days']) <= 0:
             raise CommandError('--chunk-trading-days must be greater than 0.')
+        if int(options['lightgbm_batch_size']) <= 0:
+            raise CommandError('--lightgbm-batch-size must be greater than 0.')
 
         matrix_started_at = timezone.now()
 
@@ -268,6 +294,15 @@ class Command(BaseCommand):
             raise CommandError(
                 'Unsupported sources: ' + ', '.join(invalid_sources)
                 + '. Expected subset of: ' + ', '.join(sorted(VALID_SOURCES))
+            )
+
+        lightgbm_inference_backend = str(options['lightgbm_inference_backend'] or 'auto').strip().lower()
+        if lightgbm_inference_backend not in VALID_LIGHTGBM_INFERENCE_BACKENDS:
+            raise CommandError(
+                'Unsupported --lightgbm-inference-backend: '
+                + lightgbm_inference_backend
+                + '. Expected one of: '
+                + ', '.join(sorted(VALID_LIGHTGBM_INFERENCE_BACKENDS))
             )
 
         specs = self._build_run_specs(
@@ -290,6 +325,8 @@ class Command(BaseCommand):
             matrix_cache_key,
             int(options['chunk_trading_days']),
             lightgbm_artifacts,
+            lightgbm_inference_backend,
+            int(options['lightgbm_batch_size']),
         )
 
         self.stdout.write(
@@ -364,6 +401,8 @@ class Command(BaseCommand):
             'queued': bool(options['queue']),
             'execute_inline': bool(options['execute_inline']),
             'chunk_trading_days': int(options['chunk_trading_days']),
+            'lightgbm_inference_backend': lightgbm_inference_backend,
+            'lightgbm_batch_size': int(options['lightgbm_batch_size']),
             'matrix_signal_cache_key': matrix_cache_key,
         }
         (output_dir / 'matrix_manifest.json').write_text(

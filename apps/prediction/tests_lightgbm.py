@@ -1,3 +1,4 @@
+import ctypes
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
@@ -22,6 +23,7 @@ from .tasks_lightgbm import (
     _build_snapshot_feature_pruning_plan,
     _create_feature_matrix,
     _extract_features_for_asset,
+    _lightgbm_gpu_predict_cache_key,
     _resolve_prediction_feature_value,
     generate_lightgbm_predictions_for_date,
     train_lightgbm_models,
@@ -83,6 +85,16 @@ class LightGBMPredictionTests(TestCase):
                 weight=Decimal('4.2'),
             ))
         IndexMembership.objects.bulk_create(memberships)
+
+    def test_lightgbm_gpu_predict_cache_key_normalizes_ctypes_handles(self):
+        class StubHandleModel:
+            def __init__(self):
+                self._handle = ctypes.c_void_p(1234)
+
+        cache_key = _lightgbm_gpu_predict_cache_key(StubHandleModel())
+
+        self.assertEqual(cache_key[2], 1234)
+        self.assertIsInstance(hash(cache_key), int)
 
     def _seed_features(self):
         """Create factor and sentiment data for inference."""

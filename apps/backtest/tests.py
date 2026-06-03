@@ -26,7 +26,7 @@ from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
 from apps.prediction.tasks_lstm import LSTM_MISSING_VALUE_STRATEGY, _predict_with_lstm
-from apps.prediction.tasks_lightgbm import _create_feature_matrix
+from apps.prediction.tasks_lightgbm import IdentityCalibrator, _create_feature_matrix
 from apps.sentiment.models import SentimentScore
 from . import tasks as backtest_tasks
 from .models import BacktestRun, BacktestTrade
@@ -49,10 +49,38 @@ class CapturingScaler:
         return matrix
 
 
+class CapturingBooster:
+    def __init__(self, feature_count=3, supported_devices=None, probabilities=None):
+        self.feature_count = int(feature_count)
+        self.supported_devices = set(supported_devices or [])
+        self.last_matrix = None
+        self.last_kwargs = None
+        self.calls = []
+        self.probabilities = np.asarray(probabilities or [[0.1, 0.2, 0.7]], dtype=np.float64)
+
+    def num_feature(self):
+        return self.feature_count
+
+    def predict(self, matrix, **kwargs):
+        device_type = kwargs.get('device_type')
+        resolved_matrix = np.asarray(matrix, dtype=np.float64)
+        self.last_matrix = resolved_matrix.copy()
+        self.last_kwargs = dict(kwargs)
+        self.calls.append({'shape': tuple(resolved_matrix.shape), 'kwargs': dict(kwargs)})
+
+        if device_type and device_type not in self.supported_devices:
+            raise RuntimeError(f'unsupported device: {device_type}')
+
+        if self.probabilities.shape[0] == 1:
+            return np.tile(self.probabilities, (len(resolved_matrix), 1))
+        return self.probabilities
+
+
 class StubCalibrator:
     def predict_proba(self, matrix):
         import numpy as np
-        return np.array([[0.1, 0.2, 0.7]])
+        row_count = len(matrix) if hasattr(matrix, '__len__') else 1
+        return np.tile(np.array([[0.1, 0.2, 0.7]]), (row_count, 1))
 
 
 class StaticLstmModel:
@@ -753,6 +781,11 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(run.report['model_references'][0]['reference_type'], 'LightGBMModelArtifact')
         self.assertEqual(run.report['model_references'][0]['reference_id'], artifact.id)
         self.assertEqual(run.report['model_references'][0]['horizon_days'], 7)
+        self.assertEqual(run.report['lightgbm_runtime']['inference_backend'], 'cpu_batched')
+        self.assertGreater(run.report['lightgbm_runtime']['prediction_map_calls'], 0)
+        self.assertGreater(run.report['lightgbm_runtime']['predicted_asset_count'], 0)
+        self.assertGreaterEqual(run.report['lightgbm_runtime']['feature_extraction_seconds'], 0.0)
+        self.assertGreaterEqual(run.report['lightgbm_runtime']['probability_inference_seconds'], 0.0)
         self.assertIsNotNone(sell_trade)
         self.assertEqual(sell_trade.metadata['exit_reason'], 'SCHEDULED')
 
@@ -2171,6 +2204,361 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(run.parameters['horizon_days'], 30)
         mock_delay.assert_called_once()
 
+    @patch('apps.backtest.views.run_backtest.delay')
+    def test_backtest_serializer_normalizes_lightgbm_runtime_params(self, mock_delay):
+        self._auth()
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                '/api/v1/backtest/',
+                {
+                    'name': 'P15 LightGBM Runtime Params',
+                    'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'start_date': str(self.d1),
+                    'end_date': str(self.d2),
+                    'initial_capital': '100000.00',
+                    'parameters': {
+                        'top_n': 1,
+                        'horizon_days': 7,
+                        'up_threshold': 0.55,
+                        'prediction_source': 'lightgbm',
+                        'lightgbm_inference_backend': 'cpu_batched',
+                        'lightgbm_batch_size': '128',
+                    },
+                },
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        run = BacktestRun.objects.latest('id')
+        self.assertEqual(run.parameters['lightgbm_inference_backend'], 'cpu_batched')
+        self.assertEqual(run.parameters['lightgbm_batch_size'], 128)
+        mock_delay.assert_called_once()
+
+    @patch('apps.backtest.views.run_backtest.delay')
+    def test_backtest_serializer_accepts_windows_gpu_runtime_params(self, mock_delay):
+        self._auth()
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                '/api/v1/backtest/',
+                {
+                    'name': 'P15 LightGBM Windows GPU Params',
+                    'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                    'start_date': str(self.d1),
+                    'end_date': str(self.d2),
+                    'initial_capital': '100000.00',
+                    'parameters': {
+                        'top_n': 1,
+                        'horizon_days': 7,
+                        'up_threshold': 0.55,
+                        'prediction_source': 'lightgbm',
+                        'lightgbm_inference_backend': 'windows_gpu',
+                        'lightgbm_batch_size': '64',
+                    },
+                },
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        run = BacktestRun.objects.latest('id')
+        self.assertEqual(run.parameters['lightgbm_inference_backend'], 'windows_gpu')
+        self.assertEqual(run.parameters['lightgbm_batch_size'], 64)
+        mock_delay.assert_called_once()
+
+    @patch('apps.backtest.tasks.estimate_trade_decision')
+    @patch('apps.backtest.tasks._extract_features_for_asset')
+    @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_lightgbm_prediction_map_cpu_batched_matches_cpu_serial(
+        self,
+        mock_load_artifacts,
+        mock_eligible_asset_ids,
+        mock_extract_features,
+        mock_estimate_trade_decision,
+    ):
+        second_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600002',
+            ts_code='600002.SH',
+            name='Backtest Asset 2',
+        )
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-batch-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/batch-test',
+            feature_names=['rsi', 'mom_5d', 'rs_score'],
+            is_active=True,
+        )
+        serial_scaler = CapturingScaler()
+        batched_scaler = CapturingScaler()
+        mock_load_artifacts.side_effect = [
+            {
+                'model': object(),
+                'scaler': serial_scaler,
+                'calibrator': StubCalibrator(),
+                'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score']},
+            },
+            {
+                'model': object(),
+                'scaler': batched_scaler,
+                'calibrator': StubCalibrator(),
+                'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score']},
+            },
+        ]
+        mock_eligible_asset_ids.return_value = [self.asset.id, second_asset.id]
+
+        def _feature_side_effect(asset_id, *_args, **_kwargs):
+            base = float(asset_id % 10)
+            return {
+                'rsi': 40.0 + base,
+                'mom_5d': 0.1 + (base / 100.0),
+                'rs_score': 0.7 + (base / 100.0),
+            }
+
+        def _trade_decision_side_effect(*, asset_id, **_kwargs):
+            return {
+                'trade_score': Decimal(str(asset_id)),
+                'target_price': Decimal('12.5'),
+                'stop_loss_price': Decimal('9.5'),
+                'risk_reward_ratio': Decimal('1.5'),
+                'suggested': True,
+            }
+
+        mock_extract_features.side_effect = _feature_side_effect
+        mock_estimate_trade_decision.side_effect = _trade_decision_side_effect
+
+        serial_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Serial Map',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 2,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'cpu_serial',
+                'lightgbm_model_artifact_id': artifact.id,
+            },
+        )
+        batched_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Batched Map',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 2,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'cpu_batched',
+                'lightgbm_batch_size': 16,
+                'lightgbm_model_artifact_id': artifact.id,
+            },
+        )
+
+        serial_cache = {}
+        batched_cache = {}
+        serial_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, serial_cache, run=serial_run)
+        batched_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, batched_cache, run=batched_run)
+
+        self.assertEqual(serial_map, batched_map)
+        self.assertEqual(serial_cache['lightgbm_runtime_metrics']['inference_backend'], 'cpu_serial')
+        self.assertEqual(serial_cache['lightgbm_runtime_metrics']['batch_size'], 1)
+        self.assertEqual(batched_cache['lightgbm_runtime_metrics']['inference_backend'], 'cpu_batched')
+        self.assertEqual(batched_cache['lightgbm_runtime_metrics']['batch_size'], 16)
+        self.assertEqual(batched_cache['lightgbm_runtime_metrics']['batch_prediction_calls'], 1)
+        self.assertEqual(batched_cache['lightgbm_runtime_metrics']['batch_prediction_rows'], 2)
+        self.assertEqual(serial_scaler.last_matrix.shape, (1, 3))
+        self.assertEqual(batched_scaler.last_matrix.shape, (2, 3))
+
+    @patch('apps.backtest.tasks.estimate_trade_decision')
+    @patch('apps.backtest.tasks._extract_features_for_asset')
+    @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_lightgbm_prediction_map_windows_gpu_matches_cpu_serial(
+        self,
+        mock_load_artifacts,
+        mock_eligible_asset_ids,
+        mock_extract_features,
+        mock_estimate_trade_decision,
+    ):
+        second_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600002',
+            ts_code='600002.SH',
+            name='Backtest Asset 2',
+        )
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-gpu-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/gpu-test',
+            feature_names=['rsi', 'mom_5d', 'rs_score'],
+            is_active=True,
+        )
+        serial_model = CapturingBooster(feature_count=3)
+        gpu_model = CapturingBooster(feature_count=3, supported_devices={'gpu'})
+        serial_scaler = CapturingScaler()
+        gpu_scaler = CapturingScaler()
+        mock_load_artifacts.side_effect = [
+            {
+                'model': serial_model,
+                'scaler': serial_scaler,
+                'calibrator': IdentityCalibrator(serial_model),
+                'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score']},
+            },
+            {
+                'model': gpu_model,
+                'scaler': gpu_scaler,
+                'calibrator': IdentityCalibrator(gpu_model),
+                'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score']},
+            },
+        ]
+        mock_eligible_asset_ids.return_value = [self.asset.id, second_asset.id]
+
+        def _feature_side_effect(asset_id, *_args, **_kwargs):
+            base = float(asset_id % 10)
+            return {
+                'rsi': 40.0 + base,
+                'mom_5d': 0.1 + (base / 100.0),
+                'rs_score': 0.7 + (base / 100.0),
+            }
+
+        def _trade_decision_side_effect(*, asset_id, **_kwargs):
+            return {
+                'trade_score': Decimal(str(asset_id)),
+                'target_price': Decimal('12.5'),
+                'stop_loss_price': Decimal('9.5'),
+                'risk_reward_ratio': Decimal('1.5'),
+                'suggested': True,
+            }
+
+        mock_extract_features.side_effect = _feature_side_effect
+        mock_estimate_trade_decision.side_effect = _trade_decision_side_effect
+
+        serial_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Serial GPU Oracle',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 2,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'cpu_serial',
+                'lightgbm_model_artifact_id': artifact.id,
+            },
+        )
+        gpu_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Windows GPU Map',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 2,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_batch_size': 16,
+                'lightgbm_model_artifact_id': artifact.id,
+            },
+        )
+
+        serial_cache = {}
+        gpu_cache = {}
+        serial_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, serial_cache, run=serial_run)
+        gpu_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, gpu_cache, run=gpu_run)
+
+        self.assertEqual(serial_map, gpu_map)
+        self.assertEqual(serial_cache['lightgbm_runtime_metrics']['inference_backend'], 'cpu_serial')
+        self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['inference_backend'], 'windows_gpu')
+        self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['batch_size'], 16)
+        self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['batch_prediction_calls'], 1)
+        self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['batch_prediction_rows'], 2)
+        self.assertEqual(serial_scaler.last_matrix.shape, (1, 3))
+        self.assertEqual(gpu_scaler.last_matrix.shape, (2, 3))
+        self.assertTrue(any(call['kwargs'].get('device_type') == 'gpu' for call in gpu_model.calls))
+        self.assertEqual(gpu_model.last_kwargs.get('device_type'), 'gpu')
+
+    @patch('apps.backtest.tasks.estimate_trade_decision')
+    @patch('apps.backtest.tasks._extract_features_for_asset')
+    @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
+    @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_lightgbm_prediction_map_windows_gpu_falls_back_to_cpu_serial(
+        self,
+        mock_load_artifacts,
+        mock_eligible_asset_ids,
+        mock_extract_features,
+        mock_estimate_trade_decision,
+    ):
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-gpu-fallback-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/gpu-fallback-test',
+            feature_names=['rsi', 'mom_5d', 'rs_score'],
+            is_active=True,
+        )
+        fallback_model = CapturingBooster(feature_count=3, supported_devices=set())
+        mock_load_artifacts.return_value = {
+            'model': fallback_model,
+            'scaler': IdentityScaler(),
+            'calibrator': IdentityCalibrator(fallback_model),
+            'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score']},
+        }
+        mock_eligible_asset_ids.return_value = [self.asset.id]
+        mock_extract_features.return_value = {
+            'rsi': 42.0,
+            'mom_5d': 0.12,
+            'rs_score': 0.74,
+        }
+        mock_estimate_trade_decision.return_value = {
+            'trade_score': Decimal('1.0'),
+            'target_price': Decimal('12.5'),
+            'stop_loss_price': Decimal('9.5'),
+            'risk_reward_ratio': Decimal('1.5'),
+            'suggested': True,
+        }
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Windows GPU Fallback',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_batch_size': 16,
+                'lightgbm_model_artifact_id': artifact.id,
+            },
+        )
+
+        cache = {}
+        mapping = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, cache, run=run)
+
+        self.assertIn(self.asset.id, mapping)
+        self.assertEqual(cache['lightgbm_runtime_metrics']['inference_backend'], 'cpu_serial')
+        self.assertEqual(cache['lightgbm_runtime_metrics']['batch_size'], 1)
+        self.assertTrue(any(call['kwargs'].get('device_type') == 'cuda' for call in fallback_model.calls))
+        self.assertTrue(any(call['kwargs'].get('device_type') == 'gpu' for call in fallback_model.calls))
+        self.assertEqual(fallback_model.last_kwargs, {})
+
     @patch('apps.backtest.tasks._build_heuristic_prediction_map')
     def test_top_n_mode_ignores_max_positions_but_trade_score_mode_honors_it(self, mock_heuristic_prediction_map):
         second_asset = Asset.objects.create(
@@ -2644,6 +3032,118 @@ class BacktestManagementCommandTests(TestCase):
             self.assertTrue(all(row['chunk_trading_days'] == '60' for row in rows))
             self.assertTrue(all(row['matrix_signal_cache_key'] for row in rows))
             self.assertIn('Core matrix exported to', output.getvalue())
+
+    @patch('apps.backtest.management.commands.run_core_backtest_matrix.queue_backtest_run')
+    def test_run_core_backtest_matrix_stamps_lightgbm_runtime_params(self, mock_queue_backtest_run):
+        LightGBMModelArtifact.objects.create(
+            horizon_days=3,
+            version='lgb-matrix-3d',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/matrix-3d',
+            feature_names=['rsi'],
+            is_active=True,
+        )
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-matrix-7d',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/matrix-7d',
+            feature_names=['rsi'],
+            is_active=True,
+        )
+        LightGBMModelArtifact.objects.create(
+            horizon_days=30,
+            version='lgb-matrix-30d',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/matrix-30d',
+            feature_names=['rsi'],
+            is_active=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / 'matrix_lightgbm_bundle'
+            output = StringIO()
+
+            call_command(
+                'run_core_backtest_matrix',
+                start_date='2026-01-01',
+                end_date='2026-12-31',
+                variants='top-n',
+                sources='lightgbm',
+                name_prefix='matrixlgbm',
+                output_dir=str(output_dir),
+                queue=True,
+                lightgbm_inference_backend='cpu_batched',
+                lightgbm_batch_size=128,
+                stdout=output,
+            )
+
+            manifest = json.loads((output_dir / 'matrix_manifest.json').read_text(encoding='utf-8'))
+
+        runs = list(BacktestRun.objects.order_by('id'))
+        self.assertEqual(mock_queue_backtest_run.call_count, 9)
+        self.assertEqual(len(runs), 9)
+        self.assertTrue(all(run.parameters['prediction_source'] == 'lightgbm' for run in runs))
+        self.assertTrue(all(run.parameters['lightgbm_inference_backend'] == 'cpu_batched' for run in runs))
+        self.assertTrue(all(run.parameters['lightgbm_batch_size'] == 128 for run in runs))
+        self.assertTrue(all(run.parameters['lightgbm_model_artifact_id'] for run in runs))
+        self.assertEqual(manifest['lightgbm_inference_backend'], 'cpu_batched')
+        self.assertEqual(manifest['lightgbm_batch_size'], 128)
+
+    @patch('apps.backtest.management.commands.run_core_backtest_matrix.queue_backtest_run')
+    def test_run_core_backtest_matrix_stamps_windows_gpu_runtime_params(self, mock_queue_backtest_run):
+        LightGBMModelArtifact.objects.create(
+            horizon_days=3,
+            version='lgb-matrix-gpu-3d',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/matrix-gpu-3d',
+            feature_names=['rsi'],
+            is_active=True,
+        )
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-matrix-gpu-7d',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/matrix-gpu-7d',
+            feature_names=['rsi'],
+            is_active=True,
+        )
+        LightGBMModelArtifact.objects.create(
+            horizon_days=30,
+            version='lgb-matrix-gpu-30d',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/matrix-gpu-30d',
+            feature_names=['rsi'],
+            is_active=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / 'matrix_lightgbm_gpu_bundle'
+            output = StringIO()
+
+            call_command(
+                'run_core_backtest_matrix',
+                start_date='2026-01-01',
+                end_date='2026-12-31',
+                variants='top-n',
+                sources='lightgbm',
+                name_prefix='matrixlgbmgpu',
+                output_dir=str(output_dir),
+                queue=True,
+                lightgbm_inference_backend='windows_gpu',
+                lightgbm_batch_size=64,
+                stdout=output,
+            )
+
+            manifest = json.loads((output_dir / 'matrix_manifest.json').read_text(encoding='utf-8'))
+
+        runs = list(BacktestRun.objects.order_by('id'))
+        self.assertEqual(mock_queue_backtest_run.call_count, 9)
+        self.assertEqual(len(runs), 9)
+        self.assertTrue(all(run.parameters['lightgbm_inference_backend'] == 'windows_gpu' for run in runs))
+        self.assertTrue(all(run.parameters['lightgbm_batch_size'] == 64 for run in runs))
+        self.assertEqual(manifest['lightgbm_inference_backend'], 'windows_gpu')
+        self.assertEqual(manifest['lightgbm_batch_size'], 64)
 
     def test_run_core_backtest_matrix_inline_scheduler_round_robins_continuations(self):
         from apps.backtest.management.commands.run_core_backtest_matrix import Command

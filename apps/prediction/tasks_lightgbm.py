@@ -180,6 +180,104 @@ class IdentityCalibrator:
         return np.asarray(self.model.predict(matrix))
 
 
+_LIGHTGBM_GPU_PREDICT_DEVICE_CACHE = {}
+
+
+def _coerce_lightgbm_probability_matrix(probabilities):
+    matrix = np.asarray(probabilities, dtype=np.float64)
+    if matrix.ndim == 1:
+        return matrix.reshape(1, -1)
+    return matrix
+
+
+def _lightgbm_gpu_predict_cache_key(model):
+    model_handle = getattr(model, '_handle', None)
+    if model_handle is not None:
+        model_handle = getattr(model_handle, 'value', model_handle)
+    if model_handle is None:
+        model_handle = id(model)
+    return (type(model).__module__, type(model).__qualname__, model_handle or id(model))
+
+
+def _probe_lightgbm_gpu_predict_device(model, sample_matrix):
+    cache_key = _lightgbm_gpu_predict_cache_key(model)
+    if cache_key in _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE:
+        return _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE[cache_key]
+
+    resolved_device = None
+    probe_matrix = np.asarray(sample_matrix, dtype=np.float64)
+    if probe_matrix.ndim == 1:
+        probe_matrix = probe_matrix.reshape(1, -1)
+    if len(probe_matrix) > 1:
+        probe_matrix = probe_matrix[:1]
+
+    if hasattr(model, 'predict'):
+        for device_type in ('cuda', 'gpu'):
+            try:
+                _coerce_lightgbm_probability_matrix(model.predict(probe_matrix, device_type=device_type))
+            except Exception:
+                continue
+            resolved_device = device_type
+            break
+
+    _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE[cache_key] = resolved_device
+    return resolved_device
+
+
+def _resolve_lightgbm_gpu_predict_device(artifacts, feature_count=None):
+    calibrator = artifacts.get('calibrator')
+    if not isinstance(calibrator, IdentityCalibrator):
+        return None
+
+    resolved_feature_count = feature_count
+    if resolved_feature_count in (None, 0):
+        model = artifacts.get('model')
+        num_feature = getattr(model, 'num_feature', None)
+        if callable(num_feature):
+            try:
+                resolved_feature_count = int(num_feature())
+            except Exception:
+                resolved_feature_count = None
+
+    if resolved_feature_count in (None, 0):
+        return None
+
+    probe_matrix = np.zeros((1, int(resolved_feature_count)), dtype=np.float64)
+    return _probe_lightgbm_gpu_predict_device(artifacts['model'], probe_matrix)
+
+
+def _predict_lightgbm_probabilities_for_scaled_matrix(artifacts, X_scaled, prefer_gpu=False):
+    model = artifacts['model']
+    calibrator = artifacts['calibrator']
+
+    if prefer_gpu and isinstance(calibrator, IdentityCalibrator):
+        gpu_device_type = _probe_lightgbm_gpu_predict_device(model, X_scaled)
+        if gpu_device_type is not None:
+            gpu_probabilities = _coerce_lightgbm_probability_matrix(
+                model.predict(X_scaled, device_type=gpu_device_type)
+            )
+            return {
+                'raw_probabilities': gpu_probabilities,
+                'calibrated_probabilities': gpu_probabilities,
+                'used_gpu': True,
+                'gpu_device_type': gpu_device_type,
+            }
+
+    calibrated_probabilities = _coerce_lightgbm_probability_matrix(calibrator.predict_proba(X_scaled))
+    raw_probabilities = calibrated_probabilities
+    if hasattr(model, 'predict'):
+        try:
+            raw_probabilities = _coerce_lightgbm_probability_matrix(model.predict(X_scaled))
+        except Exception:
+            raw_probabilities = calibrated_probabilities
+    return {
+        'raw_probabilities': raw_probabilities,
+        'calibrated_probabilities': calibrated_probabilities,
+        'used_gpu': False,
+        'gpu_device_type': None,
+    }
+
+
 def _preserves_true_missing(missing_value_strategy):
     return missing_value_strategy == MISSING_VALUE_STRATEGY_NATIVE_NAN
 
@@ -2063,8 +2161,9 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days, cache=None):
     X_scaled = artifacts['scaler'].transform(X)
 
     # Predict
-    raw_probs = artifacts['model'].predict(X_scaled)[0]
-    calibrated_probs = artifacts['calibrator'].predict_proba(X_scaled)[0]
+    prediction_result = _predict_lightgbm_probabilities_for_scaled_matrix(artifacts, X_scaled)
+    raw_probs = prediction_result['raw_probabilities'][0]
+    calibrated_probs = prediction_result['calibrated_probabilities'][0]
 
     down_prob, flat_prob, up_prob = calibrated_probs
     confidence = max(calibrated_probs)

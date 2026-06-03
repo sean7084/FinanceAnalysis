@@ -8,6 +8,8 @@ VALID_ENTRY_WEEKDAYS = {'MON', 'TUE', 'WED', 'THU', 'FRI'}
 VALID_CANDIDATE_MODES = {'top_n', 'trade_score'}
 VALID_TRADE_SCORE_SCOPES = {'independent', 'combined'}
 VALID_TOP_N_METRICS = {'trade_score', 'up_prob_3d', 'up_prob_7d', 'up_prob_30d'}
+VALID_LIGHTGBM_INFERENCE_BACKENDS = {'auto', 'cpu_serial', 'cpu_batched', 'windows_gpu'}
+DEFAULT_LIGHTGBM_BATCH_SIZE = 256
 TOP_N_METRIC_HORIZON_MAP = {
     'up_prob_3d': 3,
     'up_prob_7d': 7,
@@ -79,6 +81,36 @@ class BacktestRunSerializer(serializers.ModelSerializer):
             prediction_source = str(parameters.get('prediction_source', 'heuristic')).lower()
             if prediction_source not in {'heuristic', 'lightgbm', 'lstm'}:
                 raise serializers.ValidationError({'parameters': 'prediction_source must be one of heuristic, lightgbm, or lstm.'})
+
+            if prediction_source == 'lightgbm':
+                lightgbm_inference_backend = str(parameters.get('lightgbm_inference_backend', 'auto')).lower()
+                if lightgbm_inference_backend not in VALID_LIGHTGBM_INFERENCE_BACKENDS:
+                    raise serializers.ValidationError({
+                        'parameters': 'lightgbm_inference_backend must be one of auto, cpu_serial, cpu_batched, or windows_gpu.',
+                    })
+
+                try:
+                    lightgbm_batch_size = int(parameters.get('lightgbm_batch_size', DEFAULT_LIGHTGBM_BATCH_SIZE))
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError({'parameters': 'lightgbm_batch_size must be an integer.'})
+
+                if lightgbm_batch_size <= 0:
+                    raise serializers.ValidationError({'parameters': 'lightgbm_batch_size must be greater than 0.'})
+
+                parameters['lightgbm_inference_backend'] = lightgbm_inference_backend
+                parameters['lightgbm_batch_size'] = lightgbm_batch_size
+            else:
+                unsupported_lightgbm_keys = [
+                    key for key in ('lightgbm_inference_backend', 'lightgbm_batch_size')
+                    if key in parameters
+                ]
+                if unsupported_lightgbm_keys:
+                    raise serializers.ValidationError({
+                        'parameters': (
+                            ', '.join(unsupported_lightgbm_keys)
+                            + ' are only supported when prediction_source is lightgbm.'
+                        ),
+                    })
 
             missing = [key for key in ['top_n', 'horizon_days', 'up_threshold'] if key not in parameters]
             if missing:

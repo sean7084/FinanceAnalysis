@@ -5,6 +5,7 @@ from collections import OrderedDict
 from datetime import date, timedelta
 from decimal import Decimal
 from statistics import mean, pstdev
+from time import perf_counter
 
 import numpy as np
 from celery import current_app, shared_task
@@ -19,7 +20,12 @@ from apps.macro.models import MarketContext
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
-from apps.prediction.tasks_lightgbm import _extract_features_for_asset, _load_model_artifacts
+from apps.prediction.tasks_lightgbm import (
+    _extract_features_for_asset,
+    _load_model_artifacts,
+    _predict_lightgbm_probabilities_for_scaled_matrix,
+    _resolve_lightgbm_gpu_predict_device,
+)
 from apps.prediction.tasks_lstm import _predict_with_lstm, _prime_lstm_inference_asset_ids
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 from .models import BacktestRun, BacktestTrade
@@ -67,6 +73,25 @@ _TRADING_DATES_CACHE = OrderedDict()
 _PRICE_MAP_CACHE = OrderedDict()
 _MATRIX_SIGNAL_CACHE = OrderedDict()
 
+LIGHTGBM_RUNTIME_FLOAT_FIELDS = (
+    'feature_extraction_seconds',
+    'row_assembly_seconds',
+    'scaler_transform_seconds',
+    'probability_inference_seconds',
+    'trade_decision_seconds',
+    'asset_loop_seconds',
+    'prediction_map_build_seconds',
+)
+LIGHTGBM_RUNTIME_INT_FIELDS = (
+    'batch_prediction_calls',
+    'batch_prediction_rows',
+    'batch_size',
+    'prediction_map_calls',
+    'predicted_asset_count',
+    'matrix_cache_hits',
+)
+DEFAULT_LIGHTGBM_BATCH_SIZE = _int_env('LIGHTGBM_BACKTEST_BATCH_SIZE', 256)
+
 
 def _bounded_cache_get(cache, key):
     if key not in cache:
@@ -81,6 +106,77 @@ def _bounded_cache_set(cache, key, value, max_entries):
     while len(cache) > max_entries:
         cache.popitem(last=False)
     return value
+
+
+def _default_lightgbm_runtime_metrics():
+    metrics = {
+        'inference_backend': 'cpu_serial',
+    }
+    for field in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
+        metrics[field] = 0.0
+    for field in LIGHTGBM_RUNTIME_INT_FIELDS:
+        metrics[field] = 0
+    return metrics
+
+
+def _deserialize_lightgbm_runtime_metrics(raw_metrics):
+    if not raw_metrics:
+        return None
+
+    metrics = _default_lightgbm_runtime_metrics()
+    metrics['inference_backend'] = str(raw_metrics.get('inference_backend') or 'cpu_serial')
+
+    for field in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
+        try:
+            metrics[field] = float(raw_metrics.get(field, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            metrics[field] = 0.0
+
+    for field in LIGHTGBM_RUNTIME_INT_FIELDS:
+        try:
+            metrics[field] = int(raw_metrics.get(field, 0) or 0)
+        except (TypeError, ValueError):
+            metrics[field] = 0
+
+    return metrics
+
+
+def _serialize_lightgbm_runtime_metrics(metrics):
+    if not metrics:
+        return None
+
+    serialized = {
+        'inference_backend': str(metrics.get('inference_backend') or 'cpu_serial'),
+    }
+    for field in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
+        serialized[field] = round(float(metrics.get(field, 0.0) or 0.0), 6)
+    for field in LIGHTGBM_RUNTIME_INT_FIELDS:
+        serialized[field] = int(metrics.get(field, 0) or 0)
+    return serialized
+
+
+def _lightgbm_runtime_metrics(cache):
+    raw_metrics = cache.get('lightgbm_runtime_metrics')
+    metrics = _deserialize_lightgbm_runtime_metrics(raw_metrics)
+    if metrics is None:
+        metrics = _default_lightgbm_runtime_metrics()
+    if raw_metrics is not metrics:
+        cache['lightgbm_runtime_metrics'] = metrics
+    return metrics
+
+
+def _add_lightgbm_runtime_time(cache, field, elapsed_seconds):
+    if field not in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
+        return
+    metrics = _lightgbm_runtime_metrics(cache)
+    metrics[field] += max(0.0, float(elapsed_seconds or 0.0))
+
+
+def _increment_lightgbm_runtime_count(cache, field, amount=1):
+    if field not in LIGHTGBM_RUNTIME_INT_FIELDS:
+        return
+    metrics = _lightgbm_runtime_metrics(cache)
+    metrics[field] += int(amount)
 
 
 def _matrix_signal_scope(run):
@@ -481,8 +577,7 @@ def _payload_trade_decision_policy(policy):
 
 
 def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_policy=None, run=None):
-    policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
-    cache_key = ('lightgbm_prediction', int(asset_id), dt.isoformat(), int(horizon), policy_key)
+    cache_key = _lightgbm_prediction_cache_key(asset_id, dt, horizon, trade_decision_policy)
     if cache_key in cache:
         return cache[cache_key]
 
@@ -491,49 +586,45 @@ def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_pol
     artifacts = runtime['artifacts']
     feature_names = runtime['feature_names']
 
-    features_dict = _extract_features_for_asset(asset_id, dt, cache=cache)
-    X = np.array([features_dict.get(name, 0.0) for name in feature_names]).reshape(1, -1)
-    X_scaled = artifacts['scaler'].transform(X)
-    calibrated_probs = artifacts['calibrator'].predict_proba(X_scaled)[0]
-    down_prob, flat_prob, up_prob = [Decimal(str(value)) for value in calibrated_probs]
-    confidence = max(up_prob, flat_prob, down_prob)
-    predicted_label = ['DOWN', 'FLAT', 'UP'][int(np.argmax(calibrated_probs))]
-    trade_decision = estimate_trade_decision(
-        asset_id=asset_id,
-        as_of=dt,
-        horizon_days=horizon,
-        up_probability=up_prob,
-        predicted_label=predicted_label,
-        policy_options=trade_decision_policy,
-        cache=cache,
-    )
+    _set_lightgbm_runtime_execution(cache, 'cpu_serial', 1)
 
-    payload = {
-        'up_probability': up_prob,
-        'flat_probability': flat_prob,
-        'down_probability': down_prob,
-        'confidence': confidence,
-        'predicted_label': predicted_label,
-        'trade_score': trade_decision.get('trade_score'),
-        'target_price': trade_decision.get('target_price'),
-        'stop_loss_price': trade_decision.get('stop_loss_price'),
-        'risk_reward_ratio': trade_decision.get('risk_reward_ratio'),
-        'suggested': bool(trade_decision.get('suggested') or False),
-        'model_artifact_id': model_artifact.id,
-        'model_version': model_artifact.version,
-        'generated_on_demand': True,
-    }
-    if trade_decision_policy:
-        payload['trade_decision_policy'] = _payload_trade_decision_policy(trade_decision_policy)
+    features_started = perf_counter()
+    features_dict = _extract_features_for_asset(asset_id, dt, cache=cache)
+    _add_lightgbm_runtime_time(cache, 'feature_extraction_seconds', perf_counter() - features_started)
+
+    row_assembly_started = perf_counter()
+    X = np.array([features_dict.get(name, 0.0) for name in feature_names]).reshape(1, -1)
+    _add_lightgbm_runtime_time(cache, 'row_assembly_seconds', perf_counter() - row_assembly_started)
+
+    scaler_started = perf_counter()
+    X_scaled = artifacts['scaler'].transform(X)
+    _add_lightgbm_runtime_time(cache, 'scaler_transform_seconds', perf_counter() - scaler_started)
+
+    inference_started = perf_counter()
+    prediction_result = _predict_lightgbm_probabilities_for_scaled_matrix(artifacts, X_scaled)
+    calibrated_probs = prediction_result['calibrated_probabilities'][0]
+    _add_lightgbm_runtime_time(cache, 'probability_inference_seconds', perf_counter() - inference_started)
+    payload = _build_lightgbm_prediction_payload(
+        asset_id,
+        dt,
+        horizon,
+        calibrated_probs,
+        cache,
+        model_artifact,
+        trade_decision_policy=trade_decision_policy,
+    )
     cache[cache_key] = payload
     return payload
 
 
 def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=None, run=None):
+    build_started = perf_counter()
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('lightgbm_prediction_map', dt.isoformat(), int(horizon), policy_key)
     if cache_key in cache:
         return cache[cache_key]
+
+    _increment_lightgbm_runtime_count(cache, 'prediction_map_calls')
 
     matrix_cache_key = None
     if run is not None and _matrix_signal_scope(run):
@@ -549,6 +640,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
         )
         cached_mapping = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
         if cached_mapping is not None:
+            _increment_lightgbm_runtime_count(cache, 'matrix_cache_hits')
             cache[cache_key] = cached_mapping
             return cached_mapping
 
@@ -567,25 +659,64 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
         except (TypeError, ValueError):
             predict_supports_run = True
 
-    mapping = {}
-    for asset_id in _eligible_backtest_asset_ids(dt, cache):
-        if predict_supports_run:
-            mapping[asset_id] = _predict_lightgbm_for_asset(
-                asset_id,
-                dt,
-                horizon,
-                cache,
-                trade_decision_policy,
-                run=run,
-            )
-        else:
-            mapping[asset_id] = _predict_lightgbm_for_asset(
-                asset_id,
-                dt,
-                horizon,
-                cache,
-                trade_decision_policy,
-            )
+    runtime = _get_lightgbm_runtime(run, horizon, cache)
+    resolved_backend = _resolved_lightgbm_inference_backend(
+        run,
+        horizon=horizon,
+        cache=cache,
+        runtime=runtime,
+    )
+    if resolved_backend == 'cpu_batched':
+        _set_lightgbm_runtime_execution(cache, 'cpu_batched', _lightgbm_batch_size(run))
+    elif resolved_backend == 'windows_gpu':
+        _set_lightgbm_runtime_execution(cache, 'windows_gpu', _lightgbm_batch_size(run))
+    else:
+        _set_lightgbm_runtime_execution(cache, 'cpu_serial', 1)
+
+    asset_ids = _eligible_backtest_asset_ids(dt, cache)
+    asset_loop_started = perf_counter()
+    if resolved_backend == 'cpu_batched':
+        mapping = _predict_lightgbm_for_assets_batched(
+            asset_ids,
+            dt,
+            horizon,
+            cache,
+            trade_decision_policy=trade_decision_policy,
+            run=run,
+            inference_backend='cpu_batched',
+        )
+    elif resolved_backend == 'windows_gpu':
+        mapping = _predict_lightgbm_for_assets_batched(
+            asset_ids,
+            dt,
+            horizon,
+            cache,
+            trade_decision_policy=trade_decision_policy,
+            run=run,
+            inference_backend='windows_gpu',
+        )
+    else:
+        mapping = {}
+        for asset_id in asset_ids:
+            if predict_supports_run:
+                mapping[asset_id] = _predict_lightgbm_for_asset(
+                    asset_id,
+                    dt,
+                    horizon,
+                    cache,
+                    trade_decision_policy,
+                    run=run,
+                )
+            else:
+                mapping[asset_id] = _predict_lightgbm_for_asset(
+                    asset_id,
+                    dt,
+                    horizon,
+                    cache,
+                    trade_decision_policy,
+                )
+    _add_lightgbm_runtime_time(cache, 'asset_loop_seconds', perf_counter() - asset_loop_started)
+    _add_lightgbm_runtime_time(cache, 'prediction_map_build_seconds', perf_counter() - build_started)
 
     cache[cache_key] = mapping
     if matrix_cache_key:
@@ -1077,6 +1208,54 @@ def _prediction_source(run):
     return str(params.get('prediction_source', 'heuristic')).lower()
 
 
+def _requested_lightgbm_inference_backend(run):
+    params = run.parameters or {}
+    return str(params.get('lightgbm_inference_backend', 'auto')).lower()
+
+
+def _lightgbm_batch_size(run):
+    params = run.parameters or {}
+    try:
+        batch_size = int(params.get('lightgbm_batch_size', DEFAULT_LIGHTGBM_BATCH_SIZE))
+    except (TypeError, ValueError):
+        batch_size = DEFAULT_LIGHTGBM_BATCH_SIZE
+    return max(1, batch_size)
+
+
+def _resolved_lightgbm_gpu_device_type(runtime):
+    if runtime is None:
+        return None
+
+    if not runtime.get('windows_gpu_device_resolved'):
+        runtime['windows_gpu_device_type'] = _resolve_lightgbm_gpu_predict_device(
+            runtime['artifacts'],
+            feature_count=len(runtime['feature_names']),
+        )
+        runtime['windows_gpu_device_resolved'] = True
+
+    return runtime.get('windows_gpu_device_type')
+
+
+def _resolved_lightgbm_inference_backend(run, horizon=None, cache=None, runtime=None):
+    requested = _requested_lightgbm_inference_backend(run)
+    if requested in {'auto', 'cpu_batched'}:
+        return 'cpu_batched'
+
+    if requested == 'windows_gpu':
+        resolved_runtime = runtime
+        if resolved_runtime is None and horizon is not None and cache is not None:
+            resolved_runtime = _get_lightgbm_runtime(run, horizon, cache)
+        if _resolved_lightgbm_gpu_device_type(resolved_runtime):
+            return 'windows_gpu'
+    return 'cpu_serial'
+
+
+def _set_lightgbm_runtime_execution(cache, backend, batch_size):
+    metrics = _lightgbm_runtime_metrics(cache)
+    metrics['inference_backend'] = str(backend or 'cpu_serial')
+    metrics['batch_size'] = max(1, int(batch_size or 1))
+
+
 def _get_selected_lightgbm_artifact(run, horizon):
     params = run.parameters or {}
     artifact_id = _to_int_or_none(params.get('lightgbm_model_artifact_id'))
@@ -1149,6 +1328,135 @@ def _get_lightgbm_runtime(run, horizon, cache):
     }
     cache[runtime_key] = runtime
     return runtime
+
+
+def _lightgbm_prediction_cache_key(asset_id, dt, horizon, trade_decision_policy=None):
+    policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
+    return ('lightgbm_prediction', int(asset_id), dt.isoformat(), int(horizon), policy_key)
+
+
+def _build_lightgbm_prediction_payload(
+    asset_id,
+    dt,
+    horizon,
+    calibrated_probs,
+    cache,
+    model_artifact,
+    trade_decision_policy=None,
+):
+    down_prob, flat_prob, up_prob = [Decimal(str(value)) for value in calibrated_probs]
+    confidence = max(up_prob, flat_prob, down_prob)
+    predicted_label = ['DOWN', 'FLAT', 'UP'][int(np.argmax(calibrated_probs))]
+
+    trade_decision_started = perf_counter()
+    trade_decision = estimate_trade_decision(
+        asset_id=asset_id,
+        as_of=dt,
+        horizon_days=horizon,
+        up_probability=up_prob,
+        predicted_label=predicted_label,
+        policy_options=trade_decision_policy,
+        cache=cache,
+    )
+    _add_lightgbm_runtime_time(cache, 'trade_decision_seconds', perf_counter() - trade_decision_started)
+    _increment_lightgbm_runtime_count(cache, 'predicted_asset_count')
+
+    payload = {
+        'up_probability': up_prob,
+        'flat_probability': flat_prob,
+        'down_probability': down_prob,
+        'confidence': confidence,
+        'predicted_label': predicted_label,
+        'trade_score': trade_decision.get('trade_score'),
+        'target_price': trade_decision.get('target_price'),
+        'stop_loss_price': trade_decision.get('stop_loss_price'),
+        'risk_reward_ratio': trade_decision.get('risk_reward_ratio'),
+        'suggested': bool(trade_decision.get('suggested') or False),
+        'model_artifact_id': model_artifact.id,
+        'model_version': model_artifact.version,
+        'generated_on_demand': True,
+    }
+    if trade_decision_policy:
+        payload['trade_decision_policy'] = _payload_trade_decision_policy(trade_decision_policy)
+    return payload
+
+
+def _predict_lightgbm_for_assets_batched(
+    asset_ids,
+    dt,
+    horizon,
+    cache,
+    trade_decision_policy=None,
+    run=None,
+    inference_backend='cpu_batched',
+):
+    runtime = _get_lightgbm_runtime(run, horizon, cache)
+    model_artifact = runtime['model_artifact']
+    artifacts = runtime['artifacts']
+    feature_names = runtime['feature_names']
+    batch_size = _lightgbm_batch_size(run)
+
+    _set_lightgbm_runtime_execution(cache, inference_backend, batch_size)
+
+    mapping = {}
+    uncached_asset_ids = []
+    uncached_rows = []
+    for asset_id in asset_ids:
+        asset_cache_key = _lightgbm_prediction_cache_key(asset_id, dt, horizon, trade_decision_policy)
+        cached_payload = cache.get(asset_cache_key)
+        if cached_payload is not None:
+            mapping[asset_id] = cached_payload
+            continue
+
+        features_started = perf_counter()
+        features_dict = _extract_features_for_asset(asset_id, dt, cache=cache)
+        _add_lightgbm_runtime_time(cache, 'feature_extraction_seconds', perf_counter() - features_started)
+
+        row_assembly_started = perf_counter()
+        uncached_rows.append([features_dict.get(name, 0.0) for name in feature_names])
+        _add_lightgbm_runtime_time(cache, 'row_assembly_seconds', perf_counter() - row_assembly_started)
+        uncached_asset_ids.append(asset_id)
+
+    if not uncached_asset_ids:
+        return mapping
+
+    for batch_start in range(0, len(uncached_asset_ids), batch_size):
+        batch_asset_ids = uncached_asset_ids[batch_start:batch_start + batch_size]
+        batch_rows = uncached_rows[batch_start:batch_start + batch_size]
+        X = np.array(batch_rows)
+
+        scaler_started = perf_counter()
+        X_scaled = artifacts['scaler'].transform(X)
+        _add_lightgbm_runtime_time(cache, 'scaler_transform_seconds', perf_counter() - scaler_started)
+
+        inference_started = perf_counter()
+        prediction_result = _predict_lightgbm_probabilities_for_scaled_matrix(
+            artifacts,
+            X_scaled,
+            prefer_gpu=inference_backend == 'windows_gpu',
+        )
+        calibrated_probs = prediction_result['calibrated_probabilities']
+        _add_lightgbm_runtime_time(cache, 'probability_inference_seconds', perf_counter() - inference_started)
+        if inference_backend == 'windows_gpu' and not prediction_result['used_gpu']:
+            _set_lightgbm_runtime_execution(cache, 'cpu_batched', batch_size)
+        _increment_lightgbm_runtime_count(cache, 'batch_prediction_calls')
+        _increment_lightgbm_runtime_count(cache, 'batch_prediction_rows', len(batch_asset_ids))
+
+        for asset_id, probability_row in zip(batch_asset_ids, calibrated_probs):
+            payload = _build_lightgbm_prediction_payload(
+                asset_id,
+                dt,
+                horizon,
+                probability_row,
+                cache,
+                model_artifact,
+                trade_decision_policy=trade_decision_policy,
+            )
+            asset_cache_key = _lightgbm_prediction_cache_key(asset_id, dt, horizon, trade_decision_policy)
+            cache[asset_cache_key] = payload
+            mapping[asset_id] = payload
+
+    return mapping
 
 
 def _get_heuristic_model_context(cache):
@@ -1703,6 +2011,7 @@ def _load_runtime_state(run):
         'closed_pnls': [_d(value) for value in raw_state.get('closed_pnls', [])],
         'open_positions': _deserialize_open_positions(raw_state.get('open_positions', [])),
         'macro_monthly_report': raw_state.get('macro_monthly_report', {}),
+        'lightgbm_runtime': _deserialize_lightgbm_runtime_metrics(raw_state.get('lightgbm_runtime')),
     }
 
 
@@ -1715,6 +2024,7 @@ def _save_runtime_state(run, state, total_trading_days):
         'closed_pnls': [str(value) for value in state['closed_pnls']],
         'open_positions': _serialize_open_positions(state['open_positions']),
         'macro_monthly_report': state['macro_monthly_report'],
+        'lightgbm_runtime': _serialize_lightgbm_runtime_metrics(state.get('lightgbm_runtime')),
     }
     report['progress'] = {
         'processed_trading_days': state['current_index'],
@@ -1881,6 +2191,8 @@ def run_backtest(self, backtest_run_id):
             closed_pnls = runtime_state['closed_pnls']
             open_positions = runtime_state['open_positions']
             macro_monthly_report = runtime_state['macro_monthly_report']
+            if runtime_state.get('lightgbm_runtime'):
+                candidate_cache['lightgbm_runtime_metrics'] = runtime_state['lightgbm_runtime']
 
         chunk_trading_days = _backtest_chunk_trading_days(run)
         chunk_end = min(current_index + chunk_trading_days, len(trading_dates))
@@ -1949,6 +2261,7 @@ def run_backtest(self, backtest_run_id):
                     'closed_pnls': closed_pnls,
                     'open_positions': open_positions,
                     'macro_monthly_report': macro_monthly_report,
+                    'lightgbm_runtime': candidate_cache.get('lightgbm_runtime_metrics'),
                 },
                 len(trading_dates),
             )
@@ -2009,18 +2322,9 @@ def run_backtest(self, backtest_run_id):
         resolved_horizon_days = int((run.parameters or {}).get('horizon_days', 7))
         compare_backtest_run_id = (run.parameters or {}).get('compare_backtest_run_id')
         model_references = _collect_run_model_references(run)
+        lightgbm_runtime = _serialize_lightgbm_runtime_metrics(candidate_cache.get('lightgbm_runtime_metrics'))
 
-        run.status = BacktestRun.Status.COMPLETED
-        run.cash = final_value
-        run.final_value = final_value
-        run.total_return = _clamp(total_return)
-        run.annualized_return = _clamp(annualized)
-        run.max_drawdown = _clamp(max_dd, DECIMAL_0, DECIMAL_1)
-        run.sharpe_ratio = sharpe
-        run.win_rate = _clamp(win_rate, DECIMAL_0, DECIMAL_1)
-        run.total_trades = total_trades
-        run.winning_trades = winning
-        run.report = _clear_runtime_state({
+        report = {
             'equity_curve': [float(v) for v in equity_curve],
             'num_trading_days': len(trading_dates),
             'strategy': run.strategy_type,
@@ -2047,7 +2351,21 @@ def run_backtest(self, backtest_run_id):
                 }
                 for month, payload in sorted(macro_monthly_report.items())
             ],
-        })
+        }
+        if lightgbm_runtime is not None:
+            report['lightgbm_runtime'] = lightgbm_runtime
+
+        run.status = BacktestRun.Status.COMPLETED
+        run.cash = final_value
+        run.final_value = final_value
+        run.total_return = _clamp(total_return)
+        run.annualized_return = _clamp(annualized)
+        run.max_drawdown = _clamp(max_dd, DECIMAL_0, DECIMAL_1)
+        run.sharpe_ratio = sharpe
+        run.win_rate = _clamp(win_rate, DECIMAL_0, DECIMAL_1)
+        run.total_trades = total_trades
+        run.winning_trades = winning
+        run.report = _clear_runtime_state(report)
         run.pending_control_action = BacktestRun.ControlAction.NONE
         run.current_task_id = ''
         run.completed_at = timezone.now()
