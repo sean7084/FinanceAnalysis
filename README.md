@@ -355,6 +355,7 @@ These items improve model quality and signal usefulness, but they depend on the 
 
    `.env` is the only env file required for the host-native test workflow.
    Django and the helper scripts read it directly, and the Compose file also points at it if you still run containers for non-test work.
+   The Compose stack no longer starts PostgreSQL or Redis containers; those services must already be running on the host or another reachable Linux machine referenced by `.env`.
    If you still have `.envs/.local` or `compose/local/django/.env`, copy any missing keys into `.env` and remove the legacy files locally.
 
 3. **Create and activate the virtual environment**:
