@@ -108,7 +108,7 @@ function Get-DatabaseEndpoint {
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-Import-DotEnvFile -Path (Join-Path $ProjectRoot '.envs\.local')
+Import-DotEnvFile -Path (Join-Path $ProjectRoot '.env')
 
 $VenvBin = if (-not [string]::IsNullOrWhiteSpace($env:VENV_BIN)) {
   $env:VENV_BIN

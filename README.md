@@ -331,8 +331,8 @@ These items improve model quality and signal usefulness, but they depend on the 
 ### Prerequisites
 - Windows 11 with PowerShell 7 for the primary local workflow
 - Python 3.14 with `venv`
-- PostgreSQL 15 reachable at the host configured in `.envs/.local` (current shared dev host: `192.168.31.8:5432`)
-- Redis 7 reachable at the host configured in `.envs/.local` (current shared dev host: `192.168.31.8:6379`)
+- PostgreSQL 15 reachable at the host configured in `.env` (current shared dev host: `192.168.31.8:5432`)
+- Redis 7 reachable at the host configured in `.env` (current shared dev host: `192.168.31.8:6379`)
 - Node.js and npm
 - TA-Lib system library installed on the host
 - Git for Windows
@@ -347,16 +347,15 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 2. **Set up environment variables**:
    ```bash
-   New-Item -ItemType Directory -Force .envs | Out-Null
-   Copy-Item .env.example .envs/.local
+   Copy-Item .env.example .env
    ```
 
-   Update `.envs/.local` with your local secrets and service URLs.
+   Update `.env` with your local secrets and service URLs.
    The checked-in example uses the current shared PostgreSQL/Redis host at `192.168.31.8`; replace those URLs if your services live elsewhere.
 
-   `.envs/.local` is the only env file required for the host-native test workflow.
+   `.env` is the only env file required for the host-native test workflow.
    Django and the helper scripts read it directly, and the Compose file also points at it if you still run containers for non-test work.
-   If you still have `.env` or `compose/local/django/.env`, copy any missing keys into `.envs/.local` and remove the legacy files locally.
+   If you still have `.envs/.local` or `compose/local/django/.env`, copy any missing keys into `.env` and remove the legacy files locally.
 
 3. **Create and activate the virtual environment**:
    ```bash

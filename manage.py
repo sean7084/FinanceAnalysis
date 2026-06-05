@@ -8,7 +8,7 @@ from pathlib import Path
 def main():
     """Run administrative tasks."""
     base_dir = Path(__file__).resolve().parent
-    if (base_dir / ".envs" / ".local").exists():
+    if (base_dir / ".env").exists():
         os.environ.setdefault("DJANGO_READ_DOT_ENV_FILE", "True")
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     try:

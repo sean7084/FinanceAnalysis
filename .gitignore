@@ -1,5 +1,6 @@
 README.md
 compose/local/django/.env
+.env
 .envs/.local
 .vscode/settings.json
 .vscode/git-safe.sh

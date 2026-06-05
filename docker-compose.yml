@@ -11,7 +11,7 @@ services:
     volumes:
       - .:/app
     env_file:
-      - ./.envs/.local
+      - ./.env
     ports:
       - "8000:8000"
     command: /start
@@ -44,7 +44,7 @@ services:
     volumes:
       - .:/app
     env_file:
-      - ./.envs/.local
+      - ./.env
     command: /start-celeryworker
 
   celery_beat:
@@ -59,7 +59,7 @@ services:
     volumes:
       - .:/app
     env_file:
-      - ./.envs/.local
+      - ./.env
     command: /start-celerybeat
 
 

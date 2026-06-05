@@ -35,10 +35,10 @@ if [[ ! -x "$CELERY_BIN" ]]; then
   exit 1
 fi
 
-if [[ -f "$PROJECT_ROOT/.envs/.local" ]]; then
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
-  source "$PROJECT_ROOT/.envs/.local"
+  source "$PROJECT_ROOT/.env"
   set +a
 fi
 
