@@ -196,6 +196,31 @@ def _matrix_signal_cache_set(key, value):
     )
 
 
+def _matrix_signal_cache_mapping(entry):
+    if isinstance(entry, dict) and 'mapping' in entry:
+        return entry.get('mapping')
+    return entry
+
+
+def _matrix_signal_cache_runtime(entry):
+    if isinstance(entry, dict) and 'mapping' in entry:
+        runtime = entry.get('runtime')
+        if isinstance(runtime, dict):
+            return runtime
+    return {}
+
+
+def _lightgbm_matrix_signal_cache_entry(mapping, cache):
+    metrics = _lightgbm_runtime_metrics(cache)
+    return {
+        'mapping': mapping,
+        'runtime': {
+            'inference_backend': str(metrics.get('inference_backend') or 'cpu_serial'),
+            'batch_size': max(1, int(metrics.get('batch_size') or 1)),
+        },
+    }
+
+
 def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity, policy_key):
     scope = _matrix_signal_scope(run)
     if not scope:
@@ -638,9 +663,17 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             ('LightGBMModelArtifact', model_artifact.id, model_artifact.version),
             policy_key,
         )
-        cached_mapping = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
+        cached_entry = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
+        cached_mapping = _matrix_signal_cache_mapping(cached_entry)
+        cached_runtime = _matrix_signal_cache_runtime(cached_entry)
         if cached_mapping is not None:
             _increment_lightgbm_runtime_count(cache, 'matrix_cache_hits')
+            if cached_runtime:
+                _set_lightgbm_runtime_execution(
+                    cache,
+                    cached_runtime.get('inference_backend'),
+                    cached_runtime.get('batch_size'),
+                )
             cache[cache_key] = cached_mapping
             return cached_mapping
 
@@ -720,7 +753,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
 
     cache[cache_key] = mapping
     if matrix_cache_key:
-        _matrix_signal_cache_set(matrix_cache_key, mapping)
+        _matrix_signal_cache_set(matrix_cache_key, _lightgbm_matrix_signal_cache_entry(mapping, cache))
     return mapping
 
 

@@ -2495,6 +2495,96 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._extract_features_for_asset')
     @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
     @patch('apps.backtest.tasks._load_model_artifacts')
+    def test_lightgbm_matrix_cache_hit_preserves_windows_gpu_backend(
+        self,
+        mock_load_artifacts,
+        mock_eligible_asset_ids,
+        mock_extract_features,
+        mock_estimate_trade_decision,
+    ):
+        artifact = LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-gpu-cache-test',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/gpu-cache-test',
+            feature_names=['rsi', 'mom_5d', 'rs_score'],
+            is_active=True,
+        )
+        gpu_model = CapturingBooster(feature_count=3, supported_devices={'gpu'})
+        mock_load_artifacts.return_value = {
+            'model': gpu_model,
+            'scaler': IdentityScaler(),
+            'calibrator': IdentityCalibrator(gpu_model),
+            'metadata': {'feature_names': ['rsi', 'mom_5d', 'rs_score']},
+        }
+        mock_eligible_asset_ids.return_value = [self.asset.id]
+        mock_extract_features.return_value = {
+            'rsi': 42.0,
+            'mom_5d': 0.12,
+            'rs_score': 0.74,
+        }
+        mock_estimate_trade_decision.return_value = {
+            'trade_score': Decimal('1.0'),
+            'target_price': Decimal('12.5'),
+            'stop_loss_price': Decimal('9.5'),
+            'risk_reward_ratio': Decimal('1.5'),
+            'suggested': True,
+        }
+
+        shared_scope = 'gpu-cache-preserve-scope'
+        first_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Windows GPU Cache Builder',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_batch_size': 16,
+                'lightgbm_model_artifact_id': artifact.id,
+                'matrix_signal_cache_key': shared_scope,
+            },
+        )
+        second_run = BacktestRun.objects.create(
+            user=self.user,
+            name='P15 LightGBM Windows GPU Cache Hit',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=self.d1,
+            end_date=self.d2,
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.55,
+                'prediction_source': 'lightgbm',
+                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_batch_size': 16,
+                'lightgbm_model_artifact_id': artifact.id,
+                'matrix_signal_cache_key': shared_scope,
+            },
+        )
+
+        first_cache = {}
+        second_cache = {}
+        first_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, first_cache, run=first_run)
+        second_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, second_cache, run=second_run)
+
+        self.assertEqual(first_map, second_map)
+        self.assertEqual(first_cache['lightgbm_runtime_metrics']['inference_backend'], 'windows_gpu')
+        self.assertEqual(second_cache['lightgbm_runtime_metrics']['inference_backend'], 'windows_gpu')
+        self.assertEqual(second_cache['lightgbm_runtime_metrics']['matrix_cache_hits'], 1)
+        self.assertEqual(second_cache['lightgbm_runtime_metrics']['batch_prediction_calls'], 0)
+        self.assertEqual(second_cache['lightgbm_runtime_metrics']['batch_prediction_rows'], 0)
+
+    @patch('apps.backtest.tasks.estimate_trade_decision')
+    @patch('apps.backtest.tasks._extract_features_for_asset')
+    @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
+    @patch('apps.backtest.tasks._load_model_artifacts')
     def test_lightgbm_prediction_map_windows_gpu_falls_back_to_cpu_serial(
         self,
         mock_load_artifacts,
