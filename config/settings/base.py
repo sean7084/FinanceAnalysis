@@ -14,6 +14,7 @@ import os
 import environ
 from pathlib import Path
 from celery.schedules import crontab
+from kombu import Queue
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -178,6 +179,25 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
+CELERY_TASK_DEFAULT_QUEUE = "ops"
+CELERY_TASK_DEFAULT_ROUTING_KEY = "ops"
+CELERY_TASK_QUEUES = (
+    Queue("ops", routing_key="ops"),
+    Queue("backtest", routing_key="backtest"),
+    Queue("train-lightgbm", routing_key="train-lightgbm"),
+    Queue("train-lstm", routing_key="train-lstm"),
+)
+CELERY_TASK_ROUTES = {
+    "apps.backtest.tasks.run_backtest": {"queue": "backtest", "routing_key": "backtest"},
+    "apps.prediction.tasks_lightgbm.train_lightgbm_models": {
+        "queue": "train-lightgbm",
+        "routing_key": "train-lightgbm",
+    },
+    "apps.prediction.tasks_lstm.train_lstm_models": {
+        "queue": "train-lstm",
+        "routing_key": "train-lstm",
+    },
+}
 CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_TASK_SOFT_TIME_LIMIT = 60
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
