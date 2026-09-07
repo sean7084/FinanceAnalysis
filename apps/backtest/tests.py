@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db.utils import OperationalError
@@ -195,6 +196,21 @@ class Phase15BacktestTests(TestCase):
         context = _resolve_macro_context_for_date(date(2024, 2, 15), {})
 
         self.assertEqual(context['macro_phase'], MarketContext.MacroPhase.RECOVERY)
+
+    def test_celery_queue_split_routes_backtest_and_training_tasks(self):
+        queue_names = [queue.name for queue in settings.CELERY_TASK_QUEUES]
+
+        self.assertEqual(settings.CELERY_TASK_DEFAULT_QUEUE, 'ops')
+        self.assertCountEqual(queue_names, ['ops', 'backtest', 'train-lightgbm', 'train-lstm'])
+        self.assertEqual(settings.CELERY_TASK_ROUTES['apps.backtest.tasks.run_backtest']['queue'], 'backtest')
+        self.assertEqual(
+            settings.CELERY_TASK_ROUTES['apps.prediction.tasks_lightgbm.train_lightgbm_models']['queue'],
+            'train-lightgbm',
+        )
+        self.assertEqual(
+            settings.CELERY_TASK_ROUTES['apps.prediction.tasks_lstm.train_lstm_models']['queue'],
+            'train-lstm',
+        )
 
     def _auth(self):
         self.client.force_authenticate(user=self.user)
