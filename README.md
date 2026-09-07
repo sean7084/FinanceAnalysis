@@ -387,7 +387,7 @@ These items improve model quality and signal usefulness, but they depend on the 
 
 7. **Start local services**:
    ```bash
-   # Preferred: VS Code task -> Run local stack
+   # Preferred on Windows: VS Code task -> Run local stack
 
    # Or run the services in separate PowerShell terminals:
    pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_backend.ps1
@@ -398,6 +398,18 @@ These items improve model quality and signal usefulness, but they depend on the 
 
    The existing `.sh` launchers are still available if you prefer to work from Git Bash.
    On Windows, `run_celery_worker.ps1` defaults to Celery's `solo` pool to avoid `billiard` handle errors; set `CELERY_WORKER_POOL` and optionally `CELERY_WORKER_CONCURRENCY` if you need a different local worker mode.
+
+### WSL2 High-Performance Workflow
+
+For backtests, training, and Celery-heavy workloads, the preferred performance path is WSL2 Ubuntu with the repository cloned inside the WSL ext4 filesystem rather than the Windows mount.
+
+1. Clone the repository inside WSL under your Ubuntu home directory, not under `/mnt/c/...`.
+2. Copy the root `.env` into that WSL clone and keep PostgreSQL / Redis pointed at `192.168.31.8` unless your service host changes.
+3. Create a fresh Linux `.venv` inside the WSL clone and install `requirements/local.txt` there.
+4. Open the WSL clone in VS Code Remote - WSL. The existing task labels now route to the Linux shell launchers when opened in Linux, so `Run backend`, `Run celery worker`, `Run celery beat`, `Run frontend`, and `Run local stack` work there without using the Windows PowerShell wrappers.
+5. For a quick smoke, run `./scripts/verify_local_stack.sh` from inside WSL before launching the full stack.
+
+This WSL path keeps Windows as the browser, VS Code UI host, and NVIDIA driver owner, while allowing Celery to use its normal Linux worker model instead of the Windows `solo` path.
 
 8. **Run tests locally**:
    ```bash

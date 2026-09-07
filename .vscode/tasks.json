@@ -12,6 +12,12 @@
         "-File",
         "${workspaceFolder}\\scripts\\run_backend.ps1"
       ],
+      "linux": {
+        "command": "bash",
+        "args": [
+          "./scripts/run_backend.sh"
+        ]
+      },
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -35,6 +41,12 @@
         "-File",
         "${workspaceFolder}\\scripts\\run_celery_worker.ps1"
       ],
+      "linux": {
+        "command": "bash",
+        "args": [
+          "./scripts/run_celery_worker.sh"
+        ]
+      },
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -58,6 +70,12 @@
         "-File",
         "${workspaceFolder}\\scripts\\run_celery_beat.ps1"
       ],
+      "linux": {
+        "command": "bash",
+        "args": [
+          "./scripts/run_celery_beat.sh"
+        ]
+      },
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -81,6 +99,12 @@
         "-File",
         "${workspaceFolder}\\scripts\\run_frontend.ps1"
       ],
+      "linux": {
+        "command": "bash",
+        "args": [
+          "./scripts/run_frontend.sh"
+        ]
+      },
       "options": {
         "cwd": "${workspaceFolder}"
       },
