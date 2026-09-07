@@ -108,6 +108,12 @@ def _bounded_cache_set(cache, key, value, max_entries):
     return value
 
 
+def clear_backtest_process_caches():
+    _TRADING_DATES_CACHE.clear()
+    _PRICE_MAP_CACHE.clear()
+    _MATRIX_SIGNAL_CACHE.clear()
+
+
 def _default_lightgbm_runtime_metrics():
     metrics = {
         'inference_backend': 'cpu_serial',

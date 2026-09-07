@@ -3256,18 +3256,81 @@ class BacktestManagementCommandTests(TestCase):
 
         command = Command()
         calls = []
-        continuation_counts = {101: 0, 102: 0}
+        inline_date = date(2026, 1, 1)
+        first_horizon_a = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline 3d A',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=inline_date,
+            end_date=inline_date,
+            initial_capital=Decimal('100000.00'),
+            parameters={'horizon_days': 3},
+        )
+        first_horizon_b = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline 3d B',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=inline_date,
+            end_date=inline_date,
+            initial_capital=Decimal('100000.00'),
+            parameters={'horizon_days': 3},
+        )
+        second_horizon_a = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline 7d A',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=inline_date,
+            end_date=inline_date,
+            initial_capital=Decimal('100000.00'),
+            parameters={'horizon_days': 7},
+        )
+        second_horizon_b = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline 7d B',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=inline_date,
+            end_date=inline_date,
+            initial_capital=Decimal('100000.00'),
+            parameters={'horizon_days': 7},
+        )
+        continuation_counts = {
+            first_horizon_a.id: 0,
+            first_horizon_b.id: 0,
+            second_horizon_a.id: 0,
+            second_horizon_b.id: 0,
+        }
 
         def _fake_run_backtest(run_id):
             calls.append(run_id)
             if continuation_counts[run_id] == 0:
                 continuation_counts[run_id] += 1
-                backtest_tasks.run_backtest.delay(run_id)
+                BacktestRun.objects.filter(id=run_id).update(status=BacktestRun.Status.RUNNING)
+            else:
+                BacktestRun.objects.filter(id=run_id).update(status=BacktestRun.Status.COMPLETED)
 
-        with patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest', side_effect=_fake_run_backtest):
-            command._run_backtests_inline_to_completion([101, 102])
+        with patch('apps.backtest.management.commands.run_core_backtest_matrix.clear_backtest_process_caches') as mock_clear_caches:
+            with patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest', side_effect=_fake_run_backtest):
+                command._run_backtests_inline_to_completion([
+                    first_horizon_a.id,
+                    second_horizon_a.id,
+                    first_horizon_b.id,
+                    second_horizon_b.id,
+                ])
 
-        self.assertEqual(calls, [101, 102, 101, 102])
+        self.assertEqual(
+            calls,
+            [
+                first_horizon_a.id,
+                first_horizon_b.id,
+                first_horizon_a.id,
+                first_horizon_b.id,
+                second_horizon_a.id,
+                second_horizon_b.id,
+                second_horizon_a.id,
+                second_horizon_b.id,
+            ],
+        )
+        self.assertEqual(mock_clear_caches.call_count, 3)
 
     @patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest')
     def test_run_core_backtest_matrix_execute_inline_creates_all_runs_before_execution(self, mock_run_backtest):

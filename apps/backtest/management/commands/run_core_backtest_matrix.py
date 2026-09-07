@@ -2,6 +2,7 @@
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuqueue --queue --lightgbm-inference-backend cpu_serial
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260603-windowsgpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu --output-dir reports/20260603-windowsgpuinline
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend cpu_serial --output-dir reports/20260601-windowscpuinline
+
 import json
 import json
 from datetime import date
@@ -16,7 +17,7 @@ from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.backtest.models import BacktestRun
-from apps.backtest.tasks import queue_backtest_run, run_backtest
+from apps.backtest.tasks import clear_backtest_process_caches, queue_backtest_run, run_backtest
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 
 
@@ -245,26 +246,47 @@ class Command(BaseCommand):
             spec['parameters'] = params
 
     def _run_backtests_inline_to_completion(self, root_run_ids):
-        pending_run_ids = [int(run_id) for run_id in root_run_ids]
+        ordered_root_run_ids = [int(run_id) for run_id in root_run_ids]
         queued_count = 0
+
+        horizon_groups = []
+        horizon_group_index = {}
+        for run in BacktestRun.objects.filter(id__in=ordered_root_run_ids).order_by('id'):
+            horizon = int((run.parameters or {}).get('horizon_days') or 0)
+            if horizon not in horizon_group_index:
+                horizon_group_index[horizon] = len(horizon_groups)
+                horizon_groups.append([])
+            horizon_groups[horizon_group_index[horizon]].append(run.id)
 
         def _enqueue(run_id):
             nonlocal queued_count
             queued_count += 1
-            pending_run_ids.append(int(run_id))
             return _InlineDelayResult(f'inline-matrix-{queued_count}')
 
         with patch('apps.backtest.tasks.run_backtest.delay', side_effect=_enqueue):
-            while pending_run_ids:
-                current_run_id = pending_run_ids.pop(0)
-                for attempt in range(2):
-                    try:
-                        run_backtest(current_run_id)
-                        break
-                    except (OperationalError, InterfaceError):
-                        connections.close_all()
-                        if attempt == 1:
-                            raise
+            clear_backtest_process_caches()
+            try:
+                for group_index, group_run_ids in enumerate(horizon_groups):
+                    pending_run_ids = list(group_run_ids)
+                    while pending_run_ids:
+                        current_run_id = pending_run_ids.pop(0)
+                        for attempt in range(2):
+                            try:
+                                run_backtest(current_run_id)
+                                break
+                            except (OperationalError, InterfaceError):
+                                connections.close_all()
+                                if attempt == 1:
+                                    raise
+
+                        current_run = BacktestRun.objects.filter(id=current_run_id).first()
+                        if current_run is not None and current_run.status == BacktestRun.Status.RUNNING:
+                            pending_run_ids.append(current_run_id)
+
+                    if group_index < len(horizon_groups) - 1:
+                        clear_backtest_process_caches()
+            finally:
+                clear_backtest_process_caches()
 
     def handle(self, *args, **options):
         start_date = _parse_date(options['start_date'], 'start-date')
