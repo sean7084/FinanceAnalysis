@@ -16,8 +16,9 @@ import tempfile
 import datetime
 from pathlib import Path
 from apps.markets.benchmarking import PITMembershipCoverageError
-from apps.markets.models import Market, Asset, IndexMembership, OHLCV
+from apps.markets.models import ExchangeTradingCalendar, Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
+from .technical_staleness import asset_exchange_code
 from .management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand, DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
@@ -544,12 +545,44 @@ class Phase8IndicatorTests(TestCase):
 
 
 def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
-    """Helper: create OHLCV rows from a list of (close) prices, most-recent last."""
+    """Helper: create OHLCV rows from a list of (close) prices, most-recent last.
+
+    Dates are business days ending at or before ``base_date``, and a matching open
+    ``ExchangeTradingCalendar`` row is seeded for each one. Both halves are required:
+
+    The freshness guards in ``technical_staleness`` resolve trading dates from the
+    official calendar, never from OHLCV. With no calendar rows,
+    ``latest_official_trade_date`` returns ``None``, the guard cannot establish a
+    current trading date, and no indicator or signal row is written at all.
+
+    Consecutive *calendar* dates would still breach the tight interior-gap budgets
+    once weekends count as gaps -- ``SMA(5)`` allows a maximum gap of 2 trading
+    days -- so the sequence skips Saturdays and Sundays.
+
+    The exchange code is derived with the production helper rather than hardcoded,
+    so the seeded calendar always matches what the guard looks up.
+    """
     if base_date is None:
         base_date = timezone.now().date()
-    n = len(prices)
-    for i, close in enumerate(prices):
-        day = base_date - datetime.timedelta(days=(n - 1 - i))
+    count = len(prices)
+
+    trading_days = []
+    cursor = base_date
+    while len(trading_days) < count:
+        if cursor.weekday() < 5:
+            trading_days.append(cursor)
+        cursor -= datetime.timedelta(days=1)
+    trading_days.reverse()
+
+    exchange_code = asset_exchange_code(asset)
+    for day in trading_days:
+        ExchangeTradingCalendar.objects.get_or_create(
+            exchange_code=exchange_code,
+            trade_date=day,
+            defaults=dict(is_open=True),
+        )
+
+    for day, close in zip(trading_days, prices):
         OHLCV.objects.get_or_create(
             asset=asset,
             date=day,
@@ -563,6 +596,8 @@ def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
                 amount=Decimal(str(close * volume)),
             ),
         )
+
+    return trading_days
 
 
 class Phase10SignalTests(TestCase):
@@ -1003,9 +1038,17 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
         )
         self.base_date = timezone.datetime(2024, 4, 30).date()
         prices = [10.0 + (index * 0.1) for index in range(80)]
-        _make_ohlcv_sequence(self.asset, prices, base_date=self.base_date, volume=100000)
-        self.start_date = self.base_date - datetime.timedelta(days=4)
-        self.end_date = self.base_date
+        trading_days = _make_ohlcv_sequence(
+            self.asset, prices, base_date=self.base_date, volume=100000,
+        )
+        # Window spans the last five *trading* days. Because 2024-04-30 is a
+        # Tuesday, those five sessions run Wed 04-24 through Tue 04-30 -- seven
+        # calendar days, straddling a weekend. Deriving the bounds from the
+        # generated dates keeps every expectation below deterministic and stops
+        # them silently assuming one row per calendar day.
+        self.trading_days = trading_days
+        self.start_date = trading_days[-5]
+        self.end_date = trading_days[-1]
 
     def test_backfill_technical_indicators_persists_default_non_rs_history(self):
         output = StringIO()
@@ -1189,7 +1232,9 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
             stdout=output,
         )
 
-        self.assertIn('processed_chunks=3', output.getvalue())
+        # chunk_size_days counts calendar days, so the seven-calendar-day window
+        # splits into [04-24,04-25] [04-26,04-27] [04-28,04-29] [04-30] = 4 chunks.
+        self.assertIn('processed_chunks=4', output.getvalue())
         self.assertEqual(
             TechnicalIndicator.objects.filter(
                 asset=self.asset,
@@ -1251,7 +1296,9 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
             )
 
             self.assertIn(f'checkpoint resume skips through {first_chunk_end}', output.getvalue())
-            self.assertIn('processed_chunks=2', output.getvalue())
+            # Four chunks in total, one already completed per the checkpoint, so the
+            # resumed run processes the remaining three.
+            self.assertIn('processed_chunks=3', output.getvalue())
 
             checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
             self.assertEqual(checkpoint['assets'][self.asset.ts_code]['status'], 'completed')
