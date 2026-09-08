@@ -187,19 +187,26 @@ produced one by default.
 
 ## 6. Known failures and how to read them
 
-A full run currently reports **109 failing of 339**. That number is dominated by one
-environmental cause, not by 109 defects. Categorise before investigating:
+A full run currently reports **10 failing of 339**, in four clusters — all
+pre-existing fixture debt, catalogued with their diagnoses in `BACKLOG.md`.
 
-| Count | Cause | Kind |
+That number was **109** until recently. The reduction is instructive, because almost
+none of it came from fixing product code:
+
+| Stage | Failing | What changed |
 | --- | --- | --- |
-| 93 | `redis.exceptions.AuthenticationError` | Environmental, single root cause |
-| 14 | `AssertionError` | Genuine expectation mismatches, need triage |
-| 1 | `ValueError` | Needs triage |
+| As discovered | 109 | Bare `manage.py test` had been finding **0** tests, so none of this was visible |
+| After the Redis credential fix | 17 | One environment value; 92 tests recovered |
+| After the analytics calendar fixture fix | 10 | One test helper; 7 more recovered |
 
-### 6.1 The Redis failure (93 tests)
+The lesson: when a suite reports a large failure count, **categorise by exception
+type before investigating any individual test.** Here 93 of 109 shared one cause, and
+the remaining 16 shared another. Two fixes accounted for 91% of the total.
 
-Every test that makes an API request fails, because DRF runs `check_throttles`
-during `initial()` and throttle counters live in the Redis cache. The traceback ends:
+### 6.1 Case study: the Redis failure (93 tests, resolved)
+
+Every test that made an API request failed, because DRF runs `check_throttles`
+during `initial()` and throttle counters live in the Redis cache. The traceback ended:
 
 ```
 rest_framework/views.py, in check_throttles
@@ -207,8 +214,8 @@ rest_framework/views.py, in check_throttles
   -> redis.exceptions.AuthenticationError: invalid username-password pair or user is disabled.
 ```
 
-**Verified diagnosis:** the password in `.env` is rejected by the server. Tested
-directly, both with and without a username in the URL:
+**Diagnosis:** the password in `.env` had gone stale and the server rejected it.
+Tested directly, both with and without a username in the URL:
 
 ```python
 redis.Redis.from_url(REDIS_URL).ping()                 # AuthenticationError
@@ -229,10 +236,14 @@ Django cache, `cache_page` responses, and the Channels layer, so while it is wro
 - server-side response caching does not work;
 - the WebSocket alert stream has no functioning channel layer.
 
-Fix `.env` to match the server (its `requirepass`, or an ACL user that actually
-exists) and roughly 93 tests recover at once. Until then, tests that avoid the API
-client — management-command, task-level, and model tests — still run and pass, so a
-green result from those remains meaningful.
+Resolved by correcting the credential in `REDIS_URL`, `CELERY_BROKER_URL`, and
+`CELERY_RESULT_BACKEND`; 92 tests recovered at once. Probing settled the URL shape
+definitively — this server uses a real ACL user, so the empty-username form fails
+here. See `local-setup.md` §3 before changing a working `REDIS_URL`.
+
+The general point stands: tests that avoid the API client — management-command,
+task-level, and model tests — keep passing while the cache is unreachable, so a
+partially green suite can hide a completely broken one.
 
 ### 6.2 Non-hermetic sentiment tests
 

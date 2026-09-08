@@ -45,56 +45,84 @@ Items here have no commitment attached. When something is done, move it to
 - **Scratch notes in README.** Roughly 155 lines of unfiled TODOs, pasted Celery
   logs, first-person fragments, and a stray `>>` were moved here. `README.md` is
   now orientation-only.
+- **Redis credential rejected — was blocking 93 tests and all caching.** `.env`
+  carried a stale password. Corrected in `REDIS_URL`, `CELERY_BROKER_URL`, and
+  `CELERY_RESULT_BACKEND`; all three now authenticate, the Django cache
+  round-trips, and the Channels layer completes a group add/send/discard/flush
+  cycle. Recovered **92 tests** (109 failing → 17). Probing also settled the URL
+  shape: this server uses a real ACL user, so `redis://:<pw>@` and
+  `redis://default:<pw>@` both fail while `redis://finance_analysis:<pw>@`
+  succeeds. Recorded in `docs/how-to/local-setup.md` §3 so nobody "simplifies" a
+  working URL into a broken one.
+- **`verify_local_stack.ps1` never actually verified anything.** It shelled out to
+  `pg_isready` and `redis-cli`, neither of which ships with Windows, then downgraded
+  their absence to a warning and still `exit 0`. On the primary documented platform
+  the verifier introspected Django settings and printed URLs back without ever
+  opening a connection — which is exactly how the stale Redis password survived.
+  Both launchers now probe through `psycopg2` and `redis-py`, fail the exit code on
+  any unreachable service, and redact credentials from every message including
+  failures (the `.sh` previously printed the raw URL, password included, on error).
+- **Analytics test fixtures never seeded the trading calendar.**
+  `_make_ohlcv_sequence` created OHLCV on consecutive *calendar* days and
+  `ExchangeTradingCalendar` appeared nowhere in `apps/analytics/tests.py`. Since the
+  freshness guards resolve trading dates from the official calendar, an empty
+  calendar made `latest_official_trade_date` return `None`, so no indicator or
+  signal row was written and 8 tests failed. The helper now generates business days,
+  seeds a matching open calendar row per date, derives the exchange code through the
+  production `asset_exchange_code` helper so fixture and guard cannot diverge, and
+  returns the dates so callers can bound windows by trading day instead of assuming
+  one row per calendar day.
 
 ---
 
 ## Open — correctness
 
-### Redis credentials are rejected — blocks 93 tests and all caching
+### Remaining test failures — 10, in four clusters
 
-**This is the highest-impact open item.** The password configured in `.env` is
-rejected by the Redis server at the configured host. Verified directly, both with
-and without a username in the URL:
+Down from 109 (Redis) to 17 to **10** after the calendar fixture fix. All 10 are
+pre-existing; none was introduced by the documentation work or the fixture fix, and
+the fixture fix was verified not to regress the chunking tests that share the helper.
 
-```python
-redis.Redis.from_url(REDIS_URL).ping()              # AuthenticationError
-redis.Redis(host=..., password=<same>, ...).ping()  # AuthenticationError
-```
+**Cluster 1 — RS_SCORE fixtures (3 tests, `analytics.Phase10SignalTests`).**
+`test_calculate_rs_scores_for_all_assets_{creates_high_rs_score_for_top_bucket,
+filters_to_point_in_time_union_when_membership_exists,ignores_future_dated_ohlcv_rows}`.
+Same root cause as the fixed cluster but in a different place: these build OHLCV
+inline over 21 **consecutive calendar days** from 2024-02-01 and never seed
+`ExchangeTradingCalendar`. `RS_SCORE` needs an exact 20-trading-day anchor from the
+official calendar. Fix the same way — business days plus seeded calendar rows.
 
-So it is **not** the ACL-username-versus-`requirepass` URL-shape issue first
-suspected — the credential itself does not match the server. Either the password
-changed, the ACL user was removed, or `.env` points at a different instance than
-the one provisioned.
+**Cluster 2 — data-quality continuity (3 tests, `core`).**
+`DataQualityValidationCommandTests.test_validate_data_quality_writes_actionable_reports`,
+`…test_technical_indicator_continuity_warnings_appear_in_summary_and_metadata`, and
+`TechnicalIndicatorValidationRegressionTests.…flags_out_of_range_rsi`. Reported as
+`AssertionError: 0 != 1` — the continuity report finds no issue where one is
+expected. The validator was rewritten around official exchange calendars, so the
+fixtures likely need the same treatment; the earlier note about
+`RETURN_3D/5D/10D` disagreements in an expected indicator-type list is a second,
+separate symptom in the same area and needs its own look.
 
-Blast radius, all from one wrong credential:
+**Cluster 3 — missing active artifact fixture (1 test, `backtest`).**
+`Phase15BacktestTests.test_pick_candidates_filters_on_demand_lightgbm_candidates_to_point_in_time_union`
+raises `ValueError: No active LightGBM artifact available for horizon 7` from
+`_get_selected_lightgbm_artifact`. The test exercises on-demand LightGBM candidate
+generation but does not create an active horizon-7 `LightGBMModelArtifact`. Distinct
+from the calendar clusters.
 
-- **93 of 339 backend tests fail.** Every test making an API request dies in DRF
-  `check_throttles`, because throttle counters live in the Redis cache.
-- Every authenticated API request fails at the throttle check.
-- `cache_page` response caching does not work.
-- The Channels layer is down, so the WebSocket alert stream cannot function.
-- `scripts/verify_local_stack.sh` fails.
+**Cluster 4 — unclassified (3 tests, `analytics`).**
+`Phase8IndicatorTests.test_calculate_fibonacci_retracement_creates_indicator`,
+`TechnicalIndicatorBackfillCommandTests.test_backfill_technical_indicators_persists_default_non_rs_history`
+(a set comparison reporting expected indicator types missing from the actual set),
+and `Phase17DashboardStockApiTests.test_dashboard_stocks_overlays_runtime_lstm_candidate_payload`.
+Each needs individual diagnosis; the first two may still be calendar or warmup
+related, the third involves the LSTM runtime overlay.
 
-Fix the credential and roughly 93 tests recover at once. Do this before triaging
-anything else — it masks the real signal.
-
-### Remaining test failures after Redis is fixed
-
-With the Redis cause removed, the full suite still shows:
-
-- **14 `AssertionError` failures.** Includes three in `apps.core.tests`
-  (`DataQualityValidationCommandTests`,
-  `TechnicalIndicatorValidationRegressionTests`) whose expected indicator-type
-  lists disagree about `RETURN_3D` / `RETURN_5D` / `RETURN_10D` — either the
-  validator's expected set or the tests drifted when those metrics were added.
-  Needs triage.
-- **1 `ValueError`.** Needs triage.
-
-All 109 failures were confirmed **pre-existing** by running the identical
-selection against a pristine worktree at the pre-change commit: same 94 tests,
-same 3 failures, same 22 errors, same test names for `apps.backtest` + `apps.core`;
-and for the remaining nine modules, 245 tests with the same failure set. No
-regression was introduced by the documentation restructure.
+Baseline evidence: the original 109 failures were confirmed **pre-existing** by
+running the identical selection against a pristine worktree at the pre-change
+commit — same test counts and same failing test names for both `apps.backtest` +
+`apps.core` (94 tests) and the remaining nine modules (245 tests). No regression was
+introduced by the documentation restructure. The two later reductions (109 → 17 → 10)
+came from an environment credential fix and a test-fixture fix, not from any change
+to production code.
 
 ### `apps/macro/tests.py` depends on a gitignored local fixture
 

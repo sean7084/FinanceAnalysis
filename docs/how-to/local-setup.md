@@ -59,32 +59,65 @@ tasks to vanish and cache-backed throttle counters to reset.
 ### Getting the URL shape right
 
 `.env.example` ships `redis://finance_analysis:finance_analysis@host:6379/1`. The
-part before the colon is a Redis **ACL username**, and it only works if an ACL user
-with that name exists on the server.
+part before the colon is a Redis **ACL username**. Which form is correct depends
+entirely on how the server was configured, and the two are not interchangeable:
 
 | Server configuration | Correct URL |
 | --- | --- |
-| `requirepass <pw>` only (the common case) | `redis://:<pw>@host:6379/1` — **empty username** |
-| ACL user created with `ACL SETUSER finance_analysis …` | `redis://finance_analysis:<pw>@host:6379/1` |
+| ACL user created (`ACL SETUSER finance_analysis …`) | `redis://finance_analysis:<pw>@host:6379/1` |
+| `requirepass <pw>` only, no ACL user | `redis://:<pw>@host:6379/1` — **empty username** |
 
-A username the server does not know produces:
+**This deployment uses a real ACL user.** Verified by probing all four forms
+against the configured server:
+
+| Form tried | Result |
+| --- | --- |
+| `finance_analysis:<pw>@` | **PING OK** |
+| `:<pw>@` (empty username) | AuthenticationError |
+| `default:<pw>@` | AuthenticationError |
+| no password | AuthenticationError |
+
+So the empty-username form that works for a plain `requirepass` server **fails
+here**. Do not "simplify" a working `REDIS_URL` by dropping the username.
+
+Both failure modes produce the same message, which is why probing beats guessing:
 
 ```
 redis.exceptions.AuthenticationError: invalid username-password pair or user is disabled.
 ```
 
-The same error also means the password is simply wrong, so **verify explicitly**
-rather than guessing which of the two it is:
+An unauthenticated connection is *also* rejected, so seeing this error with no
+credentials at all tells you the server requires auth rather than that your
+username is wrong.
+
+Always verify rather than reason about it:
 
 ```bash
-./scripts/verify_local_stack.sh    # pings both Redis databases and reports which failed
+./scripts/verify_local_stack.sh     # or .ps1 -- both probe through psycopg2 / redis-py
 ```
 
-This is not a test-only concern. The same credential backs DRF throttling, so a
-mismatch makes every authenticated API request fail, disables `cache_page`, and
-leaves the WebSocket alert stream without a channel layer. It currently fails in
-this environment and accounts for 93 of the 109 failing backend tests — see
+Both scripts now connect through the Python drivers and redact credentials from all
+output, including failure messages. They previously shelled out to `pg_isready` and
+`redis-cli`, which do not exist on Windows, so the PowerShell verifier skipped both
+probes and still exited 0 — which is how a wrong Redis password survived
+undetected while the documented verification step reported success.
+
+A wrong credential is not a test-only concern. The same one backs DRF throttling,
+so a mismatch makes every authenticated API request fail, disables `cache_page`,
+and leaves the WebSocket alert stream without a channel layer. It accounted for 93
+of the 109 failing backend tests before it was corrected — see
 [`testing.md`](testing.md) §6.1.
+
+Two related traps:
+
+- `REDIS_URL` and `CELERY_BROKER_URL` are **separate variables** pointing at
+  different logical databases. Updating one and not the other leaves the broker
+  authenticating with a stale password.
+- A malformed URL fails quietly in a confusing way. If the `:` separating username
+  from password is mistyped as `/`, `urlparse` reads the *username* as the hostname
+  and pushes the credential into the path — Django then tries to connect to a host
+  literally named `finance_analysis`. Percent-encode any password character that is
+  significant in a URL (`:` → `%3A`, `/` → `%2F`, `@` → `%40`, also `#`, `?`, `%`).
 
 Three logical databases are in use:
 
