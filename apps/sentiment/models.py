@@ -1,3 +1,31 @@
+"""Sentiment persistence: articles, scores, concept heat.
+
+Three tables with distinct roles that are easy to confuse:
+
+``NewsArticle`` is the raw text layer -- one row per ingested article, deduplicated on
+URL, carrying the provider source label. It is an input, not a feature.
+
+``SentimentScore`` holds **three different things in one table**, distinguished by
+``score_type``:
+
+- ``ARTICLE`` -- per-article scoring, nullable ``asset``; an inspection and QA surface
+  rather than a model feature.
+- ``ASSET_7D`` -- rolling per-asset aggregation. This is the scope the heuristic,
+  LightGBM, LSTM, and runtime backtests actually consume.
+- ``MARKET_7D`` -- rolling market aggregation with no asset; a dashboard surface only.
+
+Collapsing these into one table keeps the aggregation machinery shared, but it means
+a bare row count over ``SentimentScore`` is meaningless -- the ``ASSET_7D`` scope
+dominates by orders of magnitude. Always filter by ``score_type``, and read the
+per-scope breakdown in ``docs/reference/metrics.md``.
+
+``unique_together`` is ``(article, asset, date, score_type)``, which is what makes the
+aggregation idempotent: re-running a window upserts rather than double-counting.
+
+``ConceptHeat`` aggregates inferred concept tags for theme monitoring. It feeds no
+model.
+"""
+
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 

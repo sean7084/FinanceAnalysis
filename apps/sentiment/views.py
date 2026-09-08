@@ -1,3 +1,25 @@
+"""Sentiment API surface.
+
+Three read-mostly viewsets over the tables described in ``models.py``:
+
+``NewsArticleViewSet`` exposes the raw ingested text layer with provider and date
+filtering.
+
+``SentimentScoreViewSet`` exposes scores **and** a ``latest`` convenience action that
+resolves the most recent row per asset rather than making a client page backwards
+through history. A ``recalculate`` action re-runs the aggregation pipeline on demand.
+Because all three ``score_type`` scopes share one table, every query here must filter
+by scope -- an unfiltered response mixes per-article, per-asset, and market-level rows
+that are not comparable.
+
+``ConceptHeatViewSet`` serves the theme ranking surface.
+
+Recalculation re-runs an aggregation that is idempotent by
+``(article, asset, date, score_type)``, so it upserts rather than double-counts. It is
+nonetheless expensive over a wide window and belongs in a task, not a request, when
+the range is large.
+"""
+
 from datetime import date
 
 from django.db.models import Avg

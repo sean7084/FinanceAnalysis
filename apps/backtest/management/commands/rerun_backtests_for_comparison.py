@@ -1,4 +1,21 @@
-# docker exec -i finance_analysis_django python manage.py rerun_backtests_for_comparison --run-ids  --name-suffix --queue
+"""Clone existing backtest runs so they can be re-executed for comparison.
+
+Creates new ``BacktestRun`` rows by deep-copying the parameters of the runs named by
+``--run-ids``, suffixing their names, and optionally queueing them. The originals are
+left untouched.
+
+This is what makes an apples-to-apples comparison possible after something changed --
+a new artifact generation, a repaired feature backfill, a fee or TP/SL policy tweak.
+Re-running in place would destroy the baseline you are comparing against, and
+re-specifying the parameters by hand would not reproduce it exactly.
+
+Because ``parameters`` is deep-copied rather than shared, the clones can be edited
+individually afterwards to vary exactly one dimension at a time.
+
+Runs are queued onto the ``backtest`` Celery queue unless executed inline, so a
+worker must be consuming that queue -- see ``docs/how-to/local-setup.md``.
+"""
+
 from copy import deepcopy
 from unittest.mock import patch
 

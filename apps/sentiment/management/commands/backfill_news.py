@@ -1,3 +1,31 @@
+"""Backfill historical or recent news into ``NewsArticle``.
+
+The only backfill command in the project that takes **datetime** handles
+(``--start-at``, ``--end-at``) rather than date-only ones. News is timestamped
+intraday and providers impose per-request limits, so a date-only window cannot
+express "from this moment" or bound a single provider call.
+
+Ingestion is deduplicated on URL, which makes the command safe to re-run over an
+overlapping window -- it fills gaps without duplicating articles. Providers that
+supply no URL get a deterministic synthetic one, so deduplication still holds.
+
+``--run-pipeline`` is the flag that is easy to forget. Without it the command stores
+articles and stops: no ``SentimentScore`` rows, no ``ConceptHeat``, and therefore no
+change to anything a model consumes. With it, scoring and aggregation follow ingest.
+
+Throttling handles matter more here than anywhere else in the project, because news
+providers are the most quota-constrained source: ``--chunk-days`` bounds each request
+window, ``--sleep-seconds`` paces calls, ``--max-retries`` tolerates transient quota
+errors, ``--limit-per-provider`` caps volume, and ``--dry-run`` previews the plan
+before spending quota on it. Use ``--dry-run`` first on any wide range.
+
+``--queue`` dispatches the work to Celery instead of running inline; the ``ops`` queue
+must have a consumer.
+
+Quota and blackout behaviour is covered in
+``docs/how-to/runbook-provider-blackout.md``.
+"""
+
 from datetime import datetime, timedelta
 from time import sleep
 

@@ -1,3 +1,15 @@
+"""Benchmark comparison curves for a backtest run.
+
+Builds the payload that lets a strategy equity curve be read against the official
+CSI 300 and CSI A500 daily index series, normalised onto the run's own trading
+dates so the two are comparable point for point.
+
+Comparison is derived on demand from ``BenchmarkIndexDaily`` rather than stored on
+the run, so a run created before a benchmark backfill still compares correctly
+once the index history exists. ``build_backtest_comparison_payload`` is the entry
+point used by the API and by the export commands.
+"""
+
 from decimal import Decimal
 
 from apps.markets.models import BenchmarkIndexDaily, OHLCV

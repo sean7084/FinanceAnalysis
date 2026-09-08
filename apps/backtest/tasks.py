@@ -1,3 +1,41 @@
+"""Backtest execution engine.
+
+Turns a ``BacktestRun`` parameter set into an equity curve, a trade ledger, and a
+report. The design decisions that are easy to get wrong when reading this module:
+
+**Candidates are generated at runtime, never read from stored predictions.**
+Heuristic, LightGBM, and LSTM candidates are recomputed per trading date from the
+artifacts and feature tables that are active *now*. Depending on
+``PredictionResult`` / ``LightGBMPrediction`` history would restrict which windows
+can be tested and would freeze whichever artifact happened to be deployed when a
+row was written, making runs incomparable.
+
+**Each session closes before it opens.** Freeing capital and position slots on the
+same date they are vacated, rather than a day later, is what makes
+``capital_fraction_per_entry`` behave as configured.
+
+**Long runs are chunked and resumable.** A run executes
+``BACKTEST_CHUNK_TRADING_DAYS`` trading days at a time and persists its progress in
+``BacktestRun.report.runtime_state``. Chunking is what lets a multi-year run survive
+a worker restart or the 1800s soft time limit; the task re-queues its own
+continuation, so a single ``run_backtest`` call rarely completes a long run.
+
+**Exits prefer the conservative outcome.** Only a daily close is available, so the
+intraday path is unknown. When both a stop and a target would trigger on the same
+bar the stop wins. A position is never force-closed at a fabricated price: a
+missing or non-positive close leaves it open and retries the scheduled exit later.
+
+**Fees are asymmetric on purpose.** CN A-share stamp duty applies to sells only, so
+a symmetric fee model understates the cost of turnover and flatters short holding
+periods.
+
+Process-level caches (trading dates, price maps, matrix signals) are bounded and
+shared across runs in the same process; use ``clear_backtest_process_caches()``
+between unrelated batches.
+
+Semantics are specified in ``TECHNICAL_GUIDE.md`` section 7.
+"""
+
 import os
 import inspect
 from bisect import bisect_left
@@ -109,6 +147,13 @@ def _bounded_cache_set(cache, key, value, max_entries):
 
 
 def clear_backtest_process_caches():
+    """Drop every process-level cache used during backtest execution.
+
+    Callers running several unrelated batches in one process -- notably
+    ``run_core_backtest_matrix --execute-inline`` -- use this between horizon
+    groups so cached trading dates, price maps, and signal surfaces from one
+    batch cannot be reused by the next, and so peak memory stays bounded.
+    """
     _TRADING_DATES_CACHE.clear()
     _PRICE_MAP_CACHE.clear()
     _MATRIX_SIGNAL_CACHE.clear()
@@ -291,6 +336,25 @@ def _clamp(v, low=Decimal('-1'), high=Decimal('10')):
 
 
 def _resolve_fee_config(run):
+    """Resolve the fee model for a run from ``BacktestRun.parameters``.
+
+    Two mutually exclusive modes:
+
+    ``structured`` (default)
+        CN A-share schedule -- commission at ``0.1 permille`` with a 5 cash
+        minimum on both sides, exchange/transaction handling, regulatory and
+        transfer fees on both sides, and stamp duty on **sells only**. Each
+        component is overridable via its own ``*_per_mille`` parameter.
+
+    ``legacy_flat_fee``
+        A single symmetric ``fee_rate`` applied to both sides, retained for older
+        experiments.
+
+    Supplying ``fee_rate`` alongside any structured parameter raises
+    ``ValueError`` rather than silently preferring one, because the two models
+    price turnover differently and a mixed configuration would make results
+    uninterpretable.
+    """
     params = run.parameters or {}
     structured_keys = {
         'commission_rate_per_mille',
@@ -481,6 +545,13 @@ def _build_price_map(start_date, end_date):
 
 
 def _eligible_backtest_asset_ids(dt, cache):
+    """Return the asset ids tradable on ``dt``.
+
+    Applies the point-in-time effective-universe contract and excludes assets
+    outside their listing window or covered by a full-day suspension. Fails closed
+    when required membership coverage is missing rather than widening to all
+    assets. See ``TECHNICAL_GUIDE.md`` section 1.
+    """
     cache_key = ('eligible_backtest_asset_ids', dt.isoformat())
     if cache_key in cache:
         return cache[cache_key]
@@ -1130,6 +1201,12 @@ def _should_enter_position(_dt, _entry_weekdays):
 
 
 def _resolve_exit_date(trading_dates, entry_date, holding_period_days):
+    """Return the scheduled exit trading date for an entry.
+
+    Resolves to the first trading day on or after ``holding_period_days`` sessions
+    past ``entry_date`` using the official calendar, so suspensions and holidays
+    shift the exit rather than shortening the hold.
+    """
     target_exit_date = entry_date + timedelta(days=holding_period_days)
     position = bisect_left(trading_dates, target_exit_date)
     if position >= len(trading_dates):
@@ -1171,6 +1248,13 @@ def _reference_metadata_subset(metadata):
 
 
 def _collect_run_model_references(run):
+    """Collect the model provenance behind a run's executed trades.
+
+    Provenance is read from the ``signal_payload`` of trades that actually
+    executed, so a run that opened no positions reports no model references even
+    though it did resolve models. That is a known reporting blind spot rather than
+    evidence that no model was used.
+    """
     version_payloads = {}
     artifact_payloads = {}
 
@@ -1586,6 +1670,24 @@ def _build_lightgbm_candidates(dt, horizon, up_threshold, top_n, cache, trade_de
 
 
 def _pick_candidates(run, dt, cache):
+    """Select and rank entry candidates for ``dt`` under the run's parameters.
+
+    Generates predictions at runtime for the eligible universe, applies
+    ``up_threshold``, then ranks according to ``candidate_mode``:
+
+    ``top_n``
+        Rank by ``up_probability`` for ``horizon_days`` and keep ``top_n``.
+
+    ``trade_score``
+        Filter on ``trade_score_threshold`` and cap at ``max_positions``. With
+        ``trade_score_scope='combined'`` the heuristic and LightGBM scores are
+        averaged per asset; ``'independent'`` uses the selected source alone.
+
+    Optional macro-aware ranking multiplies scores by the market-regime factor.
+    Each returned candidate carries a ``signal_payload`` recording rank, the
+    metric it ranked on, threshold pass/fail, selection state, and model
+    provenance -- which is what makes an executed entry explainable after the fact.
+    """
     params = run.parameters or {}
     top_n = int(params.get('top_n', 5))
 
@@ -1816,6 +1918,27 @@ def _flush_trade_buffer(trade_buffer):
 
 
 def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit, trade_buffer=None):
+    """Close every open position that should exit on ``current_date``.
+
+    Exit precedence, using the **raw daily close** rather than the
+    slippage-adjusted fill price -- the trigger is a market condition, the fill is
+    a transaction:
+
+    1. ``close <= stop_loss_price`` -> ``STOP_LOSS`` (checked first: with only a
+       daily close the intraday path is unknown, so the conservative exit wins when
+       both would trigger).
+    2. ``close >= target_price`` -> ``TARGET_PRICE``.
+    3. Scheduled exit date reached -> ``SCHEDULED``.
+    4. Otherwise the position stays open.
+
+    A missing or non-positive close leaves the position open and retries the
+    scheduled exit on the next later date with a usable price; a position is never
+    force-closed at a fabricated price. Early exits only apply when
+    ``enable_stop_target_exit`` is set.
+
+    Returns ``(cash, remaining_positions)`` and appends realised PnL to
+    ``closed_pnls``.
+    """
     remaining_positions = []
     for position in open_positions:
         sell_close = price_map.get((position['asset_id'], current_date))
@@ -1889,6 +2012,24 @@ def _open_positions_for_date(
     runtime_cache=None,
     trade_buffer=None,
 ):
+    """Open positions for ``current_date`` from the ranked candidates.
+
+    Runs after ``_close_positions_for_date`` so capital and position slots freed
+    this session are available to reuse. Deployable capital for the entry cycle is
+    ``min(cash, initial_capital * capital_fraction_per_entry)``, split evenly
+    across the selected candidates; each buy amount is solved against that budget
+    **net of** the applicable buy-side fee model, including the minimum-commission
+    branch when it binds, so the budget is respected after costs rather than
+    before.
+
+    Entry is restricted to the run's ``entry_weekdays`` when supplied. Buy fills
+    are ``close + slippage``. Each position records the ``target_price``,
+    ``stop_loss_price``, and ``signal_payload`` that ``_close_positions_for_date``
+    later consumes; missing trade-decision fields are backfilled from the
+    prediction payload by ``_backfill_prediction_trade_decision``.
+
+    Returns the updated cash balance.
+    """
     if not candidate_rows:
         return cash
 
@@ -2089,6 +2230,11 @@ def revoke_backtest_task(run, *, terminate=False):
 
 
 def queue_backtest_run(run):
+    """Enqueue ``run`` on the ``backtest`` queue and record its task id.
+
+    The task id is persisted on the run so ``apps.backtest.task_health`` can later
+    tell a genuinely executing run from one whose worker disappeared.
+    """
     result = run_backtest.delay(run.id)
     next_task_id = getattr(result, 'id', '') or ''
     run.current_task_id = str(next_task_id) if next_task_id else ''
@@ -2152,6 +2298,18 @@ def _mark_backtest_run_failed(backtest_run_id, error_message):
 
 @shared_task(bind=True, soft_time_limit=1800, time_limit=2100)
 def run_backtest(self, backtest_run_id):
+    """Execute one chunk of a backtest run, re-queueing itself until complete.
+
+    Decorated with ``soft_time_limit=1800`` and ``time_limit=2100``, overriding the
+    global 60s / 300s pair: a backtest legitimately runs for tens of minutes, while
+    the short global limits exist to protect the ``ops`` queue from a stuck sync.
+
+    Progress is persisted in ``BacktestRun.report.runtime_state``, so a soft-timeout
+    or a worker restart resumes from the last completed chunk rather than
+    restarting. Because the task catches its own exceptions and records the failure
+    on the run, Celery may report ``succeeded`` for a run that actually failed --
+    read the returned value and ``BacktestRun.status``, not the Celery state.
+    """
     run = BacktestRun.objects.filter(id=backtest_run_id).first()
     if not run:
         return f'Backtest run not found: {backtest_run_id}'

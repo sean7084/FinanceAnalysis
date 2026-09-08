@@ -1,3 +1,18 @@
+"""Backtest API serialisation.
+
+Responsible for two things beyond field mapping:
+
+**Validating the parameter set on create.** The strategy surface lives in the
+``parameters`` JSON rather than in columns, so the contract -- which candidate modes
+exist, which horizons are valid, that ``fee_rate`` cannot be combined with the
+structured fee parameters, that weekdays parse -- is enforced here rather than by
+the database.
+
+**Surfacing execution state.** ``get_backtest_run_task_owner_state`` is folded into
+the representation so a client can tell a run that is genuinely executing from one
+whose worker disappeared, without polling Celery directly.
+"""
+
 from rest_framework import serializers
 
 from .models import BacktestRun, BacktestTrade

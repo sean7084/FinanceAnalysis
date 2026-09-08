@@ -1,3 +1,19 @@
+"""Backtest persistence.
+
+Two tables only. A run carries its configuration, its results, and its execution
+state; trades carry the ledger.
+
+``BacktestRun.parameters`` is the escape hatch that keeps the schema stable while
+the strategy surface grows -- candidate mode, trade-score scope, entry weekdays,
+fee overrides, TP/SL policy, and LightGBM inference backend all live there rather
+than as columns. ``BacktestRun.report`` holds the equity curve, the benchmark
+curve, strategy metadata, and ``runtime_state`` for chunked resume.
+
+The consequence is that most run behaviour is **not** queryable through the ORM.
+Filtering runs by a parameter means filtering in Python over the JSON, which is why
+the export commands read a bounded id range rather than querying by configuration.
+"""
+
 from django.conf import settings
 from django.db import models
 from django.utils.translation import gettext_lazy as _
@@ -6,6 +22,17 @@ from apps.markets.models import Asset
 
 
 class BacktestRun(models.Model):
+    """One backtest: its parameters, results, and chunked execution state.
+
+    ``status`` tracks the lifecycle (``PENDING`` -> ``RUNNING`` -> ``COMPLETED`` or
+    ``FAILED``, with ``PAUSED`` reachable from ``RUNNING``). ``current_task_id`` and
+    ``pending_control_action`` are what make an asynchronous, resumable run
+    controllable from the API; ``apps.backtest.task_health`` reads them to detect a
+    run whose worker has gone away.
+
+    ``report.runtime_state`` is resume bookkeeping rather than a result -- a run is
+    complete when the state says so, not when ``status`` is ``COMPLETED``.
+    """
     class StrategyType(models.TextChoices):
         BOTTOM_CANDIDATE = 'BOTTOM_CANDIDATE', _('Bottom Candidate')
         PREDICTION_THRESHOLD = 'PREDICTION_THRESHOLD', _('Prediction Threshold')
@@ -91,6 +118,17 @@ class BacktestRun(models.Model):
 
 
 class BacktestTrade(models.Model):
+    """One executed buy or sell leg of a run.
+
+    Rows are legs, not round trips: a closed position produces a ``BUY`` and a
+    ``SELL``. Reported ``total_trades`` counts closed positions, so it is not
+    comparable to a row count here.
+
+    ``signal_payload`` carries the candidate's rank, the metric it ranked on,
+    threshold pass/fail, selection state, trade-decision levels, and model
+    provenance. It is the only record of *why* an entry happened, and it is what
+    ``_collect_run_model_references`` reads to attribute a run to its models.
+    """
     class Side(models.TextChoices):
         BUY = 'BUY', _('Buy')
         SELL = 'SELL', _('Sell')

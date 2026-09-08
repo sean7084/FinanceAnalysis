@@ -1,3 +1,26 @@
+"""Detection of backtest runs whose worker has gone away.
+
+A chunked run re-queues its own continuation, so ``RUNNING`` is a normal state that
+can persist for a long time. That makes "is this run actually progressing?" a real
+question, and the answer cannot come from ``status`` alone.
+
+The distinction that matters is between a run whose Celery task reached a terminal
+state while the row still says ``RUNNING`` -- genuinely orphaned -- and a run whose
+continuation is queued and simply waiting for a free worker. The second case looks
+identical from the outside: ``PENDING`` task state, ``RUNNING`` row.
+
+What separates them is ``runtime_state`` / ``progress`` in the report. A chunked
+continuation always carries resume state, so ``PENDING`` **with** progress is
+legitimate, while ``PENDING`` with no progress and an age past the threshold is
+orphaned. Getting this backwards either restarts healthy runs or leaves dead ones
+stuck forever.
+
+The threshold is ``BACKTEST_STALE_TASK_MAX_AGE_SECONDS`` (default 2400). It is read
+via ``getattr`` on settings but is not defined there and not wired to the
+environment, so changing it currently needs a code edit -- tracked in
+``BACKLOG.md``.
+"""
+
 from celery.result import AsyncResult
 from django.conf import settings
 from django.utils import timezone

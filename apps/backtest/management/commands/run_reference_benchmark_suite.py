@@ -1,3 +1,22 @@
+"""Run a validation sweep and export it as a reference evidence bundle.
+
+Wraps ``run_validation_backtests`` and then writes a self-describing bundle under
+``--output-dir``: rolling run summaries, the model references those runs resolved,
+comparison reruns, and a benchmark manifest. ``--suite-name`` labels the bundle.
+
+This is the easiest way to produce shareable evidence after a retrain, because the
+bundle records not just the metrics but **which model generation produced them** --
+which is exactly the linkage that makes two suites comparable and that a bare
+results CSV loses.
+
+``--include-active-lightgbm-artifacts`` adds the active artifact pruning metadata,
+which is what lets a reader tell whether a metric change came from the strategy or
+from the model.
+
+Prefer this over ``run_validation_backtests`` alone whenever the output is meant to
+be compared with a previous run. Output goes under ``reports/``, which is gitignored.
+"""
+
 import json
 from datetime import datetime
 from pathlib import Path

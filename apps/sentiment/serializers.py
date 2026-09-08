@@ -1,3 +1,17 @@
+"""Sentiment API serialisation.
+
+Thin field mapping over ``NewsArticle``, ``SentimentScore``, and ``ConceptHeat``.
+
+Score fields are ``DecimalField`` on the models and must stay decimal in the wire
+format. Serialising them as floats would make sentiment values non-reproducible
+across clients, and sentiment feeds model features where a rounding difference is
+indistinguishable from a real signal change.
+
+``score_type`` is exposed on every ``SentimentScore`` representation so a client can
+tell which of the three scopes it is looking at -- the single table stores
+per-article, per-asset, and market-level rows together.
+"""
+
 from rest_framework import serializers
 
 from .models import NewsArticle, SentimentScore, ConceptHeat

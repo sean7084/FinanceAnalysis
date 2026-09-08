@@ -1,9 +1,34 @@
+"""Create and run the core heuristic/LightGBM backtest matrix.
+
+Builds the cross product of ``--variants`` and ``--sources`` over a date window,
+creates every ``BacktestRun`` up front, then either queues them or executes the whole
+matrix in this process.
+
+Creating all runs before executing any is deliberate: it makes the matrix visible and
+countable immediately, so an interrupted run leaves a known set of resumable rows
+rather than a partially specified experiment.
+
+``--execute-inline`` is the fastest local path. It keeps the daily signal surfaces in
+this process instead of paying cold-cache costs per worker, buckets runs by
+``horizon_days`` so runs sharing a horizon reuse the same cached predictions rather
+than evicting each other, drains each bucket round-robin, and clears the process
+caches between buckets and on exit so an interrupted matrix cannot leak state into
+the next one. Continuations are detected from persisted run state -- a run still
+``RUNNING`` after a chunk is re-queued -- so the inline path resumes exactly the way
+the queued path does.
+
+``--lightgbm-inference-backend`` is the dominant performance variable and is easy to
+leave at ``auto`` by accident; ``windows_gpu`` needs a CUDA-capable runtime that the
+default Windows install does not provide.
+
+The full option surface is generated in ``docs/reference/commands.md``.
+"""
+
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowsgpuqueue --queue --lightgbm-inference-backend windows_gpu
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuqueue --queue --lightgbm-inference-backend cpu_serial
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260603-windowsgpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu --output-dir reports/20260603-windowsgpuinline
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend cpu_serial --output-dir reports/20260601-windowscpuinline
 
-import json
 import json
 from datetime import date
 from pathlib import Path

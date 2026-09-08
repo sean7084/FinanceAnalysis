@@ -1,3 +1,23 @@
+"""Create rolling validation backtests across a date range.
+
+Walks the range in ``--window-days`` steps of ``--step-days``, creating one run per
+window per ``--sources`` entry, so a single invocation produces a rolling
+out-of-sample picture rather than one aggregate number.
+
+Rolling windows are the point. A single long backtest averages over regimes and hides
+whether a model works now or only worked during one favourable period; a sequence of
+windows shows the distribution and exposes regime sensitivity.
+
+Every parameter that shapes candidate selection and exit behaviour is exposed here
+(``--top-n``, ``--horizon-days``, ``--entry-weekdays``, ``--holding-period-days``,
+``--capital-fraction-per-entry``, ``--min-up-probability``) so a validation sweep can
+hold the strategy constant while only the window moves.
+
+Runs are queued onto the ``backtest`` Celery queue unless ``--queue`` is omitted in
+favour of inline execution. Use ``run_reference_benchmark_suite`` when the goal is a
+shareable evidence bundle rather than just the runs.
+"""
+
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model

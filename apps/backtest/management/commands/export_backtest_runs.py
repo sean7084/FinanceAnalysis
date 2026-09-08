@@ -1,4 +1,25 @@
-# docker exec -i finance_analysis_django python manage.py export_backtest_runs --start-id  --end-id  --output-dir reports/dir
+"""Export backtest runs and optional trade detail to CSV under ``reports/``.
+
+Reads a bounded run-id range rather than querying by configuration, because the
+strategy surface lives in ``BacktestRun.parameters`` JSON and is therefore not
+filterable through the ORM.
+
+The default export is deliberately light -- ``run_summary.csv``,
+``run_config_results.csv``, and ``model_references.csv`` -- because those three
+answer "what did I run and how did it do" for a whole matrix at a readable size.
+``--detail-export`` adds the trade ledger, monthly macro context, and comparison
+curves, which are large; ``--include-active-lightgbm-artifacts`` adds the artifact
+pruning metadata needed to attribute results to a model generation.
+
+``trades.csv`` under detail export carries the ``signal_payload`` fields --
+``trade_score``, ``target_price``, ``stop_loss_price``, ``suggested``,
+``model_version``, ``model_version_id``, ``model_artifact_id`` -- which is what
+makes an individual entry explainable after the fact.
+
+Output goes under ``reports/``, which is gitignored: exports are generated local
+evidence, not committed source.
+"""
+
 import csv
 import json
 from decimal import Decimal

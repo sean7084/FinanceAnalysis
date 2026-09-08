@@ -1,3 +1,30 @@
+"""News provider adapters.
+
+Each upstream source returns a different record shape, a different datetime format,
+and sometimes no stable URL at all. This module reduces all of them to one normalised
+item shape so the ingestion pipeline downstream never needs to know which provider a
+record came from.
+
+Two normalisation problems are worth understanding before adding a provider:
+
+**Datetimes.** ``_coerce_datetime`` is per-provider because the formats genuinely
+differ, including providers that omit the date on same-day items. A provider whose
+timestamps are silently misparsed will ingest news against the wrong trading day,
+which corrupts every downstream rolling window without raising an error.
+
+**Identity.** Providers that supply no URL get a deterministic synthetic one derived
+from the provider name and payload text (``_synthetic_url``). Ingestion deduplicates
+on the URL, so a stable synthetic identity is what prevents the same article being
+ingested repeatedly on successive fetches -- and why the derivation must stay
+deterministic.
+
+``PROVIDER_TO_SOURCE`` records the provenance label persisted with each article, so a
+score can later be attributed to the source that produced the text.
+
+Providers are rate-limited and occasionally unavailable; quota and blackout handling
+is the caller's concern -- see ``docs/how-to/runbook-provider-blackout.md``.
+"""
+
 import hashlib
 from datetime import datetime, time
 

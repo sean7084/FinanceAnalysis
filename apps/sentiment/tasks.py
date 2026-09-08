@@ -1,3 +1,34 @@
+"""Sentiment pipeline: ingest, score, aggregate.
+
+Four responsibilities that are easy to conflate:
+
+**Ingestion.** ``fetch_latest_market_news`` and ``ingest_latest_news`` pull from the
+provider adapters and persist ``NewsArticle`` rows, deduplicating on URL. Historical
+ingestion is windowed by ``_compute_historical_backfill_window`` against
+``NEWS_BACKFILL_FLOOR`` so an hourly job advances through history in bounded chunks
+rather than re-fetching everything.
+
+**Scoring.** ``_tokenize`` / ``_score_text`` / ``_label`` are a rule-based,
+lexicon-driven Chinese finance scorer. It is deliberately simple and its output is
+**neutral-heavy**: most articles score near zero because the lexicon does not match,
+not because the news was neutral. Treat a neutral score as "no evidence" rather than
+"no signal". Replacing this with a finance-oriented Chinese BERT model is tracked in
+``BACKLOG.md``.
+
+**Asset attribution.** ``_build_asset_match_index`` and ``_match_related_assets``
+resolve articles to assets through name aliases rather than ticker mentions, because
+Chinese financial news overwhelmingly refers to companies by name or abbreviation.
+Matching is capped so one article cannot be attributed to the whole market.
+
+**Aggregation.** Article-level scores roll up into ``ASSET_7D`` and ``MARKET_7D``
+scopes, plus ``ConceptHeat`` from inferred tags. ``ASSET_7D`` is the scope models
+actually consume; ``MARKET_7D`` is a dashboard surface only.
+
+Provider quota exhaustion is detected by ``_is_provider_quota_error`` and treated as
+a retryable condition rather than a failure -- a throttled fetch must not be recorded
+as "no news today". See ``docs/how-to/runbook-provider-blackout.md``.
+"""
+
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal

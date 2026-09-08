@@ -1,3 +1,22 @@
+"""Backtest API surface.
+
+``BacktestRunViewSet`` is not read-only. Beyond create/list/retrieve it exposes the
+run lifecycle -- pause, resume, restart, delete, rerun -- plus the benchmark
+comparison payload, and ``BacktestTradeViewSet`` serves the trade ledger.
+
+Lifecycle transitions are **intent-based**, not immediate. A pause or restart on a
+running task records ``pending_control_action`` and revokes the Celery task; the
+worker or the next chunk boundary applies the intent. This is why a run can be
+``RUNNING`` with a pending action, and why ``task_health`` exists to distinguish a
+run that is genuinely executing from one whose worker disappeared.
+
+Creation enqueues asynchronously onto the ``backtest`` queue; a worker consuming
+only ``ops`` will accept the run and never execute it.
+
+Note that ``queue_backtest_run`` is defined here and in ``tasks.py``. The two must
+stay in sync; consolidating them is tracked in ``BACKLOG.md``.
+"""
+
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
