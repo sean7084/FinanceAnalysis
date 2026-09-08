@@ -746,22 +746,17 @@ class Phase10SignalTests(TestCase):
                 )
             )
 
-        start_date = timezone.datetime(2024, 2, 1).date()
-        trade_dates = [start_date + datetime.timedelta(days=offset) for offset in range(21)]
+        # RS_SCORE requires an exact 20-trading-day anchor, i.e. 21 window points,
+        # resolved from the official exchange calendar -- assets missing the current
+        # date, the anchor date, or any interior session are excluded from the day's
+        # ranking. The helper generates business days and seeds matching open
+        # calendar rows; 21 consecutive calendar days would not work, since
+        # 2024-02-01..02-21 contains only 15 weekdays. The generated dates are
+        # identical for every asset, so the last binding is the shared window.
+        as_of = timezone.datetime(2024, 2, 21).date()
         for asset_index, asset in enumerate(assets, start=1):
-            for offset, trade_date in enumerate(trade_dates):
-                close_value = Decimal('10.0') + (Decimal(str(asset_index)) * Decimal('0.05') * Decimal(offset))
-                OHLCV.objects.create(
-                    asset=asset,
-                    date=trade_date,
-                    open=close_value,
-                    high=close_value + Decimal('0.1'),
-                    low=close_value - Decimal('0.1'),
-                    close=close_value,
-                    adj_close=close_value,
-                    volume=1000,
-                    amount=close_value * Decimal('1000'),
-                )
+            prices = [10.0 + (asset_index * 0.05 * offset) for offset in range(21)]
+            trade_dates = _make_ohlcv_sequence(asset, prices, base_date=as_of, volume=1000)
 
         IndexMembership.objects.bulk_create([
             IndexMembership(
@@ -801,23 +796,14 @@ class Phase10SignalTests(TestCase):
         )
 
         as_of = datetime.date(2024, 2, 21)
-        trade_dates = [as_of - datetime.timedelta(days=offset) for offset in range(20, -1, -1)]
-        for offset, trade_date in enumerate(trade_dates):
-            self_close = Decimal('10.0') + (Decimal('0.01') * Decimal(offset))
-            peer_close = Decimal('10.0') + (Decimal('0.10') * Decimal(offset))
-            for asset, close_value in ((self.asset, self_close), (peer_asset, peer_close)):
-                OHLCV.objects.create(
-                    asset=asset,
-                    date=trade_date,
-                    open=close_value,
-                    high=close_value + Decimal('0.1'),
-                    low=close_value - Decimal('0.1'),
-                    close=close_value,
-                    adj_close=close_value,
-                    volume=1000,
-                    amount=close_value * Decimal('1000'),
-                )
+        # Same 21-trading-day requirement as the other RS_SCORE tests. The peer's
+        # steeper trajectory is what the ranking assertion below checks.
+        self_prices = [10.0 + (0.01 * offset) for offset in range(21)]
+        peer_prices = [10.0 + (0.10 * offset) for offset in range(21)]
+        _make_ohlcv_sequence(self.asset, self_prices, base_date=as_of, volume=1000)
+        _make_ohlcv_sequence(peer_asset, peer_prices, base_date=as_of, volume=1000)
 
+        # Deliberately outside the seeded calendar window: this row must be ignored.
         OHLCV.objects.create(
             asset=self.asset,
             date=as_of + datetime.timedelta(days=1),
@@ -881,22 +867,13 @@ class Phase10SignalTests(TestCase):
                 )
             )
 
-        start_date = timezone.datetime(2024, 2, 1).date()
-        trade_dates = [start_date + datetime.timedelta(days=offset) for offset in range(21)]
+        # As above: 21 trading days ending at as_of, with the official calendar
+        # seeded, so the point-in-time union filter is what limits the result to the
+        # two assets holding membership rather than the window being unsatisfiable.
+        as_of = timezone.datetime(2024, 2, 21).date()
         for asset_index, asset in enumerate(assets, start=1):
-            for offset, trade_date in enumerate(trade_dates):
-                close_value = Decimal('10.0') + (Decimal(str(asset_index)) * Decimal('0.05') * Decimal(offset))
-                OHLCV.objects.create(
-                    asset=asset,
-                    date=trade_date,
-                    open=close_value,
-                    high=close_value + Decimal('0.1'),
-                    low=close_value - Decimal('0.1'),
-                    close=close_value,
-                    adj_close=close_value,
-                    volume=1000,
-                    amount=close_value * Decimal('1000'),
-                )
+            prices = [10.0 + (asset_index * 0.05 * offset) for offset in range(21)]
+            trade_dates = _make_ohlcv_sequence(asset, prices, base_date=as_of, volume=1000)
 
         IndexMembership.objects.create(
             asset=assets[-1],
