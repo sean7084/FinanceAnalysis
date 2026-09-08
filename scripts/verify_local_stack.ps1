@@ -9,43 +9,68 @@ Write-Output "Project root: $ProjectRoot"
 Write-Output "Python: $PythonBin"
 Write-Output "Django settings: $env:DJANGO_SETTINGS_MODULE"
 
-$databaseEndpoint = Get-DatabaseEndpoint
+# Probe PostgreSQL and Redis through their Python drivers rather than through
+# pg_isready / redis-cli. Neither binary ships with Windows, so shelling out to them
+# silently degraded this script into a no-op that still exited 0 -- which is how a
+# wrong Redis credential survived undetected while this verifier reported success.
+$serviceProbe = @'
+import os
+import sys
+from urllib.parse import urlparse
 
-$pgIsReady = Get-Command pg_isready -ErrorAction SilentlyContinue
-if ($pgIsReady) {
-  & $pgIsReady.Source -h $databaseEndpoint.Host -p $databaseEndpoint.Port *> $null
-  if ($LASTEXITCODE -ne 0) {
-    Write-Error "PostgreSQL is not ready on $($databaseEndpoint.Host):$($databaseEndpoint.Port)"
-    $status = 1
-  } else {
-    Write-Output 'PostgreSQL: ready'
-  }
-} else {
-  Write-Warning 'pg_isready not found; skipping PostgreSQL readiness probe'
+import psycopg2
+import redis
+
+
+def redact(url):
+    """Return a URL safe to print. Never emit credentials, even on failure."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return '<unparsable>'
+    host = parsed.hostname or '<unparsable>'
+    port = ':%s' % parsed.port if parsed.port else ''
+    # A malformed URL can push credentials into the path; refuse to print those.
+    path = parsed.path or ''
+    if '@' in path or ':' in path:
+        path = '/<redacted>'
+    return '%s://%s%s%s' % (parsed.scheme or 'redis', host, port, path)
+
+
+status = 0
+
+database_url = os.environ.get('DATABASE_URL', 'postgres://localhost:5432')
+try:
+    connection = psycopg2.connect(database_url, connect_timeout=5)
+except Exception as exc:
+    print('PostgreSQL check failed for %s: %s' % (redact(database_url), exc), file=sys.stderr)
+    status = 1
+else:
+    connection.close()
+    print('PostgreSQL: ready (%s)' % redact(database_url))
+
+for label, url in (
+    ('Redis broker', os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')),
+    ('Redis cache/channels', os.environ.get('REDIS_URL', 'redis://localhost:6379/1')),
+):
+    try:
+        client = redis.Redis.from_url(url, socket_connect_timeout=5, socket_timeout=5)
+        client.ping()
+    except Exception as exc:
+        print('%s check failed for %s: %s' % (label, redact(url), exc), file=sys.stderr)
+        status = 1
+    else:
+        print('%s: ready (%s)' % (label, redact(url)))
+
+sys.exit(status)
+'@
+
+& $PythonBin -c $serviceProbe
+if ($LASTEXITCODE -ne 0) {
+  $status = 1
 }
 
-$redisCli = Get-Command redis-cli -ErrorAction SilentlyContinue
-if ($redisCli) {
-  & $redisCli.Source -u $env:CELERY_BROKER_URL ping *> $null
-  if ($LASTEXITCODE -ne 0) {
-    Write-Error "Redis broker check failed for $($env:CELERY_BROKER_URL)"
-    $status = 1
-  } else {
-    Write-Output 'Redis broker: ready'
-  }
-
-  & $redisCli.Source -u $env:REDIS_URL ping *> $null
-  if ($LASTEXITCODE -ne 0) {
-    Write-Error "Redis cache/channels check failed for $($env:REDIS_URL)"
-    $status = 1
-  } else {
-    Write-Output 'Redis cache/channels: ready'
-  }
-} else {
-  Write-Warning 'redis-cli not found; skipping Redis readiness probes'
-}
-
-& $PythonBin -c "import celery, django, redis, talib; print('Python dependencies: ok')"
+& $PythonBin -c "import celery, django, psycopg2, redis, talib; print('Python dependencies: ok')"
 & $PythonBin manage.py check
 
 $settingsProbe = @'

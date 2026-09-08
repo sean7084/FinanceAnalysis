@@ -13,9 +13,25 @@ echo "Django settings: $DJANGO_SETTINGS_MODULE"
 if ! "$PYTHON_BIN" - <<'PY'
 import os
 import sys
+from urllib.parse import urlparse
 
 import psycopg2
 import redis
+
+
+def redact(url):
+    """Return a URL safe to print. Never emit credentials, even on failure."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return '<unparsable>'
+    host = parsed.hostname or '<unparsable>'
+    port = f':{parsed.port}' if parsed.port else ''
+    # A malformed URL can push credentials into the path; refuse to print those.
+    path = parsed.path or ''
+    if '@' in path or ':' in path:
+        path = '/<redacted>'
+    return f'{parsed.scheme or "redis"}://{host}{port}{path}'
 
 
 status = 0
@@ -24,11 +40,11 @@ database_url = os.environ.get('DATABASE_URL', 'postgres://localhost:5432')
 try:
     connection = psycopg2.connect(database_url, connect_timeout=5)
 except Exception as exc:
-    print(f'PostgreSQL check failed for {database_url}: {exc}', file=sys.stderr)
+    print(f'PostgreSQL check failed for {redact(database_url)}: {exc}', file=sys.stderr)
     status = 1
 else:
     connection.close()
-    print('PostgreSQL: ready')
+    print(f'PostgreSQL: ready ({redact(database_url)})')
 
 for label, url in (
     ('Redis broker', os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')),
@@ -38,10 +54,10 @@ for label, url in (
         client = redis.Redis.from_url(url, socket_connect_timeout=5, socket_timeout=5)
         client.ping()
     except Exception as exc:
-        print(f'{label} check failed for {url}: {exc}', file=sys.stderr)
+        print(f'{label} check failed for {redact(url)}: {exc}', file=sys.stderr)
         status = 1
     else:
-        print(f'{label}: ready')
+        print(f'{label}: ready ({redact(url)})')
 
 sys.exit(status)
 PY
