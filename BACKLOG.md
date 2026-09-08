@@ -72,24 +72,24 @@ Items here have no commitment attached. When something is done, move it to
   production `asset_exchange_code` helper so fixture and guard cannot diverge, and
   returns the dates so callers can bound windows by trading day instead of assuming
   one row per calendar day.
+- **RS_SCORE fixtures had the same defect in a second location.** The three
+  `test_calculate_rs_scores_for_all_assets_*` tests built OHLCV inline over 21
+  **consecutive calendar days** from 2024-02-01 with no calendar rows. That range
+  contains only 15 weekdays, so it could never satisfy the exact 20-trading-day
+  anchor `RS_SCORE` requires — the window was unsatisfiable regardless of seeding.
+  Routed all three through `_make_ohlcv_sequence`, which generates 21 business days
+  ending at the patched `as_of` (2024-02-21, so the window starts 2024-01-24) and
+  seeds the calendar. `Phase10SignalTests` is now 17/17.
 
 ---
 
 ## Open — correctness
 
-### Remaining test failures — 10, in four clusters
+### Remaining test failures — 7, in three clusters
 
-Down from 109 (Redis) to 17 to **10** after the calendar fixture fix. All 10 are
-pre-existing; none was introduced by the documentation work or the fixture fix, and
-the fixture fix was verified not to regress the chunking tests that share the helper.
-
-**Cluster 1 — RS_SCORE fixtures (3 tests, `analytics.Phase10SignalTests`).**
-`test_calculate_rs_scores_for_all_assets_{creates_high_rs_score_for_top_bucket,
-filters_to_point_in_time_union_when_membership_exists,ignores_future_dated_ohlcv_rows}`.
-Same root cause as the fixed cluster but in a different place: these build OHLCV
-inline over 21 **consecutive calendar days** from 2024-02-01 and never seed
-`ExchangeTradingCalendar`. `RS_SCORE` needs an exact 20-trading-day anchor from the
-official calendar. Fix the same way — business days plus seeded calendar rows.
+Down from 109 (Redis) to 17 to 10 to **7**. All 7 are pre-existing; none was
+introduced by the documentation work or by either fixture fix, and both fixes were
+verified against the full suite for regressions.
 
 **Cluster 2 — data-quality continuity (3 tests, `core`).**
 `DataQualityValidationCommandTests.test_validate_data_quality_writes_actionable_reports`,

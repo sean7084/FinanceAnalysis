@@ -187,21 +187,24 @@ produced one by default.
 
 ## 6. Known failures and how to read them
 
-A full run currently reports **10 failing of 339**, in four clusters — all
+A full run currently reports **7 failing of 339**, in three clusters — all
 pre-existing fixture debt, catalogued with their diagnoses in `BACKLOG.md`.
 
-That number was **109** until recently. The reduction is instructive, because almost
-none of it came from fixing product code:
+That number was **109** until recently. The reduction is instructive, because none of
+it came from fixing product code:
 
 | Stage | Failing | What changed |
 | --- | --- | --- |
 | As discovered | 109 | Bare `manage.py test` had been finding **0** tests, so none of this was visible |
 | After the Redis credential fix | 17 | One environment value; 92 tests recovered |
 | After the analytics calendar fixture fix | 10 | One test helper; 7 more recovered |
+| After the RS_SCORE fixture fix | 7 | Same helper applied to a second location; 3 more |
 
 The lesson: when a suite reports a large failure count, **categorise by exception
-type before investigating any individual test.** Here 93 of 109 shared one cause, and
-the remaining 16 shared another. Two fixes accounted for 91% of the total.
+type before investigating any individual test.** Here 93 of 109 shared one cause and
+most of the remainder shared another, so three fixes accounted for 94% of the total.
+The remaining 7 needed individual diagnosis — which is the right order to work in,
+because the cheap structural fixes remove the noise that hides the real ones.
 
 ### 6.1 Case study: the Redis failure (93 tests, resolved)
 
