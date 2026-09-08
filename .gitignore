@@ -1,18 +1,52 @@
-compose/local/django/.env
+# ===========================================================================
+# FinanceAnalysis — root .gitignore
+#
+# Rules of the road:
+#   * Keep patterns exact. A bare name such as `README.md` matches at EVERY
+#     depth, so it silently untracks same-named files in subdirectories.
+#   * Never re-add a bare `README.md` rule. It caused exactly that bug and was
+#     removed in c931c48 ("chore(repo): un-ignore README files"). The root
+#     README and nested ones (e.g. frontend/README.md) must stay tracked.
+#   * `frontend/` keeps its own .gitignore (node_modules, dist, npm/vite logs);
+#     those patterns are intentionally not duplicated here.
+#   * Ignoring a path does NOT untrack files already committed. Anything listed
+#     here is expected to be absent from the index.
+# ===========================================================================
+
+
+# --- Secrets & local environment configuration -----------------------------
+# `.env` is an exact-name match at any depth, so it already covers
+# compose/local/django/.env — a dedicated rule for that path is redundant.
+# Do NOT broaden this to `.env*`: it would swallow the shared template below.
 .env
+!.env.example
 .envs/.local
+
+
+# --- Personal editor & workspace state (machine-specific) ------------------
+# Multi-root workspace file: it points at a personal path outside this repo and
+# carries per-user tool auto-approve rules, so it is deliberately untracked.
+FinanceAnalysis.code-workspace
+# Local IDE state only. .vscode/tasks.json and .vscode/git-safe.cmd remain
+# tracked because they are shared with the team.
 .vscode/settings.json
 .vscode/git-safe.sh
-FinanceAnalysis.code-workspace
-FinanceAnalysis.code-workspace
-reports
-source_data
-.venv
+.idea/
+*.swp
+*~
 
-# Downloaded bootstrap installers (never project source)
-get-pip.py
 
-# Python bytecode and cache artifacts
+# --- OS-generated junk -----------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# --- Python virtual environment -------------------------------------------
+.venv/
+
+
+# --- Python bytecode, caches & coverage artifacts --------------------------
 __pycache__/
 *.py[cod]
 *.pyc.*
@@ -30,7 +64,19 @@ __pycache__/
 .coverage.*
 htmlcov/
 
-# Runtime PID files
+
+# --- Logs & runtime files --------------------------------------------------
+# `*.log` also covers the root-level test_results.log.
+*.log
 *.pid
-.env
-test_results.log
+celerybeat-schedule*
+
+
+# --- Local-only data & generated report packs ------------------------------
+# Large, reproducible artifacts rather than project source.
+reports
+source_data
+
+
+# --- Downloaded bootstrap installers (never project source) ----------------
+get-pip.py
