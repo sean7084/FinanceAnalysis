@@ -1,0 +1,64 @@
+Copyright (c) Sean Liu. All rights reserved.
+
+NOTICE
+------
+This repository and all of its contents — including but not limited to source
+code, model artifacts, feature definitions, configuration, documentation, and
+derived data schemas — are private and proprietary.
+
+This is not an open-source project. No licence is granted, by implication,
+estoppel, or otherwise, to any intellectual property rights in this work.
+
+PERMITTED USE
+-------------
+Use, reproduction, modification, and distribution are permitted solely by the
+copyright holder, and by parties acting on the copyright holder's explicit
+written instruction, for the purposes of developing and operating this system.
+
+NOT PERMITTED
+-------------
+Without prior written permission from the copyright holder, you may not:
+
+- copy, reproduce, redistribute, publish, or sublicense any part of this work;
+- create derivative works for any purpose other than operating this system;
+- use the trained model artifacts, feature definitions, or derived datasets
+  outside this system;
+- reverse engineer, decompile, or disassemble any part of this work;
+- remove or alter this notice.
+
+THIRD-PARTY COMPONENTS
+----------------------
+This system depends on separately licensed third-party software, including
+Django, Django REST Framework, Celery, PyTorch, LightGBM, scikit-learn, pandas,
+NumPy, TA-Lib, React, and Vite, and consumes data from TuShare and AkShare.
+Those components remain under their own licences and terms of service; nothing in
+this notice alters them. Data obtained from third-party providers remains subject
+to the respective provider's licensing and redistribution terms.
+
+NO WARRANTY
+-----------
+This work is provided "as is", without warranty of any kind, express or implied,
+including but not limited to the warranties of merchantability, fitness for a
+particular purpose, and noninfringement.
+
+LIMITATION OF LIABILITY
+-----------------------
+In no event shall the copyright holder be liable for any claim, damages, or other
+liability, whether in an action of contract, tort, or otherwise, arising from, out
+of, or in connection with this work or the use or other dealings in this work.
+
+NO FINANCIAL ADVICE
+-------------------
+Nothing produced by this system — including predictions, probability estimates,
+factor scores, trade scores, target prices, stop-loss levels, position-sizing
+suggestions, backtest results, or any derived report — constitutes financial,
+investment, legal, or tax advice. Model outputs are experimental estimates
+generated from historical data and are subject to the limitations documented in
+`TECHNICAL_GUIDE.md`. Past or backtested performance does not indicate future
+results. Any use of this system's output in making financial decisions is at the
+user's sole risk.
+
+CONTACT
+-------
+For licensing enquiries, contact the repository owner:
+https://github.com/sean7084
