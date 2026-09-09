@@ -550,8 +550,32 @@ class Phase15BacktestTests(TestCase):
 
         self.assertEqual([row['asset_id'] for row in rows], [self.asset.id])
 
+    @patch('apps.backtest.tasks._load_model_artifacts')
     @patch('apps.backtest.tasks._predict_lightgbm_for_asset')
-    def test_pick_candidates_filters_on_demand_lightgbm_candidates_to_point_in_time_union(self, mock_predict):
+    def test_pick_candidates_filters_on_demand_lightgbm_candidates_to_point_in_time_union(
+        self, mock_predict, mock_load_artifacts,
+    ):
+        # _pick_candidates resolves the LightGBM runtime for provenance even though
+        # the prediction call is mocked below, so both halves have to be satisfied:
+        # an active horizon-7 artifact row for _get_selected_lightgbm_artifact, and a
+        # stubbed on-disk load for _load_model_artifacts. Same convention as the other
+        # LightGBM backtest tests in this module.
+        feature_names = ['rsi', 'mom_5d', 'rs_score', 'factor_composite', 'sentiment_7d']
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7,
+            version='lgb-bt-pit-candidates',
+            status=LightGBMModelArtifact.Status.READY,
+            artifact_path='models/lightgbm/pit-candidates',
+            feature_names=feature_names,
+            is_active=True,
+        )
+        mock_load_artifacts.return_value = {
+            'model': object(),
+            'scaler': IdentityScaler(),
+            'calibrator': StubCalibrator(),
+            'metadata': {'feature_names': feature_names},
+        }
+
         excluded_asset = Asset.objects.create(
             market=self.market,
             symbol='600199',
