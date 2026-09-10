@@ -633,6 +633,14 @@ class Phase15BacktestTests(TestCase):
                 'horizon_days': 7,
                 'up_threshold': 0.55,
                 'prediction_source': 'lightgbm',
+                # Pin the serial backend. The default 'auto' resolves to
+                # 'cpu_batched', which routes through
+                # _predict_lightgbm_for_assets_batched and never calls the
+                # per-asset function this test mocks -- so the stubbed
+                # probabilities would be ignored and the call-count assertion
+                # would see zero calls. The test is about PIT-union filtering of
+                # on-demand candidates, not about backend selection.
+                'lightgbm_inference_backend': 'cpu_serial',
             },
         )
 
