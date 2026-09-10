@@ -187,8 +187,9 @@ produced one by default.
 
 ## 6. Known failures and how to read them
 
-A full run currently reports **7 failing of 339**, in three clusters — all
-pre-existing fixture debt, catalogued with their diagnoses in `BACKLOG.md`.
+A full run currently reports **3 failing of 339** — all pre-existing, all confined to
+the `apps.core` data-quality validator, and catalogued with their diagnosis in
+`BACKLOG.md`. `apps.analytics.tests` (39) and `apps.backtest.tests` (71) are green.
 
 That number was **109** until recently. The reduction is instructive, because none of
 it came from fixing product code:
@@ -199,12 +200,20 @@ it came from fixing product code:
 | After the Redis credential fix | 17 | One environment value; 92 tests recovered |
 | After the analytics calendar fixture fix | 10 | One test helper; 7 more recovered |
 | After the RS_SCORE fixture fix | 7 | Same helper applied to a second location; 3 more |
+| After the backtest artifact/backend fix | 6 | Two stacked defects in one test |
+| After the remaining analytics fixes | 3 | Calendar seeding, two date-set assertions, one stale stub signature |
 
 The lesson: when a suite reports a large failure count, **categorise by exception
 type before investigating any individual test.** Here 93 of 109 shared one cause and
-most of the remainder shared another, so three fixes accounted for 94% of the total.
-The remaining 7 needed individual diagnosis — which is the right order to work in,
-because the cheap structural fixes remove the noise that hides the real ones.
+most of the remainder shared another, so a handful of structural fixes accounted for
+97% of the total. The residual 3 need individual instrumentation — which is the right
+order to work in, because the cheap structural fixes remove the noise that hides the
+real ones.
+
+A corollary worth internalising: several of these were **stacked** defects. Fixing the
+missing LightGBM artifact fixture revealed that the mocked function was never called
+at all, because the default inference backend routes around it. Expect the second
+failure and budget for it rather than treating it as a regression.
 
 ### 6.1 Case study: the Redis failure (93 tests, resolved)
 

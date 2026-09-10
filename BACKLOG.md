@@ -80,49 +80,92 @@ Items here have no commitment attached. When something is done, move it to
   Routed all three through `_make_ohlcv_sequence`, which generates 21 business days
   ending at the patched `as_of` (2024-02-21, so the window starts 2024-01-24) and
   seeds the calendar. `Phase10SignalTests` is now 17/17.
+- **Backtest PIT LightGBM candidate test had two stacked defects.** First
+  `ValueError: No active LightGBM artifact available for horizon 7` — `_pick_candidates`
+  resolves the runtime for provenance even when the prediction call is mocked, so it
+  needs both an active artifact row and a stubbed `_load_model_artifacts`. Fixing that
+  exposed the second: `mock_predict.call_count` was 0 because the default `auto`
+  backend resolves to `cpu_batched`, which routes through
+  `_predict_lightgbm_for_assets_batched` and bypasses the mocked per-asset function
+  entirely. Pinned `lightgbm_inference_backend: cpu_serial` so the test exercises the
+  seam it mocks.
+- **`apps.analytics.tests` is fully green (39/39, was 13 failing).** Beyond the two
+  above: extracted a reusable `_seed_trading_calendar(asset, dates)` helper for
+  fixtures that build OHLCV inline; seeded it in `Phase8IndicatorTests.setUp`, which
+  is why `test_calculate_fibonacci_retracement_creates_indicator` got `None` back;
+  corrected two RSI date-set assertions that still expected five consecutive
+  *calendar* days after the window became five *trading* days spanning a weekend; and
+  added `model_version=None` to the LSTM prediction stub, whose signature predated
+  the model-version-selection work.
 
 ---
 
 ## Open — correctness
 
-### Remaining test failures — 7, in three clusters
+### Remaining test failures — 3, one cluster
 
-Down from 109 (Redis) to 17 to 10 to **7**. All 7 are pre-existing; none was
-introduced by the documentation work or by either fixture fix, and both fixes were
-verified against the full suite for regressions.
+Down from 109 (Redis) to 17 to 10 to 7 to 6 to **3**. `apps.analytics.tests` is 39/39
+and `apps.backtest.tests` is clean. All 3 remaining are pre-existing and confined to
+the `apps.core` data-quality validator; none was introduced by the documentation work
+or by any fixture fix, and every step was verified against the full suite.
 
 **Cluster 2 — data-quality continuity (3 tests, `core`).**
 `DataQualityValidationCommandTests.test_validate_data_quality_writes_actionable_reports`,
 `…test_technical_indicator_continuity_warnings_appear_in_summary_and_metadata`, and
-`TechnicalIndicatorValidationRegressionTests.…flags_out_of_range_rsi`. Reported as
-`AssertionError: 0 != 1` — the continuity report finds no issue where one is
-expected. The validator was rewritten around official exchange calendars, so the
-fixtures likely need the same treatment; the earlier note about
-`RETURN_3D/5D/10D` disagreements in an expected indicator-type list is a second,
-separate symptom in the same area and needs its own look.
+`TechnicalIndicatorValidationRegressionTests.…flags_out_of_range_rsi`. All three
+report `AssertionError: 0 != 1` -- the continuity report emits zero detail rows
+(`detail_rows_written=0`) where the fixture planted one finding.
 
-**Cluster 3 — missing active artifact fixture (1 test, `backtest`).**
-`Phase15BacktestTests.test_pick_candidates_filters_on_demand_lightgbm_candidates_to_point_in_time_union`
-raises `ValueError: No active LightGBM artifact available for horizon 7` from
-`_get_selected_lightgbm_artifact`. The test exercises on-demand LightGBM candidate
-generation but does not create an active horizon-7 `LightGBMModelArtifact`. Distinct
-from the calendar clusters.
+**This is not the calendar problem.** `test_…flags_out_of_range_rsi` already calls
+`self._create_calendar('SSE', [trade_date])` and `_create_ohlcv_series`, so the
+fixture is seeded correctly. Diagnosis so far, by elimination inside
+`_write_technical_indicator_continuity_gaps` (`validate_data_quality.py`):
 
-**Cluster 4 — unclassified (3 tests, `analytics`).**
-`Phase8IndicatorTests.test_calculate_fibonacci_retracement_creates_indicator`,
-`TechnicalIndicatorBackfillCommandTests.test_backfill_technical_indicators_persists_default_non_rs_history`
-(a set comparison reporting expected indicator types missing from the actual set),
-and `Phase17DashboardStockApiTests.test_dashboard_stocks_overlays_runtime_lstm_candidate_payload`.
-Each needs individual diagnosis; the first two may still be calendar or warmup
-related, the third involves the LSTM runtime overlay.
+- **Not a label mismatch.** Line 1668 sets `issue_type =
+  'technical_indicator_value_out_of_range'` but that is only the *counter* key; the
+  CSV detail row at line 1685 writes `'value_out_of_range'`, which is what the test
+  filters on. Two strings for one concept is confusing but not the bug -- though it
+  is worth unifying.
+- **Not an empty `expected_dates`.** The early return at line 1574 would mean
+  `ordered_baseline_dates` was empty, but line 1364 indexes
+  `ordered_baseline_dates[0]` unguarded and no `IndexError` was raised.
+- **Remaining candidates**, in likelihood order: `variant_rows` empty because the
+  stored indicator's `timestamp__date` is not in `baseline_dates` (line 1581 filter);
+  a `variant_key` mismatch between the stored `parameters={'timeperiod': 14}` and
+  `TECHNICAL_INDICATOR_EXPECTED_PARAMETERS` via
+  `_technical_indicator_parameters_key`; or `bounded_range` falsy at line 1659
+  despite `'RSI': (Decimal('0'), Decimal('100'))` at line 244.
+
+Next step is to instrument rather than keep reading: dump every row the validator
+*does* emit for that fixture (the test currently filters to one `issue_type` and
+deletes the temp directory), which distinguishes the three candidates immediately.
+Do not guess-and-check a fix here -- this is the validator the runbooks depend on.
+
+The command also reports `critical_issues=4` for this fixture, which is unexplained
+and may be the same underlying exclusion surfacing elsewhere.
 
 Baseline evidence: the original 109 failures were confirmed **pre-existing** by
 running the identical selection against a pristine worktree at the pre-change
-commit — same test counts and same failing test names for both `apps.backtest` +
+commit -- same test counts and same failing test names for both `apps.backtest` +
 `apps.core` (94 tests) and the remaining nine modules (245 tests). No regression was
-introduced by the documentation restructure. The two later reductions (109 → 17 → 10)
-came from an environment credential fix and a test-fixture fix, not from any change
-to production code.
+introduced by the documentation restructure. Every later reduction (109 → 17 → 10 →
+7 → 6 → 3) came from an environment credential fix or a test-fixture fix, not from
+any change to production code.
+
+### Production code inspects whether it is being mocked
+
+`apps/backtest/tasks.py` around line 757 calls `inspect.signature` on
+`_predict_lightgbm_for_asset.side_effect` to decide whether to pass `run=`. Production
+code branching on the shape of a test double is a compatibility shim for older stub
+signatures, and it hides drift instead of surfacing it.
+
+The LSTM path has no such shim, which is why
+`test_dashboard_stocks_overlays_runtime_lstm_candidate_payload` failed loudly with
+`TypeError: … unexpected keyword argument 'model_version'` -- the better failure mode,
+though it surfaces from inside the view and reads like a view bug.
+
+Removing the LightGBM shim means updating every LightGBM stub in
+`apps/backtest/tests.py` to accept `run=`. Worth doing; not urgent.
 
 ### `apps/macro/tests.py` depends on a gitignored local fixture
 
