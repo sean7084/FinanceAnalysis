@@ -438,7 +438,13 @@ class Phase17DashboardStockApiTests(TestCase):
 
     @patch('apps.backtest.tasks._predict_with_lstm')
     def test_dashboard_stocks_overlays_runtime_lstm_candidate_payload(self, mock_predict_with_lstm):
-        def fake_lstm_prediction(asset_id, target_date, horizon_days, cache):
+        # Signature must track apps/backtest/tasks.py, which calls
+        # _predict_with_lstm(asset_id=..., target_date=..., horizon_days=...,
+        # model_version=..., cache=...). model_version was added with the
+        # model-version-selection work; a stub that predates it raises TypeError
+        # on the keyword rather than failing an assertion, which reads like a
+        # view bug instead of a stale fixture.
+        def fake_lstm_prediction(asset_id, target_date, horizon_days, cache, model_version=None):
             if asset_id == self.asset1.id:
                 return {
                     'up_probability': Decimal('0.770000'),
@@ -507,8 +513,10 @@ class Phase8IndicatorTests(TestCase):
             name='Phase8 Asset',
         )
         today = timezone.now().date()
+        fixture_dates = []
         for i, close in enumerate([10.0, 10.8, 11.2, 10.6, 11.5, 11.0], start=1):
             day = today - timedelta(days=i)
+            fixture_dates.append(day)
             OHLCV.objects.create(
                 asset=self.asset,
                 date=day,
@@ -520,6 +528,9 @@ class Phase8IndicatorTests(TestCase):
                 volume=900000 + i * 1000,
                 amount=Decimal(str((900000 + i * 1000) * close)),
             )
+        # FIB_RET needs its lookback window resolvable against the official calendar;
+        # without these rows the guard skips the indicator and nothing is written.
+        _seed_trading_calendar(self.asset, fixture_dates)
 
     def test_calculate_fibonacci_retracement_creates_indicator(self):
         calculate_fibonacci_retracement_for_asset(self.asset.id, lookback_days=5)
@@ -542,6 +553,28 @@ class Phase8IndicatorTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_delay.assert_called_once_with(asset_id=self.asset.id, lookback_days=30)
+
+
+def _seed_trading_calendar(asset, dates):
+    """Seed open ``ExchangeTradingCalendar`` rows for ``dates`` on the asset's exchange.
+
+    The freshness guards in ``technical_staleness`` resolve trading dates from the
+    official calendar and never infer them from OHLCV row counts. A fixture that
+    creates OHLCV without matching calendar rows therefore produces no indicator or
+    signal at all -- ``latest_official_trade_date`` returns ``None`` and the guard
+    skips the row silently.
+
+    Any test building OHLCV inline rather than through ``_make_ohlcv_sequence`` must
+    call this. The exchange code comes from the production ``asset_exchange_code``
+    helper so the seeded rows cannot diverge from what the guard queries.
+    """
+    exchange_code = asset_exchange_code(asset)
+    for day in dates:
+        ExchangeTradingCalendar.objects.get_or_create(
+            exchange_code=exchange_code,
+            trade_date=day,
+            defaults=dict(is_open=True),
+        )
 
 
 def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
@@ -574,13 +607,7 @@ def _make_ohlcv_sequence(asset, prices, base_date=None, volume=1000000):
         cursor -= datetime.timedelta(days=1)
     trading_days.reverse()
 
-    exchange_code = asset_exchange_code(asset)
-    for day in trading_days:
-        ExchangeTradingCalendar.objects.get_or_create(
-            exchange_code=exchange_code,
-            trade_date=day,
-            defaults=dict(is_open=True),
-        )
+    _seed_trading_calendar(asset, trading_days)
 
     for day, close in zip(trading_days, prices):
         OHLCV.objects.get_or_create(
@@ -1072,7 +1099,10 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
                     timestamp__date__lte=self.end_date,
                 ).values_list('timestamp__date', flat=True)
             ),
-            {self.start_date + datetime.timedelta(days=offset) for offset in range(5)},
+            # The window holds five *trading* days, which straddle a weekend, so the
+            # expected dates come from the generated sequence rather than from five
+            # consecutive calendar days.
+            set(self.trading_days[-5:]),
         )
         self.assertEqual(
             set(
@@ -1083,7 +1113,10 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
                     timestamp__date__lte=self.end_date,
                 ).values_list('timestamp__date', flat=True)
             ),
-            {self.start_date + datetime.timedelta(days=offset) for offset in range(5)},
+            # The window holds five *trading* days, which straddle a weekend, so the
+            # expected dates come from the generated sequence rather than from five
+            # consecutive calendar days.
+            set(self.trading_days[-5:]),
         )
 
     def test_backfill_technical_indicators_persists_precomputed_metric_rows(self):
