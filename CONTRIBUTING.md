@@ -63,6 +63,26 @@ Splitting a single file across commits is legitimate. Stage the relevant hunks,
 commit, then restore and stage the rest. Verify the final file is byte-identical to
 your working state before finishing.
 
+### Describe the staged diff, not the session
+
+Before writing a message, run `git diff --cached --stat` and read what is actually
+there. Do not write the message from memory of what you worked on.
+
+A long session accumulates edits, and some of them may already be committed — by an
+earlier pass, by a collaborator, or by you committing a half-finished fix before an
+outage interrupted verification. Describing work that landed in a previous commit
+produces a message that overclaims and misattributes it in the permanent record, and
+`git blame` inherits the error.
+
+This has already happened here: `ffe2347`'s message describes a two-part fix while its
+diff contains only the second part, because the first part had been committed as
+`6ec691d`. It was left uncorrected rather than rebased, since both were already
+published. See the cluster-3 note in `BACKLOG.md`.
+
+The same check catches the inverse error — committing less than the message claims,
+which leaves a build or test suite broken at that commit. Verify the commit stands on
+its own: if the message says tests pass, the staged tree should pass them.
+
 Never commit:
 
 - `.env` (gitignored — contains `TUSHARE_TOKEN` and database credentials)

@@ -89,6 +89,17 @@ Items here have no commitment attached. When something is done, move it to
   `_predict_lightgbm_for_assets_batched` and bypasses the mocked per-asset function
   entirely. Pinned `lightgbm_inference_backend: cpu_serial` so the test exercises the
   seam it mocks.
+
+  *Commit provenance.* The fix landed in two pieces: the artifact fixture and stubbed
+  `_load_model_artifacts` in `6ec691d`, the backend pin in `ffe2347`. The first half
+  was written while PostgreSQL was unreachable and left uncommitted pending
+  verification, then committed separately. `ffe2347`'s message nonetheless describes
+  **both** halves at length while its diff contains only the pin, so it overclaims and
+  reads as though it duplicated `6ec691d`. It did not — the tree is correct and nothing
+  is duplicated. Left uncorrected because both commits are published on `origin/main`;
+  rewording would rewrite three SHAs and force-push `main`, which is not worth it for a
+  prose defect, and would leave the WSL2 clone diverged. The durable fix is the
+  "describe the staged diff, not the session" rule in `CONTRIBUTING.md`.
 - **`apps.analytics.tests` is fully green (39/39, was 13 failing).** Beyond the two
   above: extracted a reusable `_seed_trading_calendar(asset, dates)` helper for
   fixtures that build OHLCV inline; seeded it in `Phase8IndicatorTests.setUp`, which
