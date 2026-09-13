@@ -923,20 +923,44 @@ def _parse_env_example():
 
 
 def _scan_script_consumers(keys):
-    """Map each key to the shell scripts that reference it, if any."""
-    scripts_dir = Path(settings.BASE_DIR) / 'scripts'
-    sources = []
+    """Map each key to the launcher files that reference it, if any.
+
+    Covers the native launchers under ``scripts/`` and the Compose entrypoints
+    under ``compose/``. The Compose entrypoints are extensionless shell scripts
+    (``start-celeryworker``), and a key consumed only there -- ``CELERY_WORKER_QUEUES``
+    for example -- would otherwise be reported as inert even though a container reads
+    it on every boot.
+    """
+    root = Path(settings.BASE_DIR)
+    candidates = []
+
+    scripts_dir = root / 'scripts'
     if scripts_dir.is_dir():
         for path in sorted(scripts_dir.iterdir()):
             if path.suffix in ('.sh', '.ps1') or path.name.startswith('_native_env'):
-                try:
-                    sources.append((path.name, path.read_text(encoding='utf-8', errors='ignore')))
-                except OSError:
-                    continue
+                candidates.append(path)
+
+    compose_dir = root / 'compose'
+    if compose_dir.is_dir():
+        for path in sorted(compose_dir.rglob('*')):
+            if path.is_file() and path.suffix in ('', '.sh', '.ps1', '.yml', '.yaml'):
+                candidates.append(path)
+
+    sources = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            continue
+        try:
+            label = path.relative_to(root).as_posix()
+        except ValueError:
+            label = path.name
+        sources.append((label, text))
+
     consumers = {}
     for key in keys:
-        found = [name for name, text in sources if key in text]
-        consumers[key] = found
+        consumers[key] = [label for label, text in sources if key in text]
     return consumers
 
 
@@ -990,14 +1014,15 @@ def build_env():
         parts.append('\n## Keys in `.env.example` that settings never read\n')
         parts.append(
             'These are not Django settings. A key consumed by a launcher under '
-            '`scripts/` still works; a key with no consumer anywhere has no '
-            'effect at all and should be wired up or removed.\n',
+            '`scripts/` or a Compose entrypoint under `compose/` still works; a key '
+            'with no consumer anywhere has no effect at all and should be wired up or '
+            'removed.\n',
         )
         rows = []
         for key in inert:
             found = consumers.get(key) or []
             if found:
-                status = 'read by ' + ', '.join(f'`scripts/{name}`' for name in found)
+                status = 'read by ' + ', '.join(f'`{name}`' for name in found)
             else:
                 status = '**no consumer found -- inert**'
             rows.append((f'`{key}`', status))
