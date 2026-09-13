@@ -187,12 +187,11 @@ produced one by default.
 
 ## 6. Known failures and how to read them
 
-A full run currently reports **3 failing of 339** — all pre-existing, all confined to
-the `apps.core` data-quality validator, and catalogued with their diagnosis in
-`BACKLOG.md`. `apps.analytics.tests` (39) and `apps.backtest.tests` (71) are green.
+A full run currently reports **339 tests, OK**. There are no known failures.
 
-That number was **109** until recently. The reduction is instructive, because none of
-it came from fixing product code:
+That was not true until recently: the count was **109**, and before that the suite was
+silently discovering *zero* tests, so it reported success while checking nothing. The
+shape of the reduction is worth keeping because it is reusable.
 
 | Stage | Failing | What changed |
 | --- | --- | --- |
@@ -202,18 +201,30 @@ it came from fixing product code:
 | After the RS_SCORE fixture fix | 7 | Same helper applied to a second location; 3 more |
 | After the backtest artifact/backend fix | 6 | Two stacked defects in one test |
 | After the remaining analytics fixes | 3 | Calendar seeding, two date-set assertions, one stale stub signature |
+| After the data-quality fixes | 0 | One real validator bug plus two stale fixture expectations |
 
-The lesson: when a suite reports a large failure count, **categorise by exception
-type before investigating any individual test.** Here 93 of 109 shared one cause and
-most of the remainder shared another, so a handful of structural fixes accounted for
-97% of the total. The residual 3 need individual instrumentation — which is the right
-order to work in, because the cheap structural fixes remove the noise that hides the
-real ones.
+Three lessons, in the order they applied:
 
-A corollary worth internalising: several of these were **stacked** defects. Fixing the
-missing LightGBM artifact fixture revealed that the mocked function was never called
-at all, because the default inference backend routes around it. Expect the second
-failure and budget for it rather than treating it as a regression.
+**Categorise by exception type before investigating any individual test.** 93 of the 109
+shared one cause and most of the remainder shared another, so a handful of structural
+fixes accounted for 97% of the total. Cheap structural fixes remove the noise that hides
+the real defects, so they always come first.
+
+**Expect stacked defects.** Fixing the missing LightGBM artifact fixture revealed that
+the mocked function was never called at all, because the default inference backend routes
+around it. A second failure behind the first is not a regression.
+
+**A failing test may be right and the code wrong.** The last three failures were all in
+the data-quality validator, and one of them — a planted `RSI` of 120 that was never
+reported — was a genuine production bug: the value-range check sat behind the continuity
+expectation, so it was silently skipped on every date excused for warmup, suspension or
+recent listing. Static reading narrowed it to three candidate causes; instrumenting the
+fixture (dump every row the validator emits, then re-run without `--only-report`)
+identified the actual one in a single run. **When reading stops converging, instrument.**
+
+Note that this fix changes what `validate_data_quality` reports: it will now surface
+`value_out_of_range` findings it previously suppressed. They were always present and
+invisible. See `BACKLOG.md`.
 
 ### 6.1 Case study: the Redis failure (93 tests, resolved)
 

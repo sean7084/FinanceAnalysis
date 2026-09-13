@@ -113,55 +113,88 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Open — correctness
 
-### Remaining test failures — 3, one cluster
+### Test suite green — 339/339
 
-Down from 109 (Redis) to 17 to 10 to 7 to 6 to **3**. `apps.analytics.tests` is 39/39
-and `apps.backtest.tests` is clean. All 3 remaining are pre-existing and confined to
-the `apps.core` data-quality validator; none was introduced by the documentation work
-or by any fixture fix, and every step was verified against the full suite.
+Resolved. The reduction ran 109 (Redis) → 17 → 10 → 7 → 6 → 3 → **0**. Every step was
+verified against the full suite. No production behaviour changed except the one genuine
+validator bug below, which was itself surfaced by a failing test that was right.
 
-**Cluster 2 — data-quality continuity (3 tests, `core`).**
-`DataQualityValidationCommandTests.test_validate_data_quality_writes_actionable_reports`,
-`…test_technical_indicator_continuity_warnings_appear_in_summary_and_metadata`, and
-`TechnicalIndicatorValidationRegressionTests.…flags_out_of_range_rsi`. All three
-report `AssertionError: 0 != 1` -- the continuity report emits zero detail rows
-(`detail_rows_written=0`) where the fixture planted one finding.
+**Cluster 2 — data-quality continuity (3 tests, `core`). Resolved.** The three shared an
+area but not a cause, which is why the earlier "probably the calendar again" note was
+wrong and had to be replaced rather than acted on:
 
-**This is not the calendar problem.** `test_…flags_out_of_range_rsi` already calls
-`self._create_calendar('SSE', [trade_date])` and `_create_ohlcv_series`, so the
-fixture is seeded correctly. Diagnosis so far, by elimination inside
-`_write_technical_indicator_continuity_gaps` (`validate_data_quality.py`):
+- `TechnicalIndicatorValidationRegressionTests.…flags_out_of_range_rsi` exposed a **real
+  production bug** — see the next entry. Fixed in the validator; the test was not
+  modified.
+- `DataQualityValidationCommandTests.test_validate_data_quality_writes_actionable_reports`
+  compared `metadata['technical_indicators']` against `REQUIRED_TECHNICAL_INDICATORS`, a
+  hand-copied 13-entry fixture constant, while the command defaults to
+  `DEFAULT_TECHNICAL_INDICATORS` — 19 entries since `RETURN_3D/5D/10D`,
+  `RELATIVE_VOLUME_5D/20D` and `REALIZED_VOLATILITY_5D` were added. Now asserts against
+  the imported production constant, so it cannot drift again. This is the
+  `RETURN_3D/5D/10D` discrepancy flagged in the original documentation validation.
+- `…test_technical_indicator_continuity_warnings_appear_in_summary_and_metadata` listed
+  its asset on the window's first date, so RSI(14) had roughly 15 bars of warmup to find
+  in a 4-day calendar and every date was legitimately excused. The validator was right;
+  the fixture was asking for a finding the rules correctly refuse to produce. Relisted at
+  `d1 - 1 day`, which is the branch where the guard *does* expect continuity, because
+  warmup cannot be assessed from a calendar that starts after the listing.
 
-- **Not a label mismatch.** Line 1668 sets `issue_type =
-  'technical_indicator_value_out_of_range'` but that is only the *counter* key; the
-  CSV detail row at line 1685 writes `'value_out_of_range'`, which is what the test
-  filters on. Two strings for one concept is confusing but not the bug -- though it
-  is worth unifying.
-- **Not an empty `expected_dates`.** The early return at line 1574 would mean
-  `ordered_baseline_dates` was empty, but line 1364 indexes
-  `ordered_baseline_dates[0]` unguarded and no `IndexError` was raised.
-- **Remaining candidates**, in likelihood order: `variant_rows` empty because the
-  stored indicator's `timestamp__date` is not in `baseline_dates` (line 1581 filter);
-  a `variant_key` mismatch between the stored `parameters={'timeperiod': 14}` and
-  `TECHNICAL_INDICATOR_EXPECTED_PARAMETERS` via
-  `_technical_indicator_parameters_key`; or `bounded_range` falsy at line 1659
-  despite `'RSI': (Decimal('0'), Decimal('100'))` at line 244.
+Two of the three were fixtures asserting against hand-copied or unstated preconditions
+rather than against production constants. That is the same failure mode the generated
+reference sheets were built to eliminate, appearing in tests instead of docs.
 
-Next step is to instrument rather than keep reading: dump every row the validator
-*does* emit for that fixture (the test currently filters to one `issue_type` and
-deletes the temp directory), which distinguishes the three candidates immediately.
-Do not guess-and-check a fix here -- this is the validator the runbooks depend on.
+### Validator skipped value-range checks on dates excused from continuity
 
-The command also reports `critical_issues=4` for this fixture, which is unexplained
-and may be the same underlying exclusion surfacing elsewhere.
+**Production bug, fixed in `1d018d3`.** `_write_technical_indicator_continuity_gaps`
+gated the bounded-value check behind the continuity expectation:
+
+```python
+if not variant_expected_dates:
+    continue          # skipped the out-of-range loop further down as well
+```
+
+A date is legitimately excused from continuity when warmup is insufficient, the asset is
+suspended, or it is newly listed — but an excused date can still carry a stored row, and
+a stored `RSI` of 120 or an `RS_SCORE` of 4.0 is a defect wherever it sits. The old
+ordering silently suppressed range validation on exactly the partial-window dates where
+malformed rows are most likely: warmup edges, post-suspension resumes, backfill
+boundaries.
+
+The range check now runs before the continuity guard and does not depend on it.
+`variant_rows` is already restricted to OHLCV-backed baseline dates by the caller, so
+this validates what exists without asserting anything about what ought to exist.
+
+**Expect new findings on the next production run.** `validate_data_quality` will now
+report `value_out_of_range` rows it previously suppressed. They were always present and
+invisible. Budget triage time for that run rather than reading the new warnings as a
+regression.
+
+Two related notes. The `issue_type` is spelled `technical_indicator_value_out_of_range`
+in the counters and `value_out_of_range` in the CSV detail row — confusing but
+intentional, and worth unifying if the report schema is ever versioned. And the
+`critical_issues=4` seen while instrumenting that fixture were its genuinely absent
+related rows (FactorScore, MacroSnapshot, MarketContext, IndexMembership), not a
+symptom.
+
+**Instrumentation found this; reading did not.** Dumping every row the validator emitted
+for the fixture, and re-running without `--only-report`, showed the target CSV had 0 rows
+while 15 were written elsewhere — and `factor_score_gaps` had already confirmed OHLCV
+existed for the date. That eliminated the empty-baseline hypothesis in a single run and
+pointed straight at the `continue`. Several hundred lines of static reading had narrowed
+it to three candidates but not to the cause. The temporary debug block was reverted with
+`git checkout` before committing.
 
 Baseline evidence: the original 109 failures were confirmed **pre-existing** by
 running the identical selection against a pristine worktree at the pre-change
 commit -- same test counts and same failing test names for both `apps.backtest` +
 `apps.core` (94 tests) and the remaining nine modules (245 tests). No regression was
-introduced by the documentation restructure. Every later reduction (109 → 17 → 10 →
-7 → 6 → 3) came from an environment credential fix or a test-fixture fix, not from
-any change to production code.
+introduced by the documentation restructure. Every reduction up to 3 (109 → 17 → 10 →
+7 → 6 → 3) came from an environment credential fix or a test-fixture fix, with no
+change to production code. The final step (3 → 0) is the exception: it included one
+genuine production fix, the validator bug above, found because a failing test turned out
+to be correct and the code wrong. That is the outcome the whole exercise was for — a
+suite that actually runs is what makes such a bug visible at all.
 
 ### Production code inspects whether it is being mocked
 
