@@ -1,0 +1,4 @@
+- Each model version lives in its own directory named with a `<algorithm>-<horizon>-<date>` pattern, keeping one complete artifact set per version.
+- Every LightGBM version ships an identical quartet of files (`model.pkl`, `scaler.pkl`, `calibrator.pkl`, `metadata.json`) so consumers can always load preprocessing and model together.
+- LSTM versions keep one file per horizon (`{3|7|30}d_model.pt` plus matching `{horizon}d_metrics.json`) and aggregate them under a shared `summary.json` listing all horizons.
+- Metadata JSONs record immutable provenance fields: `version`, `training_window_start`, `training_window_end`, and `trained_at` timestamp.

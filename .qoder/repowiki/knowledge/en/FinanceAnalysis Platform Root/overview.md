@@ -1,0 +1,1 @@
+Top-level orchestration of the FinanceAnalysis Django + React financial data platform, wiring backend apps, Celery workers, Redis/PostgreSQL services, and the Vite dashboard into a single local stack.

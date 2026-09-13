@@ -1,0 +1,6 @@
+- Page components are lazily imported via `lazy(() => import('./pages/...'))` and wrapped in a shared `withSuspense` helper so each route shows a localized loading fallback.
+- All network requests go through the centralized `api.ts` module, which attaches Bearer JWT and X-API-Key headers via `getHeaders()` and retries once on 401 using a refresh-token flow before surfacing an `ApiRequestError`.
+- Backend response shapes are modeled as TypeScript interfaces suffixed with `Dto` (e.g., `CandidateDto`, `BacktestRunDto`, `LightGBMPredictionStockDto`) and used as generic type parameters on `apiGet<T>` / `apiPost<T>` calls.
+- User-facing strings are never hard-coded in components; they are looked up via the `useI18n().t(key)` function against the bilingual dictionary in `i18n.tsx`, with zh-CN as the fallback locale.
+- Authentication credentials (JWT access/refresh tokens and API key) are stored in either `localStorage` or `sessionStorage` depending on the persisted `AuthPersistenceMode` chosen in Settings, and read uniformly through `readAuthToken` / `readApiKey` helpers.
+- Charts are implemented as small reusable components under `src/components/charts/` (one chart per file) consuming typed data arrays rather than fetching data themselves.

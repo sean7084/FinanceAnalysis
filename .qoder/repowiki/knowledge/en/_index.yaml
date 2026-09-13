@@ -1,0 +1,60 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: main
+nodes_managed: true
+exported_at: "2026-09-12T16:48:37Z"
+modules:
+    "":
+        dir_name: FinanceAnalysis Platform Root
+        title: FinanceAnalysis Platform Root
+        scope:
+            - README.md
+            - CONTRIBUTING.md
+            - BACKLOG.md
+            - TECHNICAL_GUIDE.md
+            - .gitignore
+            - .dockerignore
+            - docker-compose.yml
+            - manage.py
+            - requirements/
+            - scripts/
+            - compose/
+            - docs/
+            - .env.example
+            - CHANGELOG.md
+            - LICENSE
+        source_files: []
+        children:
+            - config
+            - frontend
+            - models_artifacts
+        depends_on: []
+        related_to: []
+    config:
+        dir_name: Django Project Configuration & Entry Points
+        title: Django Project Configuration & Entry Points
+        scope:
+            - config/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: FinanceAnalysis React Frontend Dashboard
+        title: FinanceAnalysis React Frontend Dashboard
+        scope:
+            - frontend/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    models_artifacts:
+        dir_name: Trained Model Artifacts (LightGBM & LSTM)
+        title: Trained Model Artifacts (LightGBM & LSTM)
+        scope:
+            - models/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

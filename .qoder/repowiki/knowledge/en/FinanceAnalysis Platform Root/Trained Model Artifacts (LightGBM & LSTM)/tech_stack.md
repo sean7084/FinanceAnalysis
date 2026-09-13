@@ -1,0 +1,1 @@
+LightGBM models serialized via Python `pickle` with scikit-learn-style `scaler.pkl` and `calibrator.pkl` preprocessing; LSTM models saved as PyTorch `.pt` state dicts with per-horizon metric tracking in JSON.
