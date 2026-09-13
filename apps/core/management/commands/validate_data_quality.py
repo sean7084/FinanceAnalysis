@@ -1594,6 +1594,52 @@ class Command(BaseCommand):
             variant_name = self._technical_indicator_variant_name(indicator_type, parameters)
             variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
             variant_rows = rows_by_variant.get(variant_key, [])
+            bounded_range = TECHNICAL_INDICATOR_BOUNDED_RANGES.get(indicator_type)
+
+            # Value-range validation runs before the continuity guard below and
+            # deliberately does not depend on it. A date can be legitimately excused
+            # from continuity -- insufficient warmup, suspension, newly listed -- while
+            # still carrying a stored row. Gating the range check behind
+            # variant_expected_dates silently skipped it on exactly those partial-window
+            # dates, which is where an out-of-range stored value is both most likely and
+            # most worth catching. variant_rows is already restricted to OHLCV-backed
+            # baseline dates, so this validates what exists without inventing
+            # expectations about what should exist.
+            if bounded_range:
+                min_value, max_value = bounded_range
+                for variant_row in variant_rows:
+                    value = variant_row['value']
+                    if value is None or (min_value <= value <= max_value):
+                        continue
+
+                    issue_type = 'technical_indicator_value_out_of_range'
+                    details = (
+                        f'Stored {variant_name} value {value} is outside the expected range '
+                        f'[{min_value}, {max_value}].'
+                    )
+                    self._increment(counters, issue_type, 'warning', 1)
+                    table_counters[('technical_indicator', 'warning', issue_type)] += 1
+                    field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
+                    writer.write_detail(report_name, {
+                        **self._metric_columns('feature', variant_name, 'value_bounds', 'asset_date'),
+                        'table': 'technical_indicator',
+                        'field': variant_name,
+                        'asset_id': asset.id,
+                        'asset_symbol': asset.symbol,
+                        'asset_ts_code': asset.ts_code,
+                        'asset_name': asset.name,
+                        'parameters': parameters,
+                        'issue_type': 'value_out_of_range',
+                        'severity': 'warning',
+                        'list_date': asset.list_date,
+                        'delist_date': asset.delist_date,
+                        'date': variant_row['date'],
+                        'value': value,
+                        'expected_min_value': min_value,
+                        'expected_max_value': max_value,
+                        'details': details,
+                    })
+
             variant_expected_dates = [
                 trading_date
                 for trading_date in expected_dates
@@ -1613,7 +1659,6 @@ class Command(BaseCommand):
             variant_expected_date_set = set(variant_expected_dates)
             non_null_dates = {row['date'] for row in variant_rows if row['date'] in variant_expected_date_set}
             missing_dates = [trading_date for trading_date in variant_expected_dates if trading_date not in non_null_dates]
-            bounded_range = TECHNICAL_INDICATOR_BOUNDED_RANGES.get(indicator_type)
 
             if missing_dates:
                 issue_type = 'technical_indicator_continuity_gap'
@@ -1655,43 +1700,6 @@ class Command(BaseCommand):
                         'expected_max_value': bounded_range[1] if bounded_range else None,
                         'details': f'Expected one {variant_name} row on every OHLCV-backed baseline date.',
                     })
-
-            if not bounded_range:
-                continue
-
-            min_value, max_value = bounded_range
-            for variant_row in variant_rows:
-                value = variant_row['value']
-                if value is None or (min_value <= value <= max_value):
-                    continue
-
-                issue_type = 'technical_indicator_value_out_of_range'
-                details = (
-                    f'Stored {variant_name} value {value} is outside the expected range '
-                    f'[{min_value}, {max_value}].'
-                )
-                self._increment(counters, issue_type, 'warning', 1)
-                table_counters[('technical_indicator', 'warning', issue_type)] += 1
-                field_counters[('technical_indicator', variant_name, issue_type, 'warning')] += 1
-                writer.write_detail(report_name, {
-                    **self._metric_columns('feature', variant_name, 'value_bounds', 'asset_date'),
-                    'table': 'technical_indicator',
-                    'field': variant_name,
-                    'asset_id': asset.id,
-                    'asset_symbol': asset.symbol,
-                    'asset_ts_code': asset.ts_code,
-                    'asset_name': asset.name,
-                    'parameters': parameters,
-                    'issue_type': 'value_out_of_range',
-                    'severity': 'warning',
-                    'list_date': asset.list_date,
-                    'delist_date': asset.delist_date,
-                    'date': variant_row['date'],
-                    'value': value,
-                    'expected_min_value': min_value,
-                    'expected_max_value': max_value,
-                    'details': details,
-                })
 
     def _technical_indicator_expected_variants(self, technical_indicators):
         variants = []
