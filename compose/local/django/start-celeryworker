@@ -3,4 +3,21 @@
 set -o errexit
 set -o nounset
 
-celery -A config.celery worker -l info
+# This container is the only Celery worker in the Compose stack, so it has to
+# consume every declared queue. Without -Q, Celery falls back to
+# CELERY_TASK_DEFAULT_QUEUE ("ops"), which means run_backtest and both retrain
+# tasks are published to queues nothing ever reads -- they sit there silently
+# rather than failing, which is the worst outcome.
+#
+# Override CELERY_WORKER_QUEUES in .env to narrow this worker; the variable name
+# matches scripts/run_celery_worker.sh. Note the native launcher defaults to "ops"
+# because it is meant to be started once per queue group, each with its own node
+# name. That model does not apply to a single-container Compose worker.
+CELERY_LOG_LEVEL="${CELERY_LOG_LEVEL:-info}"
+CELERY_WORKER_QUEUES="${CELERY_WORKER_QUEUES:-ops,backtest,train-lightgbm,train-lstm}"
+
+# exec so celery replaces the shell as PID 1 and receives SIGTERM directly,
+# allowing a warm shutdown instead of being killed after the stop grace period.
+exec celery -A config.celery worker \
+	-l "$CELERY_LOG_LEVEL" \
+	-Q "$CELERY_WORKER_QUEUES"
