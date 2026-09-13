@@ -880,7 +880,16 @@ class DataQualityValidationCommandTests(TestCase):
             symbol='600588',
             ts_code='600588.SH',
             name='Technical Summary Asset',
-            list_date=self.d2,
+            # Listed before the loaded trading calendar, not inside the validation
+            # window. _should_skip_missing_technical_indicator excuses a date when the
+            # indicator's warmup anchor falls before list_date or does not exist within
+            # the loaded calendar; for an asset listed on the window's first date,
+            # RSI(14) has roughly 15 bars of warmup to find in a 3-day calendar and is
+            # therefore legitimately excused -- correctly, since a brand-new listing
+            # cannot have RSI(14) yet. This test is about a *missing stored row* on a
+            # date where its siblings exist, so the asset has to be established enough
+            # that continuity is genuinely expected.
+            list_date=self.d1 - datetime.timedelta(days=1),
         )
 
         for trade_date, close in zip((self.d2, self.d3, self.d4), ('10', '10.1', '10.2')):
