@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Both jobs need real services. 93 of the 109 test failures once found in this
+# repository were throttle-cache errors caused by an unreachable Redis, and the suite
+# cannot run at all without PostgreSQL, so stubbing either service would reproduce the
+# exact blind spot this workflow exists to close.
+#
+# The non-obvious requirement is the discovery floor in each job. Bare
+# `python manage.py test` once discovered ZERO tests and exited 0, because apps/ was a
+# PEP 420 namespace package and every test module's relative imports failed. The suite
+# reported success while checking nothing, and 109 failures stayed invisible. A workflow
+# that only checks the exit code would have gone green the whole time. Both jobs
+# therefore assert a minimum test count as well as a green result.
+
+jobs:
+  backend:
+    name: Django checks and test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: finance_analysis
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DJANGO_READ_DOT_ENV_FILE: "False"
+      DJANGO_SECRET_KEY: ci-only-not-a-secret
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/finance_analysis
+      # Stock redis:7 needs no credentials. The development server does -- it uses an
+      # ACL user, and the password-only and default-user URL forms both fail against it
+      # -- but that is a property of that server's configuration, not of this code.
+      REDIS_URL: redis://localhost:6379/1
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      # Raise this when tests are added. Lowering it should require a reason, because
+      # the only way the count drops is discovery breaking or tests being deleted.
+      MIN_TEST_COUNT: "339"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the verified local interpreter. TA-Lib >= 0.6 ships manylinux
+          # wheels that bundle the C library, so no apt build step is needed.
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements/base.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/local.txt
+        # torch is unpinned and large; expect this step to dominate the job runtime.
+
+      - name: Django system checks
+        run: python manage.py check
+
+      - name: No unrecorded model changes
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Generated reference sheets are current
+        run: python manage.py export_documentation_facts --check
+
+      - name: Test suite, with a discovery floor
+        run: |
+          # --noinput so the runner never prompts about an existing test database.
+          # No --keepdb: the service container is ephemeral, and creating the database
+          # from scratch is the honest check that migrations still work.
+          #
+          # Django writes its summary to stderr, hence 2>&1. The `|| true` keeps a
+          # failing suite from aborting this step before the floor check runs, so the
+          # diagnostic below is always reported rather than only the raw failure.
+          python manage.py test --noinput 2>&1 | tee test-output.txt || true
+
+          count=$(grep -oE '^Ran [0-9]+' test-output.txt | grep -oE '[0-9]+' | head -n1)
+          echo "Discovered ${count:-0} tests; floor is $MIN_TEST_COUNT."
+
+          if [ -z "$count" ] || [ "$count" -lt "$MIN_TEST_COUNT" ]; then
+            echo "::error::Test discovery regression: ${count:-0} tests found, floor is $MIN_TEST_COUNT."
+            echo "apps/__init__.py is what makes discovery work. Without it, apps/ is a"
+            echo "PEP 420 namespace package, every test module's relative imports fail,"
+            echo "and 'manage.py test' exits 0 having run nothing."
+            exit 1
+          fi
+
+          if grep -qE '^(FAILED|ERROR:|FAIL:)' test-output.txt; then
+            echo "::error::Suite reported failures; see the log above."
+            exit 1
+          fi
+
+          if ! grep -qE '^OK' test-output.txt; then
+            echo "::error::No 'OK' summary line; the runner did not complete."
+            exit 1
+          fi
+
+          echo "Suite green: $count tests."
+
+  frontend:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      MIN_TEST_COUNT: "31"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests, with a discovery floor
+        run: |
+          # vitest transpiles without type-checking, so a green run here says nothing
+          # about whether the project compiles. That is why the type-check job below
+          # exists separately, and why this floor matters: vitest would also exit 0
+          # having matched no test files.
+          npm test 2>&1 | tee test-output.txt || true
+
+          count=$(grep -oE 'Tests +[0-9]+ passed' test-output.txt | grep -oE '[0-9]+' | head -n1)
+          echo "Discovered ${count:-0} tests; floor is $MIN_TEST_COUNT."
+
+          if [ -z "$count" ] || [ "$count" -lt "$MIN_TEST_COUNT" ]; then
+            echo "::error::Test discovery regression: ${count:-0} tests found, floor is $MIN_TEST_COUNT."
+            exit 1
+          fi
+
+          if grep -qE 'Tests +[0-9]+ failed|Test Files +[0-9]+ failed' test-output.txt; then
+            echo "::error::Frontend suite reported failures; see the log above."
+            exit 1
+          fi
+
+          echo "Frontend suite green: $count tests."
+
+  # NOT BLOCKING, and deliberately so: both gates fail on the current tree. Six
+  # TypeScript errors and one ESLint error are outstanding, catalogued with their
+  # diagnosis in BACKLOG.md. None is a runtime bug -- the strongest evidence is
+  # BacktestWorkbenchPage.test.tsx asserting that entry_weekdays must be ABSENT from
+  # the create payload, which means the BacktestCreatePayload type is wrong to require
+  # it, not the code wrong to omit it.
+  #
+  # Shipping these as blocking gates would have made CI red on arrival and therefore
+  # ignored. Fix the seven errors, then delete continue-on-error and merge this job
+  # into the frontend job above. Until then it runs so the count is visible.
+  frontend-static:
+    name: Frontend type-check and lint (currently failing - see BACKLOG)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
