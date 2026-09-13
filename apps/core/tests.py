@@ -17,6 +17,7 @@ from apps.analytics.management.commands.backfill_technical_indicators import Com
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.backtest.models import BacktestRun, BacktestTrade
+from apps.core.management.commands.validate_data_quality import DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import AssetMarginDetailSnapshot, AssetMoneyFlowSnapshot, CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
 from apps.macro.models import EventImpactStat, MacroSnapshot, MarketContext
 from apps.markets.benchmarking import PIT_UNION_BENCHMARK_CODE
@@ -508,9 +509,19 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertEqual(metadata['coverage_status'], 'issues_detected')
             self.assertLessEqual(started_at, completed_at)
             self.assertGreaterEqual(metadata['total_elapsed_seconds'], 0)
+            # Compare against the command's own default, not a hand-copied list. This
+            # test does not pass --technical-indicators, so metadata echoes
+            # DEFAULT_TECHNICAL_INDICATORS through a comma-join/split/upper/dedupe
+            # round-trip; asserting against that constant keeps the check meaningful
+            # (the round-trip is lossless and order-preserving) and immune to the
+            # default growing. REQUIRED_TECHNICAL_INDICATORS above is the fixture's own
+            # subset -- it carries concrete values for row creation and deliberately
+            # does not track the production default, which is how this assertion drifted
+            # when RETURN_3D/5D/10D, RELATIVE_VOLUME_5D/20D and REALIZED_VOLATILITY_5D
+            # were added to the stored-metric set.
             self.assertEqual(
                 metadata['technical_indicators'],
-                [indicator_type for indicator_type, _value, _parameters in REQUIRED_TECHNICAL_INDICATORS],
+                list(DEFAULT_TECHNICAL_INDICATORS),
             )
             self.assertNotIn('latest_snapshot_technical_indicators', metadata)
             self.assertEqual(metadata['trading_calendar_start'], '2024-01-02')
