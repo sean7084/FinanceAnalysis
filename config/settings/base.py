@@ -394,7 +394,11 @@ EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 
 # FRONTEND
 # ------------------------------------------------------------------------------
-FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+# Base URL of the SPA, used to build outbound links in verification and
+# password-reset email (apps/users/views.py). The default matches the Vite dev
+# server, which pins port 5173 with strictPort: true and so never falls back to
+# another port. Override for any deployed environment.
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
 
 # ALERTING
 # ------------------------------------------------------------------------------
