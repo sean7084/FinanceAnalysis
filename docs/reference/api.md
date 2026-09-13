@@ -123,10 +123,10 @@ Registration payload:
 }
 ```
 
-Outbound links in these emails are built from the `FRONTEND_URL` setting. Its
-default (`http://localhost:3000`) does **not** match the Vite dev server port
-(`5173`, `strictPort: true`) — set `FRONTEND_URL=http://localhost:5173` in
-`.env` for local development. See [`env.md`](env.md).
+Outbound links in these emails are built from the `FRONTEND_URL` setting, which
+defaults to `http://localhost:5173` — the Vite dev server port, pinned with
+`strictPort: true` so it never falls back to another port. Override it for any
+deployed environment. See [`env.md`](env.md).
 
 Email is sent through the console backend by default, so reset and verification
 messages are printed to the Django process stdout rather than delivered.

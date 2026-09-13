@@ -231,9 +231,10 @@ TUSHARE_TOKEN=<your-tushare-token>
 FRONTEND_URL=http://localhost:5173
 ```
 
-`FRONTEND_URL` defaults to `http://localhost:3000`, which does not match the
-Vite dev server. Set it or password-reset and email-verification links will
-point at a dead port.
+`FRONTEND_URL` defaults to `http://localhost:5173`, matching the Vite dev server,
+which pins that port with `strictPort: true`. Password-reset and email-verification
+links therefore work with no configuration; override the variable for any deployed
+environment.
 
 `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` automatically when `.env`
 exists. OS environment variables take precedence over `.env` values.
@@ -401,10 +402,20 @@ generated in [`../reference/celery.md`](../reference/celery.md).
 
 ### Docker Compose workers
 
-`compose/local/django/start-celeryworker` runs `celery -A config.celery worker -l info`
-with **no `-Q`**, so a Compose worker consumes only `ops`. Either add
-`-Q backtest,train-lightgbm,train-lstm` to that script or run the native
-launchers instead.
+`compose/local/django/start-celeryworker` consumes **all four** declared queues by
+default, because the Compose stack runs a single worker container. Set
+`CELERY_WORKER_QUEUES` in `.env` to narrow it.
+
+This matters because a Celery worker started without `-Q` falls back to
+`CELERY_TASK_DEFAULT_QUEUE`, which is `ops`. `run_backtest` and both retrain tasks
+would then be published to queues nothing reads, and would sit there silently rather
+than failing — the worst outcome, since nothing surfaces the problem.
+
+The native launcher `scripts/run_celery_worker.sh` defaults to `ops` instead, because
+it is designed to be started once per queue group, each with a distinct node name
+(`CELERY_WORKER_NODE_SUFFIX`). Both honour the same `CELERY_WORKER_QUEUES` variable.
+
+`start-celerybeat` needs no `-Q`: beat publishes to queues, it does not consume them.
 
 ---
 

@@ -108,6 +108,44 @@ Items here have no commitment attached. When something is done, move it to
   *calendar* days after the window became five *trading* days spanning a weekend; and
   added `model_version=None` to the LSTM prediction stub, whose signature predated
   the model-version-selection work.
+- **Migration drift cleared — `makemigrations --check` exits 0**, so the
+  `CONTRIBUTING.md` definition of done is satisfiable at last. Two migrations were
+  pending, and neither touches data. `backtest.0003_alter_backtestrun_status` is a
+  proven no-op: `sqlmigrate` emits literally `-- (no-op)`, because `default` is a
+  Python-level attribute and `0002` had simply omitted it. `markets.0012` is five
+  `RenameIndex` operations, which PostgreSQL executes as `ALTER INDEX ... RENAME TO
+  ...` — a catalog-only rename with no table rewrite and no meaningful lock. Before
+  applying, verified that all five *old* index names existed in the dev database and
+  none of the new ones did; that is the precondition for the rename to succeed, and a
+  database built fresh under Django 6 would already carry the new names and fail. The
+  drift came from auto-generated `models.Index` names (no explicit `name=`) being
+  rehashed by a Django upgrade.
+- **Compose worker now consumes all four declared queues.** `start-celeryworker` had no
+  `-Q`, so Celery fell back to `CELERY_TASK_DEFAULT_QUEUE` (`ops`) and the single
+  Compose worker would never run a backtest or a retrain — published to queues nothing
+  reads, sitting there silently rather than failing. Now defaults to all four and is
+  overridable via `CELERY_WORKER_QUEUES`, matching the native launcher's variable. The
+  native script keeps its `ops` default because it is started once per queue group with
+  a distinct node name; that model does not apply to a single container. Also switched
+  to `exec` so celery becomes PID 1 and receives SIGTERM for a warm shutdown.
+  `start-celerybeat` was reviewed and needs no `-Q` — beat publishes, it does not
+  consume.
+- **`FRONTEND_URL` default corrected to `http://localhost:5173`.** It was `3000`, a
+  port nothing in this project listens on, while Vite pins 5173 with `strictPort: true`
+  and so can never fall back to it. The setting builds the verification and
+  password-reset links in `apps/users/views.py`, so both were dead out of the box.
+- **`.env.example` is now complete: 33 of 33 settings-read variables.** Previously 9
+  declared keys against ~30 reads, so `HISTORICAL_DATA_FLOOR` — the governance control
+  both main docs treat as canonical — was undiscoverable from the example file, along
+  with every `MACRO_*` and `NEWS_BACKFILL_*` tuning key and the whole `EMAIL_*` group.
+  Each is listed at the default the code actually uses, with the non-obvious ones
+  annotated. `WSL2_UBUNTU_ACCOUNT` / `WSL2_UBUNTU_PASSWORD` were removed: no consumer
+  anywhere, and a `*_PASSWORD` key in a committed template invites a plaintext secret.
+  `docs/reference/env.md` now reports zero missing variables and zero inert keys.
+- **`export_documentation_facts` scans Compose entrypoints too.** Its consumer scan only
+  looked in `scripts/`, so `CELERY_WORKER_QUEUES` — read by a container on every boot —
+  would have been reported as "no consumer found — inert". The generated sheet is only
+  trustworthy if its detection covers every place a key can be consumed.
 
 ---
 
@@ -327,40 +365,11 @@ design. Right now the features look broken rather than unconfigured.
 
 ## Open — configuration and infrastructure
 
-### `FRONTEND_URL` default points at a dead port
-
-Defaults to `http://localhost:3000`; Vite serves `5173` with `strictPort: true`.
-Outbound email links (verification, password reset) therefore target nothing.
-Change the default and add the key to `.env.example`.
-
-### `.env.example` is a small subset of what settings reads
-
-9 declared keys against ~30 `env(...)` reads. Notably absent:
-`HISTORICAL_DATA_FLOOR` (the governance control both main docs treat as
-canonical), all `MACRO_*` and `NEWS_BACKFILL_*` tuning keys, the `EMAIL_*` group,
-`FRONTEND_URL`, `ALERTS_ENABLE_SMS`, `SMS_WEBHOOK_URL`.
-
-Also in `.env.example` but **not read by settings**: `CELERY_RESULT_BACKEND`
-(hardcoded from `CELERY_BROKER_URL` in `base.py`), and
-`WSL2_UBUNTU_ACCOUNT` / `WSL2_UBUNTU_PASSWORD` (no consumer anywhere — dead, and
-a `*_PASSWORD` key invites a plaintext secret). `SMOKE_USERNAME` /
-`SMOKE_PASSWORD` are legitimate but consumed by `scripts/`, not settings.
-
-`docs/reference/env.md` now reports all of this automatically. Act on it.
-
 ### `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` is not configurable
 
 `apps/backtest/task_health.py` reads it via `getattr(settings, ..., 2400)`, but
 the setting is never defined and never read from the environment. Changing the
 stale-run threshold currently requires a code edit. Wire it through `env.int()`.
-
-### Compose worker does not honour the queue split
-
-`compose/local/django/start-celeryworker` runs `celery -A config.celery worker -l info`
-with no `-Q`, so a Compose worker consumes only `ops` and will never execute a
-backtest or a retrain. Either add the queues or document Compose workers as
-`ops`-only. `start-celerybeat` and `start.sh` should be reviewed for the same
-class of drift.
 
 ### OpenAPI schema metadata is stale
 

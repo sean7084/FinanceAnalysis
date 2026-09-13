@@ -6,7 +6,7 @@
 
 # Model Registry and Artifacts
 
-_Generated: 2026-09-07T15:17:02Z_
+_Generated: 2026-09-13T13:50:26Z_
 
 Read this sheet before trusting any accuracy or feature count quoted in prose. `LightGBMModelArtifact` is the authority for per-horizon LightGBM deployment; `ModelVersion` is a higher-level registry that does **not** keep one simultaneously active row per horizon. The rationale for that split, and the version-tag naming convention, are explained in `TECHNICAL_GUIDE.md`; the promote/rollback procedure is in `docs/how-to/retrain.md`.
 

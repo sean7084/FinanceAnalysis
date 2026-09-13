@@ -6,7 +6,7 @@
 
 # Data Coverage Metrics
 
-_Generated: 2026-09-07T15:16:46Z_
+_Generated: 2026-09-13T13:43:16Z_
 
 Table-level coverage for every concrete model in `apps/`. `Assets` is the distinct count of the `asset` foreign key where the table has one. Prose about what each metric *means* and what a gap *implies* lives in `TECHNICAL_GUIDE.md`; this sheet only states the measured facts.
 
