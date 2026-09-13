@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: models_artifacts
-title: Trained Model Artifacts (LightGBM & LSTM)
-scope:
-    - models/
-source_files: []
-depends_on: []
-related_to: []

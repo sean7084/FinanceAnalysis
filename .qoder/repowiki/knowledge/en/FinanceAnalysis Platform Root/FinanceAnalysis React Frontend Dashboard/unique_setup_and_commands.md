@@ -1,1 +1,0 @@
-Run `npm run dev` to start the Vite dev server on port 5173; it proxies `/api` to `http://127.0.0.1:8000` and `/ws` to `ws://127.0.0.1:8000`. Build runs `tsc -b` then `vite build`. Tests execute via `vitest run` using a jsdom environment configured in `vite.config.ts` with setup file `src/test/setup.ts`.

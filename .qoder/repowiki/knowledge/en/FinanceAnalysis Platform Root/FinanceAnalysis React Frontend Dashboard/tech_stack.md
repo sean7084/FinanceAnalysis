@@ -1,1 +1,0 @@
-React 19 + TypeScript 6, Vite 8 as the dev/build server, react-router-dom v7 for client-side routing, recharts and lightweight-charts for financial visualizations, Vitest + @testing-library/react for unit tests, and ESLint 9 with typescript-eslint.

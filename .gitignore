@@ -32,6 +32,13 @@ FinanceAnalysis.code-workspace
 .vscode/settings.json
 .vscode/git-safe.sh
 .idea/
+# IDE-generated repository wiki and knowledge cards. Regenerated on every refresh and
+# stamped with exported_at timestamps that change with no content change, so tracking
+# them produces pure churn. Worse, the tooling does not manage renames through git: a
+# card rename leaves the old directory tracked beside the new one, and a name
+# collision produces a "<name>__2" orphan that nothing indexes. The files stay on disk
+# and keep working locally; only tracking stops.
+.qoder/
 *.swp
 *~
 

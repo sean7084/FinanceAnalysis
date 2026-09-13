@@ -1,1 +1,0 @@
-No build or test commands are present; artifacts are consumed by loading the appropriate version directory and deserializing `model.pkl` / `{horizon}d_model.pt` along with their companion metadata/metrics JSONs.

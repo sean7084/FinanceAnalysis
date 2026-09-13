@@ -1,1 +1,0 @@
-React + Vite single-page application providing a financial dashboard, stock detail views, backtest workbench, model monitoring, and alert center with real-time WebSocket updates.

@@ -1,4 +1,0 @@
-- Per-environment dependency sets under requirements/ (base.txt, local.txt, production.txt) consumed by both native venv and Docker builds.
-- Cross-app boundaries are expressed as Django app ordering rather than direct Python imports, so new apps must be inserted at the correct position in INSTALLED_APPS.
-- All time-bounded calculations must use the canonical CSI 300/A500 membership cutoff from apps/markets/benchmarking.py instead of ad-hoc date filters.
-- Generated reference sheets (commands, celery, env, metrics, models) are never hand-edited; they are regenerated from the live database via the export_documentation_facts management command.

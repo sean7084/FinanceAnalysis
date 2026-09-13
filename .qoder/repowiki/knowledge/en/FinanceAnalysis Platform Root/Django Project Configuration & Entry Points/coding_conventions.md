@@ -1,5 +1,0 @@
-- Configuration values are read from environment variables through `django-environ`'s `Env` object with explicit type helpers (`env.bool`, `env.int`, `env.float`, `env.list`) and sensible defaults, never hard-coded secrets.
-- Per-environment settings are implemented by importing `from .base import *` and overriding only the differences (e.g., `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`, `EMAIL_BACKEND`), keeping shared defaults centralized in `base.py`.
-- REST endpoints are declared as DRF ViewSets and registered declaratively on a single `DefaultRouter` instance in `urls.py`, with each registration specifying a path prefix and a `basename` for reverse URL generation.
-- Celery tasks are routed to dedicated queues by mapping full Python task paths in `CELERY_TASK_ROUTES` to named queues and routing keys defined in `CELERY_TASK_QUEUES`.
-- Scheduled background jobs are configured centrally in `CELERY_BEAT_SCHEDULE` using `crontab` expressions that invoke tasks from `apps.*` modules.

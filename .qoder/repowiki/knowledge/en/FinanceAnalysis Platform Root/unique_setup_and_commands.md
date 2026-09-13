@@ -1,1 +1,0 @@
-docker-compose up boots the full local stack (django on :8000, celery_worker, celery_beat); verify dependencies with scripts/verify_local_stack.{sh,ps1}; populate data via docs/how-to/backfill.md; regenerate reference docs with `python manage.py export_documentation_facts [--check]`; run tests with `python manage.py test --keepdb` and `cd frontend && npm test`.

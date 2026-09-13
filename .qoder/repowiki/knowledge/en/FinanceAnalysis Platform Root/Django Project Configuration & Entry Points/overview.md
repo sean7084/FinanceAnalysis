@@ -1,1 +1,0 @@
-Django project root that wires together settings, URL routing, ASGI/WSGI entry points, Celery worker configuration, and per-environment overrides for the FinanceAnalysis financial data platform.

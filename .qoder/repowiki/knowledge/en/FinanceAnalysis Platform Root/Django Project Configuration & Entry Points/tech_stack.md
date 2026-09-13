@@ -1,1 +1,0 @@
-Django 6.0 with Django REST Framework, SimpleJWT (HS256), drf-spectacular for OpenAPI 3.0, django-environ for env-based config, Channels + channels_redis for WebSockets, Celery with Redis broker and django-celery-beat for scheduled tasks, multiple message queues (`ops`, `backtest`, `train-lightgbm`, `train-lstm`).

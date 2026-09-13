@@ -1,1 +1,0 @@
-Versioned, persisted artifacts for LightGBM and LSTM prediction models across 3d/7d/30d horizons, including serialized model weights, scalers/calibrators, and training metadata.

@@ -1,1 +1,0 @@
-Django + DRF + Channels over ASGI; PostgreSQL primary store; Redis for cache, Celery broker, and WebSocket pub/sub; Celery Beat scheduling across four named queues; React 19 + Vite frontend; Docker Compose orchestrating django/celery_worker/celery_beat containers sharing one image.
