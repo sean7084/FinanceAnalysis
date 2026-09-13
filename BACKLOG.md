@@ -265,27 +265,23 @@ a pristine HEAD worktree, and the difference was the missing untracked file, not
 code. Fix by building the yield fixture in a temp directory the way the CNY/USD
 case in the same module already does.
 
-### `makemigrations --check` can never pass
+### `makemigrations --check` — resolved
 
-Two sets of pending migrations exist at HEAD, both pre-existing:
+Both drifts are gone; the check exits 0 and is enforced in CI. See the Resolved entry
+for what the generated migrations actually contained. Two corrections to the earlier
+diagnosis, recorded so the reasoning is not reused blindly:
 
-1. **`backtest.0003_alter_backtestrun_status`** — `0002_backtestrun_lifecycle_controls`
-   declares the `status` `AlterField` **without** `default='PENDING'`, while the
-   model has it. Django therefore proposes a perpetual `AlterField` whose field
-   definition is otherwise identical to what 0002 already wrote. Harmless at
-   runtime (Django applies defaults in Python, not as DB constraints) but it makes
-   the check permanently dirty.
-2. **`markets.0012_rename_*_idx`** — five index renames on `assetsuspension`,
-   `benchmarkindexdaily`, `exchangetradingcalendar`, and
-   `pointintimebenchmarkdaily`. `apps/markets/models.py` is byte-identical to HEAD,
-   so this drift predates any current work. Unlike (1), these touch real indexes.
+- `backtest.0003` was correctly predicted to be harmless, and `sqlmigrate` confirms it
+  emits literally `-- (no-op)`.
+- `markets.0012` was described as touching "real indexes", which overstated it. Django
+  generated `RenameIndex`, and PostgreSQL executes that as `ALTER INDEX ... RENAME TO
+  ...` — a catalog-only rename with no rebuild, no table rewrite and no meaningful
+  lock. The distinction mattered: it is what made applying this to the dev database
+  routine rather than something to schedule.
 
-Generate and commit both. Do not edit the applied `0002`. Until this is done, the
-`makemigrations --check` line in the `CONTRIBUTING.md` definition of done cannot be
-satisfied — either fix the drift or drop that line.
-
-Note `CHANGELOG.md` records `makemigrations --check` as clean at v0.1.9, so both
-drifts were introduced between then and now.
+The `CHANGELOG.md` note that the check was clean at v0.1.9 still stands, and the
+likely cause of the index half is a Django upgrade rehashing auto-generated
+`models.Index` names.
 
 ### Non-hermetic sentiment tests
 
@@ -362,6 +358,69 @@ Either seed reference data, or document these as user-provisioned and empty by
 design. Right now the features look broken rather than unconfigured.
 
 ---
+
+## Open — frontend
+
+### The frontend does not type-check or lint clean
+
+`npm run build` exits 2 with six TypeScript errors; `npm run lint` exits 1 with one
+error and nine warnings. `npm test` passes all 31 — because vitest transpiles without
+type-checking, so a green test run says nothing about whether the project compiles.
+
+That is the same blind-spot class as `manage.py test` once discovering zero tests and
+exiting 0. It is also why `frontend/dist` cannot currently be rebuilt from a clean
+checkout.
+
+Itemised, with the diagnosis that makes each one small:
+
+| Where | Error | Assessment |
+| --- | --- | --- |
+| `BacktestWorkbenchPage.test.tsx` 350, 351, 353 | TS2783 — `id`, `name`, `status` specified more than once | Fixture object literals with duplicate keys. Last wins, so behaviour is unchanged; delete the shadowed ones |
+| `BacktestWorkbenchPage.tsx` 192, 193 | TS2339 — `processed_trading_days`, `total_trading_days` do not exist on `{}` | `BacktestRunDto['report']['progress']` is typed `{}`. The runtime code is already defensive, routing both through `parseFiniteNumber`, so widen the DTO rather than change the call sites |
+| `BacktestWorkbenchPage.tsx` 432 | TS2741 — `entry_weekdays` missing but required | **The code is right and the type is wrong.** `BacktestWorkbenchPage.test.tsx:518` asserts `expect(payload?.parameters).not.toHaveProperty('entry_weekdays')`, so omitting it from the create payload is deliberate and tested. Make the field optional in `BacktestCreatePayload` |
+| `629:17` | ESLint `react-refresh/only-export-components` | A page module exports a non-component beside its components, which breaks Fast Refresh. Move the shared constant or helper to its own module |
+| 9 warnings | `react-hooks/exhaustive-deps` — missing `t` | All the same shape: a translation function used inside an effect but absent from the dependency array |
+
+The `entry_weekdays` row is the one worth reading carefully. It looks like a dropped
+user selection — a required parameter silently missing from a create payload is exactly
+what a real bug looks like — and the test asserting its absence is the only thing that
+distinguishes it. Checking that before "fixing" it avoids breaking intended behaviour.
+
+### CI runs these two gates non-blocking
+
+`.github/workflows/ci.yml` has a `frontend-static` job with `continue-on-error: true`
+that runs `npm run build` and `npm run lint`. It is non-blocking because both fail on
+the current tree, and a workflow that is red on arrival gets ignored rather than fixed.
+
+Fix the seven errors above, then delete `continue-on-error` and fold the two steps into
+the blocking `frontend` job. The job name states the situation so the non-blocking
+status is not mistaken for an oversight.
+
+### CI exists, and asserts a discovery floor
+
+`.github/workflows/ci.yml` runs on push to `main` and on pull requests, with three jobs:
+
+- **`backend`** (blocking) — PostgreSQL 15 and Redis 7 service containers, then
+  `manage.py check`, `makemigrations --check --dry-run`,
+  `export_documentation_facts --check`, and the full suite.
+- **`frontend`** (blocking) — `npm ci` and the vitest suite.
+- **`frontend-static`** (non-blocking, see above).
+
+Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`, currently 339 and 31)
+as well as a green result. This is the load-bearing part. A workflow that only checked
+the exit code would have reported success through the entire period when
+`manage.py test` was discovering zero tests, which is how 109 failures stayed hidden.
+The floor converts that class of silent success into a hard failure.
+
+Raise the floors when tests are added. Lowering one should require a stated reason, since
+the count can only fall if discovery breaks or tests are deleted.
+
+Two notes on the service configuration. The Redis service runs unauthenticated: the
+development server requires an ACL user, but that is a property of that server's
+configuration, not of the code, so CI does not need to reproduce it. And Python is pinned
+to 3.14 to match the verified local interpreter — TA-Lib 0.6.8 ships manylinux wheels
+bundling the C library, so no apt build step is needed, but `torch` is unpinned and large
+enough to dominate the job runtime.
 
 ## Open — configuration and infrastructure
 
