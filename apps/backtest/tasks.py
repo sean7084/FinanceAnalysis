@@ -108,6 +108,12 @@ def _bounded_cache_set(cache, key, value, max_entries):
     return value
 
 
+def clear_backtest_process_caches():
+    _TRADING_DATES_CACHE.clear()
+    _PRICE_MAP_CACHE.clear()
+    _MATRIX_SIGNAL_CACHE.clear()
+
+
 def _default_lightgbm_runtime_metrics():
     metrics = {
         'inference_backend': 'cpu_serial',
@@ -472,6 +478,15 @@ def _build_price_map(start_date, end_date):
     rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list('asset_id', 'date', 'close')
     price_map = {(asset_id, dt): _d(close) for asset_id, dt, close in rows}
     return _bounded_cache_set(_PRICE_MAP_CACHE, cache_key, price_map, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
+
+
+def _build_chunk_price_map(trading_dates, current_index, chunk_end):
+    if current_index < 0 or chunk_end <= current_index or current_index >= len(trading_dates):
+        return {}
+
+    chunk_start_date = trading_dates[current_index]
+    chunk_end_date = trading_dates[chunk_end - 1]
+    return _build_price_map(chunk_start_date, chunk_end_date)
 
 
 def _eligible_backtest_asset_ids(dt, cache):
@@ -2197,7 +2212,6 @@ def run_backtest(self, backtest_run_id):
         if len(trading_dates) < 2:
             raise ValueError('Not enough OHLCV data in selected date range.')
 
-        price_map = _build_price_map(run.start_date, run.end_date)
         fee_config = _resolve_fee_config(run)
         slippage_bps = _non_negative_decimal('slippage_bps', (run.parameters or {}).get('slippage_bps', '5'))
         entry_weekdays = _entry_weekdays(run)
@@ -2229,6 +2243,7 @@ def run_backtest(self, backtest_run_id):
 
         chunk_trading_days = _backtest_chunk_trading_days(run)
         chunk_end = min(current_index + chunk_trading_days, len(trading_dates))
+        price_map = _build_chunk_price_map(trading_dates, current_index, chunk_end)
 
         for current_date in trading_dates[current_index:chunk_end]:
             cash, open_positions = _close_positions_for_date(

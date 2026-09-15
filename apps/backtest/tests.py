@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db.utils import OperationalError
@@ -195,6 +196,21 @@ class Phase15BacktestTests(TestCase):
         context = _resolve_macro_context_for_date(date(2024, 2, 15), {})
 
         self.assertEqual(context['macro_phase'], MarketContext.MacroPhase.RECOVERY)
+
+    def test_celery_queue_split_routes_backtest_and_training_tasks(self):
+        queue_names = [queue.name for queue in settings.CELERY_TASK_QUEUES]
+
+        self.assertEqual(settings.CELERY_TASK_DEFAULT_QUEUE, 'ops')
+        self.assertCountEqual(queue_names, ['ops', 'backtest', 'train-lightgbm', 'train-lstm'])
+        self.assertEqual(settings.CELERY_TASK_ROUTES['apps.backtest.tasks.run_backtest']['queue'], 'backtest')
+        self.assertEqual(
+            settings.CELERY_TASK_ROUTES['apps.prediction.tasks_lightgbm.train_lightgbm_models']['queue'],
+            'train-lightgbm',
+        )
+        self.assertEqual(
+            settings.CELERY_TASK_ROUTES['apps.prediction.tasks_lstm.train_lstm_models']['queue'],
+            'train-lstm',
+        )
 
     def _auth(self):
         self.client.force_authenticate(user=self.user)
@@ -2833,6 +2849,85 @@ class Phase15BacktestTests(TestCase):
         self.assertNotIn('progress', run.report)
 
     @patch('apps.backtest.tasks.BACKTEST_CHUNK_TRADING_DAYS', 1)
+    def test_chunked_backtest_builds_price_map_per_chunk_window(self):
+        chunk_asset = Asset.objects.create(
+            market=self.market,
+            symbol='600103',
+            ts_code='600103.SH',
+            name='Chunk Price Asset',
+        )
+        start_date = date(2026, 2, 2)
+        trading_dates = [start_date + timedelta(days=index) for index in range(4)]
+        closes = ['9.9000', '10.1000', '10.4000', '10.2500']
+
+        for trading_date, close in zip(trading_dates, closes):
+            OHLCV.objects.create(
+                asset=chunk_asset,
+                date=trading_date,
+                open=Decimal(close),
+                high=Decimal(close) + Decimal('0.2500'),
+                low=Decimal(close) - Decimal('0.1500'),
+                close=Decimal(close),
+                adj_close=Decimal(close),
+                volume=120000,
+                amount=Decimal(close) * Decimal('120000'),
+            )
+
+        IndexMembership.objects.bulk_create([
+            IndexMembership(
+                asset=chunk_asset,
+                index_code='000300.SH',
+                index_name='CSI 300',
+                trade_date=trading_dates[0] - timedelta(days=1),
+                weight=Decimal('3.100000'),
+            ),
+            IndexMembership(
+                asset=chunk_asset,
+                index_code='000510.CSI',
+                index_name='CSI A500',
+                trade_date=trading_dates[0] - timedelta(days=1),
+                weight=Decimal('1.900000'),
+            ),
+        ])
+
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='Chunked Price Window Run',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=trading_dates[0],
+            end_date=trading_dates[-1],
+            initial_capital=Decimal('100000.00'),
+            parameters={
+                'top_n': 1,
+                'horizon_days': 7,
+                'up_threshold': 0.20,
+                'prediction_source': 'heuristic',
+                'holding_period_days': 2,
+            },
+        )
+
+        original_build_price_map = backtest_tasks._build_price_map
+        observed_windows = []
+
+        def _record_price_window(start_value, end_value):
+            observed_windows.append((start_value, end_value))
+            return original_build_price_map(start_value, end_value)
+
+        with patch('apps.backtest.tasks._build_price_map', side_effect=_record_price_window):
+            with patch('apps.backtest.tasks.run_backtest.delay', side_effect=lambda run_id: run_backtest(run_id)):
+                run_backtest(run.id)
+
+        self.assertEqual(
+            observed_windows,
+            [
+                (trading_dates[0], trading_dates[0]),
+                (trading_dates[1], trading_dates[1]),
+                (trading_dates[2], trading_dates[2]),
+                (trading_dates[3], trading_dates[3]),
+            ],
+        )
+
+    @patch('apps.backtest.tasks.BACKTEST_CHUNK_TRADING_DAYS', 1)
     def test_run_backtest_pauses_at_chunk_boundary_when_requested(self):
         run = self._create_run(pending_control_action=BacktestRun.ControlAction.PAUSE)
 
@@ -3235,32 +3330,65 @@ class BacktestManagementCommandTests(TestCase):
         self.assertEqual(manifest['lightgbm_inference_backend'], 'windows_gpu')
         self.assertEqual(manifest['lightgbm_batch_size'], 64)
 
-    def test_run_core_backtest_matrix_inline_scheduler_round_robins_continuations(self):
+    @patch('apps.backtest.management.commands.run_core_backtest_matrix.subprocess.run')
+    def test_run_core_backtest_matrix_execute_inline_relaunches_running_runs_in_subprocesses(self, mock_subprocess_run):
         from apps.backtest.management.commands.run_core_backtest_matrix import Command
 
         command = Command()
+        inline_date = date(2026, 1, 1)
+        first_run = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline First',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=inline_date,
+            end_date=inline_date,
+            initial_capital=Decimal('100000.00'),
+            parameters={'horizon_days': 3},
+        )
+        second_run = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline Second',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=inline_date,
+            end_date=inline_date,
+            initial_capital=Decimal('100000.00'),
+            parameters={'horizon_days': 7},
+        )
         calls = []
-        continuation_counts = {101: 0, 102: 0}
+        continuation_counts = {first_run.id: 0, second_run.id: 0}
 
-        def _fake_run_backtest(run_id):
+        def _fake_subprocess_run(args, **kwargs):
+            run_id = int(args[-1])
             calls.append(run_id)
+            run = BacktestRun.objects.get(id=run_id)
             if continuation_counts[run_id] == 0:
                 continuation_counts[run_id] += 1
-                backtest_tasks.run_backtest.delay(run_id)
+                run.status = BacktestRun.Status.RUNNING
+                run.report = {'runtime_state': {'current_index': 1}}
+            else:
+                run.status = BacktestRun.Status.COMPLETED
+                run.report = {}
+            run.save(update_fields=['status', 'report', 'updated_at'])
 
-        with patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest', side_effect=_fake_run_backtest):
-            command._run_backtests_inline_to_completion([101, 102])
+        mock_subprocess_run.side_effect = _fake_subprocess_run
 
-        self.assertEqual(calls, [101, 102, 101, 102])
+        command._run_backtests_inline_to_completion([first_run.id, second_run.id])
 
-    @patch('apps.backtest.management.commands.run_core_backtest_matrix.run_backtest')
-    def test_run_core_backtest_matrix_execute_inline_creates_all_runs_before_execution(self, mock_run_backtest):
+        self.assertEqual(mock_subprocess_run.call_count, 4)
+        self.assertEqual(
+            calls,
+            [first_run.id, second_run.id, first_run.id, second_run.id],
+        )
+        self.assertTrue(all(call.kwargs['check'] for call in mock_subprocess_run.call_args_list))
+
+    @patch('apps.backtest.management.commands.run_core_backtest_matrix.subprocess.run')
+    def test_run_core_backtest_matrix_execute_inline_creates_all_runs_before_execution(self, mock_subprocess_run):
         counts_at_execution = []
 
-        def _fake_run_backtest(_run_id):
+        def _fake_subprocess_run(*_args, **_kwargs):
             counts_at_execution.append(BacktestRun.objects.count())
 
-        mock_run_backtest.side_effect = _fake_run_backtest
+        mock_subprocess_run.side_effect = _fake_subprocess_run
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / 'matrix_inline_bundle'
@@ -3280,11 +3408,30 @@ class BacktestManagementCommandTests(TestCase):
 
             manifest = json.loads((output_dir / 'matrix_manifest.json').read_text(encoding='utf-8'))
 
-        self.assertEqual(mock_run_backtest.call_count, 9)
+        self.assertEqual(mock_subprocess_run.call_count, 9)
         self.assertEqual(counts_at_execution, [9] * 9)
         self.assertFalse(manifest['queued'])
         self.assertTrue(manifest['execute_inline'])
         self.assertIn('Executed inline matrix to completion.', output.getvalue())
+
+    @patch('apps.backtest.management.commands.run_backtest_inline_once.run_backtest_inline_chunk_once')
+    def test_run_backtest_inline_once_executes_one_chunk(self, mock_inline_helper):
+        run = BacktestRun.objects.create(
+            user=self.user,
+            name='Inline Once Subject',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            initial_capital=Decimal('100000.00'),
+            parameters={'top_n': 1, 'horizon_days': 7, 'up_threshold': 0.55},
+        )
+        mock_inline_helper.return_value = 'ok'
+
+        output = StringIO()
+        call_command('run_backtest_inline_once', run_id=run.id, stdout=output)
+
+        mock_inline_helper.assert_called_once_with(run.id)
+        self.assertIn('ok', output.getvalue())
 
     def test_export_backtest_runs_includes_compare_backtest_run_id(self):
         compare_run = BacktestRun.objects.create(

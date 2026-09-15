@@ -1,18 +1,53 @@
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowsgpuqueue --queue --lightgbm-inference-backend windows_gpu
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuqueue --queue --lightgbm-inference-backend cpu_serial
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260603-windowsgpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu --output-dir reports/20260603-windowsgpuinline
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend cpu_serial --output-dir reports/20260601-windowscpuinline
+'''
+cd /home/cliu/FinanceAnalysis-wsl2
+source .venv/bin/activate
+
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260621-wsl2gpuinline --execute-inline --chunk-trading-days 20 --lightgbm-inference-backend windows_gpu 
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260621-wsl2cpuinline --execute-inline --chunk-trading-days 20 --lightgbm-inference-backend cpu_serial
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260621-wsl2gpuqueue --queue --chunk-trading-days 20 --lightgbm-inference-backend windows_gpu
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260621-wsl2cpuqueue --queue --chunk-trading-days 20 --lightgbm-inference-backend cpu_serial
+
+export BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES=8
+export BACKTEST_RANGE_CACHE_MAX_ENTRIES=1
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260606-wsl2cpuqueue --queue --lightgbm-inference-backend cpu_serial
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260606-wsl2gpuqueue --queue --lightgbm-inference-backend windows_gpu
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260606-wsl2gpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260606-wsl2cpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend cpu_serial
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-03-31 --variants top-n --sources lightgbm --name-prefix core18-20260619-wsl2cpuinline-chunk10 --execute-inline --lightgbm-inference-backend cpu_serial --chunk-trading-days 10
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-03-31 --variants top-n --sources lightgbm --name-prefix core18-20260619-wsl2cpuinline-chunk20 --execute-inline --lightgbm-inference-backend cpu_serial --chunk-trading-days 20
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-03-31 --variants top-n --sources lightgbm --name-prefix core18-20260619-wsl2cpuinline-chunk25 --execute-inline --lightgbm-inference-backend cpu_serial --chunk-trading-days 25
+python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-03-31 --variants top-n --sources lightgbm --name-prefix core18-20260619-wsl2cpuinline-chunk25-core16 --execute-inline --lightgbm-inference-backend cpu_serial --chunk-trading-days 25
+
+cd /home/cliu/FinanceAnalysis-wsl2
+source /home/cliu/.venvs/financeanalysis-wsl2/bin/activate
+CELERY_WORKER_QUEUES=backtest CELERY_WORKER_NODE_SUFFIX=backtest ./scripts/run_celery_worker.sh
+
+cd /home/cliu/FinanceAnalysis-wsl2
+export VENV_BIN=/home/cliu/.venvs/financeanalysis-wsl2/bin
+source /home/cliu/.venvs/financeanalysis-wsl2/bin/activate
+scripts/run_local_stack.sh
+
+scripts/run_backend.sh
+scripts/run_celery_worker.sh
+scripts/run_frontend.sh
+
+Add retry/backoff around psycopg2.OperationalError, especially for messages like database system is shutting down, starting up, terminating connection, or connection reset.
+
+
+
+'''
+
 import json
 import json
+import os
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
-from unittest.mock import patch
 
 from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connections
-from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.backtest.models import BacktestRun
@@ -67,12 +102,6 @@ def _parse_csv_tokens(raw_value, name):
     if not values:
         raise CommandError(f'{name} must contain at least one value.')
     return values
-
-
-class _InlineDelayResult:
-    def __init__(self, task_id):
-        self.id = task_id
-
 
 class Command(BaseCommand):
     help = 'Create and optionally queue the heuristic/lightgbm core-profile backtest matrix across selected variants.'
@@ -245,26 +274,24 @@ class Command(BaseCommand):
             spec['parameters'] = params
 
     def _run_backtests_inline_to_completion(self, root_run_ids):
-        pending_run_ids = [int(run_id) for run_id in root_run_ids]
-        queued_count = 0
-
-        def _enqueue(run_id):
-            nonlocal queued_count
-            queued_count += 1
-            pending_run_ids.append(int(run_id))
-            return _InlineDelayResult(f'inline-matrix-{queued_count}')
-
-        with patch('apps.backtest.tasks.run_backtest.delay', side_effect=_enqueue):
-            while pending_run_ids:
-                current_run_id = pending_run_ids.pop(0)
-                for attempt in range(2):
-                    try:
-                        run_backtest(current_run_id)
-                        break
-                    except (OperationalError, InterfaceError):
-                        connections.close_all()
-                        if attempt == 1:
-                            raise
+        child_env = os.environ.copy()
+        pending_run_ids = [int(value) for value in root_run_ids]
+        while pending_run_ids:
+            run_id = pending_run_ids.pop(0)
+            subprocess.run(
+                [
+                    sys.executable,
+                    'manage.py',
+                    'run_backtest_inline_once',
+                    '--run-id',
+                    str(run_id),
+                ],
+                check=True,
+                env=child_env,
+            )
+            run = BacktestRun.objects.filter(id=run_id).first()
+            if run is not None and run.status == BacktestRun.Status.RUNNING and (run.report or {}).get('runtime_state'):
+                pending_run_ids.append(run_id)
 
     def handle(self, *args, **options):
         start_date = _parse_date(options['start_date'], 'start-date')

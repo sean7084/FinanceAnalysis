@@ -1,9 +1,9 @@
 # docker exec -i finance_analysis_django python manage.py rerun_backtests_for_comparison --run-ids  --name-suffix --queue
 from copy import deepcopy
-from unittest.mock import patch
 
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.backtest.inline_execution import run_backtest_inline_to_completion
 from apps.backtest.models import BacktestRun
 from apps.backtest.tasks import run_backtest
 
@@ -44,19 +44,6 @@ def _parse_run_ids(raw_value):
     if not run_ids:
         raise CommandError('run-ids must contain at least one id or range.')
     return run_ids
-
-
-def _run_backtest_inline(root_run_id):
-    pending_run_ids = [root_run_id]
-
-    def _enqueue(run_id):
-        pending_run_ids.append(int(run_id))
-
-    with patch('apps.backtest.tasks.run_backtest.delay', side_effect=_enqueue):
-        while pending_run_ids:
-            current_run_id = pending_run_ids.pop(0)
-            run_backtest(current_run_id)
-
 
 class Command(BaseCommand):
     help = (
@@ -129,7 +116,7 @@ class Command(BaseCommand):
             if options['queue']:
                 run_backtest.delay(cloned_run.id)
             else:
-                _run_backtest_inline(cloned_run.id)
+                run_backtest_inline_to_completion(cloned_run.id)
 
         self.stdout.write(
             self.style.SUCCESS(

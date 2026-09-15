@@ -43,6 +43,35 @@ $CeleryWorkerConcurrency = if (-not [string]::IsNullOrWhiteSpace($env:CELERY_WOR
   $null
 }
 
+$NormalizedWorkerQueues = ($CeleryWorkerQueues -replace '\s+', '')
+
+if ($NormalizedWorkerQueues -eq 'backtest') {
+  if ([string]::IsNullOrWhiteSpace($CeleryWorkerConcurrency)) {
+    $CeleryWorkerConcurrency = '1'
+  }
+  $CeleryWorkerPrefetchMultiplier = if (-not [string]::IsNullOrWhiteSpace($env:CELERY_WORKER_PREFETCH_MULTIPLIER)) {
+    $env:CELERY_WORKER_PREFETCH_MULTIPLIER
+  } else {
+    '1'
+  }
+  $CeleryWorkerMaxTasksPerChild = if (-not [string]::IsNullOrWhiteSpace($env:CELERY_WORKER_MAX_TASKS_PER_CHILD)) {
+    $env:CELERY_WORKER_MAX_TASKS_PER_CHILD
+  } else {
+    '1'
+  }
+} else {
+  $CeleryWorkerPrefetchMultiplier = if (-not [string]::IsNullOrWhiteSpace($env:CELERY_WORKER_PREFETCH_MULTIPLIER)) {
+    $env:CELERY_WORKER_PREFETCH_MULTIPLIER
+  } else {
+    $null
+  }
+  $CeleryWorkerMaxTasksPerChild = if (-not [string]::IsNullOrWhiteSpace($env:CELERY_WORKER_MAX_TASKS_PER_CHILD)) {
+    $env:CELERY_WORKER_MAX_TASKS_PER_CHILD
+  } else {
+    $null
+  }
+}
+
 $celeryArguments = @(
   '-A', 'config.celery',
   'worker',
@@ -57,6 +86,14 @@ if (-not [string]::IsNullOrWhiteSpace($CeleryWorkerQueues)) {
 
 if (-not [string]::IsNullOrWhiteSpace($CeleryWorkerConcurrency)) {
   $celeryArguments += @('--concurrency', $CeleryWorkerConcurrency)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($CeleryWorkerPrefetchMultiplier)) {
+  $celeryArguments += @('--prefetch-multiplier', $CeleryWorkerPrefetchMultiplier)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($CeleryWorkerMaxTasksPerChild)) {
+  $celeryArguments += @('--max-tasks-per-child', $CeleryWorkerMaxTasksPerChild)
 }
 
 Invoke-CeleryCommand $celeryArguments

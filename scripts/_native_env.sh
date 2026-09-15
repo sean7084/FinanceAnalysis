@@ -26,6 +26,14 @@ else
   DEFAULT_VENV_BIN="$PROJECT_ROOT/.venv/bin"
 fi
 
+if [[ -z "${VENV_BIN:-}" && -n "${VIRTUAL_ENV:-}" ]]; then
+  if [[ -d "$VIRTUAL_ENV/bin" ]]; then
+    DEFAULT_VENV_BIN="$VIRTUAL_ENV/bin"
+  elif [[ -d "$VIRTUAL_ENV/Scripts" ]]; then
+    DEFAULT_VENV_BIN="$VIRTUAL_ENV/Scripts"
+  fi
+fi
+
 VENV_BIN="${VENV_BIN:-$DEFAULT_VENV_BIN}"
 PYTHON_BIN="${PYTHON_BIN:-$VENV_BIN/python}"
 CELERY_BIN="${CELERY_BIN:-$VENV_BIN/celery}"
