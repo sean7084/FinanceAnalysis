@@ -59,9 +59,32 @@ Items here have no commitment attached. When something is done, move it to
   their absence to a warning and still `exit 0`. On the primary documented platform
   the verifier introspected Django settings and printed URLs back without ever
   opening a connection — which is exactly how the stale Redis password survived.
-  Both launchers now probe through `psycopg2` and `redis-py`, fail the exit code on
-  any unreachable service, and redact credentials from every message including
-  failures (the `.sh` previously printed the raw URL, password included, on error).
+  Both launchers now probe through `psycopg2` and `redis-py` and fail the exit code on
+  any unreachable service.
+
+  *Corrected afterwards.* That commit also claimed both launchers redact credentials
+  "from every message including failures". They did not, and the claim was wrong in two
+  different ways. `verify_local_stack.sh` redacted its probe messages but its settings
+  summary at the end of the file printed `CELERY_BROKER_URL` and the cache `LOCATION`
+  raw — `redact()` was defined inside a heredoc and was not in scope twenty lines later.
+  `verify_local_stack.ps1` had a second, weaker `redact_url()` in its settings probe,
+  with no `try/except` and no malformed-path guard, so it leaked whenever a mistyped URL
+  pushed credentials into the path component.
+
+  Three copies of the redaction logic existed and two were defective differently. The
+  duplication was the root cause, not an incidental detail — it is how one copy got
+  missed while the commit message asserted otherwise. Fixed in `04faf85` by consolidating
+  into a single `scripts/_stack_probe.py` that both verifiers call, which also removed
+  135 lines of Python embedded in shell strings.
+
+  Found by running the `.sh` on Linux for the first time — it had never been executed on
+  any platform, because Windows users run the `.ps1`. The weaker `.ps1` `redact_url()`
+  likewise looked correct on Windows, because a well-formed URL puts credentials in
+  `urlparse`'s `username`/`password` fields, which it drops; the malformed-path branch
+  that it failed to guard only triggers on a mistyped URL. Both defects were invisible
+  until something exercised the untested path. **That is the reason this file records it:
+  a fix applied to two platform variants must be verified on both, and a claim in a commit
+  message is not evidence.**
 - **Analytics test fixtures never seeded the trading calendar.**
   `_make_ohlcv_sequence` created OHLCV on consecutive *calendar* days and
   `ExchangeTradingCalendar` appeared nowhere in `apps/analytics/tests.py`. Since the
