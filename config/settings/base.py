@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_vite',
     'rest_framework',
     'channels',
     'rest_framework_simplejwt.token_blacklist',
@@ -89,6 +90,12 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # WhiteNoise serves /static/ directly from STATIC_ROOT in production and
+    # falls through to django.contrib.staticfiles when DEBUG=True. It must sit
+    # immediately after SecurityMiddleware so gzip/brotli compression and
+    # immutable-cache headers are applied before any other middleware sees the
+    # response.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -152,6 +159,13 @@ STATIC_ROOT = str(BASE_DIR / "staticfiles")
 STATIC_URL = "/static/"
 # https://docs.djangoproject.com/en/dev/ref/contrib/staticfiles/#std:setting-STATICFILES_DIRS
 STATICFILES_DIRS = [str(APPS_DIR / "static")]
+# Vite build output. Guarded by an existence check so a fresh checkout that has
+# not yet run `npm run build` does not break `collectstatic`. Inside the Docker
+# image the multi-stage build always materialises this directory before Django
+# starts, so production collectstatic picks up the hashed assets.
+FRONTEND_DIST_DIR = BASE_DIR / "frontend" / "dist"
+if FRONTEND_DIST_DIR.exists():
+    STATICFILES_DIRS.append(str(FRONTEND_DIST_DIR))
 # https://docs.djangoproject.com/en/dev/ref/contrib/staticfiles/#staticfiles-finders
 STATICFILES_FINDERS = [
     "django.contrib.staticfiles.finders.FileSystemFinder",
@@ -399,11 +413,34 @@ EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 
 # FRONTEND
 # ------------------------------------------------------------------------------
-# Base URL of the SPA, used to build outbound links in verification and
-# password-reset email (apps/users/views.py). The default matches the Vite dev
-# server, which pins port 5173 with strictPort: true and so never falls back to
-# another port. Override for any deployed environment.
-FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
+# Public origin of the SPA. Django now serves the built Vite bundle itself (see
+# apps/core/views.py and apps/templates/frontend/index.html), so outbound links
+# in verification and password-reset email (apps/users/views.py) point at the
+# same host that owns /api and /ws. Operators who still run the pure-Vite HMR
+# flow (visit http://localhost:5173 directly) should override this back to
+# http://localhost:5173 in their .env.
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:8000')
+
+# DJANGO-VITE
+# ------------------------------------------------------------------------------
+# dev_mode=True makes the {% vite %} / {% vite_client %} / {% vite_react_refresh %}
+# template tags emit absolute <script> URLs against the Vite dev server so HMR
+# keeps working even when the page itself is served by Django on :8000.
+# dev_mode=False makes django-vite read FRONTEND_DIST_DIR/.vite/manifest.json
+# and emit hashed /static/ asset URLs served by WhiteNoise.
+# Defaults to DEBUG so a fresh `runserver` with Vite running alongside works
+# out of the box, while production (DEBUG=False) automatically switches to the
+# built manifest.
+DJANGO_VITE_DEV_MODE = env.bool('DJANGO_VITE_DEV_MODE', default=DEBUG)
+DJANGO_VITE = {
+    'default': {
+        'dev_mode': DJANGO_VITE_DEV_MODE,
+        'dev_server_host': env('DJANGO_VITE_DEV_SERVER_HOST', default='localhost'),
+        'dev_server_port': env.int('DJANGO_VITE_DEV_SERVER_PORT', default=5173),
+        'manifest_path': FRONTEND_DIST_DIR / '.vite' / 'manifest.json',
+        'static_url_prefix': '',
+    }
+}
 
 # ALERTING
 # ------------------------------------------------------------------------------

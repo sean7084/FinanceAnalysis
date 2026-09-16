@@ -228,13 +228,14 @@ DATABASE_URL=postgres://finance_analysis:finance_analysis@<db-host>:5432/finance
 REDIS_URL=redis://:<redis-password>@<redis-host>:6379/1
 CELERY_BROKER_URL=redis://:<redis-password>@<redis-host>:6379/0
 TUSHARE_TOKEN=<your-tushare-token>
-FRONTEND_URL=http://localhost:5173
+FRONTEND_URL=http://localhost:8000
 ```
 
-`FRONTEND_URL` defaults to `http://localhost:5173`, matching the Vite dev server,
-which pins that port with `strictPort: true`. Password-reset and email-verification
-links therefore work with no configuration; override the variable for any deployed
-environment.
+`FRONTEND_URL` defaults to `http://localhost:8000` because Django now serves the
+built SPA itself (see §12). Password-reset and email-verification links land on
+the same origin that owns `/api` and `/ws`. Operators who still run the pure-Vite
+HMR flow and want email links to land on `http://localhost:5173` should override
+the variable explicitly.
 
 `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` automatically when `.env`
 exists. OS environment variables take precedence over `.env` values.
@@ -323,10 +324,13 @@ Then:
 
 | Surface | URL |
 | --- | --- |
-| Frontend | `http://localhost:5173/` |
+| Frontend (Django-served) | `http://localhost:8000/` |
+| Frontend (Vite HMR) | `http://localhost:5173/` |
 | API root | `http://localhost:8000/api/v1/` |
 | Admin | `http://localhost:8000/admin/` |
 | Swagger | `http://localhost:8000/api/v1/schema/swagger-ui/` |
+
+Both frontend URLs work; see §12 for when to use which.
 
 The backend binds `0.0.0.0:8000` by default; override with `DJANGO_BIND`.
 
@@ -424,13 +428,32 @@ it is designed to be started once per queue group, each with a distinct node nam
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # Vite HMR on http://localhost:5173
+npm run build      # writes frontend/dist for Django to serve
 ```
 
 Scripts invoke the binaries through Node directly
 (`node ./node_modules/vite/bin/vite.js`) rather than through npm's shim, which
 avoids a class of Windows path-resolution failures. Use `npm run <script>`, not
 `npx vite`.
+
+### Two ways to reach the dashboard
+
+Django now ships the SPA itself (see `apps/core/views.py`,
+`apps/templates/frontend/index.html`, and `DJANGO_VITE` in
+`config/settings/base.py`). Both flows below stay supported:
+
+| Flow | URL | Vite needed? | HMR? | When to use |
+| --- | --- | --- | --- | --- |
+| Pure Vite (unchanged) | `http://localhost:5173/` | Yes | Yes | Frontend-only work; Vite serves `frontend/index.html` and proxies `/api` and `/ws` to Django on `:8000`. |
+| Django-served, dev mode | `http://localhost:8000/` | Yes | Yes | You want same-origin cookies/CSRF/WebSockets during development. Set `DJANGO_VITE_DEV_MODE=True` (default when `DJANGO_DEBUG=True`); Django renders the shell, `<script>` tags point at Vite on `:5173`. |
+| Django-served, prod mode | `http://localhost:8000/` | No | No | Verifying the built bundle. Run `npm run build` once, set `DJANGO_VITE_DEV_MODE=False`; Django reads `frontend/dist/.vite/manifest.json` and emits hashed `/static/` URLs. |
+
+In production (Docker), `DJANGO_VITE_DEV_MODE` is unset and `DEBUG=False`, so
+`dev_mode` resolves to `False` automatically. The multi-stage Dockerfile builds
+`frontend/dist` in a `node:22-alpine` stage and copies it into the runtime
+image; `entrypoint.sh` runs `collectstatic` so WhiteNoise serves the hashed
+assets from `STATIC_ROOT`.
 
 See [`../../frontend/README.md`](../../frontend/README.md) for the frontend
 architecture.

@@ -1,7 +1,13 @@
 # FinanceAnalysis Frontend
 
-React 19 + TypeScript + Vite dashboard for the FinanceAnalysis platform. Talks to
-the Django API over a dev proxy and receives live alerts over WebSocket.
+React 19 + TypeScript + Vite dashboard for the FinanceAnalysis platform.
+
+Django now serves the built bundle itself through `django-vite` +
+`whitenoise` (see `../apps/core/views.py` and
+`../apps/templates/frontend/index.html`), so the canonical dashboard URL is
+`http://localhost:8000/`. The standalone Vite dev server on port 5173 remains
+the HMR entry point for frontend-only work; both flows are documented in
+[`../docs/how-to/local-setup.md`](../docs/how-to/local-setup.md) §12.
 
 This replaces the original Vite scaffold README, which described the template
 rather than this application.
@@ -41,27 +47,80 @@ node ./node_modules/vitest/vitest.mjs
 `vite.config.ts`:
 
 ```ts
+base: '/static/',            // align built asset URLs with Django STATIC_URL
 server: {
   host: '0.0.0.0',
   port: 5173,
   strictPort: true,
+  origin: 'http://localhost:5173',   // lets Django-rendered pages resolve HMR URLs
   proxy: {
     '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     '/ws':  { target: 'ws://127.0.0.1:8000',   changeOrigin: true, ws: true },
   },
-}
+},
+build: {
+  manifest: true,                    // writes dist/.vite/manifest.json
+  outDir: 'dist',
+  emptyOutDir: true,
+  rollupOptions: {
+    // Key the manifest entry as `src/main.tsx` instead of `index.html` so
+    // django-vite's `{% vite_asset 'src/main.tsx' %}` resolves in prod mode.
+    input: { main: fileURLToPath(new URL('./src/main.tsx', import.meta.url)) },
+  },
+},
 ```
 
 `strictPort: true` means Vite **fails** rather than silently moving to 5174 when
-the port is taken. That is intentional — the backend's `FRONTEND_URL` and any
-bookmarked links assume 5173.
+the port is taken. That is intentional — `DJANGO_VITE_DEV_SERVER_PORT` and any
+bookmarked HMR links assume 5173.
 
 Because both `/api` and `/ws` are proxied, application code uses **relative**
 paths and never hardcodes a backend origin. `lib/api.ts` defaults to
-`import.meta.env.VITE_API_BASE_URL ?? '/api/v1'`.
+`import.meta.env.VITE_API_BASE_URL ?? '/api/v1'`. Relative paths keep working
+unchanged when the SPA is served from Django's origin — same-origin requests
+never hit the proxy.
 
 The backend must be running on `127.0.0.1:8000`. See
 [`../docs/how-to/local-setup.md`](../docs/how-to/local-setup.md).
+
+---
+
+## Serving from Django
+
+`../apps/templates/frontend/index.html` renders the SPA shell and emits three
+django-vite template tags: `{% vite_react_refresh %}`, `{% vite_hmr_client %}`,
+and `{% vite_asset 'src/main.tsx' %}`. Which URLs those tags produce depends on
+`DJANGO_VITE_DEV_MODE` (see `../config/settings/base.py`):
+
+| Mode | URLs emitted | Requires |
+| --- | --- | --- |
+| `True` (dev) | `http://localhost:5173/static/@vite/client`, `.../static/src/main.tsx`, React Refresh preamble | Vite dev server running |
+| `False` (prod) | `/static/assets/main-<hash>.js`, `/static/assets/main-<hash>.css`, modulepreload links | `frontend/dist/.vite/manifest.json` (produced by `npm run build`) |
+
+`../config/urls.py` mounts the shell at `/` and at a negative-lookahead
+catch-all `^(?!api/|admin/|api-auth/|static/|media/|ws/).*$`, so every
+client-side route (`/dashboard`, `/verify-email/<token>`, `/reset-password/<token>`,
+`/stock/<symbol>`, ...) resolves to the same shell and `react-router-dom`
+picks up from there.
+
+### Public assets
+
+Files under `public/` are copied into `frontend/dist/` by `npm run build` and
+are also served by Vite at `/static/<name>` in dev. The Django-rendered shell
+references `favicon.svg` through `{% static 'favicon.svg' %}`, so a copy of
+every file in `public/` must also live in `../apps/static/`. Currently:
+`favicon.svg` and `icons.svg`. When you add a new public asset, mirror it to
+`../apps/static/` or the Django-served shell will 404 on it.
+
+### Production image
+
+The `frontend-build` stage in `../compose/local/django/Dockerfile` runs
+`npm ci && npm run build` on `node:22-alpine`, and the runtime stage copies
+`/frontend/dist` into `/app/frontend/dist`. `.dockerignore` excludes
+`frontend/node_modules` and `frontend/dist` so a stale host copy can never
+shadow the built assets. `docker-compose.yml` adds an anonymous volume at
+`/app/frontend/dist` on the `django` service so the `.:/app` bind-mount does
+not hide the image-baked build.
 
 ---
 

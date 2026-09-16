@@ -7,6 +7,11 @@ services:
     container_name: finance_analysis_django
     volumes:
       - .:/app
+      # Anonymous volume that preserves the frontend/dist directory baked into
+      # the image by the `frontend-build` stage. Without it, the `.:/app`
+      # bind-mount above would expose the host's frontend/dist (typically
+      # empty because it is gitignored) and shadow the built SPA assets.
+      - /app/frontend/dist
     env_file:
       - ./.env
     ports:
