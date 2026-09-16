@@ -155,7 +155,10 @@ jobs:
           # about whether the project compiles. That is why the type-check step above
           # exists, and why this floor matters: vitest would also exit 0 having
           # matched no test files.
-          npm test 2>&1 | tee test-output.txt || true
+          npm test 2>&1 | tee test-output-raw.txt || true
+
+          # Strip ANSI color codes so grep patterns match reliably.
+          sed 's/\x1b\[[0-9;]*m//g' test-output-raw.txt > test-output.txt
 
           count=$(grep -oE 'Tests +[0-9]+ passed' test-output.txt | grep -oE '[0-9]+' | head -n1)
           echo "Discovered ${count:-0} tests; floor is $MIN_TEST_COUNT."

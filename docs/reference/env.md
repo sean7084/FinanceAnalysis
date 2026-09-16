@@ -15,6 +15,7 @@ _Generated: 2026-09-13T13:50:27Z_
 | Variable | Type | Default | In `.env.example` | Read at |
 | --- | --- | --- | --- | --- |
 | `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:405 |
+| `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` | `int` | `2400` | yes | base.py:220 |
 | `CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS` | `int` | `20` | yes | base.py:212 |
 | `CELERY_BROKER_URL` | `str` | `'redis://localhost:6379/0'` | yes | base.py:176 |
 | `DATABASE_URL` | `db` | _required_ | yes | base.py:124 |
