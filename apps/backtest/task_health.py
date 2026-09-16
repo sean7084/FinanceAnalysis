@@ -15,10 +15,8 @@ legitimate, while ``PENDING`` with no progress and an age past the threshold is
 orphaned. Getting this backwards either restarts healthy runs or leaves dead ones
 stuck forever.
 
-The threshold is ``BACKTEST_STALE_TASK_MAX_AGE_SECONDS`` (default 2400). It is read
-via ``getattr`` on settings but is not defined there and not wired to the
-environment, so changing it currently needs a code edit -- tracked in
-``BACKLOG.md``.
+The threshold is ``BACKTEST_STALE_TASK_MAX_AGE_SECONDS`` (default 2400), read from
+the environment via ``config/settings/base.py``.
 """
 
 from celery.result import AsyncResult

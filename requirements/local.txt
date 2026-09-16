@@ -1,1 +1,7 @@
 -r base.txt
+
+# Development and testing tools
+coverage==7.6.4
+django-extensions==3.2.3
+ipython==8.29.0
+werkzeug==3.1.3

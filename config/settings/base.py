@@ -215,6 +215,9 @@ NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
 NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
 NEWS_BACKFILL_FLOOR = env('NEWS_BACKFILL_FLOOR', default='2021-04-15 00:00:00')
 NEWS_BACKFILL_LIMIT_PER_PROVIDER = env.int('NEWS_BACKFILL_LIMIT_PER_PROVIDER', default=0)
+# Backtest task health: how long a RUNNING backtest run can sit with no progress
+# before it is considered orphaned. See apps/backtest/task_health.py.
+BACKTEST_STALE_TASK_MAX_AGE_SECONDS = env.int('BACKTEST_STALE_TASK_MAX_AGE_SECONDS', default=2400)
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
@@ -352,7 +355,7 @@ DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@financeanalysis.
 SPECTACULAR_SETTINGS = {
     'TITLE': 'FinanceAnalysis API',
     'DESCRIPTION': (
-        'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 300).\n\n'
+        'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 300 and CSI A500).\n\n'
         '## Authentication\n\n'
         'Requests may be authenticated using either:\n'
         '- **JWT Bearer token**: `Authorization: Bearer <token>`  '
@@ -360,14 +363,16 @@ SPECTACULAR_SETTINGS = {
         '- **API Key**: `X-API-Key: <key>`  '
         '(issued via `POST /api/v1/developer/keys/`)\n\n'
         '## Rate Limits\n\n'
-        '| Tier | Daily Limit |\n'
-        '|------|-------------|\n'
+        '| Scope | Daily Limit |\n'
+        '|-------|-------------|\n'
         '| Anonymous | 100 requests |\n'
-        '| Free | 100 requests |\n'
-        '| Pro | 1 000 requests |\n'
-        '| Premium | 10 000 requests |\n'
+        '| Auth endpoints | 100 requests |\n'
+        '| Free tier | 100 requests |\n'
+        '| Pro tier | 1 000 requests |\n'
+        '| Premium tier | 10 000 requests |\n'
+        '| Authenticated (default) | 1 000 requests |\n'
     ),
-    'VERSION': '1.2.0',
+    'VERSION': '0.1.13',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
     'SWAGGER_UI_SETTINGS': {

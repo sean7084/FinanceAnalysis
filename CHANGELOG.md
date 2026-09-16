@@ -2,6 +2,11 @@
 
 ### version 0.1.13
 
+> **Note**: This entry is an audit checklist, not release notes. It documents the
+> validation workflow used during the 0.1.13 development cycle. For proper release
+> notes, see the structured entries in 0.1.12 and earlier. This section will be
+> converted to standard release-note format before the 0.1.13 tag is created.
+
 #### Validation Checklist:
 
 Workflow Audit Checklist
@@ -532,6 +537,9 @@ D. 输出结果与落库
 
 - Improved native local-dev and ops workflows outside Docker:
   - moved Django settings and env loading onto `.envs/.local` plus `.venv` defaults, including `TUSHARE_TOKEN` and localhost Redis broker/cache defaults
+    > **Note (0.1.13)**: This was later reversed by the single-`.env` consolidation.
+    > The project now uses a single `.env` file at the repository root instead of
+    > `.envs/.local`. See `docs/reference/env.md` for the current configuration.
   - added native helper scripts for backend, Celery worker, Celery beat, environment bootstrapping, and local stack verification
   - updated Vite/API/WebSocket defaults to use relative `/api` and `/ws` paths with local proxying
   - rewired smoke and staged-news-backfill shell helpers to run against the native virtualenv stack instead of `docker compose exec`

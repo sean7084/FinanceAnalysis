@@ -489,3 +489,54 @@ Restart the processes that loaded it:
 
 `runserver` autoreloads, but Celery workers do not. Frontend changes are picked
 up by Vite HMR without a restart.
+
+---
+
+## 15. Helper scripts
+
+The `scripts/` directory contains several helper scripts that are not part of
+the core startup flow but are useful for specific tasks:
+
+### `run_local_stack.sh`
+
+Runs all local services (backend, celery-worker, celery-beat, frontend) in
+parallel with prefixed output. Useful for development when you want all services
+running in a single terminal.
+
+```bash
+./scripts/run_local_stack.sh
+```
+
+Each service's output is prefixed with its name (e.g., `[backend]`, `[celery-worker]`)
+so you can distinguish log lines. Press Ctrl+C to stop all services.
+
+### `smoke_api_check.sh`
+
+Runs a smoke test against the API endpoints using the credentials from `.env`
+(`SMOKE_USERNAME` and `SMOKE_PASSWORD`). Verifies that authentication, key
+endpoints, and pagination work correctly.
+
+```bash
+./scripts/smoke_api_check.sh
+```
+
+Requires the backend to be running. Set `API_BASE` to override the default
+`http://localhost:8000/api/v1`.
+
+### `run_staged_news_backfill.sh`
+
+Helper for staged news backfill. Computes the backfill window from the earliest
+existing `NewsArticle` row and runs the backfill in chunks. Useful for gradually
+filling in historical news data without overwhelming provider rate limits.
+
+```bash
+./scripts/run_staged_news_backfill.sh
+```
+
+Environment variables:
+- `PROVIDER`: News provider (default: `tushare_major`)
+- `CHUNK_DAYS`: Days per chunk (default: `31`)
+- `BACKFILL_FLOOR`: Earliest date to backfill (default: `2021-04-15 00:00:00`)
+- `RUN_PIPELINE`: Run sentiment pipeline after ingest (default: `1`)
+
+Requires at least one `NewsArticle` row to exist (seed current news first).

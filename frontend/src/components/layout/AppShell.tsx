@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { useI18n } from '../../i18n'
+import { useI18n } from '../../useI18n'
 
 const navItems = [
   { to: '/', key: 'nav.dashboard' },

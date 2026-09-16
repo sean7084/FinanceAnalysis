@@ -33,6 +33,31 @@ from .odds import estimate_trade_decision
 LSTM_MODELS_DIR = os.path.join(settings.BASE_DIR, 'models', 'lstm')
 os.makedirs(LSTM_MODELS_DIR, exist_ok=True)
 
+# Relative path prefix for storing artifact paths in the database.
+LSTM_MODELS_RELATIVE_PREFIX = os.path.join('models', 'lstm')
+
+
+def _to_relative_lstm_path(absolute_path):
+    """Convert an absolute LSTM artifact path to a BASE_DIR-relative path for storage."""
+    if not absolute_path:
+        return absolute_path
+    base_dir = str(settings.BASE_DIR)
+    path_str = str(absolute_path)
+    if path_str.startswith(base_dir):
+        relative = path_str[len(base_dir):].lstrip(os.sep).lstrip('/')
+        return relative
+    return path_str
+
+
+def _resolve_lstm_artifact_path(stored_path):
+    """Resolve a stored LSTM artifact path to an absolute path."""
+    if not stored_path:
+        return stored_path
+    path_str = str(stored_path)
+    if os.path.isabs(path_str):
+        return path_str
+    return os.path.join(settings.BASE_DIR, path_str)
+
 LSTM_MISSING_INDICATOR_SUFFIX = '__is_missing'
 LSTM_MISSING_VALUE_STRATEGY = 'mask_and_zero_impute'
 LSTM_STUB_METADATA_SOURCES = {'phase14_training_stub'}
@@ -265,7 +290,8 @@ def _resolve_lstm_model_version(target_date):
 def _load_lstm_artifact(model_version, horizon_days):
     candidate_dirs = []
     if model_version.artifact_path:
-        candidate_dirs.append(model_version.artifact_path)
+        # Resolve relative paths to absolute for file I/O
+        candidate_dirs.append(_resolve_lstm_artifact_path(model_version.artifact_path))
     fallback_dir = os.path.join(LSTM_MODELS_DIR, model_version.version)
     if fallback_dir not in candidate_dirs:
         candidate_dirs.append(fallback_dir)
@@ -744,6 +770,7 @@ def train_lstm_models(
     aggregate_accuracy = float(np.mean(success_accuracies)) if success_accuracies else 0.0
 
     aggregate_artifact_path = os.path.join(LSTM_MODELS_DIR, version)
+    aggregate_artifact_relative_path = os.path.join(LSTM_MODELS_RELATIVE_PREFIX, version)
     os.makedirs(aggregate_artifact_path, exist_ok=True)
 
     with open(os.path.join(aggregate_artifact_path, 'summary.json'), 'w', encoding='utf-8') as file_handle:
@@ -774,7 +801,7 @@ def train_lstm_models(
         version=version,
         defaults={
             'status': ModelVersion.Status.READY,
-            'artifact_path': aggregate_artifact_path,
+            'artifact_path': aggregate_artifact_relative_path,
             'metrics': {
                 'accuracy': aggregate_accuracy,
                 'accuracy_by_horizon': {

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { ColorType, createChart, type IChartApi } from 'lightweight-charts'
-import { useI18n } from '../../i18n'
+import { useI18n } from '../../useI18n'
 
 interface CandlestickPoint {
   time: string

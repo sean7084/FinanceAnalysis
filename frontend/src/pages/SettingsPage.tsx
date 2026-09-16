@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AuthSettingsPanel } from '../components/layout/AuthSettingsPanel'
 import { readApiKey, readAuthToken } from '../lib/api'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 export function SettingsPage() {
   const { locale, setLocale, t } = useI18n()

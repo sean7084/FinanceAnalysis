@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -16,6 +16,14 @@ from .models import NewsArticle, SentimentScore
 from .tasks import calculate_daily_sentiment, fetch_latest_market_news, ingest_latest_news, run_hourly_historical_news_backfill
 
 
+@override_settings(
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'sentiment-test-cache',
+        }
+    }
+)
 class Phase13SentimentTests(TestCase):
     def setUp(self):
         self.client = APIClient()

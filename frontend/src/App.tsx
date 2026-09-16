@@ -1,7 +1,7 @@
 import { Suspense, lazy, type ReactElement } from 'react'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
-import { useI18n } from './i18n'
+import { useI18n } from './useI18n'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 const StockDetailPage = lazy(() => import('./pages/StockDetailPage').then((m) => ({ default: m.StockDetailPage })))
