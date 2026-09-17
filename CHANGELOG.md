@@ -1,5 +1,17 @@
 # Changelog
 
+### version 0.1.14
+
+#### Changed:
+
+- Switched the effective stock-pool universe from the CSI 300 + CSI A500 point-in-time union to a single-index CSI 500 (`000905.SH`) universe, simplifying the cross-sectional contract and improving the risk/return balance.
+- `apps/markets/benchmarking.py`: single-index contract from the `2010-01-01` floor; removed the CSI A500 launch-date branch; renamed the internal PIT benchmark to `CSI500_PIT` ("CSI 500 PIT").
+- Ingestion (`apps/markets/tasks.py`) now syncs CSI 500 (`000905.SH`) constituents and benchmark history; the membership tag is `CSI500`.
+- Backtest comparison curves now plot a single official `CSI 500` series (`csi500`).
+- Retired `onboard_csi_a500_universe` / `rollout_csi_a500_universe`; added `onboard_csi500_universe` for the end-to-end universe onboarding + retrain workflow.
+- Added migration `markets.0013` to purge legacy CSI 300 / CSI A500 membership rows, official benchmark series, the old PIT union benchmark rows, and the `CSI300`/`CSIA500` asset tags.
+- Requires a data re-sync, raw backfill for CSI 500 constituents, PIT benchmark rebuild, and LightGBM/LSTM retrain (see `docs/how-to/backfill.md` and `docs/how-to/retrain.md`).
+
 ### version 0.1.13
 
 #### Validation Checklist:

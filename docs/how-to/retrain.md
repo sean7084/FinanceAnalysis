@@ -15,7 +15,7 @@ Retrain when any of these is true:
 | --- | --- |
 | A Stage 3 backfill materially changed stored features | The deployed artifacts were fitted against the old feature distribution |
 | The feature contract changed (new column, renamed column, new missing-value strategy) | Old artifacts silently fall back to legacy neutral fills |
-| The effective universe expanded (e.g. CSI A500 onboarding) | Training samples must come from the same universe inference will see |
+| The effective universe changed (e.g. the CSI 500 switch) | Training samples must come from the same universe inference will see |
 | Validation backtests show drift versus the benchmark | The usual symptom that prompts the others |
 | `validate_data_quality` reports repaired critical findings | Repaired history invalidates the previous fit |
 

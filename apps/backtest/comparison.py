@@ -1,8 +1,8 @@
 """Benchmark comparison curves for a backtest run.
 
 Builds the payload that lets a strategy equity curve be read against the official
-CSI 300 and CSI A500 daily index series, normalised onto the run's own trading
-dates so the two are comparable point for point.
+CSI 500 daily index series, normalised onto the run's own trading dates so the two
+are comparable point for point.
 
 Comparison is derived on demand from ``BenchmarkIndexDaily`` rather than stored on
 the run, so a run created before a benchmark backfill still compares correctly
@@ -20,8 +20,7 @@ from .models import BacktestRun
 DECIMAL_0 = Decimal('0')
 DECIMAL_1 = Decimal('1')
 BENCHMARK_SERIES_SPECS = (
-    {'code': '000300.SH', 'key': 'csi300', 'label': 'CSI 300'},
-    {'code': '000510.CSI', 'key': 'csia500', 'label': 'CSI A500'},
+    {'code': '000905.SH', 'key': 'csi500', 'label': 'CSI 500'},
 )
 
 

@@ -303,10 +303,10 @@ vi.mock('../lib/api', async () => {
           ],
         },
         {
-          key: 'csi300',
-          label: 'CSI 300',
+          key: 'csi500',
+          label: 'CSI 500',
           kind: 'benchmark',
-          index_code: '000300.SH',
+          index_code: '000905.SH',
           total_return: 0.03,
           max_drawdown: -0.06,
           points: [
@@ -314,21 +314,9 @@ vi.mock('../lib/api', async () => {
             { date: '2024-12-31', value: 206000, drawdown: -0.03 },
           ],
         },
-        {
-          key: 'csia500',
-          label: 'CSI A500',
-          kind: 'benchmark',
-          index_code: '000510.CSI',
-          total_return: 0.01,
-          max_drawdown: -0.05,
-          points: [
-            { date: '2023-01-01', value: 200000, drawdown: 0 },
-            { date: '2024-12-31', value: 202000, drawdown: -0.04 },
-          ],
-        },
       ],
       compare_target: null,
-      available_series_keys: ['selected_run', 'csi300', 'csia500'],
+      available_series_keys: ['selected_run', 'csi500'],
       message: null,
     })),
     hasAnyAuthCredential: vi.fn(() => true),
@@ -1008,12 +996,11 @@ describe('BacktestWorkbenchPage runner controls', () => {
     renderWorkbench()
 
     await waitFor(() => {
-      expect(screen.getAllByText('CSI 300').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('CSI 500').length).toBeGreaterThan(0)
     })
 
     expect(screen.getByText('Equity Curve Comparison')).toBeInTheDocument()
-    expect(screen.getAllByText('CSI 300').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('CSI A500').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('CSI 500').length).toBeGreaterThan(0)
     expect(screen.getByText('Compare Target')).toBeInTheDocument()
     expect(screen.getAllByText('No compare target').length).toBeGreaterThan(0)
   })

@@ -129,10 +129,9 @@ class Phase14PredictionTests(TestCase):
         )
         return d
 
-    def _seed_required_pit_membership(self, asset, trade_date, index_codes=('000300.SH', '000510.CSI')):
+    def _seed_required_pit_membership(self, asset, trade_date, index_codes=('000905.SH',)):
         for index_code, index_name in (
-            ('000300.SH', 'CSI 300'),
-            ('000510.CSI', 'CSI A500'),
+            ('000905.SH', 'CSI 500'),
         ):
             if index_code not in index_codes:
                 continue
@@ -144,7 +143,7 @@ class Phase14PredictionTests(TestCase):
                 weight=Decimal('1.000000'),
             )
 
-    def _seed_features_for_asset(self, asset, index_codes=('000300.SH', '000510.CSI')):
+    def _seed_features_for_asset(self, asset, index_codes=('000905.SH',)):
         d = timezone.now().date()
         trade_dates = [d - timezone.timedelta(days=offset) for offset in range(30)]
         _seed_trading_calendar_dates('SSE', trade_dates)
@@ -427,7 +426,7 @@ class Phase14PredictionTests(TestCase):
 
     def test_generate_predictions_task_uses_market_context_as_of_target_date(self):
         d = timezone.datetime(2024, 1, 10).date()
-        self._seed_required_pit_membership(self.asset, d, index_codes=('000300.SH',))
+        self._seed_required_pit_membership(self.asset, d, index_codes=('000905.SH',))
         OHLCV.objects.create(
             asset=self.asset,
             date=d,
@@ -788,8 +787,8 @@ class BackfillModelDataCommandTests(TestCase):
     def test_backfill_model_data_recomputes_factor_scores_for_full_requested_range(self, mock_calculate):
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date='2024-01-02',
             weight=Decimal('4.2'),
         )
@@ -838,8 +837,8 @@ class BackfillModelDataCommandTests(TestCase):
         )
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.trading_dates[0],
             weight=Decimal('4.2'),
         )
@@ -895,8 +894,8 @@ class BackfillModelDataCommandTests(TestCase):
             )
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.trading_dates[0],
             weight=Decimal('4.2'),
         )
@@ -956,8 +955,8 @@ class BackfillModelDataCommandTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trade_dates[0],
                 weight=Decimal('4.2'),
             )
@@ -1023,8 +1022,7 @@ class BackfillModelDataCommandTests(TestCase):
         _seed_trading_calendar_dates('SSE', full_trade_dates)
 
         for index_code, index_name, weight in (
-            ('000300.SH', 'CSI 300', Decimal('4.2')),
-            ('000510.CSI', 'CSI A500', Decimal('2.1')),
+            ('000905.SH', 'CSI 500', Decimal('4.2')),
         ):
             IndexMembership.objects.create(
                 asset=asset,
@@ -1086,15 +1084,15 @@ class BackfillModelDataCommandTests(TestCase):
 
         IndexMembership.objects.create(
             asset=assets[-1],
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=trade_dates[0],
             weight=Decimal('4.2'),
         )
         IndexMembership.objects.create(
             asset=assets[-2],
-            index_code='000510.CSI',
-            index_name='CSI A500',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=trade_dates[0],
             weight=Decimal('2.1'),
         )
@@ -1145,8 +1143,8 @@ class BackfillModelDataCommandTests(TestCase):
 
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=target_date,
             weight=Decimal('4.2'),
         )
@@ -1225,17 +1223,9 @@ class BackfillModelDataCommandTests(TestCase):
                 amount=close_value * Decimal('100000'),
             )
 
-        IndexMembership.objects.create(
-            asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
-            trade_date=start_date,
-            weight=Decimal('4.2'),
-        )
-
         with self.assertRaisesMessage(
             CommandError,
-            'missing point-in-time membership coverage for 000510.CSI on 2024-09-23',
+            'missing point-in-time membership coverage for 000905.SH on 2024-09-23',
         ):
             call_command(
                 'backfill_model_data',
@@ -1275,8 +1265,8 @@ class BackfillModelDataCommandTests(TestCase):
 
         IndexMembership.objects.create(
             asset=delisted_asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=trade_dates[0],
             weight=Decimal('4.2'),
         )
@@ -1305,8 +1295,8 @@ class BackfillModelDataCommandTests(TestCase):
     def test_backfill_model_data_resume_from_checkpoint_skips_completed_stages(self, mock_calculate, mock_sentiment, mock_rs):
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date='2024-01-02',
             weight=Decimal('4.2'),
         )
@@ -1350,8 +1340,8 @@ class BackfillModelDataCommandTests(TestCase):
     def test_backfill_model_data_writes_checkpoint_and_stage_timings(self, mock_calculate):
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date='2024-01-02',
             weight=Decimal('4.2'),
         )
@@ -1407,15 +1397,15 @@ class PointInTimeTrainingDatasetTests(TestCase):
 
         IndexMembership.objects.create(
             asset=self.asset1,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.trade_dates[0],
             weight=Decimal('4.0'),
         )
         IndexMembership.objects.create(
             asset=self.asset2,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.trade_dates[2],
             weight=Decimal('4.0'),
         )
@@ -1459,7 +1449,7 @@ class PointInTimeTrainingDatasetTests(TestCase):
 
         with self.assertRaisesMessage(
             PITMembershipCoverageError,
-            'missing point-in-time membership coverage for 000300.SH on 2024-01-02',
+            'missing point-in-time membership coverage for 000905.SH on 2024-01-02',
         ):
             _create_feature_matrix(
                 start_date=self.trade_dates[0],
@@ -1472,7 +1462,7 @@ class PointInTimeTrainingDatasetTests(TestCase):
 
         with self.assertRaisesMessage(
             PITMembershipCoverageError,
-            'missing point-in-time membership coverage for 000300.SH on 2024-01-02',
+            'missing point-in-time membership coverage for 000905.SH on 2024-01-02',
         ):
             _create_labels_for_training(
                 start_date=self.trade_dates[0],
@@ -1666,15 +1656,8 @@ class LstmTrainingRegistryTests(TestCase):
             IndexMembership.objects.bulk_create([
                 IndexMembership(
                     asset=self.asset,
-                    index_code='000300.SH',
-                    index_name='CSI 300',
-                    trade_date=trade_date,
-                    weight=Decimal('1.000000'),
-                ),
-                IndexMembership(
-                    asset=self.asset,
-                    index_code='000510.CSI',
-                    index_name='CSI A500',
+                    index_code='000905.SH',
+                    index_name='CSI 500',
                     trade_date=trade_date,
                     weight=Decimal('1.000000'),
                 ),

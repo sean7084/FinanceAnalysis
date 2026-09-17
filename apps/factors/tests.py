@@ -136,10 +136,9 @@ class Phase11FactorTests(TestCase):
             metadata={},
         )
 
-    def _seed_required_pit_membership(self, target_date, asset1_codes=('000300.SH',), asset2_codes=('000510.CSI',)):
+    def _seed_required_pit_membership(self, target_date, asset1_codes=('000905.SH',), asset2_codes=('000905.SH',)):
         index_names = {
-            '000300.SH': 'CSI 300',
-            '000510.CSI': 'CSI A500',
+            '000905.SH': 'CSI 500',
         }
         for asset, index_codes in ((self.asset1, asset1_codes), (self.asset2, asset2_codes)):
             for index_code in index_codes:
@@ -208,7 +207,7 @@ class Phase11FactorTests(TestCase):
 
     def test_calculate_factor_scores_filters_to_point_in_time_union_when_membership_exists(self):
         target_date = timezone.now().date()
-        self._seed_required_pit_membership(target_date, asset1_codes=('000300.SH', '000510.CSI'), asset2_codes=())
+        self._seed_required_pit_membership(target_date, asset1_codes=('000905.SH',), asset2_codes=())
 
         calculate_factor_scores_for_date(target_date=str(target_date))
 

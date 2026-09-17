@@ -2,20 +2,20 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
-from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import Asset
-from apps.markets.tasks import DEFAULT_INDEX_CODES
+from apps.markets.tasks import DEFAULT_INDEX_CODES, INDEX_CODE_SPECS
 
 
 class Command(BaseCommand):
     help = (
-        'Add CSI A500 alongside CSI 300, persist historical memberships, backfill A500-only raw data, '
-        'recompute model inputs across the combined universe, retrain LightGBM/LSTM, and export pre/post benchmark suites.'
+        'Onboard the CSI 500 effective universe: sync historical memberships, backfill raw data for '
+        'all current constituents, rebuild the point-in-time benchmark, recompute model inputs, '
+        'retrain LightGBM/LSTM, and optionally export a reference benchmark suite.'
     )
 
     @staticmethod
@@ -40,12 +40,11 @@ class Command(BaseCommand):
         parser.add_argument('--benchmark-holding-period-days', type=int, default=7)
         parser.add_argument('--benchmark-capital-fraction-per-entry', type=float, default=0.5)
         parser.add_argument('--benchmark-min-up-probability', type=float, default=0.0)
-        parser.add_argument('--benchmark-name-prefix', default='csi300-a500')
+        parser.add_argument('--benchmark-name-prefix', default='csi500')
         parser.add_argument('--report-label', default='')
         parser.add_argument('--report-root-dir', default='reports')
         parser.add_argument('--horizons', default='3,7,30')
-        parser.add_argument('--skip-pre-benchmarks', action='store_true')
-        parser.add_argument('--skip-post-benchmarks', action='store_true')
+        parser.add_argument('--skip-benchmarks', action='store_true')
         parser.add_argument('--skip-raw-backfills', action='store_true')
         parser.add_argument('--skip-model-backfill', action='store_true')
         parser.add_argument('--skip-retrain', action='store_true')
@@ -76,11 +75,20 @@ class Command(BaseCommand):
             raise CommandError('benchmark-end-date must be on or after benchmark-start-date.')
         return benchmark_start, benchmark_end
 
-    def _resolve_a500_only_symbols(self):
+    def _managed_tags(self, index_codes):
+        tags = set()
+        for token in str(index_codes).split(','):
+            spec = INDEX_CODE_SPECS.get(token.strip())
+            if spec:
+                tags.add(spec['tag'])
+        return tags
+
+    def _resolve_current_universe_symbols(self, index_codes):
+        managed_tags = self._managed_tags(index_codes)
         symbols = []
         for asset in Asset.objects.filter(listing_status=Asset.ListingStatus.ACTIVE).order_by('ts_code'):
             tags = set(asset.membership_tags or [])
-            if 'CSIA500' in tags and 'CSI300' not in tags:
+            if tags & managed_tags:
                 symbols.append(asset.symbol)
         return symbols
 
@@ -113,24 +121,12 @@ class Command(BaseCommand):
             raise CommandError('end-date must be on or after start-date.')
 
         benchmark_start, benchmark_end = self._resolve_benchmark_range(start_date, end_date, options)
-        report_label = str(options['report_label'] or f"csi300_a500_{timezone.now().strftime('%Y%m%d_%H%M%S')}")
+        report_label = str(options['report_label'] or f"csi500_onboarding_{timezone.now().strftime('%Y%m%d_%H%M%S')}")
         report_root = Path(options['report_root_dir']) / report_label
         report_root.mkdir(parents=True, exist_ok=True)
-        pre_report_dir = report_root / 'pre_expansion'
-        post_report_dir = report_root / 'post_expansion'
+        benchmark_report_dir = report_root / 'post_onboarding'
 
-        if not options['skip_pre_benchmarks']:
-            self.stdout.write(self.style.NOTICE('Running pre-expansion benchmark suite...'))
-            self._run_benchmark_suite(
-                output_dir=pre_report_dir,
-                suite_name=f'{report_label}_pre',
-                name_prefix=f"{options['benchmark_name_prefix']}-pre",
-                benchmark_start=benchmark_start,
-                benchmark_end=benchmark_end,
-                options=options,
-            )
-
-        self.stdout.write(self.style.NOTICE('Syncing CSI 300 + CSI A500 memberships...'))
+        self.stdout.write(self.style.NOTICE('Syncing CSI 500 memberships...'))
         call_command(
             'sync_index_constituents',
             index_codes=options['index_codes'],
@@ -140,15 +136,24 @@ class Command(BaseCommand):
             stdout=self.stdout,
         )
 
-        a500_only_symbols = self._resolve_a500_only_symbols()
+        self.stdout.write(self.style.NOTICE('Syncing CSI 500 official benchmark index history...'))
+        call_command(
+            'sync_benchmark_index_history',
+            index_codes=options['index_codes'],
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            stdout=self.stdout,
+        )
+
+        universe_symbols = self._resolve_current_universe_symbols(options['index_codes'])
         self.stdout.write(
             self.style.NOTICE(
-                f'Resolved {len(a500_only_symbols)} current A500-only active symbols for targeted raw backfills.'
+                f'Resolved {len(universe_symbols)} current CSI 500 active symbols for targeted raw backfills.'
             )
         )
 
-        if a500_only_symbols and not options['skip_raw_backfills']:
-            symbol_csv = ','.join(a500_only_symbols)
+        if universe_symbols and not options['skip_raw_backfills']:
+            symbol_csv = ','.join(universe_symbols)
             call_command(
                 'backfill_ohlcv_history',
                 start_date=start_date.isoformat(),
@@ -187,9 +192,9 @@ class Command(BaseCommand):
         elif options['skip_raw_backfills']:
             self.stdout.write('Skipping targeted raw backfills by request.')
         else:
-            self.stdout.write('No current A500-only active symbols found; targeted raw backfills skipped.')
+            self.stdout.write('No current CSI 500 active symbols found; targeted raw backfills skipped.')
 
-        self.stdout.write(self.style.NOTICE('Refreshing point-in-time union benchmark history...'))
+        self.stdout.write(self.style.NOTICE('Refreshing point-in-time CSI 500 benchmark history...'))
         call_command(
             'build_pit_union_benchmark',
             start_date=start_date.isoformat(),
@@ -207,7 +212,7 @@ class Command(BaseCommand):
                 model_backfill_kwargs['skip_sentiment'] = True
             call_command('backfill_model_data', **model_backfill_kwargs)
         else:
-            self.stdout.write('Skipping combined-universe model backfill by request.')
+            self.stdout.write('Skipping model-data backfill by request.')
 
         if not options['skip_retrain']:
             lightgbm_kwargs = {
@@ -239,16 +244,18 @@ class Command(BaseCommand):
         else:
             self.stdout.write('Skipping model retraining by request.')
 
-        if not options['skip_post_benchmarks']:
-            self.stdout.write(self.style.NOTICE('Running post-expansion benchmark suite...'))
+        if not options['skip_benchmarks']:
+            self.stdout.write(self.style.NOTICE('Running post-onboarding benchmark suite...'))
             self._run_benchmark_suite(
-                output_dir=post_report_dir,
+                output_dir=benchmark_report_dir,
                 suite_name=f'{report_label}_post',
                 name_prefix=f"{options['benchmark_name_prefix']}-post",
                 benchmark_start=benchmark_start,
                 benchmark_end=benchmark_end,
                 options=options,
             )
+        else:
+            self.stdout.write('Skipping post-onboarding benchmark suite by request.')
 
         manifest = {
             'report_label': report_label,
@@ -259,15 +266,13 @@ class Command(BaseCommand):
             'benchmark_start_date': benchmark_start.isoformat(),
             'benchmark_end_date': benchmark_end.isoformat(),
             'benchmark_sources': [token.strip() for token in str(options['benchmark_sources']).split(',') if token.strip()],
-            'a500_only_symbols': a500_only_symbols,
+            'universe_symbols': universe_symbols,
             'pit_benchmark_window': {
                 'start_date': start_date.isoformat(),
                 'end_date': end_date.isoformat(),
             },
-            'pre_benchmark_output_dir': str(pre_report_dir),
-            'post_benchmark_output_dir': str(post_report_dir),
-            'skipped_pre_benchmarks': bool(options['skip_pre_benchmarks']),
-            'skipped_post_benchmarks': bool(options['skip_post_benchmarks']),
+            'benchmark_output_dir': str(benchmark_report_dir),
+            'skipped_benchmarks': bool(options['skip_benchmarks']),
             'skipped_raw_backfills': bool(options['skip_raw_backfills']),
             'skipped_model_backfill': bool(options['skip_model_backfill']),
             'skipped_retrain': bool(options['skip_retrain']),
@@ -277,4 +282,4 @@ class Command(BaseCommand):
             encoding='utf-8',
         )
 
-        self.stdout.write(self.style.SUCCESS(f'CSI A500 onboarding workflow complete. report_root={report_root}'))
+        self.stdout.write(self.style.SUCCESS(f'CSI 500 onboarding workflow complete. report_root={report_root}'))

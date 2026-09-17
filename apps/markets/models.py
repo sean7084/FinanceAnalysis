@@ -50,7 +50,7 @@ class Asset(models.Model):
         _("Membership Tags"),
         default=list,
         blank=True,
-        help_text=_("Current benchmark/index memberships, e.g. CSI300 and CSIA500."),
+        help_text=_("Current benchmark/index memberships, e.g. CSI500."),
     )
 
     class Meta:
