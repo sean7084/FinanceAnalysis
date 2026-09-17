@@ -124,9 +124,11 @@ Registration payload:
 ```
 
 Outbound links in these emails are built from the `FRONTEND_URL` setting, which
-defaults to `http://localhost:5173` — the Vite dev server port, pinned with
-`strictPort: true` so it never falls back to another port. Override it for any
-deployed environment. See [`env.md`](env.md).
+defaults to `http://localhost:8000` — Django now serves the built SPA itself
+through `django-vite` (see `apps/core/views.py`), so the email links land on the
+same origin that owns `/api` and `/ws`. Operators who still run the pure-Vite
+HMR flow and want links to land on `http://localhost:5173` should override the
+variable explicitly. See [`env.md`](env.md).
 
 Email is sent through the console backend by default, so reset and verification
 messages are printed to the Django process stdout rather than delivered.
@@ -263,7 +265,11 @@ Two mechanisms, tried in order:
 ws://localhost:8000/ws/alerts/?token=eyJhbGciOiJIUzI1NiIs...
 ```
 
-Through the Vite proxy the frontend connects to `ws://localhost:5173/ws/alerts/`.
+When the dashboard is served by Django (default: `http://localhost:8000/`), the
+browser connects to `ws://localhost:8000/ws/alerts/` directly — same origin, no
+proxy. When the pure-Vite HMR flow is used (`http://localhost:5173/`), the Vite
+dev server proxies `/ws` to Django, so the browser still sees
+`ws://localhost:5173/ws/alerts/`.
 
 If neither yields an authenticated, active user the consumer **closes the socket
 immediately without accepting it** — the client sees a close event, not a 401.

@@ -594,7 +594,7 @@ class Phase15BacktestTests(TestCase):
             weight=Decimal('4.200000'),
         )
 
-        def _prediction_payload(asset_id, dt, horizon, cache, trade_decision_policy=None):
+        def _prediction_payload(asset_id, dt, horizon, cache, trade_decision_policy=None, run=None):
             base_up = Decimal('0.70') if asset_id == self.asset.id else Decimal('0.95')
             return {
                 'up_probability': base_up,

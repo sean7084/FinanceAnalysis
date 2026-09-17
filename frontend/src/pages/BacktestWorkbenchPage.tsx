@@ -23,7 +23,7 @@ import {
   type PredictionSource,
   type TopNMetric,
 } from '../lib/dashboardCandidateFilters'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 type WeekdayLabel = (typeof WEEKDAY_LABELS)[number]
 const RUN_HISTORY_PAGE_SIZE_DEFAULT = 5

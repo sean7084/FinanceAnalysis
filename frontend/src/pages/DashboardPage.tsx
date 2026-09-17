@@ -17,7 +17,7 @@ import {
   type DashboardCandidateFilters,
   type TopNMetric,
 } from '../lib/dashboardCandidateFilters'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 type SortDirection = 'asc' | 'desc'
 type DashboardSortField = keyof DashboardStockRowDto

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAlertsSocket } from '../hooks/useAlertsSocket'
 import { apiGet, hasAnyAuthCredential, type AlertEventDto, type Paginated } from '../lib/api'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 export function AlertCenterPage() {
   const { t } = useI18n()

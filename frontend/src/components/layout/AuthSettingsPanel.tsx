@@ -11,7 +11,7 @@ import {
   saveAuthSettings,
   type AuthPersistenceMode,
 } from '../../lib/api'
-import { useI18n } from '../../i18n'
+import { useI18n } from '../../useI18n'
 
 interface AuthSettingsPanelProps {
   onAuthChange?: () => void

@@ -303,6 +303,7 @@ class Phase11FactorTests(TestCase):
         mock_delay.assert_called_once()
 
 
+@override_settings(TUSHARE_TOKEN='test-token')
 class FundamentalSnapshotBackfillCommandTests(TestCase):
     def setUp(self):
         self.market = Market.objects.create(code='FND', name='Fundamental Market')
@@ -913,6 +914,7 @@ class CapitalFlowSnapshotBackfillCommandTests(TestCase):
         self.assertIn('capital_rows=1', output.getvalue())
 
 
+@override_settings(TUSHARE_TOKEN='test-token')
 class FundamentalSnapshotMarketCapBackfillCommandTests(TestCase):
     def setUp(self):
         self.market = Market.objects.create(code='FMC', name='Fundamental Market Cap')

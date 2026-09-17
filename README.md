@@ -105,12 +105,15 @@ point-in-time membership coverage is missing. The canonical implementation is
 
 ### Runtime components
 
-Django + DRF serve the REST API, admin, and OpenAPI schema. Channels over Redis
-carries the WebSocket alert stream through ASGI. PostgreSQL is the primary store;
-Redis holds the cache, the Celery broker, and the Channels layer. Celery Beat
-drives the daily schedule across four queues (`ops`, `backtest`,
-`train-lightgbm`, `train-lstm`). The React 19 + Vite dashboard runs on port 5173
-and proxies `/api` and `/ws` to the backend.
+Django + DRF serve the REST API, admin, OpenAPI schema, and -- since the SPA
+merge -- the built React dashboard itself through `django-vite` +
+`whitenoise`. Channels over Redis carries the WebSocket alert stream through
+ASGI. PostgreSQL is the primary store; Redis holds the cache, the Celery broker,
+and the Channels layer. Celery Beat drives the daily schedule across four queues
+(`ops`, `backtest`, `train-lightgbm`, `train-lstm`). The React 19 + Vite
+dashboard is built once and served from Django's origin; the standalone Vite dev
+server on port 5173 (proxying `/api` and `/ws` to the backend) remains available
+for HMR-driven frontend work.
 
 ---
 
@@ -144,7 +147,8 @@ cd frontend && npm install && cd ..
 
 | Surface | URL |
 | --- | --- |
-| Dashboard | `http://localhost:5173/` |
+| Dashboard | `http://localhost:8000/` (Django-served SPA) |
+| Dashboard (HMR) | `http://localhost:5173/` (pure Vite dev server) |
 | API | `http://localhost:8000/api/v1/` |
 | Admin | `http://localhost:8000/admin/` |
 | Swagger | `http://localhost:8000/api/v1/schema/swagger-ui/` |

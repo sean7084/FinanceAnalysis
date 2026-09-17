@@ -14,6 +14,69 @@
 
 ### version 0.1.13
 
+> **Note**: This entry is an audit checklist, not release notes. It documents the
+> validation workflow used during the 0.1.13 development cycle. For proper release
+> notes, see the structured entries in 0.1.12 and earlier. This section will be
+> converted to standard release-note format before the 0.1.13 tag is created.
+
+#### Frontend / Deployment: Django now serves the built SPA
+
+**Objective**: collapse the two-origin dev/deploy topology into a single Django
+origin without touching the React codebase.
+
+**Implemented**:
+
+- Django renders the SPA shell through `django-vite==3.1.0` +
+  `whitenoise==6.8.2`. New files: `apps/core/views.py` (`SPAFallbackView`),
+  `apps/templates/frontend/index.html`, `apps/core/tests_frontend.py`.
+- `config/urls.py` mounts the shell at `/` and at a negative-lookahead
+  catch-all `^(?!api/|admin/|api-auth/|static/|media/|ws/).*$` so every
+  client-side route resolves to the SPA while DRF, admin, static, and Channels
+  paths keep their own handlers.
+- `frontend/vite.config.ts`: added `base: '/static/'`, `server.origin`,
+  `build.manifest: true`, and `build.rollupOptions.input` pinned to
+  `src/main.tsx` so the manifest keys match the Django template tag.
+- `config/settings/base.py`: added `django_vite` to `INSTALLED_APPS`, inserted
+  `whitenoise.middleware.WhiteNoiseMiddleware` after `SecurityMiddleware`,
+  guarded-append `frontend/dist` to `STATICFILES_DIRS`, and introduced the
+  `DJANGO_VITE` config block plus `DJANGO_VITE_DEV_MODE` env var (defaults to
+  `DEBUG`).
+- `config/settings/production.py`: enabled
+  `whitenoise.storage.CompressedManifestStaticFilesStorage` so prod assets are
+  pre-compressed and content-hashed.
+- `compose/local/django/Dockerfile`: added a `node:22-alpine` `frontend-build`
+  stage that runs `npm ci && npm run build`; the runtime stage overlays
+  `/frontend/dist` onto `/app/frontend/dist`. `.dockerignore` excludes
+  `frontend/node_modules`, `frontend/dist`, and `frontend/coverage`.
+- `docker-compose.yml`: added an anonymous volume at `/app/frontend/dist` on
+  the `django` service so the `.:/app` bind-mount does not hide the
+  image-baked build.
+- Mirrored `frontend/public/favicon.svg` and `frontend/public/icons.svg` into
+  `apps/static/` so `{% static %}` resolves them in both dev and prod modes.
+
+**Breaking change**:
+
+- `FRONTEND_URL` default flipped from `http://localhost:5173` to
+  `http://localhost:8000` in `config/settings/base.py` and `.env.example`.
+  Verification and password-reset email links now land on Django's origin,
+  which serves the SPA. **Operators who still run the pure-Vite HMR flow and
+  want email links to open on `:5173` must set `FRONTEND_URL=http://localhost:5173`
+  explicitly in their `.env`.**
+
+**New env vars** (all optional; defaults shown):
+
+- `DJANGO_VITE_DEV_MODE` = `DJANGO_DEBUG` -- when True, Django-rendered pages
+  point `<script>` tags at the Vite dev server on `:5173` so HMR keeps working
+  through the Django origin.
+- `DJANGO_VITE_DEV_SERVER_HOST` = `localhost`.
+- `DJANGO_VITE_DEV_SERVER_PORT` = `5173`.
+
+**Unchanged**: every React component, hook, page, and `lib/api.ts` call. The
+pure-Vite HMR flow at `http://localhost:5173/` still works exactly as before;
+`scripts/run_frontend.ps1` / `.sh` remain the canonical entry point for it.
+Same-origin serving means `fetch('/api/…')` and `ws://…/ws/alerts/` keep
+working with no client-side changes.
+
 #### Validation Checklist:
 
 Workflow Audit Checklist
@@ -544,6 +607,9 @@ D. 输出结果与落库
 
 - Improved native local-dev and ops workflows outside Docker:
   - moved Django settings and env loading onto `.envs/.local` plus `.venv` defaults, including `TUSHARE_TOKEN` and localhost Redis broker/cache defaults
+    > **Note (0.1.13)**: This was later reversed by the single-`.env` consolidation.
+    > The project now uses a single `.env` file at the repository root instead of
+    > `.envs/.local`. See `docs/reference/env.md` for the current configuration.
   - added native helper scripts for backend, Celery worker, Celery beat, environment bootstrapping, and local stack verification
   - updated Vite/API/WebSocket defaults to use relative `/api` and `/ws` paths with local proxying
   - rewired smoke and staged-news-backfill shell helpers to run against the native virtualenv stack instead of `docker compose exec`

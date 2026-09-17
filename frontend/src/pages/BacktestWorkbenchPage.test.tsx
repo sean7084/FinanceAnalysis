@@ -335,10 +335,7 @@ const mockDeleteBacktestRun = vi.mocked(deleteBacktestRun)
 
 function buildBacktestRun(overrides: Partial<BacktestRunDto> & Pick<BacktestRunDto, 'id' | 'name' | 'status'>): BacktestRunDto {
   return {
-    id: overrides.id,
-    name: overrides.name,
     strategy_type: 'PREDICTION_THRESHOLD',
-    status: overrides.status,
     pending_control_action: 'NONE',
     task_state: '',
     has_stale_task_owner: false,

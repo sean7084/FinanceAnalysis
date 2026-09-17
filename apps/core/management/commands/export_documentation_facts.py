@@ -21,6 +21,11 @@ artifact metadata, then writes five Markdown files under ``docs/reference/``.
 any committed file differs, which makes documentation drift a test failure
 rather than a review accident. Generated output is deterministic apart from
 the timestamp line, which ``--check`` ignores.
+
+Sheets whose substance is live row counts (``metrics``, ``models``) are
+excluded from ``--check`` -- see ``DB_GATED_SHEETS``. They are still written by
+ordinary runs; only the drift comparison skips them, because CI has no
+populated database to compare against.
 """
 
 import argparse
@@ -1040,6 +1045,19 @@ BUILDERS = {
     'env': (build_env, 'No database access.'),
 }
 
+# Sheets whose substance is live database row counts / registry contents.
+#
+# ``--check`` cannot gate these. CI regenerates them against a freshly created,
+# table-less service database (migrations have not run yet at that step), so
+# the "fresh" output is a wall of backend-specific ``UNAVAILABLE ... <exc>``
+# rows whose text embeds the psycopg2 error message. That can never equal a
+# sheet a developer generated against a populated database, in either
+# direction: committing the CI-shaped sheet makes every local ``--check``
+# fail, and committing the developer-shaped sheet makes CI fail. The
+# comparison is therefore skipped for these two; ordinary (non-check) runs
+# still write them so the prose stays useful.
+DB_GATED_SHEETS = frozenset({'metrics', 'models'})
+
 
 class Command(BaseCommand):
     help = (
@@ -1073,6 +1091,13 @@ class Command(BaseCommand):
         drifted = []
         for name in selected:
             builder, requirement = BUILDERS[name]
+            if options['check'] and name in DB_GATED_SHEETS:
+                self.stdout.write(
+                    f'Skipping {name}.md in --check ({requirement}) '
+                    '-- row-count content cannot be reproduced without a populated '
+                    'database; see DB_GATED_SHEETS.'
+                )
+                continue
             self.stdout.write(f'Building {name}.md ({requirement})')
             try:
                 content = builder()

@@ -1,3 +1,29 @@
+# ===========================================================================
+# Frontend build stage
+# ---------------------------------------------------------------------------
+# Produces /frontend/dist containing the hashed Vite bundle and
+# /frontend/dist/.vite/manifest.json consumed by django-vite at runtime.
+# Kept as a separate stage so the Python runtime image never carries Node,
+# npm, or node_modules.
+#
+# Vite 8 requires Node >=20.19 or >=22.12, so we pin to node:22-alpine.
+# ===========================================================================
+FROM node:22-alpine AS frontend-build
+
+WORKDIR /frontend
+
+# Install deps first for layer caching; only package*.json changes bust this
+# layer, so source-only edits reuse the cached npm ci.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY frontend/ ./
+RUN npm run build
+
+
+# ===========================================================================
+# Django runtime stage
+# ===========================================================================
 # set base image
 FROM python:3.12-slim-bullseye
 
@@ -50,3 +76,8 @@ RUN chmod +x /start-celerybeat
 
 # copy project
 COPY . .
+
+# Overlay the freshly built frontend bundle. Placed AFTER `COPY . .` because
+# .dockerignore excludes frontend/dist from the build context, but if that
+# exclusion is ever removed we still want the image-baked dist to win.
+COPY --from=frontend-build /frontend/dist /app/frontend/dist

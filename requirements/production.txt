@@ -1,1 +1,16 @@
 -r base.txt
+
+# ASGI server for Django Channels (WebSocket support)
+daphne==4.1.2
+
+# Production WSGI/ASGI server
+gunicorn==23.0.0
+uvicorn[standard]==0.32.0
+
+# PostgreSQL driver (already in base.txt as psycopg2-binary, but production
+# may prefer the non-binary build for security patching)
+# psycopg2==2.9.10
+
+# Monitoring and error tracking (optional, enable as needed)
+# sentry-sdk==2.18.0
+# django-prometheus==2.3.1

@@ -858,9 +858,21 @@ class MacroProviderAndBackfillTests(TestCase):
                 '2012-1,0.1585,0.1591,0.1592,0.1584\n'
                 '2012-2,0.1584,0.1591,0.1583,0.1588\n'
             )
-            csv_path = handle.name
+            cnyusd_csv_path = handle.name
 
-        with override_settings(MACRO_CNYUSD_CSV_PATH=csv_path):
+        # The yield CSV is also loaded for dates before CSV_YIELD_MONTH_END (2016-06-01).
+        # Build a minimal fixture in a temp directory so the test does not depend on
+        # the gitignored source_data/CGBYieldCurve_2010to2016.csv.
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as handle:
+            handle.write(
+                'Date,6M,1Y,3Y,5Y,7Y,10Y,30Y\n'
+                '2012/01/31,2.5,2.6,2.8,3.0,3.2,3.5,4.0\n'
+                '2012/02/29,2.5,2.6,2.8,3.0,3.2,3.5,4.0\n'
+                '2012/03/31,2.5,2.6,2.8,3.0,3.2,3.5,4.0\n'
+            )
+            yield_csv_path = handle.name
+
+        with override_settings(MACRO_CNYUSD_CSV_PATH=cnyusd_csv_path, MACRO_YIELD_CSV_PATH=yield_csv_path):
             call_command(
                 'backfill_macro_snapshots',
                 start_date='2012-01-01',

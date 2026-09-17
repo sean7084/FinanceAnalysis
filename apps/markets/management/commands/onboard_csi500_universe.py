@@ -1,3 +1,17 @@
+"""Full CSI 500 universe onboarding workflow.
+
+This is the comprehensive, all-in-one command that:
+1. Syncs CSI 500 (000905.SH) index memberships across the requested window
+2. Syncs the official CSI 500 benchmark index history
+3. Backfills raw data (OHLCV, fundamentals, capital flow, technicals) for all
+   current CSI 500 constituents
+4. Rebuilds the point-in-time CSI 500 benchmark
+5. Recomputes model inputs across the universe and retrains LightGBM/LSTM
+6. Optionally exports a post-onboarding reference benchmark suite
+
+Use the ``--skip-*`` flags to bypass individual stages.
+"""
+
 import json
 from datetime import date, timedelta
 from pathlib import Path

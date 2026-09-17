@@ -9,7 +9,7 @@ import {
   YAxis,
 } from 'recharts'
 
-import { useI18n } from '../../i18n'
+import { useI18n } from '../../useI18n'
 import type { BacktestComparisonPayloadDto, BacktestComparisonSeriesDto } from '../../lib/api'
 
 interface BacktestComparisonChartProps {
