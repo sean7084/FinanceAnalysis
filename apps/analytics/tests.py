@@ -207,15 +207,15 @@ class Phase17DashboardStockApiTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=self.asset1,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.as_of,
                 weight=Decimal('4.2'),
             ),
             IndexMembership(
                 asset=self.asset2,
-                index_code='000510.CSI',
-                index_name='CSI A500',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.as_of,
                 weight=Decimal('4.2'),
             ),
@@ -788,8 +788,8 @@ class Phase10SignalTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trade_dates[-1],
                 weight=Decimal('4.2'),
             )
@@ -846,15 +846,15 @@ class Phase10SignalTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=self.asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=as_of,
                 weight=Decimal('4.2'),
             ),
             IndexMembership(
                 asset=peer_asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=as_of,
                 weight=Decimal('4.2'),
             ),
@@ -904,15 +904,15 @@ class Phase10SignalTests(TestCase):
 
         IndexMembership.objects.create(
             asset=assets[-1],
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=trade_dates[-1],
             weight=Decimal('4.2'),
         )
         IndexMembership.objects.create(
             asset=assets[-2],
-            index_code='000510.CSI',
-            index_name='CSI A500',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=trade_dates[-1],
             weight=Decimal('2.1'),
         )
@@ -968,7 +968,7 @@ class Phase10SignalTests(TestCase):
         with patch('apps.analytics.tasks.timezone.now', return_value=timezone.make_aware(datetime.datetime(2024, 2, 21, 16, 0, 0))):
             with self.assertRaisesMessage(
                 PITMembershipCoverageError,
-                'missing point-in-time membership coverage for 000300.SH on 2024-02-21',
+                'missing point-in-time membership coverage for 000905.SH on 2024-02-21',
             ):
                 calculate_rs_scores_for_all_assets()
 

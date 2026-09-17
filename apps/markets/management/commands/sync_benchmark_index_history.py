@@ -4,14 +4,14 @@ from apps.markets.tasks import sync_benchmark_index_history
 
 
 class Command(BaseCommand):
-    help = 'Sync official benchmark index history for CSI300 and CSIA500.'
+    help = 'Sync official benchmark index history for CSI 500.'
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--index-codes',
             dest='index_codes',
             default=None,
-            help='Comma-separated benchmark index codes. Defaults to 000300.SH,000510.CSI.',
+            help='Comma-separated benchmark index codes. Defaults to 000905.SH.',
         )
         parser.add_argument(
             '--start-date',

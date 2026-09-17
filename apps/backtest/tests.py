@@ -163,17 +163,10 @@ class Phase15BacktestTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=self.asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.d1 - timedelta(days=1),
                 weight=Decimal('4.200000'),
-            ),
-            IndexMembership(
-                asset=self.asset,
-                index_code='000510.CSI',
-                index_name='CSI A500',
-                trade_date=self.d1 - timedelta(days=1),
-                weight=Decimal('2.100000'),
             ),
         ])
 
@@ -530,8 +523,8 @@ class Phase15BacktestTests(TestCase):
         )
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.d1,
             weight=Decimal('4.200000'),
         )
@@ -595,8 +588,8 @@ class Phase15BacktestTests(TestCase):
         )
         IndexMembership.objects.create(
             asset=self.asset,
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.d1,
             weight=Decimal('4.200000'),
         )
@@ -854,8 +847,8 @@ class Phase15BacktestTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=self.asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trade_date,
                 weight=Decimal('4.200000'),
             )
@@ -1799,8 +1792,7 @@ class Phase15BacktestTests(TestCase):
                 defaults={'is_open': True},
             )
             for index_code, index_name in (
-                ('000300.SH', 'CSI 300'),
-                ('000510.CSI', 'CSI A500'),
+                ('000905.SH', 'CSI 500'),
             ):
                 IndexMembership.objects.get_or_create(
                     asset=self.asset,
@@ -1924,41 +1916,29 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'lightgbm'},
         )
         BenchmarkIndexDaily.objects.create(
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.d1,
             close=Decimal('4000.0000'),
         )
         BenchmarkIndexDaily.objects.create(
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.d2,
             close=Decimal('4200.0000'),
-        )
-        BenchmarkIndexDaily.objects.create(
-            index_code='000510.CSI',
-            index_name='CSI A500',
-            trade_date=self.d1,
-            close=Decimal('5000.0000'),
-        )
-        BenchmarkIndexDaily.objects.create(
-            index_code='000510.CSI',
-            index_name='CSI A500',
-            trade_date=self.d2,
-            close=Decimal('4900.0000'),
         )
 
         response = self.client.get(f'/api/v1/backtest/{run.id}/comparison_curve/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['run']['id'], run.id)
-        self.assertEqual(response.data['available_series_keys'], ['selected_run', 'csi300', 'csia500'])
+        self.assertEqual(response.data['available_series_keys'], ['selected_run', 'csi500'])
         selected_series = next(series for series in response.data['series'] if series['key'] == 'selected_run')
-        csi300_series = next(series for series in response.data['series'] if series['key'] == 'csi300')
+        csi500_series = next(series for series in response.data['series'] if series['key'] == 'csi500')
         self.assertEqual(selected_series['points'][0]['date'], str(self.d1))
         self.assertAlmostEqual(selected_series['points'][0]['value'], 99950.0)
-        self.assertAlmostEqual(csi300_series['points'][0]['value'], 99950.0)
-        self.assertAlmostEqual(csi300_series['points'][1]['value'], 104947.5)
+        self.assertAlmostEqual(csi500_series['points'][0]['value'], 99950.0)
+        self.assertAlmostEqual(csi500_series['points'][1]['value'], 104947.5)
 
     def test_backtest_comparison_curve_includes_compare_run_when_explicit_target_exists(self):
         self._auth()
@@ -1991,28 +1971,16 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'lightgbm', 'compare_backtest_run_id': compare_run.id},
         )
         BenchmarkIndexDaily.objects.create(
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.d1,
             close=Decimal('4000.0000'),
         )
         BenchmarkIndexDaily.objects.create(
-            index_code='000300.SH',
-            index_name='CSI 300',
+            index_code='000905.SH',
+            index_name='CSI 500',
             trade_date=self.d2,
             close=Decimal('4100.0000'),
-        )
-        BenchmarkIndexDaily.objects.create(
-            index_code='000510.CSI',
-            index_name='CSI A500',
-            trade_date=self.d1,
-            close=Decimal('5000.0000'),
-        )
-        BenchmarkIndexDaily.objects.create(
-            index_code='000510.CSI',
-            index_name='CSI A500',
-            trade_date=self.d2,
-            close=Decimal('5100.0000'),
         )
 
         response = self.client.get(f'/api/v1/backtest/{run.id}/comparison_curve/')
@@ -2835,17 +2803,10 @@ class Phase15BacktestTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=chunk_asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trading_dates[0] - timedelta(days=1),
                 weight=Decimal('4.200000'),
-            ),
-            IndexMembership(
-                asset=chunk_asset,
-                index_code='000510.CSI',
-                index_name='CSI A500',
-                trade_date=trading_dates[0] - timedelta(days=1),
-                weight=Decimal('2.100000'),
             ),
         ])
 
@@ -2997,19 +2958,10 @@ class Phase15BacktestTests(TestCase):
             membership_rows.append(
                 IndexMembership(
                     asset=asset,
-                    index_code='000300.SH',
-                    index_name='CSI 300',
+                    index_code='000905.SH',
+                    index_name='CSI 500',
                     trade_date=schedule_start - timedelta(days=1),
                     weight=Decimal('4.200000'),
-                )
-            )
-            membership_rows.append(
-                IndexMembership(
-                    asset=asset,
-                    index_code='000510.CSI',
-                    index_name='CSI A500',
-                    trade_date=schedule_start - timedelta(days=1),
-                    weight=Decimal('2.100000'),
                 )
             )
         IndexMembership.objects.bulk_create(membership_rows)

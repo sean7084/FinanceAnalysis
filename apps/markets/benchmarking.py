@@ -2,8 +2,7 @@
 
 `effective_universe(date)` is the single gate for benchmark-universe membership:
 
-- `2010-01-04 <= date < 2024-09-23` -> CSI300 only
-- `date >= 2024-09-23` -> CSI300 union CSI A500
+- `date >= 2010-01-01` -> CSI 500 (`000905.SH`)
 
 All cross-sectional ranking, training sample filtering, backtest candidate selection,
 benchmark construction, and daily prediction should resolve membership through this
@@ -24,15 +23,12 @@ from .models import Asset, IndexMembership, OHLCV, PointInTimeBenchmarkDaily
 
 DECIMAL_0 = Decimal('0')
 DECIMAL_1 = Decimal('1')
-DEFAULT_PIT_INDEX_CODES = ('000300.SH', '000510.CSI')
-PIT_UNION_BENCHMARK_CODE = 'CSI300_CSIA500_PIT_UNION'
-PIT_UNION_BENCHMARK_NAME = 'CSI300 + CSI A500 PIT Union'
+DEFAULT_PIT_INDEX_CODES = ('000905.SH',)
+PIT_BENCHMARK_CODE = 'CSI500_PIT'
+PIT_BENCHMARK_NAME = 'CSI 500 PIT'
 PIT_UNION_WEIGHTING_METHOD = 'free_float_market_cap'
-ACTIVE_UNION_TAGS = {'CSI300', 'CSIA500'}
-PIT_UNIVERSE_START_DATE = date(2010, 1, 4)
-# On this launch date the required effective universe expands from CSI300-only
-# to the deduplicated union of CSI300 and CSI A500.
-CSIA500_LAUNCH_DATE = date(2024, 9, 23)
+ACTIVE_UNIVERSE_TAGS = {'CSI500'}
+PIT_UNIVERSE_START_DATE = date(2010, 1, 1)
 
 
 class PITMembershipCoverageError(ValueError):
@@ -93,18 +89,15 @@ def _load_membership_snapshots_by_index(trade_dates, index_codes=None):
 def required_pit_index_codes_for_date(trade_date):
     """Return the required index codes for the canonical effective universe.
 
-    The contract is inclusive on `2010-01-04`: CSI300 is required from that date
-    onward, and CSI A500 becomes additionally required on `2024-09-23`.
+    The contract is inclusive on `2010-01-01`: CSI 500 (`000905.SH`) is the sole
+    required index from that date onward.
     """
     if isinstance(trade_date, str):
         trade_date = date.fromisoformat(trade_date)
 
-    required_codes = []
     if trade_date >= PIT_UNIVERSE_START_DATE:
-        required_codes.append('000300.SH')
-    if trade_date >= CSIA500_LAUNCH_DATE:
-        required_codes.append('000510.CSI')
-    return tuple(required_codes)
+        return tuple(DEFAULT_PIT_INDEX_CODES)
+    return ()
 
 
 def pit_membership_coverage_gaps(trade_dates, index_codes=None):
@@ -370,8 +363,8 @@ def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=D
         
         rows.append(
             PointInTimeBenchmarkDaily(
-                benchmark_code=PIT_UNION_BENCHMARK_CODE,
-                benchmark_name=PIT_UNION_BENCHMARK_NAME,
+                benchmark_code=PIT_BENCHMARK_CODE,
+                benchmark_name=PIT_BENCHMARK_NAME,
                 trade_date=trade_date,
                 daily_return=daily_return,
                 nav=nav,
@@ -406,7 +399,7 @@ def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Deci
     )
     if not rows:
         return {
-            'benchmark_code': PIT_UNION_BENCHMARK_CODE,
+            'benchmark_code': PIT_BENCHMARK_CODE,
             'rows_written': 0,
             'start_date': start_date.isoformat(),
             'end_date': end_date.isoformat(),
@@ -420,7 +413,7 @@ def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Deci
         update_fields=['benchmark_name', 'daily_return', 'nav', 'constituent_count', 'overlap_count', 'weighting_method', 'metadata', 'updated_at'],
     )
     return {
-        'benchmark_code': PIT_UNION_BENCHMARK_CODE,
+        'benchmark_code': PIT_BENCHMARK_CODE,
         'rows_written': len(rows),
         'start_date': start_date.isoformat(),
         'end_date': end_date.isoformat(),
@@ -434,7 +427,7 @@ def refresh_latest_point_in_time_union_benchmark(target_date, initial_nav=Decima
 
     previous_row = (
         PointInTimeBenchmarkDaily.objects.filter(
-            benchmark_code=PIT_UNION_BENCHMARK_CODE,
+            benchmark_code=PIT_BENCHMARK_CODE,
             trade_date__lt=target_date,
         )
         .order_by('-trade_date')

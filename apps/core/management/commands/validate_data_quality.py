@@ -40,8 +40,8 @@ from apps.factors.models import (
 )
 from apps.macro.models import MacroSnapshot, MarketContext
 from apps.markets.benchmarking import (
-    PIT_UNION_BENCHMARK_CODE,
-    PIT_UNION_BENCHMARK_NAME,
+    PIT_BENCHMARK_CODE,
+    PIT_BENCHMARK_NAME,
     pit_membership_coverage_gaps,
     point_in_time_union_asset_ids_by_dates,
     required_pit_index_codes_for_date,
@@ -117,10 +117,10 @@ SECTION_ONE_LIMITATIONS = (
     'TechnicalIndicator rows do not expose full intermediate state, so the default validator checks stored historical completeness for configured indicator variants and uses an optional sampled OHLCV replay audit for direct formula reconciliation.',
 )
 REPORT_DESCRIPTIONS = {
-    'index_membership_history_gaps.csv': 'Required CSI300/CSIA500 membership coverage gaps on PIT trading dates.',
-    'index_membership_monthly_blanks.csv': 'Warning months where required CSI300/CSIA500 membership snapshots are completely blank in the required portion of the month.',
+    'index_membership_history_gaps.csv': 'Required CSI 500 membership coverage gaps on PIT trading dates.',
+    'index_membership_monthly_blanks.csv': 'Warning months where required CSI 500 membership snapshots are completely blank in the required portion of the month.',
     'benchmark_index_daily_gaps.csv': 'Missing official benchmark daily rows on PIT-required trading dates.',
-    'pit_benchmark_daily_gaps.csv': 'Missing PIT union benchmark daily rows on PIT-required trading dates.',
+    'pit_benchmark_daily_gaps.csv': 'Missing PIT benchmark daily rows on PIT-required trading dates.',
     'macro_snapshot_gaps.csv': 'Missing or NULL macro snapshot and market-context rows relative to required trade-date context rows.',
     'factor_score_gaps.csv': 'Missing FactorScore rows relative to existing OHLCV-backed asset dates.',
     'sentiment_score_gaps.csv': 'Missing SentimentScore rows relative to existing OHLCV-backed asset dates.',
@@ -145,8 +145,7 @@ REPORT_DESCRIPTIONS = {
     'metadata.json': 'Run metadata, limitations, and report descriptions.',
 }
 INDEX_CODE_LABELS = {
-    '000300.SH': 'CSI 300',
-    '000510.CSI': 'CSI A500',
+    '000905.SH': 'CSI 500',
 }
 USABLE_ASSET_CLIFF_DROP_RATIO = 0.2
 FACTOR_SCORE_FIELDS = (
@@ -1031,7 +1030,7 @@ class Command(BaseCommand):
 
         actual_dates = set(
             PointInTimeBenchmarkDaily.objects.filter(
-                benchmark_code=PIT_UNION_BENCHMARK_CODE,
+                benchmark_code=PIT_BENCHMARK_CODE,
                 trade_date__gte=expected_dates[0],
                 trade_date__lte=expected_dates[-1],
             ).values_list('trade_date', flat=True)
@@ -1048,10 +1047,10 @@ class Command(BaseCommand):
 
         for gap_start, gap_end, window_dates in self._iter_target_date_windows(expected_dates, missing_dates):
             writer.write_detail('pit_benchmark_daily_gaps', {
-                **self._metric_columns('benchmark', PIT_UNION_BENCHMARK_CODE, 'pit_union_benchmark_gap', 'trade_date_window'),
+                **self._metric_columns('benchmark', PIT_BENCHMARK_CODE, 'pit_union_benchmark_gap', 'trade_date_window'),
                 'severity': severity,
-                'benchmark_code': PIT_UNION_BENCHMARK_CODE,
-                'benchmark_name': PIT_UNION_BENCHMARK_NAME,
+                'benchmark_code': PIT_BENCHMARK_CODE,
+                'benchmark_name': PIT_BENCHMARK_NAME,
                 'expected_start': expected_dates[0],
                 'expected_end': expected_dates[-1],
                 'expected_trade_dates_count': len(expected_dates),

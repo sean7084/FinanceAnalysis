@@ -72,15 +72,8 @@ class LightGBMPredictionTests(TestCase):
         for trade_date in trade_dates:
             memberships.append(IndexMembership(
                 asset=asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
-                trade_date=trade_date,
-                weight=Decimal('4.2'),
-            ))
-            memberships.append(IndexMembership(
-                asset=asset,
-                index_code='000510.CSI',
-                index_name='CSI A500',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trade_date,
                 weight=Decimal('4.2'),
             ))

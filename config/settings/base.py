@@ -369,7 +369,7 @@ DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@financeanalysis.
 SPECTACULAR_SETTINGS = {
     'TITLE': 'FinanceAnalysis API',
     'DESCRIPTION': (
-        'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 300 and CSI A500).\n\n'
+        'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 500).\n\n'
         '## Authentication\n\n'
         'Requests may be authenticated using either:\n'
         '- **JWT Bearer token**: `Authorization: Bearer <token>`  '

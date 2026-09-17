@@ -1,7 +1,7 @@
 # FinanceAnalysis
 
-A Django-based platform for analysing Chinese A-share markets over the CSI 300 /
-CSI A500 benchmark universe. It ingests market, fundamental, macro, and news
+A Django-based platform for analysing Chinese A-share markets over the CSI 500
+benchmark universe. It ingests market, fundamental, macro, and news
 data; derives technical and factor features; runs three prediction models; and
 backtests trading strategies against point-in-time benchmarks.
 
@@ -95,8 +95,7 @@ One rule governs every cross-sectional calculation, training-sample filter,
 backtest candidate pool, benchmark build, and daily prediction:
 
 ```
-2010-01-04 <= date <  2024-09-23   ->  CSI 300 only
-              date >= 2024-09-23   ->  CSI 300 ∪ CSI A500
+date >= 2010-01-01   ->  CSI 500 (000905.SH)
 ```
 
 Silent fallback to "all assets" is prohibited — workflows fail closed when

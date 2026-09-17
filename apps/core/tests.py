@@ -20,7 +20,7 @@ from apps.backtest.models import BacktestRun, BacktestTrade
 from apps.core.management.commands.validate_data_quality import DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import AssetMarginDetailSnapshot, AssetMoneyFlowSnapshot, CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
 from apps.macro.models import EventImpactStat, MacroSnapshot, MarketContext
-from apps.markets.benchmarking import PIT_UNION_BENCHMARK_CODE
+from apps.markets.benchmarking import PIT_BENCHMARK_CODE
 from apps.markets.models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.prediction.models import PredictionResult
 from apps.prediction.models_lightgbm import EnsembleWeightSnapshot, LightGBMPrediction
@@ -155,22 +155,22 @@ class DataQualityValidationCommandTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=self.asset_old,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.d1,
                 weight=Decimal('1.000000'),
             ),
             IndexMembership(
                 asset=self.asset_new,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.d2,
                 weight=Decimal('1.000000'),
             ),
             IndexMembership(
                 asset=self.asset_new,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.d4,
                 weight=Decimal('1.000000'),
             ),
@@ -395,11 +395,11 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertEqual(monthly_blank_rows, [])
 
             benchmark_gap_rows = read_csv(output_dir / 'benchmark_index_daily_gaps.csv')
-            self.assertTrue(any(row['index_code'] == '000300.SH' for row in benchmark_gap_rows))
+            self.assertTrue(any(row['index_code'] == '000905.SH' for row in benchmark_gap_rows))
             self.assertTrue(all(row['metric_family'] == 'benchmark' for row in benchmark_gap_rows))
 
             pit_benchmark_rows = read_csv(output_dir / 'pit_benchmark_daily_gaps.csv')
-            self.assertTrue(any(row['benchmark_code'] == PIT_UNION_BENCHMARK_CODE for row in pit_benchmark_rows))
+            self.assertTrue(any(row['benchmark_code'] == PIT_BENCHMARK_CODE for row in pit_benchmark_rows))
             self.assertTrue(all(row['metric_family'] == 'benchmark' for row in pit_benchmark_rows))
 
             factor_gap_rows = read_csv(output_dir / 'factor_score_gaps.csv')
@@ -1193,81 +1193,50 @@ class DataQualityValidationCommandTests(TestCase):
     def test_validate_data_quality_reports_partial_month_membership_blanks(self):
         jan2010_d1 = timezone.datetime(2010, 1, 4).date()
         jan2010_d2 = timezone.datetime(2010, 1, 5).date()
-        sep2024_d1 = timezone.datetime(2024, 9, 23).date()
-        sep2024_d2 = timezone.datetime(2024, 9, 24).date()
 
         for exchange_code in ('SSE', 'SZSE'):
             ExchangeTradingCalendar.objects.bulk_create([
                 ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=jan2010_d1),
                 ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=jan2010_d2),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=sep2024_d1),
-                ExchangeTradingCalendar(exchange_code=exchange_code, trade_date=sep2024_d2),
             ])
-
-        IndexMembership.objects.create(
-            asset=self.asset_old,
-            index_code='000300.SH',
-            index_name='CSI 300',
-            trade_date=sep2024_d1,
-            weight=Decimal('1.000000'),
-        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             call_command(
                 'validate_data_quality',
                 start_date='2010-01-04',
-                end_date='2024-09-24',
+                end_date='2010-01-05',
                 output_dir=temp_dir,
             )
 
             output_dir = Path(temp_dir)
             membership_history_rows = read_csv(output_dir / 'index_membership_history_gaps.csv')
             self.assertTrue(any(
-                row['index_code'] == '000300.SH'
+                row['index_code'] == '000905.SH'
                 and row['gap_start'] == '2010-01-04'
                 and row['gap_end'] == '2010-01-05'
-                for row in membership_history_rows
-            ))
-            self.assertTrue(any(
-                row['index_code'] == '000510.CSI'
-                and row['gap_start'] == '2024-09-23'
-                and row['gap_end'] == '2024-09-24'
                 for row in membership_history_rows
             ))
 
             monthly_blank_rows = read_csv(output_dir / 'index_membership_monthly_blanks.csv')
             self.assertTrue(any(
-                row['index_code'] == '000300.SH'
+                row['index_code'] == '000905.SH'
                 and row['calendar_month'] == '2010-01'
                 and row['first_expected_trade_date'] == '2010-01-04'
                 and row['last_expected_trade_date'] == '2010-01-05'
                 and row['actual_snapshot_count'] == '0'
                 for row in monthly_blank_rows
             ))
-            self.assertTrue(any(
-                row['index_code'] == '000510.CSI'
-                and row['calendar_month'] == '2024-09'
-                and row['first_expected_trade_date'] == '2024-09-23'
-                and row['last_expected_trade_date'] == '2024-09-24'
-                and row['actual_snapshot_count'] == '0'
-                for row in monthly_blank_rows
-            ))
-            self.assertFalse(any(
-                row['index_code'] == '000300.SH'
-                and row['calendar_month'] == '2024-09'
-                for row in monthly_blank_rows
-            ))
 
             benchmark_gap_rows = read_csv(output_dir / 'benchmark_index_daily_gaps.csv')
             self.assertTrue(any(
-                row['index_code'] == '000300.SH'
+                row['index_code'] == '000905.SH'
                 and row['gap_start'] == '2010-01-04'
                 for row in benchmark_gap_rows
             ))
 
             pit_benchmark_rows = read_csv(output_dir / 'pit_benchmark_daily_gaps.csv')
             self.assertTrue(any(
-                row['benchmark_code'] == PIT_UNION_BENCHMARK_CODE
+                row['benchmark_code'] == PIT_BENCHMARK_CODE
                 and row['gap_start'] == '2010-01-04'
                 for row in pit_benchmark_rows
             ))
@@ -1337,15 +1306,15 @@ class DataQualityValidationCommandTests(TestCase):
         IndexMembership.objects.bulk_create([
             IndexMembership(
                 asset=self.asset_old,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.d3,
                 weight=Decimal('1.000000'),
             ),
             IndexMembership(
                 asset=self.asset_new,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=self.d3,
                 weight=Decimal('1.000000'),
             ),
@@ -1984,14 +1953,14 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
             )
             IndexMembership.objects.create(
                 asset=self.asset,
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trade_date,
                 weight=Decimal('0.010000'),
             )
             BenchmarkIndexDaily.objects.create(
-                index_code='000300.SH',
-                index_name='CSI 300',
+                index_code='000905.SH',
+                index_name='CSI 500',
                 trade_date=trade_date,
                 open=Decimal('4000.0'),
                 high=Decimal('4010.0'),

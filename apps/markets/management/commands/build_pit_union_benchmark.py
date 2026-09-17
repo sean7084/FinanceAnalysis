@@ -7,7 +7,7 @@ from apps.markets.benchmarking import refresh_point_in_time_union_benchmark
 
 
 class Command(BaseCommand):
-    help = 'Build or refresh the internal point-in-time CSI300 + CSI A500 union benchmark.'
+    help = 'Build or refresh the internal point-in-time CSI 500 benchmark.'
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', required=True, help='Inclusive start date (YYYY-MM-DD).')

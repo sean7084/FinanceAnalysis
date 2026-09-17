@@ -7,7 +7,7 @@ from apps.markets.tasks import DEFAULT_INDEX_CODES, sync_index_constituent_unive
 
 
 class Command(BaseCommand):
-    help = 'Sync CSI 300 + CSI A500 index constituents, persist membership history, refresh current tags, and dispatch unique asset syncs.'
+    help = 'Sync CSI 500 index constituents, persist membership history, refresh current tags, and dispatch unique asset syncs.'
 
     def add_arguments(self, parser):
         parser.add_argument('--index-codes', default=','.join(DEFAULT_INDEX_CODES))
@@ -34,7 +34,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--dispatch-changed-assets-only',
             action='store_true',
-            help='Dispatch only assets whose current CSI300/CSIA500 memberships changed.',
+            help='Dispatch only assets whose current CSI 500 membership changed.',
         )
 
     def _parse_date(self, value, name):
