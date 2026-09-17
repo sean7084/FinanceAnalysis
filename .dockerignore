@@ -20,3 +20,10 @@ env/
 
 # VSCode
 .vscode/
+
+# Frontend build artifacts -- the runtime image gets a freshly built dist from
+# the `frontend-build` stage in compose/local/django/Dockerfile. Excluding these
+# guarantees a stale host copy can never shadow the image-baked assets.
+frontend/node_modules
+frontend/dist
+frontend/coverage

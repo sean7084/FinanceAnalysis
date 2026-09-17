@@ -1,0 +1,19 @@
+{% load static %}{% load django_vite %}<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="{% static 'favicon.svg' %}" />
+    <title>FinanceAnalysis</title>
+    {# django-vite v3 tag names: vite_react_refresh + vite_hmr_client are #}
+    {# no-ops in prod mode; vite_asset emits either an absolute URL against #}
+    {# the Vite dev server (dev_mode=True, HMR) or hashed /static/ URLs #}
+    {# resolved from frontend/dist/.vite/manifest.json (dev_mode=False). #}
+    {% vite_react_refresh %}
+    {% vite_hmr_client %}
+    {% vite_asset 'src/main.tsx' %}
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
