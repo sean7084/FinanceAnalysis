@@ -5,7 +5,7 @@ The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/6.0/topics/http/urls/
 """
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from rest_framework.routers import DefaultRouter
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -13,6 +13,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
 )
 
+from apps.core.views import spa_fallback
 from apps.markets.views import MarketViewSet, AssetViewSet, OHLCVViewSet
 from apps.analytics.views import (
     TechnicalIndicatorViewSet,
@@ -107,6 +108,9 @@ router.register(r'developer/keys', DeveloperAPIKeyViewSet, basename='developer-k
 router.register(r'developer/changelog', ChangelogEntryViewSet, basename='developer-changelog')
 
 urlpatterns = [
+    # Bare origin serves the SPA shell. Registered first so `/` never falls
+    # through to the catch-all below (which excludes empty paths by design).
+    path('', spa_fallback, name='spa-root'),
     path('admin/', admin.site.urls),
     # API v1 endpoints
     path('api/v1/', include(router.urls)),
@@ -125,4 +129,9 @@ urlpatterns = [
     path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/v1/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/v1/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    # SPA fallback -- must stay LAST. The negative lookahead keeps DRF, admin,
+    # browsable-API auth, static, media, and Channels WebSocket paths out of
+    # the catch-all so those subsystems keep returning their own 404s and
+    # redirects instead of the SPA shell.
+    re_path(r'^(?!api/|admin/|api-auth/|static/|media/|ws/).*$', spa_fallback, name='spa-fallback'),
 ]

@@ -10,7 +10,7 @@ import {
   type LightGBMModelArtifactDto,
   type ModelVersionDto,
 } from '../lib/api'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 function topFeatureSummary(featureImportance: Record<string, number>) {
   const entries = Object.entries(featureImportance)

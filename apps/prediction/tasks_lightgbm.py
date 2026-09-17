@@ -58,6 +58,39 @@ from .odds import estimate_trade_decision
 MODELS_DIR = os.path.join(settings.BASE_DIR, 'models', 'lightgbm')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
+# Relative path prefix for storing artifact paths in the database.
+# Paths are stored relative to BASE_DIR so they remain portable across hosts.
+MODELS_RELATIVE_PREFIX = os.path.join('models', 'lightgbm')
+
+
+def _to_relative_artifact_path(absolute_path):
+    """Convert an absolute artifact path to a BASE_DIR-relative path for storage."""
+    if not absolute_path:
+        return absolute_path
+    base_dir = str(settings.BASE_DIR)
+    path_str = str(absolute_path)
+    # Normalize separators for cross-platform comparison
+    if path_str.startswith(base_dir):
+        relative = path_str[len(base_dir):].lstrip(os.sep).lstrip('/')
+        return relative
+    # Already relative or from a different root -- store as-is
+    return path_str
+
+
+def _resolve_artifact_path(stored_path):
+    """Resolve a stored artifact path to an absolute path.
+
+    Handles both relative paths (preferred) and legacy absolute paths.
+    """
+    if not stored_path:
+        return stored_path
+    path_str = str(stored_path)
+    if os.path.isabs(path_str):
+        # Legacy absolute path -- return as-is for backward compatibility
+        return path_str
+    # Relative path -- resolve against BASE_DIR
+    return os.path.join(settings.BASE_DIR, path_str)
+
 
 def _positive_int_env(name, default):
     try:
@@ -76,7 +109,13 @@ PRUNING_MAX_RETAINED_FEATURES = 25
 
 
 def _get_model_path(horizon_days, version):
+    """Return the absolute path for model artifacts (used for file I/O)."""
     return os.path.join(MODELS_DIR, f'{horizon_days}d_{version}')
+
+
+def _get_model_relative_path(horizon_days, version):
+    """Return the BASE_DIR-relative path for storing in the database."""
+    return os.path.join(MODELS_RELATIVE_PREFIX, f'{horizon_days}d_{version}')
 
 
 def _normalize_version_tag(version_tag):
@@ -596,7 +635,7 @@ def _register_lightgbm_model_version(horizon_days, model_version, training_start
         version=model_version,
         defaults={
             'status': ModelVersion.Status.READY,
-            'artifact_path': _get_model_path(horizon_days, model_version),
+            'artifact_path': _get_model_relative_path(horizon_days, model_version),
             'metrics': metrics,
             'feature_schema': feature_names,
             'training_window_start': training_start,
@@ -2039,7 +2078,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
 
             artifact_defaults = {
                 'status': LightGBMModelArtifact.Status.READY,
-                'artifact_path': _get_model_path(horizon, model_version),
+                'artifact_path': _get_model_relative_path(horizon, model_version),
                 'metrics_json': {
                     'accuracy': float(accuracy),
                     'training_samples': len(X_train),

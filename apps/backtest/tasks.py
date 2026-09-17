@@ -37,7 +37,6 @@ Semantics are specified in ``TECHNICAL_GUIDE.md`` section 7.
 """
 
 import os
-import inspect
 from bisect import bisect_left
 from collections import OrderedDict
 from datetime import date, timedelta
@@ -754,21 +753,6 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             cache[cache_key] = cached_mapping
             return cached_mapping
 
-    predict_supports_run = True
-    predict_side_effect = getattr(_predict_lightgbm_for_asset, 'side_effect', None)
-    if callable(predict_side_effect):
-        try:
-            side_effect_signature = inspect.signature(predict_side_effect)
-            predict_supports_run = (
-                'run' in side_effect_signature.parameters
-                or any(
-                    parameter.kind == inspect.Parameter.VAR_KEYWORD
-                    for parameter in side_effect_signature.parameters.values()
-                )
-            )
-        except (TypeError, ValueError):
-            predict_supports_run = True
-
     runtime = _get_lightgbm_runtime(run, horizon, cache)
     resolved_backend = _resolved_lightgbm_inference_backend(
         run,
@@ -808,23 +792,14 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
     else:
         mapping = {}
         for asset_id in asset_ids:
-            if predict_supports_run:
-                mapping[asset_id] = _predict_lightgbm_for_asset(
-                    asset_id,
-                    dt,
-                    horizon,
-                    cache,
-                    trade_decision_policy,
-                    run=run,
-                )
-            else:
-                mapping[asset_id] = _predict_lightgbm_for_asset(
-                    asset_id,
-                    dt,
-                    horizon,
-                    cache,
-                    trade_decision_policy,
-                )
+            mapping[asset_id] = _predict_lightgbm_for_asset(
+                asset_id,
+                dt,
+                horizon,
+                cache,
+                trade_decision_policy,
+                run=run,
+            )
     _add_lightgbm_runtime_time(cache, 'asset_loop_seconds', perf_counter() - asset_loop_started)
     _add_lightgbm_runtime_time(cache, 'prediction_map_build_seconds', perf_counter() - build_started)
 

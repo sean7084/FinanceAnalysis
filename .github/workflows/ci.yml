@@ -122,7 +122,7 @@ jobs:
           echo "Suite green: $count tests."
 
   frontend:
-    name: Frontend tests
+    name: Frontend tests, type-check, and lint
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -143,13 +143,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
       - name: Unit tests, with a discovery floor
         run: |
           # vitest transpiles without type-checking, so a green run here says nothing
-          # about whether the project compiles. That is why the type-check job below
-          # exists separately, and why this floor matters: vitest would also exit 0
-          # having matched no test files.
-          npm test 2>&1 | tee test-output.txt || true
+          # about whether the project compiles. That is why the type-check step above
+          # exists, and why this floor matters: vitest would also exit 0 having
+          # matched no test files.
+          npm test 2>&1 | tee test-output-raw.txt || true
+
+          # Strip ANSI color codes so grep patterns match reliably.
+          sed 's/\x1b\[[0-9;]*m//g' test-output-raw.txt > test-output.txt
 
           count=$(grep -oE 'Tests +[0-9]+ passed' test-output.txt | grep -oE '[0-9]+' | head -n1)
           echo "Discovered ${count:-0} tests; floor is $MIN_TEST_COUNT."
@@ -165,40 +174,3 @@ jobs:
           fi
 
           echo "Frontend suite green: $count tests."
-
-  # NOT BLOCKING, and deliberately so: both gates fail on the current tree. Six
-  # TypeScript errors and one ESLint error are outstanding, catalogued with their
-  # diagnosis in BACKLOG.md. None is a runtime bug -- the strongest evidence is
-  # BacktestWorkbenchPage.test.tsx asserting that entry_weekdays must be ABSENT from
-  # the create payload, which means the BacktestCreatePayload type is wrong to require
-  # it, not the code wrong to omit it.
-  #
-  # Shipping these as blocking gates would have made CI red on arrival and therefore
-  # ignored. Fix the seven errors, then delete continue-on-error and merge this job
-  # into the frontend job above. Until then it runs so the count is visible.
-  frontend-static:
-    name: Frontend type-check and lint (currently failing - see BACKLOG)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: frontend
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type-check and build
-        run: npm run build
-
-      - name: Lint
-        run: npm run lint

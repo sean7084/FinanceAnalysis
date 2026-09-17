@@ -1,3 +1,17 @@
+"""Full CSI A500 onboarding workflow.
+
+This is the comprehensive, all-in-one command that:
+1. Adds CSI A500 alongside CSI 300 in the index registry
+2. Persists historical index memberships
+3. Backfills A500-only raw data (OHLCV, fundamentals, etc.)
+4. Recomputes model inputs across the combined universe
+5. Retrains LightGBM/LSTM models
+6. Exports pre/post benchmark suites for comparison
+
+Use this for a complete, single-pass onboarding. For a safer, staged rollout
+with explicit checkpoints, use ``rollout_csi_a500_universe`` instead.
+"""
+
 import json
 from datetime import date, timedelta
 from pathlib import Path

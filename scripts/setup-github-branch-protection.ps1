@@ -33,7 +33,7 @@ Write-Host "`n[1/3] Setting up required status checks..." -ForegroundColor Yello
 # GitHub uses the job `name:` field as the check context.
 $statusCheckContexts = @(
     "Django checks and test suite",
-    "Frontend tests"
+    "Frontend tests, type-check, and lint"
 )
 
 $protectionPayload = @{

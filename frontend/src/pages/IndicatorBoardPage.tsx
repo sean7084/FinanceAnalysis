@@ -4,7 +4,7 @@ import {
   hasAnyAuthCredential,
   type DashboardStockRowDto,
 } from '../lib/api'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 function renderValue(value: unknown, t: (key: string) => string) {
   if (typeof value === 'boolean') {

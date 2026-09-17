@@ -1,3 +1,14 @@
+"""Staged CSI A500 rollout workflow (production-safe).
+
+This is the safer, staged alternative to ``onboard_csi_a500_universe`` that:
+1. Runs onboarding with pre/post benchmarks disabled (faster, less risk)
+2. Performs fixed-window LightGBM/LSTM retrains with explicit date ranges
+3. Runs compact post-expansion benchmark suites for validation
+
+Use this for production rollouts where you want explicit checkpoints between
+stages. For a complete, single-pass onboarding, use ``onboard_csi_a500_universe``.
+"""
+
 import json
 from datetime import date, timedelta
 from pathlib import Path

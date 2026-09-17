@@ -1,12 +1,5 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-
-type Locale = 'zh-CN' | 'en-US'
-
-interface I18nContextValue {
-  locale: Locale
-  setLocale: (locale: Locale) => void
-  t: (key: string) => string
-}
+import { useMemo, useState, type ReactNode } from 'react'
+import { I18nContext, type I18nContextValue, type Locale } from './useI18n'
 
 const STORAGE_KEY = 'finance_locale'
 
@@ -597,8 +590,6 @@ const dict: Record<Locale, Record<string, string>> = {
   },
 }
 
-const I18nContext = createContext<I18nContextValue | null>(null)
-
 function getInitialLocale(): Locale {
   const stored = localStorage.getItem(STORAGE_KEY)
   if (stored === 'en-US' || stored === 'zh-CN') {
@@ -626,10 +617,4 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
 }
 
-export function useI18n() {
-  const ctx = useContext(I18nContext)
-  if (!ctx) {
-    throw new Error('useI18n must be used inside I18nProvider')
-  }
-  return ctx
-}
+

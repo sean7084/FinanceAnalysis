@@ -278,6 +278,16 @@ export interface FeatureImportanceTrendResponseDto {
   results: FeatureImportanceTrendGroupDto[]
 }
 
+export interface BacktestRunProgressDto {
+  processed_trading_days?: number | null
+  total_trading_days?: number | null
+}
+
+export interface BacktestRunReportDto {
+  progress?: BacktestRunProgressDto
+  [key: string]: unknown
+}
+
 export interface BacktestRunDto {
   id: number
   name: string
@@ -298,7 +308,7 @@ export interface BacktestRunDto {
   total_trades: number
   winning_trades: number
   parameters: Record<string, unknown>
-  report: Record<string, unknown>
+  report: BacktestRunReportDto
   error_message: string
   started_at: string | null
   completed_at: string | null
@@ -377,7 +387,7 @@ export interface BacktestCreatePayload {
     top_n: number
     horizon_days: 3 | 7 | 30
     up_threshold: number
-    entry_weekdays: Array<'MON' | 'TUE' | 'WED' | 'THU' | 'FRI'>
+    entry_weekdays?: Array<'MON' | 'TUE' | 'WED' | 'THU' | 'FRI'>
     holding_period_days: number
     capital_fraction_per_entry: number
     candidate_mode?: 'top_n' | 'trade_score'

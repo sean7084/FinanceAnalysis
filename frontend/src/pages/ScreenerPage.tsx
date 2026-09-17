@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchScreenerRows, hasAnyAuthCredential, type CandidateDto } from '../lib/api'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 export function ScreenerPage() {
   const { t } = useI18n()

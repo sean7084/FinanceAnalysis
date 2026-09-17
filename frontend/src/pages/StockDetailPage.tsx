@@ -14,7 +14,7 @@ import {
   type LightGBMPredictionStockDto,
   type PredictionStockDto,
 } from '../lib/api'
-import { useI18n } from '../i18n'
+import { useI18n } from '../useI18n'
 
 export function StockDetailPage() {
   const { t } = useI18n()
