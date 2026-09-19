@@ -1,0 +1,67 @@
+{
+  "about": "Recorded baseline for scripts/check-static-baseline.mjs. A diagnostic is keyed by file, rule code and a 40-character message fingerprint, never by line and column, so the baseline survives edits that merely move code. Regenerate one gate with `node scripts/check-static-baseline.mjs <build|lint> --update`; raising a count or adding a key also requires --allow-increase. Delete this file and this script, and restore the plain npm scripts in the frontend CI job, once the warnings listed here are cleared too.",
+  "gates": {
+    "build": {
+      "command": "npm run build",
+      "counts": {
+        "error": 0,
+        "warning": 0
+      },
+      "diagnostics": []
+    },
+    "lint": {
+      "command": "npm run lint -- --format json",
+      "counts": {
+        "error": 0,
+        "warning": 9
+      },
+      "diagnostics": [
+        {
+          "key": "src/pages/AlertCenterPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/BacktestWorkbenchPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/BacktestWorkbenchPage.tsx::react-hooks/exhaustive-deps::The 'extraComparisonOptions' conditional",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/DashboardPage.tsx::react-hooks/exhaustive-deps::React Hook useMemo has a missing depende",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/IndicatorBoardPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/MacroContextPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/ModelMonitoringPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/ScreenerPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        },
+        {
+          "key": "src/pages/StockDetailPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
+          "severity": "warning",
+          "count": 1
+        }
+      ]
+    }
+  }
+}
