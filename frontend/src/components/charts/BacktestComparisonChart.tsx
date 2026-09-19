@@ -22,8 +22,7 @@ interface BacktestComparisonChartProps {
 const SERIES_COLORS: Record<string, string> = {
   selected_run: '#35c96b',
   compare_run: '#f3b54a',
-  csi300: '#59a8ff',
-  csia500: '#ff7d6c',
+  csi500: '#59a8ff',
 }
 
 const EXTRA_SERIES_COLORS = ['#6fd3c1', '#f28b6d', '#8f9bff', '#d8b962', '#f07cb2', '#68c4ff']

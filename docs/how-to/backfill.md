@@ -14,8 +14,7 @@ Every cross-sectional calculation, training-sample filter, backtest candidate
 pool, benchmark build, and daily prediction must resolve the same universe:
 
 ```
-2010-01-04 <= date <  2024-09-23   ->  CSI 300 only
-              date >= 2024-09-23   ->  CSI 300 ∪ CSI A500
+date >= 2010-01-01   ->  CSI 500 (000905.SH)
 ```
 
 Silent fallback to "all assets" is prohibited. When required point-in-time
@@ -81,18 +80,18 @@ chunking.
 `backfill_ohlcv_history` is run twice with different warm-up flags because the
 two warm-ups compute different pre-window requirements. Both are idempotent.
 
-### CSI A500 onboarding
+### CSI 500 onboarding
 
-For the end-to-end A500 rollout (membership sync, OHLCV, derived features,
+For the end-to-end CSI 500 universe onboarding (membership sync, benchmark index
+history, OHLCV, derived features, PIT benchmark rebuild, model-data backfill, and
 retrain):
 
 ```bash
-python manage.py onboard_csi_a500_universe --start-date 2010-01-04 --end-date <today>
+python manage.py onboard_csi500_universe --start-date 2010-01-01 --end-date <today>
 ```
 
-`rollout_csi_a500_universe` is the narrower membership/universe rollout without
-the retrain stages. Check [`../reference/commands.md`](../reference/commands.md)
-for the current option surface of each before choosing.
+Check [`../reference/commands.md`](../reference/commands.md) for the current
+option surface (including the `--skip-*` stages) before choosing.
 
 ---
 

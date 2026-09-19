@@ -28,8 +28,7 @@ One rule governs every cross-sectional calculation, training-sample filter,
 backtest candidate pool, benchmark construction, and daily prediction:
 
 ```
-2010-01-04 <= date <  2024-09-23   ->  CSI 300 only
-              date >= 2024-09-23   ->  CSI 300 ∪ CSI A500
+date >= 2010-01-01   ->  CSI 500 (000905.SH)
 ```
 
 The canonical implementation is `apps/markets/benchmarking.py`.

@@ -23,14 +23,11 @@ from .models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTrading
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_INDEX_CODES = ('000300.SH', '000510.CSI')
+DEFAULT_INDEX_CODES = ('000905.SH',)
 INDEX_CODE_SPECS = {
-    '000300.SH': {'name': 'CSI 300', 'tag': 'CSI300'},
-    '000510.CSI': {'name': 'CSI A500', 'tag': 'CSIA500'},
+    '000905.SH': {'name': 'CSI 500', 'tag': 'CSI500'},
 }
-INDEX_WEIGHT_PROVIDER_CODES = {
-    '000300.SH': '399300.SZ',
-}
+INDEX_WEIGHT_PROVIDER_CODES = {}
 MONTHLY_INDEX_SYNC_LOOKBACK_DAYS = 45
 DEFAULT_TRADING_CALENDAR_EXCHANGE_CODES = ('SSE', 'SZSE')
 TRADE_CAL_SYNC_WINDOW_DAYS = 365
@@ -38,7 +35,7 @@ SUSPEND_D_SYNC_WINDOW_DAYS = 60
 SUSPEND_D_PAGE_LIMIT = 5000
 FULL_DAY_SUSPEND_TYPE = 'S'
 INDEX_CODE_ALIASES = {
-    '000300.CSI': '000300.SH',
+    '000905.CSI': '000905.SH',
 }
 MARKET_SUFFIX_TO_CODE = {
     'SH': 'SSE',
@@ -46,7 +43,7 @@ MARKET_SUFFIX_TO_CODE = {
     'BJ': 'BSE',
 }
 # TuShare caps index_weight responses at 6000 rows, so keep windows small enough
-# to cover daily 300/500-member snapshots without truncating the front of a range.
+# to cover daily 500-member snapshots without truncating the front of a range.
 INDEX_WEIGHT_SYNC_WINDOW_DAYS = 10
 INDEX_WEIGHT_REQUEST_SLEEP_SECONDS = 0.4
 INDEX_WEIGHT_RETRY_SLEEP_SECONDS = 15.0
@@ -1043,10 +1040,10 @@ def run_post_sync_universal_refresh(sync_results=None, target_date=None):
 @shared_task
 def sync_daily_a_shares(target_date=None):
     """
-    Dispatcher task: Fetches CSI 300 + CSI A500 lists, queues unique OHLCV sync tasks,
+    Dispatcher task: Fetches the CSI 500 constituent list, queues unique OHLCV sync tasks,
     and schedules a post-sync universal metric refresh after the fan-out completes.
     """
-    print("Starting CSI 300 + CSI A500 synchronization dispatcher from TuShare...")
+    print("Starting CSI 500 synchronization dispatcher from TuShare...")
 
     try:
         today = _resolve_target_date(target_date)
@@ -1068,7 +1065,7 @@ def sync_daily_a_shares(target_date=None):
             force_floor_backfill=False,
         )
         if summary['current_union_count'] == 0:
-            return 'Dispatch failed: no CSI 300 / CSI A500 constituents from TuShare.'
+            return 'Dispatch failed: no CSI 500 constituents from TuShare.'
 
         suspension_summary = sync_asset_suspensions(
             start_date=today,
@@ -1128,7 +1125,7 @@ def sync_monthly_index_memberships():
     Refresh benchmark memberships at month open and enqueue history syncs only for
     assets whose current managed membership changed.
     """
-    print("Starting monthly CSI 300 + CSI A500 membership refresh from TuShare...")
+    print("Starting monthly CSI 500 membership refresh from TuShare...")
 
     try:
         today = timezone.now().date()
@@ -1141,7 +1138,7 @@ def sync_monthly_index_memberships():
             dispatch_changed_assets_only=True,
         )
         if summary['current_union_count'] == 0:
-            return 'Monthly membership sync failed: no CSI 300 / CSI A500 constituents from TuShare.'
+            return 'Monthly membership sync failed: no CSI 500 constituents from TuShare.'
 
         print(
             f"Refreshed current constituents: union={summary['current_union_count']} overlap={summary['overlap_count']} "

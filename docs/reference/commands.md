@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-09-16T15:25:01Z_
+_Generated: 2026-09-17T23:32:21Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**31** project commands across **8** apps.
+**30** project commands across **8** apps.
 
 
 ## `apps.analytics`
@@ -325,7 +325,7 @@ Backfill official exchange trading calendar data from TuShare trade_cal.
 
 ### `build_pit_union_benchmark`
 
-Build or refresh the internal point-in-time CSI300 + CSI A500 union benchmark.
+Build or refresh the internal point-in-time CSI 500 benchmark.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
@@ -334,15 +334,15 @@ Build or refresh the internal point-in-time CSI300 + CSI A500 union benchmark.
 | `--initial-nav` | value | `100000` |  | Initial NAV used for the first benchmark row. |
 
 
-### `onboard_csi_a500_universe`
+### `onboard_csi500_universe`
 
-Add CSI A500 alongside CSI 300, persist historical memberships, backfill A500-only raw data, recompute model inputs across the combined universe, retrain LightGBM/LSTM, and export pre/post benchmark suites.
+Onboard the CSI 500 effective universe: sync historical memberships, backfill raw data for all current constituents, rebuild the point-in-time benchmark, recompute model inputs, retrain LightGBM/LSTM, and optionally export a reference benchmark suite.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--start-date` | value | `2010-01-01` |  |  |
 | `--end-date` | value | `<dynamic-date>` |  |  |
-| `--index-codes` | value | `000300.SH,000510.CSI` |  |  |
+| `--index-codes` | value | `000905.SH` |  |  |
 | `--benchmark-start-date` | value | `""` |  |  |
 | `--benchmark-end-date` | value | `""` |  |  |
 | `--benchmark-window-days` | value | `180` |  |  |
@@ -353,12 +353,11 @@ Add CSI A500 alongside CSI 300, persist historical memberships, backfill A500-on
 | `--benchmark-holding-period-days` | value | `7` |  |  |
 | `--benchmark-capital-fraction-per-entry` | value | `0.5` |  |  |
 | `--benchmark-min-up-probability` | value | `0.0` |  |  |
-| `--benchmark-name-prefix` | value | `csi300-a500` |  |  |
+| `--benchmark-name-prefix` | value | `csi500` |  |  |
 | `--report-label` | value | `""` |  |  |
 | `--report-root-dir` | value | `reports` |  |  |
 | `--horizons` | value | `3,7,30` |  |  |
-| `--skip-pre-benchmarks` | flag | `False` |  |  |
-| `--skip-post-benchmarks` | flag | `False` |  |  |
+| `--skip-benchmarks` | flag | `False` |  |  |
 | `--skip-raw-backfills` | flag | `False` |  |  |
 | `--skip-model-backfill` | flag | `False` |  |  |
 | `--skip-retrain` | flag | `False` |  |  |
@@ -383,65 +382,29 @@ Verify OHLCV/full-day suspension overlaps against AkShare Baidu suspension notic
 | `--execute` | flag | `False` |  |  |
 
 
-### `rollout_csi_a500_universe`
-
-Run the safe CSI A500 rollout workflow: onboarding with pre/post benchmarks disabled, fixed-window LightGBM/LSTM retrains, and compact post-expansion benchmark suites.
-
-| Option | Takes | Default | Required | Help |
-| --- | --- | --- | --- | --- |
-| `--start-date` | value | `2010-01-01` |  |  |
-| `--end-date` | value | `<dynamic-date>` |  |  |
-| `--index-codes` | value | `000300.SH,000510.CSI` |  |  |
-| `--report-label` | value | `""` |  |  |
-| `--report-root-dir` | value | `reports` |  |  |
-| `--skip-onboarding` | flag | `False` |  |  |
-| `--skip-retrain` | flag | `False` |  |  |
-| `--skip-post-benchmarks` | flag | `False` |  |  |
-| `--skip-sentiment` | flag | `False` |  |  |
-| `--horizons` | value | `3,7,30` |  |  |
-| `--retrain-start-date` | value | `2016-06-01` |  |  |
-| `--retrain-end-date` | value | `2024-12-31` |  |  |
-| `--lightgbm-version-tag` | value | `""` |  |  |
-| `--lightgbm-use-snapshot-pruning` | flag | `False` |  |  |
-| `--lstm-sequence-length` | value | `20` |  |  |
-| `--lstm-asset-chunk-size` | value | `60` |  |  |
-| `--lstm-max-samples-per-horizon` | value | `30000` |  |  |
-| `--benchmark-sources` | value | `heuristic,lightgbm,lstm` |  |  |
-| `--benchmark-top-n` | value | `3` |  |  |
-| `--benchmark-holding-period-days` | value | `7` |  |  |
-| `--benchmark-capital-fraction-per-entry` | value | `0.5` |  |  |
-| `--benchmark-min-up-probability` | value | `0.0` |  |  |
-| `--benchmark-name-prefix` | value | `post-a500-expansion-compact` |  |  |
-| `--benchmark-launch-mode` | value | `queue` |  |  |
-| `--post-benchmark-train-start-date` | value | `2023-01-01` |  |  |
-| `--post-benchmark-train-end-date` | value | `2024-12-31` |  |  |
-| `--post-benchmark-test-start-date` | value | `2025-01-01` |  |  |
-| `--post-benchmark-test-end-date` | value | `<dynamic-date>` |  |  |
-
-
 ### `sync_benchmark_index_history`
 
-Sync official benchmark index history for CSI300 and CSIA500.
+Sync official benchmark index history for CSI 500.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
-| `--index-codes` | value | &mdash; |  | Comma-separated benchmark index codes. Defaults to 000300.SH,000510.CSI. |
+| `--index-codes` | value | &mdash; |  | Comma-separated benchmark index codes. Defaults to 000905.SH. |
 | `--start-date` | value | &mdash; |  | Start date in YYYY-MM-DD format. |
 | `--end-date` | value | &mdash; |  | End date in YYYY-MM-DD format. |
 
 
 ### `sync_index_constituents`
 
-Sync CSI 300 + CSI A500 index constituents, persist membership history, refresh current tags, and dispatch unique asset syncs.
+Sync CSI 500 index constituents, persist membership history, refresh current tags, and dispatch unique asset syncs.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
-| `--index-codes` | value | `000300.SH,000510.CSI` |  |  |
+| `--index-codes` | value | `000905.SH` |  |  |
 | `--start-date` | value | `<dynamic-date>` |  | Inclusive start date for index_weight snapshots (YYYY-MM-DD). |
 | `--end-date` | value | `<dynamic-date>` |  | Inclusive end date for index_weight snapshots (YYYY-MM-DD). |
 | `--skip-sync-dispatch` | flag | `False` |  | Persist membership/tags only and skip dispatching sync_asset_history tasks. |
 | `--force-floor-backfill` | flag | `False` |  | Dispatch sync_asset_history with force_floor_backfill=True. |
-| `--dispatch-changed-assets-only` | flag | `False` |  | Dispatch only assets whose current CSI300/CSIA500 memberships changed. |
+| `--dispatch-changed-assets-only` | flag | `False` |  | Dispatch only assets whose current CSI 500 membership changed. |
 
 
 ## `apps.prediction`
