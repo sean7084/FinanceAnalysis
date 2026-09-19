@@ -384,50 +384,93 @@ design. Right now the features look broken rather than unconfigured.
 
 ## Open — frontend
 
-### The frontend does not type-check or lint clean
+### Nine lint warnings remain, and nothing used to gate them
 
-`npm run build` exits 2 with six TypeScript errors; `npm run lint` exits 1 with one
-error and nine warnings. `npm test` passes all 31 — because vitest transpiles without
-type-checking, so a green test run says nothing about whether the project compiles.
+`npm run build` exits 0 and `npm run lint` exits 0. This entry previously recorded six
+TypeScript errors and one ESLint error, and both claims are now false: commit `5883eaf`
+(PR #17) fixed all seven, and `src/i18n.tsx` is 620 lines long, so the `629:17` it cited
+cannot exist. `frontend/dist` rebuilds from a clean checkout again.
 
-That is the same blind-spot class as `manage.py test` once discovering zero tests and
-exiting 0. It is also why `frontend/dist` cannot currently be rebuilt from a clean
-checkout.
+What is left is nine `react-hooks/exhaustive-deps` warnings. Unlike the errors they never
+failed anything — eslint exits 0 with all nine present because nothing passes
+`--max-warnings` — so a tenth would have arrived as silently as they did. That is the same
+blind-spot class as `manage.py test` once discovering zero tests and exiting 0, and it is
+what the ratchet in the next section closes.
 
-Itemised, with the diagnosis that makes each one small:
-
-| Where | Error | Assessment |
+| Where | Diagnostic | Assessment |
 | --- | --- | --- |
-| `BacktestWorkbenchPage.test.tsx` 350, 351, 353 | TS2783 — `id`, `name`, `status` specified more than once | Fixture object literals with duplicate keys. Last wins, so behaviour is unchanged; delete the shadowed ones |
-| `BacktestWorkbenchPage.tsx` 192, 193 | TS2339 — `processed_trading_days`, `total_trading_days` do not exist on `{}` | `BacktestRunDto['report']['progress']` is typed `{}`. The runtime code is already defensive, routing both through `parseFiniteNumber`, so widen the DTO rather than change the call sites |
-| `BacktestWorkbenchPage.tsx` 432 | TS2741 — `entry_weekdays` missing but required | **The code is right and the type is wrong.** `BacktestWorkbenchPage.test.tsx:518` asserts `expect(payload?.parameters).not.toHaveProperty('entry_weekdays')`, so omitting it from the create payload is deliberate and tested. Make the field optional in `BacktestCreatePayload` |
-| `629:17` | ESLint `react-refresh/only-export-components` | A page module exports a non-component beside its components, which breaks Fast Refresh. Move the shared constant or helper to its own module |
-| 9 warnings | `react-hooks/exhaustive-deps` — missing `t` | All the same shape: a translation function used inside an effect but absent from the dependency array |
+| `AlertCenterPage`, `IndicatorBoardPage`, `MacroContextPage`, `ModelMonitoringPage`, `ScreenerPage`, `StockDetailPage` | missing dependency `t` | Six of the nine are the same shape: the translation function is used inside an effect but absent from the dependency array. **Adding it is not the no-op it looks like.** `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — those effects would start re-running on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but make it deliberately rather than to silence a warning |
+| `DashboardPage` | `useMemo` missing `searchParams` | Same class, a memo rather than an effect. The memo does not recompute when the URL query changes, so it can serve a stale value — worth reading as a possible real bug, not just a lint nit |
+| `BacktestWorkbenchPage` (2) | missing `loadRuns`; conditional `extraComparisonOptions` | Neither is the `t` shape. One needs the callback in the array or wrapped in `useCallback`; the other needs its initialisation wrapped in `useMemo` so the effect's dependencies stop changing on every render |
 
-The `entry_weekdays` row is the one worth reading carefully. It looks like a dropped
-user selection — a required parameter silently missing from a create payload is exactly
-what a real bug looks like — and the test asserting its absence is the only thing that
-distinguishes it. Checking that before "fixing" it avoids breaking intended behaviour.
+The six fixed errors are worth keeping as a near-miss rather than as work outstanding. One
+of them — `BacktestWorkbenchPage.tsx` requiring `entry_weekdays` in the create payload —
+looked exactly like a dropped user selection, and was in fact the type being wrong:
+`BacktestWorkbenchPage.test.tsx` asserts
+`expect(payload?.parameters).not.toHaveProperty('entry_weekdays')`, so omitting it is
+deliberate and tested. A required parameter silently missing from a payload is what a real
+bug looks like, and the test asserting its absence was the only thing distinguishing the
+two. Check for that before "fixing" a type error.
 
-### CI runs these two gates non-blocking
+### CI gates both static checks through a ratchet
 
-`.github/workflows/ci.yml` has a `frontend-static` job with `continue-on-error: true`
-that runs `npm run build` and `npm run lint`. It is non-blocking because both fail on
-the current tree, and a workflow that is red on arrival gets ignored rather than fixed.
+`.github/workflows/ci.yml` runs the type-check and the lint as blocking steps of the
+`frontend` job, but through `frontend/scripts/check-static-baseline.mjs` rather than
+directly. The script runs the command, parses its diagnostics, and fails only on something
+beyond what `frontend/static-baseline.json` records.
 
-Fix the seven errors above, then delete `continue-on-error` and fold the two steps into
-the blocking `frontend` job. The job name states the situation so the non-blocking
-status is not mistaken for an oversight.
+The recorded baseline is **zero TypeScript errors, zero ESLint errors, nine
+`react-hooks/exhaustive-deps` warnings** — the nine itemised above. So the type-check is
+exactly as strict as the bare `npm run build` it replaced, and the known warnings are
+tolerated on arrival while a tenth fails the job.
+
+A diagnostic is keyed by file, rule code and a 40-character fingerprint of its message —
+deliberately not by line and column. Line numbers move whenever code is edited above them,
+and a position-keyed baseline would turn every unrelated change into a false regression,
+which is how gates get ignored. Forty characters separates every diagnostic currently
+recorded and stops before a TypeScript type dump, whose field order churns independently
+of the error it belongs to.
+
+Re-record one gate after fixing something:
+
+```
+cd frontend && node scripts/check-static-baseline.mjs <build|lint> --update
+```
+
+Lowering the baseline needs no ceremony. Raising it — adding a key or increasing a count —
+also requires `--allow-increase`, so absorbing a new failure stays a deliberate act with a
+reason in the commit rather than a reflex. The script also fails when a gate exits non-zero
+and parses *zero* diagnostics, because that means either a failure the parser does not
+understand or a parser that has gone stale, and neither may pass silently.
+
+One trap worth recording. The build gate deletes `node_modules/.tmp/*.tsbuildinfo` before
+running, because `tsc --build` is incremental and a warm run is not a measurement of the
+current tree: it can skip a project it considers up to date, or replay diagnostics
+recorded against an older revision of the source. Re-recording this baseline began with
+`npm run build` reporting six TypeScript errors, and the same command reporting none once
+the build-info files were removed — confirmed independently by
+`tsc -p tsconfig.app.json --noEmit` and `tsc -b --force`, both exiting 0. A baseline taken
+from that first reading would have enshrined six errors the tree did not have. CI never
+hits this, because `npm ci` starts cold; a local `--update` would have.
+
+Clear the nine warnings and the ratchet is pure overhead: delete the script and the
+baseline file, and put the plain `npm run build` and `npm run lint` back into the two
+steps.
 
 ### CI exists, and asserts a discovery floor
 
-`.github/workflows/ci.yml` runs on push to `main` and on pull requests, with three jobs:
+`.github/workflows/ci.yml` runs on push to `main` and on pull requests, with two jobs:
 
 - **`backend`** (blocking) — PostgreSQL 15 and Redis 7 service containers, then
   `manage.py check`, `makemigrations --check --dry-run`,
   `export_documentation_facts --check`, and the full suite.
-- **`frontend`** (blocking) — `npm ci` and the vitest suite.
-- **`frontend-static`** (non-blocking, see above).
+- **`frontend`** (blocking, named "Frontend tests, type-check, and lint") — `npm ci`, the
+  ratcheted type-check and lint described above, and the vitest suite.
+
+There used to be a third, `frontend-static`, holding the two static checks under
+`continue-on-error: true` while they failed. `5883eaf` fixed the errors and folded the
+steps into `frontend`; both job names above are required status checks, so neither can be
+renamed without re-applying branch protection.
 
 Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`, currently 339 and 31)
 as well as a green result. This is the load-bearing part. A workflow that only checked
