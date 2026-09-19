@@ -93,6 +93,11 @@ python manage.py onboard_csi500_universe --start-date 2010-01-01 --end-date <tod
 Check [`../reference/commands.md`](../reference/commands.md) for the current
 option surface (including the `--skip-*` stages) before choosing.
 
+For the full one-time migration off the legacy CSI 300 + CSI A500 universe - the
+destructive purge, full-history backfill, retrain, verification, and doc
+regeneration, in order - see
+[`csi500-migration-runbook.md`](csi500-migration-runbook.md).
+
 ---
 
 ## 3. Stage 2 — Raw factor, macro, and news sources
