@@ -5,19 +5,56 @@ fleet, and frontend. Assumes no Docker.
 
 Time: ~20 minutes on a warm machine, longer if TA-Lib needs building.
 
+**The normal working arrangement here is two clones of the same repository, one per
+OS, sharing one PostgreSQL and one Redis.** Windows keeps the browser, the editor UI
+and the NVIDIA driver; WSL2 runs the Python workloads, because Celery's prefork pool
+works there while the Windows path is limited to `--pool solo`. If you intend to run
+backtests, training, the worker fleet, or any long-lived migration runbook, set up
+[§13](#13-wsl2-the-primary-backend-runtime) first and treat §5–§8 as reference.
+
+> ### Which directory am I in?
+>
+> The two clones have **different virtual-environment layouts**, and mixing them up
+> fails in a way that points at the wrong cause:
+>
+> | Clone | Path | venv layout | Activate with |
+> | --- | --- | --- | --- |
+> | Windows | `C:\Users\<you>\Documents\FinanceAnalysis` | `.venv\Scripts\` | `.\.venv\Scripts\Activate.ps1` |
+> | WSL2 | `~/FinanceAnalysis-wsl2` (ext4) | `.venv/bin/` | `source .venv/bin/activate` |
+>
+> The Windows clone is *also* visible from inside WSL at
+> `/mnt/c/Users/<you>/Documents/FinanceAnalysis`. **Never work there from WSL.** It
+> has no `.venv/bin/`, so `source .venv/bin/activate` fails with `No such file or
+> directory`; `scripts/_native_env.sh` refuses to run from a `/mnt/*` root by design;
+> and file I/O over the 9P mount is far slower than ext4.
+>
+> The failure is confusing because activation failing does **not** stop the next
+> command. `pip install -r requirements/local.txt` then runs against the *system*
+> Python and dies with `error: externally-managed-environment` (PEP 668) — which
+> reads like a pip or packaging problem but is really "you are in the wrong
+> directory, so no venv was ever active". Check `pwd` first; the shell prompt is the
+> only thing telling you which clone you are in.
+
 ---
 
 ## 1. Prerequisites
 
 | Component | Version | Notes |
 | --- | --- | --- |
-| Python | 3.14 | `venv` module required |
+| Python | 3.12 – 3.14 | CI pins 3.14; the WSL2 clone runs 3.12.3 and passes the full suite. Needs `venv` — on Ubuntu, `sudo apt install python3-venv python3-full` |
 | PostgreSQL | 15 | Runs **outside** the repo — host service or another machine |
+| `postgresql-client` | ≥ 15 | WSL2 only, and only for `pg_dump`. Not installed by default, and the CSI 500 runbook's backup step needs it |
 | Redis | 7 | Runs **outside** the repo — same |
 | Node.js + npm | current LTS | Frontend only |
 | TA-Lib | C library | See §4 — the most common first-run failure |
 | Git | any recent | |
 | PowerShell 7 | `pwsh` | Windows launcher scripts |
+
+**Do not `apt install python3-pip` in WSL2.** Ubuntu 24.04 marks its system Python
+as externally managed, so a system-wide `pip install` is refused by design. The venv
+created in §5 ships its own pip at `.venv/bin/pip`; a system one is never needed and
+installing it makes the wrong-directory mistake above harder to diagnose, because you
+get a packaging error instead of `command not found`.
 
 The Compose stack in `docker-compose.yml` no longer starts PostgreSQL or Redis.
 Those services must already be reachable at whatever `.env` points to.
@@ -189,18 +226,42 @@ If it imports under your login shell but not under the launcher scripts, the
 
 ## 5. Create the virtual environment
 
+**One venv per clone.** Each of the two clones needs its own, created inside it.
+
+```bash
+# Linux / WSL2 -- from ~/FinanceAnalysis-wsl2, NOT from /mnt/c/...
+cd ~/FinanceAnalysis-wsl2
+python3 -m venv .venv
+source .venv/bin/activate          # 'source' is required; ./.venv/bin/activate alone
+                                   # fails with Permission denied
+.venv/bin/pip install -r requirements/local.txt
+```
+
 ```powershell
 # Windows
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements/local.txt
+.\.venv\Scripts\pip install -r requirements/local.txt
 ```
 
+Invoking the venv's pip by path rather than relying on activation is worth the extra
+typing: if activation silently failed, a bare `pip` resolves to the system one and
+you get a PEP 668 `externally-managed-environment` error that says nothing about the
+real problem. `.venv/bin/pip` either works or tells you the venv is missing.
+
+**Re-run the install after every `git pull`.** `requirements/base.txt` moves — the
+SPA merge added `django-vite` and `whitenoise`, and a stale venv fails at
+`apps.populate()` with `ModuleNotFoundError: No module named 'django_vite'` before
+any project code runs. The pull and the reinstall are one operation, not two.
+
+Occasionally a pull also *downgrades* a package, because pins are added after a venv
+was built from unpinned requirements. That is expected and correct — align to the
+pin — but for `scikit-learn` it matters: `models/lightgbm/*/scaler.pkl` and
+`calibrator.pkl` are pickled sklearn objects. Run the test suite after any sklearn
+version change rather than assuming the artifacts still load:
+
 ```bash
-# Linux / WSL2
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements/local.txt
+python manage.py test --keepdb
 ```
 
 **Never reuse a `.venv` copied from another OS.** The interpreter path is baked
@@ -251,7 +312,8 @@ inventory, with defaults and the file:line of each read, is generated in
 ## 7. Verify before running anything else
 
 ```bash
-./scripts/verify_local_stack.sh
+./scripts/verify_local_stack.sh      # WSL2 / Linux
+bash scripts/verify_local_stack.sh   # same thing, and works if the exec bit is missing
 ```
 
 ```powershell
@@ -261,11 +323,27 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_local_stack.ps1
 It probes PostgreSQL through `psycopg2` and both Redis databases through
 `redis-py` — not through `pg_isready` / `redis-cli`, which a minimal WSL2 install
 does not ship. Then it imports `celery, django, psycopg2, redis, talib`, runs
-`manage.py check`, and prints the resolved `DATABASE_URL`, `CELERY_BROKER_URL`,
-and cache location.
+`manage.py check`, and prints the resolved database name/host/port plus the
+redacted broker and cache URLs. All probing and redaction lives in
+`scripts/_stack_probe.py`, shared by both scripts.
 
 Any failure here is a configuration problem, not a code problem. Fix it before
 continuing.
+
+> **`Python dependencies: ok` is a weak signal — do not trust it alone.** That line
+> imports five hardcoded modules. It cannot notice a dependency that was added to
+> `requirements/base.txt` after the list was written, so it printed `ok` immediately
+> before `manage.py check` died with `ModuleNotFoundError: No module named
+> 'django_vite'`. The step that actually validates the installed set is
+> `manage.py check`, which imports every `INSTALLED_APPS` entry. Read the two lines
+> together, and treat §5's reinstall-after-pull as the real defence.
+
+If `./scripts/verify_local_stack.sh` fails with `Permission denied`, the executable
+bit is missing. The `.sh` files and the Compose entrypoints are committed as mode
+`100755`; if a checkout lost that, restore it with
+`git update-index --chmod=+x <paths>` and commit, or work around it locally with
+`chmod +x scripts/*.sh compose/local/django/*`. Prefixing with `bash` also works and
+is what CI does.
 
 ---
 
@@ -460,29 +538,80 @@ architecture.
 
 ---
 
-## 13. WSL2 for heavy workloads
+## 13. WSL2: the primary backend runtime
 
-For backtests, training, and Celery-parallel work, WSL2 Ubuntu outperforms the
-Windows `solo` path substantially because Celery can use its normal prefork
-worker model.
+Backtests, training, the worker fleet, and any long-running migration runbook belong
+here rather than on the Windows path. Celery can use its normal prefork pool on Linux;
+the Windows launcher is pinned to `--pool solo` with concurrency 1, so a Windows worker
+processes one task at a time.
 
-1. Clone the repo **inside** the WSL ext4 filesystem (`~/FinanceAnalysis`), not
-   under `/mnt/c/...`. `scripts/_native_env.sh` refuses to run from a `/mnt/*`
-   root.
-2. Copy the root `.env` into the WSL clone.
-3. Create a **fresh Linux** `.venv` there and install `requirements/local.txt`.
-   The script also refuses to run if it resolves `.exe` interpreters or finds
-   only a Windows-style `.venv/Scripts`.
-4. Open the WSL clone in VS Code Remote - WSL. Task labels route to the `.sh`
-   launchers automatically.
-5. Smoke with `./scripts/verify_local_stack.sh` before starting the stack.
+### One-time setup
 
-Windows keeps the browser, the VS Code UI, and the NVIDIA driver; WSL2 runs the
-Python workloads. Both point at the same external PostgreSQL and Redis.
+```bash
+# from PowerShell
+wsl -d Ubuntu-24.04
 
-Note that `torch` installed from `requirements/base.txt` on Windows is a
-CPU-only build. GPU-dependent paths need the WSL2 or a native Linux environment
-with CUDA-enabled PyTorch installed explicitly.
+# inside WSL
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-full postgresql-client
+#   postgresql-client is only for pg_dump, but the CSI 500 runbook's backup step needs
+#   it and step 2 is destructive -- discover the gap before that step, not during it.
+# TA-Lib C library: see §4, "Linux / WSL2".
+
+cd ~
+git clone /mnt/c/Users/<you>/Documents/FinanceAnalysis FinanceAnalysis-wsl2
+cd FinanceAnalysis-wsl2
+cp /mnt/c/Users/<you>/Documents/FinanceAnalysis/.env .env
+
+python3 -m venv .venv
+.venv/bin/pip install -r requirements/local.txt
+bash scripts/verify_local_stack.sh           # every service must report "ready"
+.venv/bin/python manage.py test --keepdb     # full suite, expect OK
+```
+
+Cloning from the Windows path makes that path `origin`, so the two clones sync through
+the local filesystem — no GitHub access and no proxy needed. Confirm with
+`git remote -v`.
+
+### Keeping the two clones in sync
+
+```bash
+cd ~/FinanceAnalysis-wsl2
+git fetch origin
+git status -sb                                      # confirm clean, and how far behind
+git merge --ff-only origin/main
+.venv/bin/pip install -r requirements/local.txt      # dependencies move; see §5
+bash scripts/verify_local_stack.sh
+```
+
+Two rules, both learned the hard way:
+
+- **Never leave work uncommitted in the WSL clone.** Nothing pushes it anywhere, so it
+  diverges silently. A clone used for real work and never committed can end up months
+  behind holding changes that exist nowhere else. If you find any, commit them to a
+  branch *first*, then sync and compare.
+- **Use `--ff-only`, and check before forcing anything.** If it refuses, the clone has
+  local commits — branch them, don't discard them. `git reset --hard` against a clone
+  with uncommitted work is unrecoverable.
+
+Both clones point at the same PostgreSQL and Redis. A migration applied from either one
+migrates the shared database; there is no separate WSL dataset. That is convenient for
+setup and unforgiving for runbooks — the destructive steps are destructive for both
+hosts at once.
+
+### Working in it
+
+Open `~/FinanceAnalysis-wsl2` in VS Code Remote - WSL. The task labels in
+`.vscode/tasks.json` carry `linux` overrides, so they route to the `.sh` launchers
+automatically.
+
+Run anything long-lived inside `tmux` (present in this install; `screen` is not). The
+CSI 500 runbook's onboarding step alone is hours of backfill plus a full LightGBM and
+LSTM retrain, and a terminal disconnect without it loses the run.
+
+`torch` from `requirements/base.txt` is a CPU-only build on both platforms.
+GPU-dependent paths need CUDA-enabled PyTorch installed explicitly into the WSL venv,
+with the NVIDIA driver staying on the Windows side.
 
 ---
 
