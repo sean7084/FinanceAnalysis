@@ -156,13 +156,41 @@ Expected **before** the migration: `membership_by_code` shows only `000300.SH` a
 
 ## Step 1 - Back up the database
 
-Use your normal Postgres backup path, e.g.:
+`DATABASE_URL` is **not** in your shell environment. Django loads `.env` itself
+(`DJANGO_READ_DOT_ENV_FILE=True`), so every `manage.py` command connects happily while a
+bare `pg_dump "$DATABASE_URL"` expands to an empty argument and falls back to libpq's
+defaults: the local unix socket `/var/run/postgresql/.s.PGSQL.5432`, which does not exist
+because PostgreSQL runs on another host. The error reads like a dead database and is
+really an unset variable. Export it the way `scripts/_native_env.sh` does:
 
 ```bash
-pg_dump "$DATABASE_URL" -Fc -f finance_analysis_pre_csi500.dump
+set -a; source .env; set +a
+echo "${DATABASE_URL##*@}"     # host:port/db -- proves it resolved, prints no credentials
+
+pg_dump "$DATABASE_URL" -Fc -f ~/finance_analysis_pre_csi500.dump
 ```
 
-Confirm the dump is non-trivial and restorable before continuing.
+Do not `source scripts/_native_env.sh` instead; it applies `set -euo pipefail` and a `cd`
+to your interactive shell.
+
+Write the dump **outside the repo**. `.gitignore` has no `*.dump` rule, so a multi-GB
+archive in the working tree is one `git add .` away from being committed, and keeping it
+out of both clones avoids picking a side when the two share one PostgreSQL.
+
+Step 2's purge is `RunPython.noop` on reverse, so this dump is the only way back. Prove it
+is restorable rather than merely present:
+
+```bash
+ls -lh ~/finance_analysis_pre_csi500.dump
+pg_restore --list ~/finance_analysis_pre_csi500.dump | grep -c 'TABLE DATA'
+pg_restore --list ~/finance_analysis_pre_csi500.dump \
+  | grep -E 'markets_indexmembership|markets_pointintimebenchmarkdaily'
+```
+
+Expect a few hundred `TABLE DATA` entries, and both tables step 2 purges must appear. If
+`pg_dump` instead reports a server/client version mismatch, the server is PostgreSQL 15
+while Ubuntu 24.04's `postgresql-client` metapackage installs 16; install
+`postgresql-client-15` to match.
 
 ---
 
