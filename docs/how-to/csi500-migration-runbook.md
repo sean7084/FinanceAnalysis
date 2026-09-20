@@ -27,6 +27,112 @@ Tracking issue: **#22** (`Execute CSI 500 universe data migration + retrain runb
 
 ---
 
+## Running this in WSL2
+
+Every command below is a bare `python manage.py …`, which assumes an activated
+environment. In WSL2 that assumption fails quietly: Ubuntu 24.04 ships `/bin/python`
+pointing at the system interpreter, so a missing venv does **not** give you
+`command not found`. It gives you `manage.py`'s own hint:
+
+```
+ImportError: Couldn't import Django. Are you sure it's installed and available on your
+PYTHONPATH environment variable? Did you forget to activate a virtual environment?
+```
+
+Activate the venv first, or prefix every command with `.venv/bin/python`.
+
+WSL2 is the right host for this runbook specifically. Step 3 is hours of backfill plus
+a full LightGBM and LSTM retrain; Celery's prefork pool works on Linux, whereas the
+Windows launcher is pinned to `--pool solo` with concurrency 1.
+
+### Prepare
+
+```bash
+wsl -d Ubuntu-24.04                    # from PowerShell
+cd ~/FinanceAnalysis-wsl2              # NOT /mnt/c/... -- see the warning below
+```
+
+> **Check `pwd` before anything else.** The Windows clone is visible inside WSL at
+> `/mnt/c/Users/<you>/Documents/FinanceAnalysis`, and it is the wrong place to run
+> this. It has `.venv\Scripts\` rather than `.venv/bin/`, so `source .venv/bin/activate`
+> fails with `No such file or directory` — and because a failed activation does not
+> stop the next command, the `pip install` that follows runs against the system Python
+> and dies with `error: externally-managed-environment` (PEP 668). That reads like a
+> packaging problem and is really a wrong-directory problem.
+> `scripts/_native_env.sh` also refuses to run from a `/mnt/*` root by design. See
+> [`local-setup.md`](local-setup.md) §13.
+
+```bash
+# 1. Bring the clone up to date. This runbook needs the code from PR #23; a stale
+#    clone does not have migration 0013 or the onboard command at all.
+git fetch origin
+git status -sb                         # confirm clean, and how far behind
+git merge --ff-only origin/main
+
+# 2. Dependencies move between pulls, and a stale venv fails during apps.populate()
+#    before any project code runs.
+source .venv/bin/activate
+pip install -r requirements/local.txt
+
+# 3. pg_dump is not installed by default and step 1 needs it.
+sudo apt-get install -y postgresql-client
+
+# 4. Prove the clone has what this runbook calls, rather than assuming the pull worked.
+ls apps/markets/migrations/0013_* \
+   apps/markets/management/commands/onboard_csi500_universe.py
+python manage.py showmigrations markets | tail -2    # 0013 must read [ ], unchecked
+
+# 5. Services, settings, and the suite.
+bash scripts/verify_local_stack.sh     # every service must report "ready"
+python manage.py test --keepdb         # cheap insurance before a destructive step
+```
+
+If step 1 reports local commits rather than a clean fast-forward, **stop and branch
+them first** — see the sync rules in [`local-setup.md`](local-setup.md) §13.
+
+### Two warnings specific to this runbook
+
+**`python manage.py migrate` *is* step 2, and step 2 is destructive.** After a pull it
+is tempting to run `migrate` as part of getting set up, because that is what
+[`local-setup.md`](local-setup.md) §8 tells you to do on a fresh database. Here it
+applies `markets.0013_purge_csi300_csia500_universe`, which deletes the legacy
+membership, benchmark and PIT rows. Do not run it until step 1's backup exists **and
+has been confirmed restorable**.
+
+**Both clones share one PostgreSQL.** There is no separate WSL dataset, so migrating
+from WSL migrates the database the Windows side uses. Bring the Windows clone up to
+the PR #23 code as well before starting; otherwise it runs the old universe contract
+against migrated data. Expect universe-gated workflows to fail on *both* hosts from
+the moment step 2 lands until step 3 completes — that is the fail-closed behaviour
+described at the top of this file, not a new problem.
+
+### Run step 3 inside tmux
+
+`tmux` is present on Ubuntu 24.04; `screen` is not.
+
+```bash
+tmux new -s csi500
+# ... run step 3 ...
+# detach:   Ctrl-b d
+# reattach: tmux attach -t csi500
+```
+
+Step 3 is the long one, and a terminal or SSH disconnect without tmux loses the run
+partway through a backfill. Steps 4–7 are quick enough to run directly and need
+nothing WSL-specific.
+
+### Step 6's worker restart means the Linux workers
+
+```bash
+CELERY_WORKER_QUEUES=backtest ./scripts/run_celery_worker.sh
+```
+
+The native launcher defaults to the `ops` queue only, so a single worker will never
+pick up backtest or retrain tasks. Start one worker per queue group as described in
+[`local-setup.md`](local-setup.md) §11.
+
+---
+
 ## Step 0 - Record the starting state (read-only)
 
 Capture a before-snapshot so you can prove the migration landed. From the repo root:
