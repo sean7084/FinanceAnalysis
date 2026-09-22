@@ -224,7 +224,7 @@ data for all current CSI 500 constituents, rebuilds the PIT benchmark, recompute
 inputs, and retrains LightGBM/LSTM:
 
 ```bash
-python manage.py onboard_csi500_universe --start-date 2010-01-01 --end-date <today>
+python manage.py onboard_csi500_universe --start-date 2010-01-01 --end-date 2026-09-21
 ```
 
 Stages it runs, in order: `sync_index_constituents` -> `sync_benchmark_index_history`
@@ -248,21 +248,100 @@ If you prefer to run stages by hand (e.g. to resume), the equivalent sequence is
 [`backfill.md`](backfill.md) followed by [`retrain.md`](retrain.md); at minimum:
 
 ```bash
-python manage.py sync_index_constituents   --start-date 2010-01-01 --end-date <today>
-python manage.py sync_benchmark_index_history --index-codes 000905.SH --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date <today> --technical-indicator-warmup
-python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date <today> --effective-universe-entry-warmup
-python manage.py backfill_fundamental_snapshots --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_capital_flow_snapshots --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_technical_indicators  --start-date 2010-01-01 --end-date <today>
-python manage.py build_pit_union_benchmark  --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_model_data        --start-date 2010-01-01 --end-date <today>
-python manage.py rebuild_lightgbm_pipeline  --start-date 2016-06-01 --end-date <train-end>
-python manage.py rebuild_lstm_pipeline      --start-date 2016-06-01 --end-date <train-end>
+python manage.py sync_index_constituents   --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py sync_benchmark_index_history --index-codes 000905.SH --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date 2026-09-21 --technical-indicator-warmup
+python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date 2026-09-21 --effective-universe-entry-warmup
+python manage.py backfill_fundamental_snapshots --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_capital_flow_snapshots --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_technical_indicators  --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py build_pit_union_benchmark  --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_model_data        --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py rebuild_lightgbm_pipeline  --start-date 2016-06-01 --end-date 2026-09-21 --skip-backfill
+python manage.py rebuild_lstm_pipeline      --start-date 2016-06-01 --end-date 2026-09-21 --skip-backfill
 ```
 
+### Membership prefill: why `--start-date 2010-01-01` works as written
+
+TuShare publishes `index_weight` snapshots periodically (month-end in the early years,
+every 5-7 days recently), never daily. A sync that starts exactly on `2010-01-01` would
+begin *after* the last published snapshot of 2009, leaving the earliest requested trading
+dates with nothing to forward-fill from - which is exactly what
+`ensure_pit_membership_coverage` refuses to tolerate, since the PIT effective-universe
+contract is fail-closed.
+
+`sync_index_constituent_universe` therefore pulls `MEMBERSHIP_PREFILL_CALENDAR_DAYS = 31`
+of lead-in ahead of `--start-date`, so `--start-date 2010-01-01` actually requests from
+`2009-12-01`. The command prints what it resolved:
+
+```
+membership_prefill_days=31 membership_pull_start_date=2009-12-01
+```
+
+Consequences to expect:
+
+- `IndexMembership` rows for `000905.SH` will start near `2009-12-31`, i.e. *before*
+  `HISTORICAL_DATA_FLOOR`. That is intentional and harmless, the same way the
+  technical-indicator warm-up prefill writes rows ahead of the floor. The step 0 snippet
+  will show `mn` in `2009-12`, not `2010-01`.
+- The prefill only affects which dates are *pulled*; it does not widen asset dispatch or
+  the current-membership tags, which still anchor to the latest snapshot in the range.
+
+### Recovering if you already hit the coverage error
+
+The prefill only applies to syncs run after the change landed, so a run that started
+before it will have the gap baked in:
+
+```
+CommandError: Historical model data backfill for 2010-01-01..2026-09-20: missing
+point-in-time membership coverage for 000905.SH on 2010-01-04 (19 affected trading dates).
+Backfill IndexMembership before continuing.
+```
+
+Recovery, in order:
+
+1. Make sure the clone you are running from has the prefill change (both clones share one
+   PostgreSQL but *not* a working tree, so pulling on Windows does nothing for
+   `~/FinanceAnalysis-wsl2`).
+2. Re-run just the membership sync:
+
+   ```bash
+   python manage.py sync_index_constituents --start-date 2010-01-01 --end-date 2026-09-21
+   ```
+
+   Check the `membership_prefill_days=31 membership_pull_start_date=2009-12-01` line.
+3. Confirm the gap is closed:
+
+   ```bash
+   python manage.py shell -c "
+   from datetime import date
+   from apps.markets.benchmarking import pit_membership_coverage_gaps
+   dates=[date(2010,1,d) for d in range(4,29)]
+   print('gaps', pit_membership_coverage_gaps(dates))
+   "
+   ```
+
+   Expect `gaps {}`.
+4. Rebuild the PIT benchmark over the **full** range from `2010-01-01`, then resume
+   `backfill_model_data`:
+
+   ```bash
+   python manage.py build_pit_union_benchmark --start-date 2010-01-01 --end-date 2026-09-21
+   python manage.py backfill_model_data       --start-date 2010-01-01 --end-date 2026-09-21
+   ```
+
+   A partial rebuild leaves the degenerate rows written while coverage was missing
+   (empty constituents, flat NAV) in place. `PointInTimeBenchmarkDaily` upserts on
+   `(benchmark_code, trade_date)`, so a full-range rebuild overwrites them - no manual
+   delete needed.
+
+> **Never** run `sync_index_constituents` with an early `--end-date`. Current-membership
+> tags anchor to the last snapshot *inside the requested range*, so a narrow window such as
+> `--start-date 2010-01-01 --end-date 2010-01-31` strips `CSI500` from every current
+> constituent and silently shrinks the effective universe. Always pass the real end date.
+
 **Verify:** re-run the step 0 snippet. Expect `csi500_membership` with `n > 0` and
-`mn` near `2010-01`; `bench_by_code` to include `000905.SH`; `pit_by_code` to include
+`mn` near `2009-12`; `bench_by_code` to include `000905.SH`; `pit_by_code` to include
 `CSI500_PIT`. Then confirm coverage and models:
 
 ```bash
@@ -287,7 +366,7 @@ post-switch version tag.
 ## Step 4 - Validate data quality
 
 ```bash
-python manage.py validate_data_quality --start-date 2010-01-01 --end-date <today>
+python manage.py validate_data_quality --start-date 2010-01-01 --end-date 2026-09-21
 ```
 
 Confirm there are no `index_membership_history_gaps`, `benchmark_index_daily_gap`, or

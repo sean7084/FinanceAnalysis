@@ -63,6 +63,10 @@ class Command(BaseCommand):
             f"current_counts={summary['current_constituent_counts']}"
         )
         self.stdout.write(
+            f"membership_prefill_days={summary['membership_prefill_days']} "
+            f"membership_pull_start_date={summary['membership_pull_start_date']}"
+        )
+        self.stdout.write(
             f"current_union_count={summary['current_union_count']} overlap_count={summary['overlap_count']} "
             f"new_assets={summary['new_assets']} existing_assets={summary['existing_assets']}"
         )

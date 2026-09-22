@@ -48,6 +48,13 @@ INDEX_WEIGHT_SYNC_WINDOW_DAYS = 10
 INDEX_WEIGHT_REQUEST_SLEEP_SECONDS = 0.4
 INDEX_WEIGHT_RETRY_SLEEP_SECONDS = 15.0
 INDEX_WEIGHT_MAX_RETRIES = 5
+# TuShare publishes index_weight snapshots periodically rather than daily, so a pull that
+# starts exactly on the requested start date can begin after the last published snapshot
+# and leave the earliest requested trading dates with nothing to forward-fill from. Pull a
+# month of lead-in so a snapshot always exists at or before the requested start; those rows
+# may legitimately predate HISTORICAL_DATA_FLOOR, the same way the technical-indicator
+# warm-up prefill does.
+MEMBERSHIP_PREFILL_CALENDAR_DAYS = 31
 
 
 def _historical_floor_date():
@@ -650,12 +657,15 @@ def sync_index_constituent_universe(
     dispatch_assets=True,
     force_floor_backfill=False,
     dispatch_changed_assets_only=False,
+    membership_prefill_days=MEMBERSHIP_PREFILL_CALENDAR_DAYS,
 ):
     _ensure_default_markets()
 
     normalized_index_codes = _parse_index_codes(index_codes)
     resolved_end_date = end_date or timezone.now().date()
     resolved_start_date = start_date or (resolved_end_date - timedelta(days=30))
+    prefill_days = max(int(membership_prefill_days or 0), 0)
+    pull_start_date = resolved_start_date - timedelta(days=prefill_days)
 
     token = getattr(settings, 'TUSHARE_TOKEN', None)
     if not token:
@@ -674,7 +684,7 @@ def sync_index_constituent_universe(
         provider_index_code = _provider_index_code_for_membership(index_code)
         weight_frames = []
         for window_start, window_end in _iter_date_windows(
-            resolved_start_date,
+            pull_start_date,
             resolved_end_date,
             INDEX_WEIGHT_SYNC_WINDOW_DAYS,
         ):
@@ -732,6 +742,8 @@ def sync_index_constituent_universe(
             'index_codes': normalized_index_codes,
             'latest_trade_dates': latest_trade_dates,
             'current_constituent_counts': current_counts,
+            'membership_prefill_days': prefill_days,
+            'membership_pull_start_date': pull_start_date.isoformat(),
             'overlap_count': 0,
             'current_union_count': 0,
             'new_assets': 0,
@@ -872,6 +884,8 @@ def sync_index_constituent_universe(
         'index_codes': normalized_index_codes,
         'latest_trade_dates': latest_trade_dates,
         'current_constituent_counts': current_counts,
+        'membership_prefill_days': prefill_days,
+        'membership_pull_start_date': pull_start_date.isoformat(),
         'current_union_ts_codes': sorted(current_tags_by_ts_code.keys()),
         'new_current_union_ts_codes': sorted(new_current_union_ts_codes),
         'overlap_count': overlap_count,

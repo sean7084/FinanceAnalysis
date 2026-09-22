@@ -872,6 +872,7 @@ class IndexConstituentSyncTests(TestCase):
                 start_date=date(2026, 1, 1),
                 end_date=date(2026, 1, 5),
                 dispatch_assets=False,
+                membership_prefill_days=0,
             )
 
         self.assertEqual(
@@ -887,6 +888,56 @@ class IndexConstituentSyncTests(TestCase):
         self.assertEqual(summary['latest_trade_dates']['000905.SH'], '20260105')
         self.assertTrue(IndexMembership.objects.filter(index_code='000905.SH', trade_date='2026-01-02').exists())
         self.assertTrue(IndexMembership.objects.filter(index_code='000905.SH', trade_date='2026-01-05').exists())
+
+    @patch('apps.markets.tasks.ts.pro_api')
+    def test_sync_index_constituent_universe_prefills_membership_before_requested_start(self, mock_pro_api):
+        class StubPro:
+            def __init__(self):
+                self.index_weight_calls = []
+
+            def stock_basic(self, **kwargs):
+                if kwargs['list_status'] == 'L':
+                    return pd.DataFrame([
+                        {'ts_code': '600001.SH', 'symbol': '600001', 'name': 'Departed Member Asset', 'list_date': '20090105', 'list_status': 'L'},
+                        {'ts_code': '600002.SH', 'symbol': '600002', 'name': 'Current Member Asset', 'list_date': '20090105', 'list_status': 'L'},
+                    ])
+                return pd.DataFrame([])
+
+            def index_weight(self, **kwargs):
+                self.index_weight_calls.append((kwargs['start_date'], kwargs['end_date']))
+                rows = []
+                if kwargs['start_date'] <= '20091231' <= kwargs['end_date']:
+                    rows.append({'trade_date': '20091231', 'con_code': '600001.SH', 'weight': 4.0})
+                if kwargs['start_date'] <= '20100129' <= kwargs['end_date']:
+                    rows.append({'trade_date': '20100129', 'con_code': '600002.SH', 'weight': 3.9})
+                return pd.DataFrame(rows)
+
+        stub_pro = StubPro()
+        mock_pro_api.return_value = stub_pro
+
+        with patch('apps.markets.tasks.settings.TUSHARE_TOKEN', 'test-token'), patch('apps.markets.tasks.INDEX_WEIGHT_SYNC_WINDOW_DAYS', 62):
+            from .tasks import sync_index_constituent_universe
+
+            summary = sync_index_constituent_universe(
+                index_codes=('000905.SH',),
+                start_date=date(2010, 1, 1),
+                end_date=date(2010, 1, 31),
+                dispatch_assets=False,
+            )
+
+        self.assertEqual(stub_pro.index_weight_calls, [('20091201', '20100131')])
+        self.assertEqual(summary['membership_prefill_days'], 31)
+        self.assertEqual(summary['membership_pull_start_date'], '2009-12-01')
+
+        # The pre-start snapshot is what lets the earliest requested trading dates resolve.
+        self.assertTrue(IndexMembership.objects.filter(index_code='000905.SH', trade_date='2009-12-31').exists())
+        ensure_pit_membership_coverage([date(2010, 1, 4)], context='membership prefill test')
+
+        # Current-membership tags stay anchored to the latest snapshot, not the prefilled one.
+        self.assertEqual(summary['latest_trade_dates']['000905.SH'], '20100129')
+        self.assertEqual(summary['current_union_ts_codes'], ['600002.SH'])
+        self.assertCountEqual(Asset.objects.get(ts_code='600002.SH').membership_tags, ['CSI500'])
+        self.assertCountEqual(Asset.objects.get(ts_code='600001.SH').membership_tags, [])
 
     @patch('apps.markets.tasks.time.sleep')
     @patch('apps.markets.tasks.ts.pro_api')
@@ -921,6 +972,7 @@ class IndexConstituentSyncTests(TestCase):
                 start_date=date(2026, 1, 4),
                 end_date=date(2026, 1, 4),
                 dispatch_assets=False,
+                membership_prefill_days=0,
             )
 
         self.assertEqual(stub_pro.index_weight_calls, 2)
