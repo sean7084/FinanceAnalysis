@@ -83,6 +83,11 @@ celerybeat-schedule*
 # Large, reproducible artifacts rather than project source.
 reports
 source_data
+# pg_dump backups taken by the migration runbooks (e.g. the pre-CSI 500 snapshot).
+# Tens of GB, restorable only on the machine that took them.
+*.dump
+# Scratch space: generated staleness reports, screenshots, one-off diagnostics.
+/tmp/
 
 
 # --- Downloaded bootstrap installers (never project source) ----------------

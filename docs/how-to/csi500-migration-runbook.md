@@ -27,6 +27,112 @@ Tracking issue: **#22** (`Execute CSI 500 universe data migration + retrain runb
 
 ---
 
+## Running this in WSL2
+
+Every command below is a bare `python manage.py …`, which assumes an activated
+environment. In WSL2 that assumption fails quietly: Ubuntu 24.04 ships `/bin/python`
+pointing at the system interpreter, so a missing venv does **not** give you
+`command not found`. It gives you `manage.py`'s own hint:
+
+```
+ImportError: Couldn't import Django. Are you sure it's installed and available on your
+PYTHONPATH environment variable? Did you forget to activate a virtual environment?
+```
+
+Activate the venv first, or prefix every command with `.venv/bin/python`.
+
+WSL2 is the right host for this runbook specifically. Step 3 is hours of backfill plus
+a full LightGBM and LSTM retrain; Celery's prefork pool works on Linux, whereas the
+Windows launcher is pinned to `--pool solo` with concurrency 1.
+
+### Prepare
+
+```bash
+wsl -d Ubuntu-24.04                    # from PowerShell
+cd ~/FinanceAnalysis-wsl2              # NOT /mnt/c/... -- see the warning below
+```
+
+> **Check `pwd` before anything else.** The Windows clone is visible inside WSL at
+> `/mnt/c/Users/<you>/Documents/FinanceAnalysis`, and it is the wrong place to run
+> this. It has `.venv\Scripts\` rather than `.venv/bin/`, so `source .venv/bin/activate`
+> fails with `No such file or directory` — and because a failed activation does not
+> stop the next command, the `pip install` that follows runs against the system Python
+> and dies with `error: externally-managed-environment` (PEP 668). That reads like a
+> packaging problem and is really a wrong-directory problem.
+> `scripts/_native_env.sh` also refuses to run from a `/mnt/*` root by design. See
+> [`local-setup.md`](local-setup.md) §13.
+
+```bash
+# 1. Bring the clone up to date. This runbook needs the code from PR #23; a stale
+#    clone does not have migration 0013 or the onboard command at all.
+git fetch origin
+git status -sb                         # confirm clean, and how far behind
+git merge --ff-only origin/main
+
+# 2. Dependencies move between pulls, and a stale venv fails during apps.populate()
+#    before any project code runs.
+source .venv/bin/activate
+pip install -r requirements/local.txt
+
+# 3. pg_dump is not installed by default and step 1 needs it.
+sudo apt-get install -y postgresql-client
+
+# 4. Prove the clone has what this runbook calls, rather than assuming the pull worked.
+ls apps/markets/migrations/0013_* \
+   apps/markets/management/commands/onboard_csi500_universe.py
+python manage.py showmigrations markets | tail -2    # 0013 must read [ ], unchecked
+
+# 5. Services, settings, and the suite.
+bash scripts/verify_local_stack.sh     # every service must report "ready"
+python manage.py test --keepdb         # cheap insurance before a destructive step
+```
+
+If step 1 reports local commits rather than a clean fast-forward, **stop and branch
+them first** — see the sync rules in [`local-setup.md`](local-setup.md) §13.
+
+### Two warnings specific to this runbook
+
+**`python manage.py migrate` *is* step 2, and step 2 is destructive.** After a pull it
+is tempting to run `migrate` as part of getting set up, because that is what
+[`local-setup.md`](local-setup.md) §8 tells you to do on a fresh database. Here it
+applies `markets.0013_purge_csi300_csia500_universe`, which deletes the legacy
+membership, benchmark and PIT rows. Do not run it until step 1's backup exists **and
+has been confirmed restorable**.
+
+**Both clones share one PostgreSQL.** There is no separate WSL dataset, so migrating
+from WSL migrates the database the Windows side uses. Bring the Windows clone up to
+the PR #23 code as well before starting; otherwise it runs the old universe contract
+against migrated data. Expect universe-gated workflows to fail on *both* hosts from
+the moment step 2 lands until step 3 completes — that is the fail-closed behaviour
+described at the top of this file, not a new problem.
+
+### Run step 3 inside tmux
+
+`tmux` is present on Ubuntu 24.04; `screen` is not.
+
+```bash
+tmux new -s csi500
+# ... run step 3 ...
+# detach:   Ctrl-b d
+# reattach: tmux attach -t csi500
+```
+
+Step 3 is the long one, and a terminal or SSH disconnect without tmux loses the run
+partway through a backfill. Steps 4–7 are quick enough to run directly and need
+nothing WSL-specific.
+
+### Step 6's worker restart means the Linux workers
+
+```bash
+CELERY_WORKER_QUEUES=backtest ./scripts/run_celery_worker.sh
+```
+
+The native launcher defaults to the `ops` queue only, so a single worker will never
+pick up backtest or retrain tasks. Start one worker per queue group as described in
+[`local-setup.md`](local-setup.md) §11.
+
+---
+
 ## Step 0 - Record the starting state (read-only)
 
 Capture a before-snapshot so you can prove the migration landed. From the repo root:
@@ -50,13 +156,41 @@ Expected **before** the migration: `membership_by_code` shows only `000300.SH` a
 
 ## Step 1 - Back up the database
 
-Use your normal Postgres backup path, e.g.:
+`DATABASE_URL` is **not** in your shell environment. Django loads `.env` itself
+(`DJANGO_READ_DOT_ENV_FILE=True`), so every `manage.py` command connects happily while a
+bare `pg_dump "$DATABASE_URL"` expands to an empty argument and falls back to libpq's
+defaults: the local unix socket `/var/run/postgresql/.s.PGSQL.5432`, which does not exist
+because PostgreSQL runs on another host. The error reads like a dead database and is
+really an unset variable. Export it the way `scripts/_native_env.sh` does:
 
 ```bash
-pg_dump "$DATABASE_URL" -Fc -f finance_analysis_pre_csi500.dump
+set -a; source .env; set +a
+echo "${DATABASE_URL##*@}"     # host:port/db -- proves it resolved, prints no credentials
+
+pg_dump "$DATABASE_URL" -Fc -f ~/finance_analysis_pre_csi500.dump
 ```
 
-Confirm the dump is non-trivial and restorable before continuing.
+Do not `source scripts/_native_env.sh` instead; it applies `set -euo pipefail` and a `cd`
+to your interactive shell.
+
+Write the dump **outside the repo**. `.gitignore` has no `*.dump` rule, so a multi-GB
+archive in the working tree is one `git add .` away from being committed, and keeping it
+out of both clones avoids picking a side when the two share one PostgreSQL.
+
+Step 2's purge is `RunPython.noop` on reverse, so this dump is the only way back. Prove it
+is restorable rather than merely present:
+
+```bash
+ls -lh ~/finance_analysis_pre_csi500.dump
+pg_restore --list ~/finance_analysis_pre_csi500.dump | grep -c 'TABLE DATA'
+pg_restore --list ~/finance_analysis_pre_csi500.dump \
+  | grep -E 'markets_indexmembership|markets_pointintimebenchmarkdaily'
+```
+
+Expect a few hundred `TABLE DATA` entries, and both tables step 2 purges must appear. If
+`pg_dump` instead reports a server/client version mismatch, the server is PostgreSQL 15
+while Ubuntu 24.04's `postgresql-client` metapackage installs 16; install
+`postgresql-client-15` to match.
 
 ---
 
@@ -90,7 +224,7 @@ data for all current CSI 500 constituents, rebuilds the PIT benchmark, recompute
 inputs, and retrains LightGBM/LSTM:
 
 ```bash
-python manage.py onboard_csi500_universe --start-date 2010-01-01 --end-date <today>
+python manage.py onboard_csi500_universe --start-date 2010-01-01 --end-date 2026-09-21
 ```
 
 Stages it runs, in order: `sync_index_constituents` -> `sync_benchmark_index_history`
@@ -114,21 +248,100 @@ If you prefer to run stages by hand (e.g. to resume), the equivalent sequence is
 [`backfill.md`](backfill.md) followed by [`retrain.md`](retrain.md); at minimum:
 
 ```bash
-python manage.py sync_index_constituents   --start-date 2010-01-01 --end-date <today>
-python manage.py sync_benchmark_index_history --index-codes 000905.SH --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date <today> --technical-indicator-warmup
-python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date <today> --effective-universe-entry-warmup
-python manage.py backfill_fundamental_snapshots --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_capital_flow_snapshots --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_technical_indicators  --start-date 2010-01-01 --end-date <today>
-python manage.py build_pit_union_benchmark  --start-date 2010-01-01 --end-date <today>
-python manage.py backfill_model_data        --start-date 2010-01-01 --end-date <today>
-python manage.py rebuild_lightgbm_pipeline  --start-date 2016-06-01 --end-date <train-end>
-python manage.py rebuild_lstm_pipeline      --start-date 2016-06-01 --end-date <train-end>
+python manage.py sync_index_constituents   --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py sync_benchmark_index_history --index-codes 000905.SH --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date 2026-09-21 --technical-indicator-warmup
+python manage.py backfill_ohlcv_history     --start-date 2010-01-01 --end-date 2026-09-21 --effective-universe-entry-warmup
+python manage.py backfill_fundamental_snapshots --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_capital_flow_snapshots --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_technical_indicators  --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py build_pit_union_benchmark  --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py backfill_model_data        --start-date 2010-01-01 --end-date 2026-09-21
+python manage.py rebuild_lightgbm_pipeline  --start-date 2016-06-01 --end-date 2026-09-21 --skip-backfill
+python manage.py rebuild_lstm_pipeline      --start-date 2016-06-01 --end-date 2026-09-21 --skip-backfill
 ```
 
+### Membership prefill: why `--start-date 2010-01-01` works as written
+
+TuShare publishes `index_weight` snapshots periodically (month-end in the early years,
+every 5-7 days recently), never daily. A sync that starts exactly on `2010-01-01` would
+begin *after* the last published snapshot of 2009, leaving the earliest requested trading
+dates with nothing to forward-fill from - which is exactly what
+`ensure_pit_membership_coverage` refuses to tolerate, since the PIT effective-universe
+contract is fail-closed.
+
+`sync_index_constituent_universe` therefore pulls `MEMBERSHIP_PREFILL_CALENDAR_DAYS = 31`
+of lead-in ahead of `--start-date`, so `--start-date 2010-01-01` actually requests from
+`2009-12-01`. The command prints what it resolved:
+
+```
+membership_prefill_days=31 membership_pull_start_date=2009-12-01
+```
+
+Consequences to expect:
+
+- `IndexMembership` rows for `000905.SH` will start near `2009-12-31`, i.e. *before*
+  `HISTORICAL_DATA_FLOOR`. That is intentional and harmless, the same way the
+  technical-indicator warm-up prefill writes rows ahead of the floor. The step 0 snippet
+  will show `mn` in `2009-12`, not `2010-01`.
+- The prefill only affects which dates are *pulled*; it does not widen asset dispatch or
+  the current-membership tags, which still anchor to the latest snapshot in the range.
+
+### Recovering if you already hit the coverage error
+
+The prefill only applies to syncs run after the change landed, so a run that started
+before it will have the gap baked in:
+
+```
+CommandError: Historical model data backfill for 2010-01-01..2026-09-20: missing
+point-in-time membership coverage for 000905.SH on 2010-01-04 (19 affected trading dates).
+Backfill IndexMembership before continuing.
+```
+
+Recovery, in order:
+
+1. Make sure the clone you are running from has the prefill change (both clones share one
+   PostgreSQL but *not* a working tree, so pulling on Windows does nothing for
+   `~/FinanceAnalysis-wsl2`).
+2. Re-run just the membership sync:
+
+   ```bash
+   python manage.py sync_index_constituents --start-date 2010-01-01 --end-date 2026-09-21
+   ```
+
+   Check the `membership_prefill_days=31 membership_pull_start_date=2009-12-01` line.
+3. Confirm the gap is closed:
+
+   ```bash
+   python manage.py shell -c "
+   from datetime import date
+   from apps.markets.benchmarking import pit_membership_coverage_gaps
+   dates=[date(2010,1,d) for d in range(4,29)]
+   print('gaps', pit_membership_coverage_gaps(dates))
+   "
+   ```
+
+   Expect `gaps {}`.
+4. Rebuild the PIT benchmark over the **full** range from `2010-01-01`, then resume
+   `backfill_model_data`:
+
+   ```bash
+   python manage.py build_pit_union_benchmark --start-date 2010-01-01 --end-date 2026-09-21
+   python manage.py backfill_model_data       --start-date 2010-01-01 --end-date 2026-09-21
+   ```
+
+   A partial rebuild leaves the degenerate rows written while coverage was missing
+   (empty constituents, flat NAV) in place. `PointInTimeBenchmarkDaily` upserts on
+   `(benchmark_code, trade_date)`, so a full-range rebuild overwrites them - no manual
+   delete needed.
+
+> **Never** run `sync_index_constituents` with an early `--end-date`. Current-membership
+> tags anchor to the last snapshot *inside the requested range*, so a narrow window such as
+> `--start-date 2010-01-01 --end-date 2010-01-31` strips `CSI500` from every current
+> constituent and silently shrinks the effective universe. Always pass the real end date.
+
 **Verify:** re-run the step 0 snippet. Expect `csi500_membership` with `n > 0` and
-`mn` near `2010-01`; `bench_by_code` to include `000905.SH`; `pit_by_code` to include
+`mn` near `2009-12`; `bench_by_code` to include `000905.SH`; `pit_by_code` to include
 `CSI500_PIT`. Then confirm coverage and models:
 
 ```bash
@@ -153,7 +366,7 @@ post-switch version tag.
 ## Step 4 - Validate data quality
 
 ```bash
-python manage.py validate_data_quality --start-date 2010-01-01 --end-date <today>
+python manage.py validate_data_quality --start-date 2010-01-01 --end-date 2026-09-21
 ```
 
 Confirm there are no `index_membership_history_gaps`, `benchmark_index_daily_gap`, or
