@@ -14,7 +14,9 @@ import tushare as ts
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connection, connections
 from django.db.models import Q
+from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.analytics.management.commands.backfill_technical_indicators import (
@@ -24,7 +26,7 @@ from apps.analytics.management.commands.backfill_technical_indicators import (
 )
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import TechnicalIndicator
-from apps.core.date_floor import get_historical_data_floor
+from apps.core.date_floor import get_historical_data_floor, utc_midnight
 from apps.factors.fundamental_materialization import (
     iter_date_windows,
     materialize_fundamental_snapshot_rows,
@@ -425,6 +427,9 @@ class ReportWriter:
 class Command(BaseCommand):
     help = 'Validate historical data quality and write actionable reports under reports/ without mutating model data.'
 
+    DATABASE_OPERATION_RETRIES = 8
+    DATABASE_OPERATION_RETRY_DELAY_SECONDS = 5.0
+
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
         parser.add_argument('--end-date', default=date.today().isoformat())
@@ -444,6 +449,26 @@ class Command(BaseCommand):
         parser.add_argument('--alert', action='store_true', help='Email a summary when critical data-quality issues are found.')
         parser.add_argument('--alert-recipients', default='', help='Comma-separated alert recipients. Falls back to settings.')
         parser.add_argument('--fail-on-critical', action='store_true')
+
+    def _run_with_database_retry(self, operation, *, action):
+        last_error = None
+        for attempt in range(self.DATABASE_OPERATION_RETRIES):
+            try:
+                return operation()
+            except (OperationalError, InterfaceError) as exc:
+                last_error = exc
+                connections.close_all()
+                if attempt + 1 >= self.DATABASE_OPERATION_RETRIES:
+                    raise
+                delay_seconds = self.DATABASE_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
+                self.stderr.write(
+                    f'Database operation failed during {action}: {exc}. '
+                    f'Retrying in {delay_seconds:.1f}s '
+                    f'({attempt + 1}/{self.DATABASE_OPERATION_RETRIES - 1}).'
+                )
+                time.sleep(delay_seconds)
+        if last_error is not None:
+            raise last_error
 
     def handle(self, *args, **options):
         run_started_at = timezone.now()
@@ -474,6 +499,12 @@ class Command(BaseCommand):
         reason_counters = Counter()
 
         try:
+            # Session guard: JIT-compiling the big analytical scans spikes CPU/memory on the
+            # (memory-constrained) database host and buys nothing now that the timestamp
+            # filters below are sargable index scans, so disable it for this connection.
+            with connection.cursor() as cursor:
+                cursor.execute('SET jit = off')
+
             calendar_rows, trading_calendar_by_exchange, trading_dates = self._load_official_trading_calendar(start_date, end_date)
             if not trading_dates:
                 raise CommandError('No official ExchangeTradingCalendar rows found in the requested validation range.')
@@ -1407,13 +1438,16 @@ class Command(BaseCommand):
             writer=writer,
         )
 
-        technical_rows = list(
-            TechnicalIndicator.objects.filter(
-                asset=asset,
-                timestamp__date__gte=min_date,
-                timestamp__date__lte=max_date,
-                indicator_type__in=technical_indicators,
-            ).values('timestamp__date', 'indicator_type', 'parameters', 'value')
+        technical_rows = self._run_with_database_retry(
+            lambda: list(
+                TechnicalIndicator.objects.filter(
+                    asset=asset,
+                    timestamp__gte=utc_midnight(min_date),
+                    timestamp__lt=utc_midnight(max_date + timedelta(days=1)),
+                    indicator_type__in=technical_indicators,
+                ).values('timestamp__date', 'indicator_type', 'parameters', 'value')
+            ),
+            action=f'loading technical indicators for {asset.ts_code}',
         )
         self._write_technical_indicator_continuity_gaps(
             report_name='technical_indicator_snapshot_continuity_gaps',
@@ -2132,8 +2166,8 @@ class Command(BaseCommand):
         asset_ids = [asset.id for asset in assets]
         base_queryset = TechnicalIndicator.objects.filter(
             asset_id__in=asset_ids,
-            timestamp__date__gte=start_date,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(start_date),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
             indicator_type__in=auditable_indicator_types,
         ).select_related('asset').order_by('timestamp', 'asset_id', 'indicator_type', 'pk')
 
@@ -2460,12 +2494,15 @@ class Command(BaseCommand):
 
         technical_queryset = TechnicalIndicator.objects.filter(
             asset_id__in=asset_ids,
-            timestamp__date__gte=start_date,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(start_date),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
             indicator_type__in=technical_indicators,
             value=Decimal('0.5'),
         ).select_related('asset')
-        technical_count = technical_queryset.count()
+        technical_count = self._run_with_database_retry(
+            technical_queryset.count,
+            action='counting neutral-default technical indicators',
+        )
         if technical_count:
             self._increment(counters, 'technical_indicator.neutral_default_value', 'info', technical_count)
             field_counters[('technical_indicator', ','.join(technical_indicators), 'neutral_default_value', 'info')] += technical_count
@@ -2682,8 +2719,8 @@ class Command(BaseCommand):
 
         for row in TechnicalIndicator.objects.filter(
             asset_id__in=union_asset_ids,
-            timestamp__date__gte=start_date,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(start_date),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
             indicator_type__in=technical_indicators,
         ).values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
             row_date = row['timestamp__date']
@@ -2868,9 +2905,12 @@ class Command(BaseCommand):
         participant_payload = defaultdict(lambda: defaultdict(dict))
 
         for row in TechnicalIndicator.objects.filter(
-            timestamp__date__in=audit_dates,
+            timestamp__gte=utc_midnight(min(audit_dates)),
+            timestamp__lt=utc_midnight(max(audit_dates) + timedelta(days=1)),
             indicator_type='RS_SCORE',
         ).select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
+            if row['timestamp__date'] not in audit_dates_set:
+                continue
             participant_payload[row['timestamp__date']]['RS_SCORE'][row['asset_id']] = {
                 'asset_id': row['asset_id'],
                 'symbol': row['asset__symbol'],
