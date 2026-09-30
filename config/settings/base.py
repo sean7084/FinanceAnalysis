@@ -439,6 +439,10 @@ DJANGO_VITE = {
         'dev_server_port': env.int('DJANGO_VITE_DEV_SERVER_PORT', default=5173),
         'manifest_path': FRONTEND_DIST_DIR / '.vite' / 'manifest.json',
         'static_url_prefix': '',
+        # Emit dev-mode URLs against the Vite origin root instead of
+        # STATIC_URL + path, so vite.config.ts can keep its default base '/'
+        # and the pure-Vite HMR flow stays reachable at http://localhost:5173/.
+        'app_client_class': 'apps.core.vite_client.RootOriginDevClient',
     }
 }
 

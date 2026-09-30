@@ -94,7 +94,7 @@ and `{% vite_asset 'src/main.tsx' %}`. Which URLs those tags produce depends on
 
 | Mode | URLs emitted | Requires |
 | --- | --- | --- |
-| `True` (dev) | `http://localhost:5173/static/@vite/client`, `.../static/src/main.tsx`, React Refresh preamble | Vite dev server running |
+| `True` (dev) | `http://localhost:5173/@vite/client`, `http://localhost:5173/src/main.tsx`, React Refresh preamble | Vite dev server running |
 | `False` (prod) | `/static/assets/main-<hash>.js`, `/static/assets/main-<hash>.css`, modulepreload links | `frontend/dist/.vite/manifest.json` (produced by `npm run build`) |
 
 `../config/urls.py` mounts the shell at `/` and at a negative-lookahead

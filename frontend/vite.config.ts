@@ -5,11 +5,15 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 //
-// `base: '/static/'` aligns built asset URLs with Django's STATIC_URL so that
-// WhiteNoise can serve them straight from STATIC_ROOT after `collectstatic`.
-// It also means the dev server exposes every Vite-served module under the same
-// `/static/` prefix, so django-vite's dev-mode URLs (which concatenate
-// STATIC_URL + the asset path) resolve correctly against Vite.
+// `base` stays at its default '/'. Built asset URLs do NOT need a '/static/'
+// base: django-vite resolves manifest paths through
+// `staticfiles_storage.url()`, which prepends STATIC_URL itself, and
+// `collectstatic` picks up frontend/dist via STATICFILES_DIRS. Setting base to
+// '/static/' instead moved the whole dev server under that prefix, which broke
+// the pure-Vite HMR flow -- createBrowserRouter has no basename, so opening
+// http://<host>:5173/static/ rendered the router's 404 error boundary. The
+// dev-mode URL scheme is handled Django-side by
+// apps/core/vite_client.py (RootOriginDevClient).
 //
 // `server.origin` is required so that Django-rendered pages (served from :8000)
 // still resolve the Vite dev-server URLs (HMR client, React Refresh preamble,
@@ -27,7 +31,6 @@ import react from '@vitejs/plugin-react'
 // `build.manifest` writes dist/.vite/manifest.json, which django-vite reads to
 // emit hashed asset tags in production mode.
 export default defineConfig({
-  base: '/static/',
   server: {
     host: '0.0.0.0', // 这会监听所有地址
     port: 5173,       // 可指定端口，默认为 5173

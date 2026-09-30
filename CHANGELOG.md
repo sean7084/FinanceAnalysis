@@ -12,6 +12,11 @@
 - Added migration `markets.0013` to purge legacy CSI 300 / CSI A500 membership rows, official benchmark series, the old PIT union benchmark rows, and the `CSI300`/`CSIA500` asset tags.
 - Requires a data re-sync, raw backfill for CSI 500 constituents, PIT benchmark rebuild, and LightGBM/LSTM retrain (see `docs/how-to/backfill.md` and `docs/how-to/retrain.md`).
 
+#### Fixed:
+
+- Pure-Vite HMR flow restored at `http://localhost:5173/`: removed `base: '/static/'` from `frontend/vite.config.ts`. That base moved the entire dev server under `/static/`, where `createBrowserRouter` (which has no basename) matched no route and rendered the router's 404 error boundary — `http://<host>:5173/static/` showed "Unexpected Application Error! 404 Not Found". Production asset URLs never depended on `base`: django-vite resolves manifest paths through `staticfiles_storage.url()`, which prepends `STATIC_URL` itself, and `collectstatic` picks up `frontend/dist` via `STATICFILES_DIRS`.
+- `config/settings/base.py`: `DJANGO_VITE['default']['app_client_class']` now points at the new `apps/core/vite_client.py::RootOriginDevClient`, which emits dev-mode asset URLs against the Vite origin root (`http://localhost:5173/src/main.tsx`, `http://localhost:5173/@vite/client`, `/@react-refresh`) instead of `STATIC_URL` + path — the only reason `base: '/static/'` existed. The Django-served dev mode (`DJANGO_VITE_DEV_MODE=True`) and the prod manifest mode are unchanged in behaviour.
+
 ### version 0.1.13
 
 > **Note**: This entry is an audit checklist, not release notes. It documents the
