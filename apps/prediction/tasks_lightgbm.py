@@ -14,7 +14,7 @@ from django.conf import settings
 from django.db.models import Avg
 from django.utils import timezone
 
-from apps.core.date_floor import get_historical_data_floor
+from apps.core.date_floor import get_historical_data_floor, utc_midnight
 try:
     import lightgbm as lgb
     from sklearn.preprocessing import StandardScaler
@@ -1312,8 +1312,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RSI',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     rsi_df = _indicator_frame_from_rows(
@@ -1327,8 +1327,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='MOM_5D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     mom_5d_df = _indicator_frame_from_rows(
@@ -1342,8 +1342,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RS_SCORE',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     rs_df = _indicator_frame_from_rows(rs_rows, 'rs_score')
@@ -1352,8 +1352,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RETURN_3D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     return_3d_df = _indicator_frame_from_rows(
@@ -1367,8 +1367,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RETURN_5D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     return_5d_df = _indicator_frame_from_rows(
@@ -1382,8 +1382,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RETURN_10D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     return_10d_df = _indicator_frame_from_rows(
@@ -1397,8 +1397,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RELATIVE_VOLUME_5D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     relative_volume_5d_df = _indicator_frame_from_rows(
@@ -1412,8 +1412,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RELATIVE_VOLUME_20D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     relative_volume_20d_df = _indicator_frame_from_rows(
@@ -1427,8 +1427,8 @@ def _create_feature_matrix(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='REALIZED_VOLATILITY_5D',
-            timestamp__date__gte=warmup_start,
-            timestamp__date__lte=end_date,
+            timestamp__gte=utc_midnight(warmup_start),
+            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
         ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
     )
     realized_volatility_5d_df = _indicator_frame_from_rows(
