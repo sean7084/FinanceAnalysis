@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-09-16T15:25:01Z_
+_Generated: 2026-09-30T23:55:02Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -14,7 +14,7 @@ _Generated: 2026-09-16T15:25:01Z_
 
 | Variable | Type | Default | In `.env.example` | Read at |
 | --- | --- | --- | --- | --- |
-| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:447 |
+| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:451 |
 | `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` | `int` | `2400` | yes | base.py:234 |
 | `CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS` | `int` | `20` | yes | base.py:226 |
 | `CELERY_BROKER_URL` | `str` | `'redis://localhost:6379/0'` | yes | base.py:190 |
@@ -49,7 +49,7 @@ _Generated: 2026-09-16T15:25:01Z_
 | `NEWS_BACKFILL_LIMIT_PER_PROVIDER` | `int` | `0` | yes | base.py:231 |
 | `NEWS_BACKFILL_PROVIDER` | `str` | `'tushare_major'` | yes | base.py:228 |
 | `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:345, base.py:353 |
-| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:448 |
+| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:452 |
 | `TUSHARE_TOKEN` | `str` | `None` | yes | base.py:30 |
 
 ## Keys in `.env.example` that settings never read
