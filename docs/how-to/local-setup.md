@@ -601,6 +601,10 @@ hosts at once.
 
 ### Working in it
 
+**To start the services, see [`wsl-services.md`](wsl-services.md)** — the day-to-day
+procedure from `cd ~/FinanceAnalysis-wsl2` to a running backend, beat, worker fleet and
+dashboard. The rest of this section covers the surrounding habits.
+
 Open `~/FinanceAnalysis-wsl2` in VS Code Remote - WSL. The task labels in
 `.vscode/tasks.json` carry `linux` overrides, so they route to the `.sh` launchers
 automatically.
@@ -651,16 +655,30 @@ the core startup flow but are useful for specific tasks:
 
 ### `run_local_stack.sh`
 
-Runs all local services (backend, celery-worker, celery-beat, frontend) in
-parallel with prefixed output. Useful for development when you want all services
-running in a single terminal.
+Runs the local services (backend, one Celery worker per queue group, celery-beat, and the
+frontend when npm is present) in parallel with prefixed output. Useful for development when
+you want everything running in a single terminal. This is the day-to-day start command in
+WSL2 — see [`wsl-services.md`](wsl-services.md).
+
+> **The frontend is optional and auto-skipped.** The script detects npm and starts the
+> frontend only when npm is available. Where npm is absent (e.g. a WSL2 clone without a
+> current Node.js) it starts the backend services and skips the frontend rather than failing.
+> An earlier version started the frontend unconditionally: `run_frontend.sh` exited 1 where
+> Node.js was absent, `wait -n` returned on that first exit, and the `EXIT` trap killed the
+> backend and workers with it. That teardown no longer happens. To run the whole stack,
+> frontend included, in WSL2, install Node 22 and `npm ci` in the clone — see
+> [`wsl-services.md`](wsl-services.md).
 
 ```bash
-./scripts/run_local_stack.sh
+./scripts/run_local_stack.sh                     # backend + ops/backtest/train workers + beat
+STACK_ALL_QUEUES=0 ./scripts/run_local_stack.sh  # lighter: only the ops worker
+./scripts/run_local_stack.sh --check             # preflight only: report what would start
 ```
 
-Each service's output is prefixed with its name (e.g., `[backend]`, `[celery-worker]`)
-so you can distinguish log lines. Press Ctrl+C to stop all services.
+Each service's output is prefixed with its name (e.g., `[backend]`, `[celery-worker-ops]`)
+so you can distinguish log lines. Press Ctrl+C to stop all services. By default it covers the
+`ops`, `backtest`, and `train-lightgbm`/`train-lstm` queues; set `STACK_ALL_QUEUES=0` to run
+only `ops` (see [`wsl-services.md`](wsl-services.md)).
 
 ### `smoke_api_check.sh`
 
