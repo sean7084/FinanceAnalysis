@@ -499,11 +499,19 @@ class Command(BaseCommand):
         reason_counters = Counter()
 
         try:
-            # Session guard: JIT-compiling the big analytical scans spikes CPU/memory on the
-            # (memory-constrained) database host and buys nothing now that the timestamp
-            # filters below are sargable index scans, so disable it for this connection.
+            # Session guards for the big analytical scans on the (shared) database host:
+            #  - jit off: JIT-compiling these scans spikes CPU/memory and buys nothing now
+            #    that the timestamp filters below are sargable index scans.
+            #  - work_mem capped: bounds per-backend sort/hash memory for this batch session
+            #    so one heavy step cannot balloon a single PG backend (the global 128 MB is
+            #    OLTP-sized, not sized for a 16-year scan). Defence-in-depth now that the
+            #    coverage scans below stream without sorting (see .order_by()).
+            # Caveat: _run_with_database_retry() calls connections.close_all(), so a retry
+            # reopens the connection and loses these session GUCs; acceptable because the
+            # .order_by() fix already removes the sort that made them matter.
             with connection.cursor() as cursor:
                 cursor.execute('SET jit = off')
+                cursor.execute("SET work_mem = '32MB'")
 
             calendar_rows, trading_calendar_by_exchange, trading_dates = self._load_official_trading_calendar(start_date, end_date)
             if not trading_dates:
@@ -2362,7 +2370,7 @@ class Command(BaseCommand):
             asset_id__in=asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).values_list('asset_id', 'date').iterator(chunk_size=5000):
+        ).order_by().values_list('asset_id', 'date').iterator(chunk_size=5000):
             moneyflow_dates_by_asset[asset_id].add(trading_date)
 
         margin_history_by_asset = defaultdict(lambda: {'index_by_date': {}, 'rzrqye': []})
@@ -2807,7 +2815,7 @@ class Command(BaseCommand):
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).values('date', 'asset_id', 'main_force_net_5d', 'margin_balance_change_5d').iterator(chunk_size=50000):
+        ).order_by().values('date', 'asset_id', 'main_force_net_5d', 'margin_balance_change_5d').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2824,7 +2832,7 @@ class Command(BaseCommand):
             date__gte=start_date,
             date__lte=end_date,
             mode=FactorScore.FactorMode.COMPOSITE,
-        ).values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
+        ).order_by().values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2911,11 +2919,14 @@ class Command(BaseCommand):
         effective_asset_ids = {target_date: set(effective_universe_by_date.get(target_date, set())) for target_date in audit_dates}
         participant_payload = defaultdict(lambda: defaultdict(dict))
 
+        # Same Meta.ordering trap as the coverage scans above: these cross-section scans
+        # only populate participant_payload dicts (order-independent), so clear the default
+        # ordering to avoid a full sort before the server-side cursor can stream the rows.
         for row in TechnicalIndicator.objects.filter(
             timestamp__gte=utc_midnight(min(audit_dates)),
             timestamp__lt=utc_midnight(max(audit_dates) + timedelta(days=1)),
             indicator_type='RS_SCORE',
-        ).select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
+        ).order_by().select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
             if row['timestamp__date'] not in audit_dates_set:
                 continue
             participant_payload[row['timestamp__date']]['RS_SCORE'][row['asset_id']] = {
@@ -2929,7 +2940,7 @@ class Command(BaseCommand):
         for row in FactorScore.objects.filter(
             date__in=audit_dates,
             mode=FactorScore.FactorMode.COMPOSITE,
-        ).select_related('asset').values(
+        ).order_by().select_related('asset').values(
             'date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name',
             'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score',
         ).iterator(chunk_size=5000):
