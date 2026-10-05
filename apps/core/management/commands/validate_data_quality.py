@@ -14,7 +14,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, connections
+from django.db import connection, connections, transaction
 from django.db.models import Q
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
@@ -713,22 +713,31 @@ class Command(BaseCommand):
                 field_counters,
                 reason_counters,
             )
-            self._write_effective_universe_daily_coverage(
-                writer,
-                start_date,
-                end_date,
-                trading_dates,
-                effective_universe_by_date,
-                technical_indicators,
-                counters,
-                table_counters,
-                field_counters,
-            )
-            self._write_cross_section_audit(
-                writer,
-                cross_section_audit_dates,
-                effective_universe_by_date,
-            )
+            # Stream the big coverage / cross-section scans inside a transaction. In
+            # autocommit, psycopg2 declares .iterator()'s server-side cursor WITH HOLD,
+            # so PostgreSQL MATERIALISES the whole result before the client sees a row --
+            # for the ~100M-row TechnicalIndicator coverage scan the client sits app-idle
+            # for >10 min and the WSL2<->NAS connection times out (the server logs "could
+            # not receive data from client: Connection timed out" and drops the backend).
+            # Inside atomic() psycopg2 uses a plain streaming cursor (FETCH per chunk), so
+            # rows flow continuously and the connection never goes idle long enough to drop.
+            with transaction.atomic():
+                self._write_effective_universe_daily_coverage(
+                    writer,
+                    start_date,
+                    end_date,
+                    trading_dates,
+                    effective_universe_by_date,
+                    technical_indicators,
+                    counters,
+                    table_counters,
+                    field_counters,
+                )
+                self._write_cross_section_audit(
+                    writer,
+                    cross_section_audit_dates,
+                    effective_universe_by_date,
+                )
             self._write_summary_reports(
                 writer,
                 counters,
