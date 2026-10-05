@@ -1,5 +1,11 @@
 # Changelog
 
+### version 0.1.15
+
+#### Fixed:
+
+- `apps/core/management/commands/validate_data_quality.py`: the four `_write_effective_universe_daily_coverage` streaming scans (OHLCV, TechnicalIndicator, SentimentScore, FundamentalFactorSnapshot) now call `.order_by()` to clear each model's default `Meta.ordering`. Without it, `TechnicalIndicator.Meta.ordering = ['-timestamp', 'asset', 'indicator_type']` forced PostgreSQL to fully sort the ~140M rows matched by a 16-year scan of the ~99 GB / ~168M-row `analytics_technicalindicator` table before the server-side cursor could stream the first row. That multi-minute silent sort is what dropped the connection mid-run as `django.db.utils.OperationalError: server closed the connection unexpectedly` (the trigger behind the CSI 500 Step-4 validation failure). The loops only OR bits into per-date feature bitmaps, so row order is irrelevant and clearing it is result-equivalent — verified by `DataQualityValidationCommandTests` + `TechnicalIndicatorValidationRegressionTests` (18 tests) and a full-range live run that now streams past the coverage step. `EXPLAIN` confirms the Sort disappears: `Gather Merge` + `Sort` + `Parallel Seq Scan` (cost ~32.8M) becomes a plain streaming `Seq Scan` (cost ~7.3M). This complements the 2026-09-29 sargable-`timestamp` rewrite, which fixed the non-sargable WHERE clause but left this implicit ORDER BY.
+
 ### version 0.1.14
 
 #### Changed:

@@ -2708,11 +2708,18 @@ class Command(BaseCommand):
 
         asset_map = Asset.objects.in_bulk(union_asset_ids)
 
+        # Each streaming scan below calls .order_by() to CLEAR the model's default
+        # Meta.ordering. These loops only OR bits into feature_bitmaps (order-independent),
+        # so an ORDER BY buys nothing and forces PostgreSQL to fully sort the entire matched
+        # set -- the TechnicalIndicator scan alone matches ~140M rows over a 16-year range --
+        # before the first row can stream. That multi-minute silent sort is what gets the
+        # WSL<->NAS connection dropped (server closed the connection unexpectedly). Clearing
+        # the ordering lets the server-side cursor stream rows immediately and continuously.
         for row_date, asset_id in OHLCV.objects.filter(
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).values_list('date', 'asset_id').iterator(chunk_size=50000):
+        ).order_by().values_list('date', 'asset_id').iterator(chunk_size=50000):
             if asset_id not in effective_universe_by_date.get(row_date, set()):
                 continue
             self._set_feature_presence(feature_bitmaps, 'ohlcv', row_date, asset_id, bit_positions)
@@ -2722,7 +2729,7 @@ class Command(BaseCommand):
             timestamp__gte=utc_midnight(start_date),
             timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
             indicator_type__in=technical_indicators,
-        ).values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
+        ).order_by().values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
             row_date = row['timestamp__date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2735,7 +2742,7 @@ class Command(BaseCommand):
             date__gte=start_date,
             date__lte=end_date,
             score_type=SentimentScore.ScoreType.ASSET_7D,
-        ).values('date', 'asset_id').iterator(chunk_size=50000):
+        ).order_by().values('date', 'asset_id').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2746,7 +2753,7 @@ class Command(BaseCommand):
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).select_related('asset').values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
+        ).order_by().select_related('asset').values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
