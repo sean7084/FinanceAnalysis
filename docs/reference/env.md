@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-09-30T23:55:02Z_
+_Generated: 2026-10-03T14:37:25Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -59,6 +59,6 @@ These are not Django settings. A key consumed by a launcher under `scripts/` or 
 | Key | Status |
 | --- | --- |
 | `CELERY_RESULT_BACKEND` | read by `scripts/_native_env.ps1`, `scripts/_native_env.sh` |
-| `CELERY_WORKER_QUEUES` | read by `scripts/run_celery_worker.ps1`, `scripts/run_celery_worker.sh`, `compose/local/django/start-celeryworker` |
+| `CELERY_WORKER_QUEUES` | read by `scripts/run_celery_worker.ps1`, `scripts/run_celery_worker.sh`, `scripts/run_local_stack.sh`, `compose/local/django/start-celeryworker` |
 | `SMOKE_PASSWORD` | read by `scripts/smoke_api_check.sh` |
 | `SMOKE_USERNAME` | read by `scripts/smoke_api_check.sh` |

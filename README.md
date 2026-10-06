@@ -18,6 +18,7 @@ This README is orientation only. Everything else is split by purpose.
 | --- | --- |
 | Understand *why* the system works the way it does | [`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) |
 | Set up a machine | [`docs/how-to/local-setup.md`](docs/how-to/local-setup.md) |
+| Run the services in WSL2 | [`docs/how-to/wsl-services.md`](docs/how-to/wsl-services.md) |
 | Populate or repair the database | [`docs/how-to/backfill.md`](docs/how-to/backfill.md) |
 | Run the one-time CSI 500 universe migration | [`docs/how-to/csi500-migration-runbook.md`](docs/how-to/csi500-migration-runbook.md) |
 | Retrain, promote, or roll back a model | [`docs/how-to/retrain.md`](docs/how-to/retrain.md) |
