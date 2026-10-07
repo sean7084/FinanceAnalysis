@@ -14,7 +14,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, connections
+from django.db import connection, connections, transaction
 from django.db.models import Q
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
@@ -499,11 +499,19 @@ class Command(BaseCommand):
         reason_counters = Counter()
 
         try:
-            # Session guard: JIT-compiling the big analytical scans spikes CPU/memory on the
-            # (memory-constrained) database host and buys nothing now that the timestamp
-            # filters below are sargable index scans, so disable it for this connection.
+            # Session guards for the big analytical scans on the (shared) database host:
+            #  - jit off: JIT-compiling these scans spikes CPU/memory and buys nothing now
+            #    that the timestamp filters below are sargable index scans.
+            #  - work_mem capped: bounds per-backend sort/hash memory for this batch session
+            #    so one heavy step cannot balloon a single PG backend (the global 128 MB is
+            #    OLTP-sized, not sized for a 16-year scan). Defence-in-depth now that the
+            #    coverage scans below stream without sorting (see .order_by()).
+            # Caveat: _run_with_database_retry() calls connections.close_all(), so a retry
+            # reopens the connection and loses these session GUCs; acceptable because the
+            # .order_by() fix already removes the sort that made them matter.
             with connection.cursor() as cursor:
                 cursor.execute('SET jit = off')
+                cursor.execute("SET work_mem = '32MB'")
 
             calendar_rows, trading_calendar_by_exchange, trading_dates = self._load_official_trading_calendar(start_date, end_date)
             if not trading_dates:
@@ -705,22 +713,31 @@ class Command(BaseCommand):
                 field_counters,
                 reason_counters,
             )
-            self._write_effective_universe_daily_coverage(
-                writer,
-                start_date,
-                end_date,
-                trading_dates,
-                effective_universe_by_date,
-                technical_indicators,
-                counters,
-                table_counters,
-                field_counters,
-            )
-            self._write_cross_section_audit(
-                writer,
-                cross_section_audit_dates,
-                effective_universe_by_date,
-            )
+            # Stream the big coverage / cross-section scans inside a transaction. In
+            # autocommit, psycopg2 declares .iterator()'s server-side cursor WITH HOLD,
+            # so PostgreSQL MATERIALISES the whole result before the client sees a row --
+            # for the ~100M-row TechnicalIndicator coverage scan the client sits app-idle
+            # for >10 min and the WSL2<->NAS connection times out (the server logs "could
+            # not receive data from client: Connection timed out" and drops the backend).
+            # Inside atomic() psycopg2 uses a plain streaming cursor (FETCH per chunk), so
+            # rows flow continuously and the connection never goes idle long enough to drop.
+            with transaction.atomic():
+                self._write_effective_universe_daily_coverage(
+                    writer,
+                    start_date,
+                    end_date,
+                    trading_dates,
+                    effective_universe_by_date,
+                    technical_indicators,
+                    counters,
+                    table_counters,
+                    field_counters,
+                )
+                self._write_cross_section_audit(
+                    writer,
+                    cross_section_audit_dates,
+                    effective_universe_by_date,
+                )
             self._write_summary_reports(
                 writer,
                 counters,
@@ -2362,7 +2379,7 @@ class Command(BaseCommand):
             asset_id__in=asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).values_list('asset_id', 'date').iterator(chunk_size=5000):
+        ).order_by().values_list('asset_id', 'date').iterator(chunk_size=5000):
             moneyflow_dates_by_asset[asset_id].add(trading_date)
 
         margin_history_by_asset = defaultdict(lambda: {'index_by_date': {}, 'rzrqye': []})
@@ -2708,11 +2725,18 @@ class Command(BaseCommand):
 
         asset_map = Asset.objects.in_bulk(union_asset_ids)
 
+        # Each streaming scan below calls .order_by() to CLEAR the model's default
+        # Meta.ordering. These loops only OR bits into feature_bitmaps (order-independent),
+        # so an ORDER BY buys nothing and forces PostgreSQL to fully sort the entire matched
+        # set -- the TechnicalIndicator scan alone matches ~140M rows over a 16-year range --
+        # before the first row can stream. That multi-minute silent sort is what gets the
+        # WSL<->NAS connection dropped (server closed the connection unexpectedly). Clearing
+        # the ordering lets the server-side cursor stream rows immediately and continuously.
         for row_date, asset_id in OHLCV.objects.filter(
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).values_list('date', 'asset_id').iterator(chunk_size=50000):
+        ).order_by().values_list('date', 'asset_id').iterator(chunk_size=50000):
             if asset_id not in effective_universe_by_date.get(row_date, set()):
                 continue
             self._set_feature_presence(feature_bitmaps, 'ohlcv', row_date, asset_id, bit_positions)
@@ -2722,7 +2746,7 @@ class Command(BaseCommand):
             timestamp__gte=utc_midnight(start_date),
             timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
             indicator_type__in=technical_indicators,
-        ).values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
+        ).order_by().values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
             row_date = row['timestamp__date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2735,7 +2759,7 @@ class Command(BaseCommand):
             date__gte=start_date,
             date__lte=end_date,
             score_type=SentimentScore.ScoreType.ASSET_7D,
-        ).values('date', 'asset_id').iterator(chunk_size=50000):
+        ).order_by().values('date', 'asset_id').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2746,7 +2770,7 @@ class Command(BaseCommand):
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).select_related('asset').values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
+        ).order_by().select_related('asset').values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2800,7 +2824,7 @@ class Command(BaseCommand):
             asset_id__in=union_asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).values('date', 'asset_id', 'main_force_net_5d', 'margin_balance_change_5d').iterator(chunk_size=50000):
+        ).order_by().values('date', 'asset_id', 'main_force_net_5d', 'margin_balance_change_5d').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2817,7 +2841,7 @@ class Command(BaseCommand):
             date__gte=start_date,
             date__lte=end_date,
             mode=FactorScore.FactorMode.COMPOSITE,
-        ).values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
+        ).order_by().values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2904,11 +2928,14 @@ class Command(BaseCommand):
         effective_asset_ids = {target_date: set(effective_universe_by_date.get(target_date, set())) for target_date in audit_dates}
         participant_payload = defaultdict(lambda: defaultdict(dict))
 
+        # Same Meta.ordering trap as the coverage scans above: these cross-section scans
+        # only populate participant_payload dicts (order-independent), so clear the default
+        # ordering to avoid a full sort before the server-side cursor can stream the rows.
         for row in TechnicalIndicator.objects.filter(
             timestamp__gte=utc_midnight(min(audit_dates)),
             timestamp__lt=utc_midnight(max(audit_dates) + timedelta(days=1)),
             indicator_type='RS_SCORE',
-        ).select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
+        ).order_by().select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
             if row['timestamp__date'] not in audit_dates_set:
                 continue
             participant_payload[row['timestamp__date']]['RS_SCORE'][row['asset_id']] = {
@@ -2922,7 +2949,7 @@ class Command(BaseCommand):
         for row in FactorScore.objects.filter(
             date__in=audit_dates,
             mode=FactorScore.FactorMode.COMPOSITE,
-        ).select_related('asset').values(
+        ).order_by().select_related('asset').values(
             'date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name',
             'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score',
         ).iterator(chunk_size=5000):
