@@ -68,33 +68,22 @@ export https_proxy=http://localhost:10808 http_proxy=http://localhost:10808
 
 ## Preflight (first run, or after a pull)
 
-The clone at `~/FinanceAnalysis-wsl2` is separate from the Windows checkout and syncs **through**
-it: the WSL clone's git `origin` is `/mnt/c/…/FinanceAnalysis` (the Windows clone), **not** GitHub
-— only the Windows clone's `origin` is `github.com/sean7084/FinanceAnalysis`. A PR merged on GitHub
-therefore reaches WSL in **two hops**, `GitHub → Windows clone → WSL clone`, and a WSL `git fetch`
-pulls the Windows clone's *local* `main`. Advance the Windows clone first, or the WSL fetch stays
-silently stale — `git status -sb` reads level with `origin/main` while the merged fix is missing.
-The upside: the WSL hop needs no GitHub access and no proxy.
+The clone at `~/FinanceAnalysis-wsl2` talks to GitHub **directly**: its git `origin` is
+`https://github.com/sean7084/FinanceAnalysis.git`, so one `git fetch` sees every merged PR with no
+intermediate clone. (This replaces an older two-hop setup that relayed through a Windows clone at
+`/mnt/c/…/FinanceAnalysis` as `origin`; that hop is retired. A Windows clone, if you keep one, is
+now an independent peer that also points at GitHub.)
 
-**Hop 1 — Windows clone** (PowerShell; the only clone that talks to GitHub):
+Two one-time prerequisites make the direct link work from WSL:
 
-```powershell
-cd C:\Users\<you>\Documents\FinanceAnalysis
-git checkout main                     # if you are on a feature branch
-git fetch origin
-git merge --ff-only origin/main
-```
+- **Reachability** — GitHub is reached through the PassWall proxy via a repo-local setting:
+  `git config --local http.https://github.com.proxy http://localhost:10808`. Direct connectivity
+  also works when the proxy is down; the router host's own proxy ports are filtered from WSL, so
+  use `localhost:10808`.
+- **Auth** — writes authenticate through the GitHub CLI: `gh auth login` once, then
+  `gh auth setup-git` wires git's credential helper to it. Reads are anonymous (the repo is public).
 
-To advance `main` without leaving a branch that holds uncommitted work, fetch and then
-fast-forward the ref in place — safe only because local `main` is a strict ancestor of
-`origin/main`:
-
-```powershell
-git fetch origin
-git branch -f main origin/main
-```
-
-**Hop 2 — WSL clone.** Before the first start — and after any pull — sync and align dependencies:
+Before the first start — and after any pull — sync and align dependencies:
 
 ```bash
 cd ~/FinanceAnalysis-wsl2
@@ -126,10 +115,10 @@ It probes PostgreSQL (`psycopg2`) and Redis (`redis-py`), imports the core Pytho
 PostgreSQL connects, the `.env` credentials are stale — the server needs a real ACL user
 (`redis://finance_analysis:<pw>@…`) and any special character in the password percent-encoded.
 
-> **Never leave work uncommitted in the clone** — nothing pushes it anywhere, so it diverges
-> silently. Commit to a branch first, then sync. Use `--ff-only`; if it refuses, the clone has
-> local commits, so branch them rather than `git reset --hard` (unrecoverable against
-> uncommitted work).
+> **Commit and push real work** — `origin` is GitHub now, so a pushed branch is backed up
+> off-machine (the old two-hop clone pushed nowhere and could silently hold changes that existed
+> on no other host). Still sync with `--ff-only`; if it refuses, the clone has local commits, so
+> branch them rather than `git reset --hard` (unrecoverable against uncommitted work).
 
 ---
 
@@ -144,9 +133,10 @@ WSL detected but project root is on a Windows mount: /mnt/c/Users/<you>/Document
 Clone the repository into the WSL ext4 filesystem before running backend workloads.
 ```
 
-The Windows clone at `/mnt/c/...` has no `.venv/bin/`, and file I/O over the 9P mount is far
-slower than ext4. **Do not unmount `/mnt/c` to enforce this** — it is the clone's only git
-`origin`, and syncing through it needs no GitHub access and no proxy.
+A Windows clone at `/mnt/c/...` (if you keep one) has no `.venv/bin/`, and file I/O over the 9P
+mount is far slower than ext4 — so run backend work from the ext4 clone. `/mnt/c` is no longer the
+git `origin` (that is GitHub now), so this guard is purely about venv layout and I/O performance,
+not about git sync.
 
 ---
 
