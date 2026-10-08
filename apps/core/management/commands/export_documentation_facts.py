@@ -32,6 +32,7 @@ import argparse
 import ast
 import json
 import re
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -39,9 +40,9 @@ from django.apps import apps
 from django.conf import settings
 from django.core.management import get_commands, load_command_class
 from django.core.management.base import BaseCommand, CommandError
-from django.db import models
+from django.db import connection, models
 from django.db.models import Count, Max, Min
-from django.db.utils import OperationalError, ProgrammingError
+from django.db.utils import InterfaceError, OperationalError, ProgrammingError
 
 SHEET_NAMES = ('metrics', 'models', 'commands', 'celery', 'env')
 
@@ -203,6 +204,37 @@ def _iter_project_models():
 
 
 # --------------------------------------------------------------------------- #
+# database resilience
+# --------------------------------------------------------------------------- #
+
+_DB_RETRIES = 3
+_DB_RETRY_DELAY = 2.0
+
+
+def _query_with_reconnect(fn):
+    """Run ``fn()``, retrying with a fresh connection if the DB connection drops.
+
+    The heavy ``COUNT(*)``/``aggregate`` scans here run against the ~100M-row
+    analytics tables. A scan can outlast an idle TCP window (or a transient
+    network blip), after which psycopg2 marks the connection closed and Django
+    reuses the dead handle, raising ``InterfaceError: connection already
+    closed`` on the next query. ``connection.close()`` nulls that handle so the
+    retry transparently reconnects. Only connection-level errors are retried;
+    ``ProgrammingError`` (a real SQL/schema fault) is left to propagate.
+    """
+    last_exc = None
+    for attempt in range(_DB_RETRIES):
+        try:
+            return fn()
+        except (OperationalError, InterfaceError) as exc:
+            last_exc = exc
+            connection.close()
+            if attempt + 1 < _DB_RETRIES:
+                time.sleep(_DB_RETRY_DELAY * (attempt + 1))
+    raise last_exc
+
+
+# --------------------------------------------------------------------------- #
 # metrics.md
 # --------------------------------------------------------------------------- #
 
@@ -226,17 +258,22 @@ def build_metrics():
         table = model._meta.db_table
         date_field = _resolve_date_field(model)
         asset_field = _resolve_asset_field(model)
-        try:
-            queryset = model._default_manager.all()
+
+        def _gather(_model=model, _date_field=date_field, _asset_field=asset_field):
+            queryset = _model._default_manager.all()
             total = queryset.count()
             earliest = latest = None
-            if date_field is not None and total:
-                span = queryset.aggregate(first=Min(date_field.name), last=Max(date_field.name))
+            if _date_field is not None and total:
+                span = queryset.aggregate(first=Min(_date_field.name), last=Max(_date_field.name))
                 earliest, latest = span['first'], span['last']
             asset_count = ''
-            if asset_field is not None and total:
-                asset_count = f'{queryset.values(asset_field.name).distinct().count():,}'
-        except (OperationalError, ProgrammingError) as exc:
+            if _asset_field is not None and total:
+                asset_count = f'{queryset.values(_asset_field.name).distinct().count():,}'
+            return total, earliest, latest, asset_count
+
+        try:
+            total, earliest, latest, asset_count = _query_with_reconnect(_gather)
+        except (OperationalError, InterfaceError, ProgrammingError) as exc:
             rows.append((f'`{table}`', f'{label}.{model.__name__}', 'UNAVAILABLE', '', '', '', str(exc)[:80]))
             continue
 
@@ -1100,8 +1137,8 @@ class Command(BaseCommand):
                 continue
             self.stdout.write(f'Building {name}.md ({requirement})')
             try:
-                content = builder()
-            except (OperationalError, ProgrammingError) as exc:
+                content = _query_with_reconnect(builder)
+            except (OperationalError, InterfaceError, ProgrammingError) as exc:
                 raise CommandError(f'{name}.md needs the database and it is unavailable: {exc}') from exc
 
             target = output_dir / f'{name}.md'
