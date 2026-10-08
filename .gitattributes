@@ -1,0 +1,58 @@
+# ===========================================================================
+# FinanceAnalysis — .gitattributes
+#
+# Normalize line endings so the WSL clone and the Windows peer stop producing
+# phantom CRLF/LF diffs. Without this file each OS applies its own
+# core.autocrlf independently: Git-for-Windows (autocrlf=true) checks out CRLF
+# while WSL git (autocrlf unset) stores LF, so every text file looks modified
+# when the repo is viewed from the other OS.
+#
+#   * text=auto eol=lf  -> store LF in the repo AND check out LF on every OS.
+#
+# After editing this file, re-normalize tracked files with:
+#   git add --renormalize .
+#
+# Binary types are listed explicitly so normalization can never corrupt model
+# artifacts, fonts, images, or dumps (git also auto-detects them, but being
+# explicit is safer and self-documenting).
+# ===========================================================================
+
+* text=auto eol=lf
+
+# --- Windows batch must stay CRLF (cmd.exe mis-parses LF-only scripts) -------
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# --- Binary artifacts: never normalize --------------------------------------
+# Model weights / ML artifacts
+*.pkl    binary
+*.pt     binary
+*.pth    binary
+*.joblib binary
+*.npy    binary
+*.npz    binary
+*.h5     binary
+*.onnx   binary
+# Databases, dumps, bundles
+*.dump   binary
+*.bundle binary
+# Images
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.webp   binary
+# Fonts
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.eot    binary
+# Documents, archives, wheels, keys
+*.pdf    binary
+*.zip    binary
+*.gz     binary
+*.tgz    binary
+*.whl    binary
+*.ppk    binary
+*.pem    binary
