@@ -24,9 +24,11 @@
 
 
 # --- Personal editor & workspace state (machine-specific) ------------------
-# Multi-root workspace file: it points at a personal path outside this repo and
-# carries per-user tool auto-approve rules, so it is deliberately untracked.
-FinanceAnalysis.code-workspace
+# Multi-root workspace files: they point at personal paths outside this repo and
+# carry per-user tool auto-approve rules, so they are deliberately untracked.
+# The broad match covers every clone's variant (e.g. FinanceAnalysis-wsl2.code-workspace),
+# which an exact `FinanceAnalysis.code-workspace` rule silently misses.
+*.code-workspace
 # Local IDE state only. .vscode/tasks.json and .vscode/git-safe.cmd remain
 # tracked because they are shared with the team.
 .vscode/settings.json
