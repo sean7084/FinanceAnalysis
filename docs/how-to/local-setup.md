@@ -559,9 +559,10 @@ sudo apt-get install -y python3-venv python3-full postgresql-client
 # TA-Lib C library: see §4, "Linux / WSL2".
 
 cd ~
-git clone /mnt/c/Users/<you>/Documents/FinanceAnalysis FinanceAnalysis-wsl2
+git clone https://github.com/sean7084/FinanceAnalysis.git FinanceAnalysis-wsl2
 cd FinanceAnalysis-wsl2
-cp /mnt/c/Users/<you>/Documents/FinanceAnalysis/.env .env
+# .env is not tracked; copy it from an existing clone, or seed it from the template:
+cp /mnt/c/Users/<you>/Documents/FinanceAnalysis/.env .env 2>/dev/null || cp .env.example .env
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements/local.txt
@@ -569,11 +570,12 @@ bash scripts/verify_local_stack.sh           # every service must report "ready"
 .venv/bin/python manage.py test --keepdb     # full suite, expect OK
 ```
 
-Cloning from the Windows path makes that path `origin`, so the two clones sync through
-the local filesystem — no GitHub access and no proxy needed. Confirm with
-`git remote -v`.
+Cloning from GitHub makes `origin` point at GitHub directly, so the WSL clone syncs with no
+intermediate hop. Confirm with `git remote -v`. GitHub is reached through the PassWall proxy
+(`git config --local http.https://github.com.proxy http://localhost:10808`); writes authenticate
+via `gh auth login` + `gh auth setup-git`, and reads are anonymous (the repo is public).
 
-### Keeping the two clones in sync
+### Keeping the clone in sync
 
 ```bash
 cd ~/FinanceAnalysis-wsl2
@@ -586,10 +588,9 @@ bash scripts/verify_local_stack.sh
 
 Two rules, both learned the hard way:
 
-- **Never leave work uncommitted in the WSL clone.** Nothing pushes it anywhere, so it
-  diverges silently. A clone used for real work and never committed can end up months
-  behind holding changes that exist nowhere else. If you find any, commit them to a
-  branch *first*, then sync and compare.
+- **Commit and push real work.** `origin` is GitHub, so a pushed branch is backed up off-machine.
+  The old two-hop clone pushed nowhere and could sit months behind holding changes that existed
+  on no other host; that failure mode is gone, but only if you actually push.
 - **Use `--ff-only`, and check before forcing anything.** If it refuses, the clone has
   local commits — branch them, don't discard them. `git reset --hard` against a clone
   with uncommitted work is unrecoverable.
