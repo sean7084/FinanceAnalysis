@@ -22,3 +22,6 @@ mlflow==3.12.0
 drf-spectacular==0.27.2
 django-vite==3.1.0
 whitenoise==6.8.2
+# S3-compatible object-store client for the model artifact backend (MinIO on the NAS).
+# Imported lazily by apps/prediction/artifact_store.py; only exercised when ARTIFACT_STORE_BACKEND=s3.
+boto3==1.43.110

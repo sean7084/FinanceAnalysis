@@ -28,6 +28,7 @@ from .tasks_lightgbm import (
     _sanitize_feature_snapshot,
 )
 from .odds import estimate_trade_decision
+from .artifact_store import get_artifact_store, to_store_key
 
 
 LSTM_MODELS_DIR = os.path.join(settings.BASE_DIR, 'models', 'lstm')
@@ -296,9 +297,13 @@ def _load_lstm_artifact(model_version, horizon_days):
     if fallback_dir not in candidate_dirs:
         candidate_dirs.append(fallback_dir)
 
+    store = get_artifact_store()
     file_path = None
     for model_dir in candidate_dirs:
         candidate_path = os.path.join(model_dir, f'{int(horizon_days)}d_model.pt')
+        if not os.path.exists(candidate_path) and store.is_remote:
+            # Cold cache + remote store: pull this version dir down before reading.
+            store.ensure_dir_local(to_store_key(model_dir), model_dir)
         if os.path.exists(candidate_path):
             file_path = candidate_path
             break
@@ -790,6 +795,12 @@ def train_lstm_models(
             ensure_ascii=True,
             indent=2,
         )
+
+    # Mirror the whole version dir (all horizons + summary.json) to the artifact
+    # store. No-op under the local backend; under S3 this uploads the cache dir.
+    get_artifact_store().upload_dir(
+        aggregate_artifact_path, to_store_key(aggregate_artifact_path)
+    )
 
     ModelVersion.objects.filter(
         model_type=ModelVersion.ModelType.LSTM,
