@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-09T14:53:40Z_
+_Generated: 2026-10-09T15:53:18Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**32** project commands across **8** apps.
+**33** project commands across **8** apps.
 
 
 ## `apps.analytics`
@@ -483,6 +483,15 @@ Download model artifacts from the store into the local cache (for fresh clones).
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--prefix` | value | `models` |  | Store key prefix to sync (default: models). |
+
+
+### `verify_artifact_store`
+
+Verify registered model artifacts resolve in the configured artifact store.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--json` | flag | `False` |  | Emit a machine-readable JSON report instead of prose. |
 
 
 ## `apps.sentiment`

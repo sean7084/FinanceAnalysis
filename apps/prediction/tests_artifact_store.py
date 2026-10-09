@@ -9,10 +9,14 @@ unit test. The point is to lock in two invariants the migration depends on:
 * the S3 backend uploads a whole family on save and downloads only missing keys on
   a cold cache, so a warm cache never touches the network.
 """
+import json
 import os
 import tempfile
+from io import StringIO
 
-from django.test import SimpleTestCase, override_settings
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.prediction.artifact_store import (
     LocalArtifactStore,
@@ -248,3 +252,77 @@ class GetArtifactStoreFactoryTests(SimpleTestCase):
         self.assertEqual(store.bucket, 'finance-analysis-artifacts')
         # Constructing the store must not require a reachable endpoint.
         self.assertIsNone(store._client)
+
+
+class VerifyArtifactStoreCommandTests(TestCase):
+    """verify_artifact_store against the local backend with a temp cache root."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        override = override_settings(
+            ARTIFACT_STORE_BACKEND='local', ARTIFACT_LOCAL_CACHE_ROOT=self.root
+        )
+        override.enable()
+        self.addCleanup(override.disable)
+        reset_artifact_store()
+        self.addCleanup(reset_artifact_store)
+        # Resolvable families on "disk" (the cache root).
+        for rel in ('models/lightgbm/3d_lgb-3d-2020-01-01', 'models/lstm/lstm-2020-01-01'):
+            os.makedirs(os.path.join(self.root, rel), exist_ok=True)
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command('verify_artifact_store', *args, stdout=out)
+        return out.getvalue()
+
+    def test_all_active_resolve_succeeds(self):
+        from apps.prediction.models import ModelVersion
+        from apps.prediction.models_lightgbm import LightGBMModelArtifact
+
+        LightGBMModelArtifact.objects.create(
+            horizon_days=3, version='lgb-3d-2020-01-01',
+            artifact_path='models/lightgbm/3d_lgb-3d-2020-01-01', is_active=True,
+        )
+        ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.LSTM, version='lstm-2020-01-01',
+            artifact_path='models/lstm/lstm-2020-01-01', is_active=True,
+        )
+        output = self._run()
+        self.assertIn('All active artifacts resolve', output)
+        self.assertIn('LightGBM artifacts: 1/1 resolve', output)
+        self.assertIn('LSTM versions: 1/1 resolve', output)
+
+    def test_missing_active_artifact_fails_loudly(self):
+        from apps.prediction.models_lightgbm import LightGBMModelArtifact
+
+        LightGBMModelArtifact.objects.create(
+            horizon_days=7, version='lgb-7d-ghost',
+            artifact_path='models/lightgbm/7d_does-not-exist', is_active=True,
+        )
+        with self.assertRaises(CommandError) as ctx:
+            self._run()
+        self.assertIn('ACTIVE', str(ctx.exception))
+
+    def test_inactive_missing_is_reported_but_does_not_fail(self):
+        from apps.prediction.models_lightgbm import LightGBMModelArtifact
+
+        LightGBMModelArtifact.objects.create(
+            horizon_days=30, version='lgb-30d-old',
+            artifact_path='models/lightgbm/30d_gone', is_active=False,
+        )
+        output = self._run()  # must not raise
+        self.assertIn('do not resolve', output)
+
+    def test_json_report_shape(self):
+        from apps.prediction.models_lightgbm import LightGBMModelArtifact
+
+        LightGBMModelArtifact.objects.create(
+            horizon_days=3, version='lgb-3d-2020-01-01',
+            artifact_path='models/lightgbm/3d_lgb-3d-2020-01-01', is_active=True,
+        )
+        data = json.loads(self._run('--json'))
+        self.assertEqual(data['backend'], 'LocalArtifactStore')
+        self.assertEqual(data['totals']['lightgbm_rows'], 1)
+        self.assertEqual(data['totals']['missing_active'], 0)
