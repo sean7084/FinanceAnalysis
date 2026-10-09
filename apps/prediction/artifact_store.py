@@ -83,6 +83,10 @@ class ArtifactStore:
     def exists(self, key):
         raise NotImplementedError
 
+    def exists_prefix(self, key_prefix):
+        """True if key_prefix is an object or has any object beneath it."""
+        raise NotImplementedError
+
     def list_keys(self, prefix):
         raise NotImplementedError
 
@@ -131,6 +135,10 @@ class LocalArtifactStore(ArtifactStore):
 
     def exists(self, key):
         return os.path.exists(self._abs(key))
+
+    def exists_prefix(self, key_prefix):
+        # A family dir or a single file under the cache root.
+        return os.path.exists(self._abs(key_prefix))
 
     def list_keys(self, prefix):
         base = self._abs(prefix)
@@ -226,6 +234,12 @@ class S3ArtifactStore(ArtifactStore):
             if code == 404:
                 return False
             raise
+
+    def exists_prefix(self, key_prefix):
+        response = self.client().list_objects_v2(
+            Bucket=self.bucket, Prefix=str(key_prefix), MaxKeys=1
+        )
+        return response.get("KeyCount", 0) > 0
 
     def list_keys(self, prefix):
         keys = []

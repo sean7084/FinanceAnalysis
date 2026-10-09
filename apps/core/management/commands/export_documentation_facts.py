@@ -385,6 +385,23 @@ def build_metrics():
 # models.md
 # --------------------------------------------------------------------------- #
 
+def _artifact_present(stored_path):
+    """True if a stored artifact_path resolves in the configured artifact store.
+
+    Store-aware so this report stays correct once artifacts live in S3/MinIO rather
+    than on local disk. Under the default local backend it is identical to the
+    previous ``Path(stored_path).exists()`` check. A store error falls back to the
+    filesystem so documentation generation never breaks on a store outage.
+    """
+    if not stored_path:
+        return False
+    from apps.prediction.artifact_store import get_artifact_store, to_store_key
+    try:
+        return get_artifact_store().exists_prefix(to_store_key(stored_path))
+    except Exception:
+        return Path(stored_path).exists()
+
+
 def _scan_disk_artifacts():
     """Return ``(lightgbm_rows, lstm_rows)`` read from on-disk artifact metadata."""
     root = Path(settings.BASE_DIR) / 'models'
@@ -429,7 +446,7 @@ def _scan_disk_artifacts():
             ),
             'missing': summary.get('missing_value_strategy', 'ABSENT'),
             'artifact_path': first_artifact,
-            'resolves': 'yes' if first_artifact and Path(first_artifact).exists() else 'NO',
+            'resolves': 'yes' if _artifact_present(first_artifact) else 'NO',
         })
     return lightgbm_rows, lstm_rows
 
@@ -494,7 +511,7 @@ def build_models():
                     feature_count or '&mdash;',
                     pruning.get('rule', '&mdash;'),
                     metadata.get('missing_value_strategy', 'ABSENT'),
-                    'yes' if stored_path and Path(stored_path).exists() else 'NO',
+                    'yes' if _artifact_present(stored_path) else 'NO',
                 ))
             parts.append(_md_table(
                 [
