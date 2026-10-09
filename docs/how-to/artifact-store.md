@@ -107,16 +107,23 @@ python manage.py migrate_artifacts_to_store --execute --normalize-registry
 # Fresh clone (models/ untracked): populate the local cache from the store
 python manage.py sync_artifacts_from_store
 python manage.py sync_artifacts_from_store --prefix models/lightgbm
+
+# Verify every registered artifact resolves in the store; fails loud on a missing
+# ACTIVE artifact (the promotion / cutover gate from TECHNICAL_GUIDE 6.5)
+python manage.py verify_artifact_store
+python manage.py verify_artifact_store --json
 ```
 
 ### Cutover sequence
 
 1. Deploy MinIO (above); put the endpoint + scoped key in `.env`.
-2. `migrate_artifacts_to_store --execute --normalize-registry` and confirm the active
-   families report as uploaded.
+2. `migrate_artifacts_to_store --execute --normalize-registry`, then
+   `verify_artifact_store` — it must report every ACTIVE artifact resolving in the
+   store. It also lists legacy absolute paths from other hosts that never resolve;
+   those are inactive, so they are safe to ignore (or re-train over).
 3. Set `ARTIFACT_STORE_BACKEND=s3`; restart the stack.
-4. Validate a daily prediction, a queued backtest, and an LSTM/LightGBM inference all
-   load from the cache/store.
+4. Re-run `verify_artifact_store` (now against S3), and validate a daily prediction, a
+   queued backtest, and an LSTM/LightGBM inference all load from the cache/store.
 5. Only then untrack artifacts: `git rm -r --cached models/`, add `models/` to
    `.gitignore` (it is now a cache), and rely on `sync_artifacts_from_store` for fresh
    clones. This is forward-only — existing git history keeps its blobs; `.git` simply
