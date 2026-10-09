@@ -151,6 +151,11 @@ Artifacts land in `models/lstm/<version>/` as `3d_model.pt`, `7d_model.pt`,
 `update_or_create`, and each successful retrain refreshes ensemble weights
 against the currently active LightGBM artifacts.
 
+`models/` is the local artifact cache. When `ARTIFACT_STORE_BACKEND=s3`, each family
+is also mirrored to the object store on save (LightGBM does the same), and a cold load
+pulls it back down — see [`artifact-store.md`](artifact-store.md). Under the default
+`local` backend the cache *is* the store, so nothing is uploaded.
+
 LSTM consumes the same shared feature extraction as LightGBM, converted into
 sequences, and expands each base feature with an `__is_missing` mask column —
 which is why the LSTM `feature_count` in `summary.json` is roughly double the
@@ -205,6 +210,11 @@ python manage.py run_reference_benchmark_suite \
 # 3. Regenerate the registry sheet and read the diff
 python manage.py export_documentation_facts --only models
 git diff docs/reference/models.md
+
+# 4. Confirm the new family's artifacts resolve in the store. TECHNICAL_GUIDE 6.5:
+#    a model that loads by version but cannot find its file fails at inference, not
+#    at promotion. Exits non-zero if any ACTIVE artifact is missing.
+python manage.py verify_artifact_store
 ```
 
 Compare the new family against the incumbent on **out-of-sample** return,

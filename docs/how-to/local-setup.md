@@ -45,6 +45,7 @@ backtests, training, the worker fleet, or any long-lived migration runbook, set 
 | PostgreSQL | 15 | Runs **outside** the repo — host service or another machine |
 | `postgresql-client` | ≥ 15 | WSL2 only, and only for `pg_dump`. Not installed by default, and the CSI 500 runbook's backup step needs it |
 | Redis | 7 | Runs **outside** the repo — same |
+| MinIO *(optional)* | recent | S3 model-artifact store, only when `ARTIFACT_STORE_BACKEND=s3`. Runs **outside** the repo (NAS) — see [`artifact-store.md`](artifact-store.md) and `deploy/minio/` |
 | Node.js + npm | current LTS | Frontend only |
 | TA-Lib | C library | See §4 — the most common first-run failure |
 | Git | any recent | |
@@ -306,6 +307,15 @@ inventory, with defaults and the file:line of each read, is generated in
 [`../reference/env.md`](../reference/env.md). Notably absent from the example:
 `HISTORICAL_DATA_FLOOR` (defaults to `2010-01-01`), all `MACRO_*` and
 `NEWS_BACKFILL_*` tuning keys, and the `EMAIL_*` group.
+
+**Model artifact store (optional).** `ARTIFACT_STORE_BACKEND` defaults to `local`
+(model files stay under `models/`), which needs no extra service. To externalize them
+to S3/MinIO, set `ARTIFACT_STORE_BACKEND=s3` plus the `ARTIFACT_S3_*` keys (endpoint,
+bucket, scoped access/secret) — all in `.env.example` and
+[`artifact-store.md`](artifact-store.md). After the store is deployed:
+`migrate_artifacts_to_store --execute` uploads existing families,
+`sync_artifacts_from_store` populates a fresh clone's cache, and `verify_artifact_store`
+confirms every active artifact resolves.
 
 ---
 
