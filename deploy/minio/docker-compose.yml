@@ -5,12 +5,16 @@
 # Postgres pattern: bind to the LAN address, no WAN port-forward, remote access
 # is WireGuard-only.
 #
-#   1. create a `.env` beside this file with MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
-#   2. docker compose up -d
-#   3. run init-minio.sh to create the bucket + a scoped app key (see README.md)
+#   1. copy this dir to the NAS at /var/docks/minio/ (house convention)
+#   2. create a `.env` beside this file with MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+#   3. docker compose up -d
+#   4. run init-minio.sh to create the bucket + a scoped app key (see README.md)
+#   5. scope 9000/9001 with DOCKER-USER firewall rules
 #
-# The application does NOT use the root credentials below; it uses the scoped
-# service-account key that init-minio.sh prints.
+# The authoritative NAS procedure (ZFS dataset, DOCKER-USER firewall, secrets,
+# monitor, and the reference rows to fill once live) is HomeServer
+# docs/runbooks/minio.md. The application does NOT use the root credentials below;
+# it uses the scoped service-account key that init-minio.sh prints.
 services:
   minio:
     image: minio/minio:latest
@@ -25,9 +29,15 @@ services:
     volumes:
       # ZFS dataset so sanoid snapshots + the offsite plan cover the artifacts.
       - /DefaultMirror/minio:/data
+    mem_limit: 1g                       # house policy: cap every container (2026-10-03)
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    networks:
+      default:
+        driver_opts:
+          # Pin the bridge so the DOCKER-USER firewall rules survive compose down/up.
+          com.docker.network.bridge.name: br-minio

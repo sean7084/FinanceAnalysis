@@ -45,17 +45,20 @@ something the Django app runs. Deploy it manually, once.
    untrack artifacts (Phase 6b of the migration plan):
    `git rm -r --cached models/` + add `models/` to `.gitignore`.
 
-6. **Record it in the HomeServer repo** (only after it is live): add rows to
-   `docs/reference/inventory.md` and `live-state.md`, the key *location* to
-   `docs/reference/secrets-inventory.md`, and a `docs/runbooks/minio.md`.
+6. **Record it in the HomeServer repo** (only after it is live): the deployment +
+   ops runbook already exists at `docs/runbooks/minio.md` — follow its "Reference rows
+   to add once DEPLOYED" checklist to fill `inventory.md`, `live-state.md`, and
+   `secrets-inventory.md`.
 
 ## Firewall
 
-The compose binds `9000`/`9001` to `192.168.31.8` (LAN-only), like PostgreSQL and
-Redis, so it is reachable from the LAN and WireGuard with no WAN forward. If the NAS
-`DOCKER-USER` chain default-drops published ports (as it does for Immich), add an
-ACCEPT for the LAN + WireGuard subnets — see the HomeServer `runbooks/firewall.md`
-and the Immich precedent in `runbooks/immich.md`.
+Published Docker ports bypass `INPUT` and are controlled by the `DOCKER-USER` chain
+(HomeServer `runbooks/firewall.md`). The compose binds `9000`/`9001` to `192.168.31.8`
+and pins the bridge to `br-minio`; scope both ports with `DOCKER-USER` ACCEPTs for the
+LAN (`192.168.31.0/24`) and the WireGuard container subnet (`172.21.0.0/16` since the
+2026-10-05 router migration), then DROP the rest — the Immich pattern. The exact rules,
+ZFS dataset, secrets, and monitor steps are in the authoritative HomeServer runbook
+`docs/runbooks/minio.md`.
 
 ## Least-privilege option
 
