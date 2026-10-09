@@ -57,6 +57,11 @@ The NAS (`192.168.31.8`) already runs Docker, Samba, ZFS, PostgreSQL, and Redis.
 MinIO as another LAN-only container, mirroring the Immich/Postgres firewall pattern
 (bind to the LAN address, accept from LAN + WireGuard in `DOCKER-USER`, no WAN forward).
 
+A turnkey kit — `docker-compose.yml`, `init-minio.sh` (bucket + versioning + a scoped
+app key), and a step-by-step `README.md` — lives in
+[`deploy/minio/`](../../deploy/minio/). The compose below is the same service, inline
+for quick reference.
+
 Reference compose (adjust the dataset path and credentials; keep the data on a ZFS
 dataset so snapshots cover it):
 

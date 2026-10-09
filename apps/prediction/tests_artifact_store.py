@@ -76,6 +76,12 @@ class LocalArtifactStoreTests(SimpleTestCase):
         self.store.delete('models/x/a.pkl')
         self.assertFalse(self.store.exists('models/x/a.pkl'))
 
+    def test_exists_prefix_dir_and_file(self):
+        self.store.put_bytes('models/x/a.pkl', b'1')
+        self.assertTrue(self.store.exists_prefix('models/x'))          # directory
+        self.assertTrue(self.store.exists_prefix('models/x/a.pkl'))    # file
+        self.assertFalse(self.store.exists_prefix('models/nope'))
+
     def test_dir_mirror_ops_are_noops(self):
         # The cache IS the store locally, so both return 0 and touch nothing.
         self.assertEqual(self.store.upload_dir(self._tmp.name, 'models/x'), 0)
@@ -126,6 +132,13 @@ class _FakeS3Client:
         with open(Filename, 'wb') as handle:
             handle.write(self.objects[Key])
 
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        matching = [k for k in sorted(self.objects) if k.startswith(Prefix)]
+        return {
+            'KeyCount': len(matching[:MaxKeys]),
+            'Contents': [{'Key': k} for k in matching[:MaxKeys]],
+        }
+
     def get_paginator(self, name):
         client = self
 
@@ -158,6 +171,12 @@ class S3ArtifactStoreTests(SimpleTestCase):
 
     def test_exists_is_false_on_404(self):
         self.assertFalse(self.store.exists('models/missing.pkl'))
+
+    def test_exists_prefix_matches_object_and_children(self):
+        self.store.put_bytes('models/x/a.pkl', b'1')
+        self.assertTrue(self.store.exists_prefix('models/x'))
+        self.assertTrue(self.store.exists_prefix('models/x/a.pkl'))
+        self.assertFalse(self.store.exists_prefix('models/nope'))
 
     def test_list_keys_scopes_to_prefix(self):
         self.store.put_bytes('models/x/a.pkl', b'1')
