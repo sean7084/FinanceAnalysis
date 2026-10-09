@@ -49,6 +49,7 @@ from apps.prediction.historical_features import (
 from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 from .odds import estimate_trade_decision
+from .artifact_store import get_artifact_store, to_store_key
 
 
 # ============================================================================
@@ -156,6 +157,10 @@ def _save_model_artifacts(model_dict, horizon_days, version, extra_metadata=None
             metadata.update(extra_metadata)
         json.dump(metadata, f, indent=2)
 
+    # Mirror the freshly written family to the artifact store. No-op under the
+    # default local backend; under S3 this uploads the local cache dir to the bucket.
+    get_artifact_store().upload_dir(path, to_store_key(path))
+
 
 def _load_model_artifacts(horizon_days, version):
     """Load trained model, scaler, calibrator from disk."""
@@ -165,6 +170,12 @@ def _load_model_artifacts(horizon_days, version):
         return _LIGHTGBM_ARTIFACT_CACHE[cache_key]
 
     path = _get_model_path(horizon_days, version)
+
+    # Cold cache + remote store: pull the family down before reading it. Under the
+    # local backend is_remote is False, so this is skipped and behaviour is unchanged.
+    store = get_artifact_store()
+    if not os.path.exists(path) and store.is_remote:
+        store.ensure_dir_local(to_store_key(path), path)
 
     if not os.path.exists(path):
         return None

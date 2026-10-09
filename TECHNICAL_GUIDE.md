@@ -643,8 +643,15 @@ A model that loads by version lookup but cannot find its file fails at
 generated models sheet reports whether each stored path resolves on the current
 host, so path resolution should be checked as part of any promotion.
 
-Long-term this should be repo-relative paths resolved against `BASE_DIR`. Tracked
-in `BACKLOG.md`.
+This is now handled two ways. New artifacts store **`BASE_DIR`-relative** paths
+(`_to_relative_artifact_path` / `_resolve_artifact_path` in `tasks_lightgbm.py`,
+`_resolve_lstm_artifact_path` in `tasks_lstm.py`), so a relative path resolves on any
+host. That relative path also doubles as the object key for the artifact store
+(`docs/how-to/artifact-store.md`), which can hold the binaries in S3/MinIO instead of
+git. Legacy rows trained on other hosts still carry absolute paths that do not resolve;
+they are inactive, and `migrate_artifacts_to_store --normalize-registry` rewrites any
+that map under the current `BASE_DIR`. The remaining git-bloat half is staged, not cut
+over yet — see `BACKLOG.md`.
 
 ### 6.6 Plausible accuracy bounds
 

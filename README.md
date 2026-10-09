@@ -22,6 +22,7 @@ This README is orientation only. Everything else is split by purpose.
 | Populate or repair the database | [`docs/how-to/backfill.md`](docs/how-to/backfill.md) |
 | Run the one-time CSI 500 universe migration | [`docs/how-to/csi500-migration-runbook.md`](docs/how-to/csi500-migration-runbook.md) |
 | Retrain, promote, or roll back a model | [`docs/how-to/retrain.md`](docs/how-to/retrain.md) |
+| Configure the model artifact store (MinIO/S3) | [`docs/how-to/artifact-store.md`](docs/how-to/artifact-store.md) |
 | Run the tests | [`docs/how-to/testing.md`](docs/how-to/testing.md) |
 | Call the API | [`docs/reference/api.md`](docs/reference/api.md) |
 | Look up a command's options | [`docs/reference/commands.md`](docs/reference/commands.md) *(generated)* |

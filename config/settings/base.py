@@ -229,6 +229,21 @@ NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
 NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
 NEWS_BACKFILL_FLOOR = env('NEWS_BACKFILL_FLOOR', default='2021-04-15 00:00:00')
 NEWS_BACKFILL_LIMIT_PER_PROVIDER = env.int('NEWS_BACKFILL_LIMIT_PER_PROVIDER', default=0)
+
+# Model artifact store -- see apps/prediction/artifact_store.py.
+# `local` (default) keeps artifacts on the filesystem under BASE_DIR (the historical
+# behaviour; used by CI and tests). `s3` mirrors them to an S3-compatible object store
+# (MinIO on the NAS) with BASE_DIR as a local cache. Object keys are the BASE_DIR-relative
+# artifact_path already stored in the registry, so artifact_path stays portable and doubles
+# as the key. S3 credentials are secrets: keep them in .env (gitignored), never in the repo.
+ARTIFACT_STORE_BACKEND = env('ARTIFACT_STORE_BACKEND', default='local')
+ARTIFACT_LOCAL_CACHE_ROOT = env('ARTIFACT_LOCAL_CACHE_ROOT', default=str(BASE_DIR))
+ARTIFACT_S3_ENDPOINT_URL = env('ARTIFACT_S3_ENDPOINT_URL', default='')
+ARTIFACT_S3_BUCKET = env('ARTIFACT_S3_BUCKET', default='finance-analysis-artifacts')
+ARTIFACT_S3_ACCESS_KEY_ID = env('ARTIFACT_S3_ACCESS_KEY_ID', default='')
+ARTIFACT_S3_SECRET_ACCESS_KEY = env('ARTIFACT_S3_SECRET_ACCESS_KEY', default='')
+ARTIFACT_S3_REGION = env('ARTIFACT_S3_REGION', default='us-east-1')
+ARTIFACT_S3_ADDRESSING_STYLE = env('ARTIFACT_S3_ADDRESSING_STYLE', default='path')
 # Backtest task health: how long a RUNNING backtest run can sit with no progress
 # before it is considered orphaned. See apps/backtest/task_health.py.
 BACKTEST_STALE_TASK_MAX_AGE_SECONDS = env.int('BACKTEST_STALE_TASK_MAX_AGE_SECONDS', default=2400)

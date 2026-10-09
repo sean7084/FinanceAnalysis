@@ -345,18 +345,22 @@ will not self-heal. `apps/backtest/task_health.py` can identify them; see
 `docs/how-to/runbook-sync-failure.md` §6. Needs a sweep and a decision on whether
 to restart or fail them.
 
-### Stored artifact paths are not portable
+### Artifact storage: portability done, git-bloat fix staged
 
-`ModelVersion.artifact_path` and LSTM `summary.json` record **absolute** paths
-from whatever host trained them. The registry currently holds paths from a Docker
-container (`/app/...`), a Linux home directory, and a Windows OneDrive checkout —
-none of which resolve on the current host. Only the most recent LightGBM family
-resolves.
+Portability is largely resolved. New artifacts store `BASE_DIR`-relative paths
+(`_resolve_artifact_path` / `_resolve_lstm_artifact_path`), and the relative path
+doubles as the object key for the artifact store
+(`apps/prediction/artifact_store.py`, `docs/how-to/artifact-store.md`). Legacy rows
+from other hosts (`/app/...`, a Linux home dir, `C:\...`) still do not resolve; they
+are inactive, and `migrate_artifacts_to_store --normalize-registry` rewrites any that
+map under the current `BASE_DIR`.
 
-Options: store repo-relative paths and resolve against `BASE_DIR` at load time, or
-add a re-registration step for moved clones. A model that loads by version but
-cannot find its file fails at **inference** time, not at promotion time, which is
-the worst place to discover it.
+Remaining — the git-bloat half. Artifacts are still plain git blobs (151 files,
+`.git` ~58 MB), growing one retained family per retrain (§6.2). The S3/MinIO backend
+and the migrate/sync commands are implemented and tested but **not cut over**: deploy
+MinIO on the NAS, `migrate_artifacts_to_store --execute`, set
+`ARTIFACT_STORE_BACKEND=s3`, then `git rm -r --cached models/` + gitignore
+(forward-only). Procedure in `docs/how-to/artifact-store.md`.
 
 ### `TECHNICAL_GUIDE.md` disagrees with the staleness code
 

@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-09-17T23:32:21Z_
+_Generated: 2026-10-09T14:53:40Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**30** project commands across **8** apps.
+**32** project commands across **8** apps.
 
 
 ## `apps.analytics`
@@ -424,6 +424,17 @@ Backfill model input data over a historical date range for heuristic and LightGB
 | `--resume-from-checkpoint` | flag | `False` |  |  |
 
 
+### `migrate_artifacts_to_store`
+
+Mirror local model artifacts (models/) into the configured artifact store.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--execute` | flag | `False` |  | Actually upload; without it the command is a dry run. |
+| `--root` | value | &mdash; |  | Artifact root to walk (default: <BASE_DIR>/models). |
+| `--normalize-registry` | flag | `False` |  | Rewrite registry artifact_path values that resolve under BASE_DIR to canonical store keys (requires --execute). |
+
+
 ### `purge_prediction_model_stubs`
 
 Purge inactive legacy phase14_training_stub LightGBM/LSTM ModelVersion rows.
@@ -463,6 +474,15 @@ Backfill features and retrain 3/7/30-day LSTM models end-to-end.
 | `--skip-backfill` | flag | `False` |  | Skip model data backfill and retrain directly. |
 | `--skip-sentiment` | flag | `False` |  | Pass through to backfill_model_data to skip sentiment recomputation. |
 | `--version-tag` | value | `""` |  | Optional suffix added to the LSTM model version to preserve existing artifact families. |
+
+
+### `sync_artifacts_from_store`
+
+Download model artifacts from the store into the local cache (for fresh clones).
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--prefix` | value | `models` |  | Store key prefix to sync (default: models). |
 
 
 ## `apps.sentiment`
