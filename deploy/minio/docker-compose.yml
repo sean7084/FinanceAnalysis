@@ -17,7 +17,7 @@
 # it uses the scoped service-account key that init-minio.sh prints.
 services:
   minio:
-    image: minio/minio:latest
+    image: minio/minio:latest   # HomeNAS pulls via docker.1panel.live then retags (see runbook)
     container_name: finance_artifacts_minio
     command: server /data --console-address ":9001"
     ports:
@@ -30,11 +30,9 @@ services:
       # ZFS dataset so sanoid snapshots + the offsite plan cover the artifacts.
       - /DefaultMirror/minio:/data
     mem_limit: 1g                       # house policy: cap every container (2026-10-03)
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    # No compose healthcheck: the minio/minio server image ships neither `mc` nor `curl`,
+    # so `mc ready local` would mark a healthy server unhealthy. homenas-monitor probes
+    # /minio/health/live externally instead (see HomeServer docs/runbooks/minio.md).
     restart: unless-stopped
     networks:
       default:
