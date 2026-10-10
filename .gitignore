@@ -94,3 +94,7 @@ source_data
 
 # --- Downloaded bootstrap installers (never project source) ----------------
 get-pip.py
+
+# Model artifacts live in the MinIO object store (docs/how-to/artifact-store.md);
+# the local models/ tree is a retrainable cache, not source-controlled (untracked 2026-10-10).
+models/

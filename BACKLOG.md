@@ -345,7 +345,7 @@ will not self-heal. `apps/backtest/task_health.py` can identify them; see
 `docs/how-to/runbook-sync-failure.md` §6. Needs a sweep and a decision on whether
 to restart or fail them.
 
-### Artifact storage: portability done, git-bloat fix staged
+### Artifact storage: DONE (portability + git-bloat, cut over 2026-10-10)
 
 Portability is largely resolved. New artifacts store `BASE_DIR`-relative paths
 (`_resolve_artifact_path` / `_resolve_lstm_artifact_path`), and the relative path
@@ -355,12 +355,14 @@ from other hosts (`/app/...`, a Linux home dir, `C:\...`) still do not resolve; 
 are inactive, and `migrate_artifacts_to_store --normalize-registry` rewrites any that
 map under the current `BASE_DIR`.
 
-Remaining — the git-bloat half. Artifacts are still plain git blobs (151 files,
-`.git` ~58 MB), growing one retained family per retrain (§6.2). The S3/MinIO backend
-and the migrate/sync commands are implemented and tested but **not cut over**: deploy
-MinIO on the NAS, `migrate_artifacts_to_store --execute`, set
-`ARTIFACT_STORE_BACKEND=s3`, then `git rm -r --cached models/` + gitignore
-(forward-only). Procedure in `docs/how-to/artifact-store.md`.
+The git-bloat half is **done** (2026-10-10). MinIO is deployed on the NAS
+(`finance_artifacts_minio`, bucket `finance-analysis-artifacts`, versioning on); all
+170 on-disk artifacts were migrated (`migrate_artifacts_to_store --execute`),
+`ARTIFACT_STORE_BACKEND=s3` is live, `verify_artifact_store` passes for every ACTIVE
+artifact, and `models/` is untracked + gitignored (forward-only — existing history keeps
+its ~58 MB of blobs, but `.git` stops growing one family per retrain). Fresh clones
+repopulate via `sync_artifacts_from_store`. Procedure + ops:
+`docs/how-to/artifact-store.md`; NAS runbook: HomeServer `docs/runbooks/minio.md`.
 
 ### `TECHNICAL_GUIDE.md` disagrees with the staleness code
 

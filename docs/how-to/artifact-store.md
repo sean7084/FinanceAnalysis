@@ -7,9 +7,13 @@ retrain rather than overwriting, `.git` grew permanently with each run (151 blob
 ~58 MB of history at the time of writing). This page describes the object-store
 backend that removes that coupling, and how to deploy and operate it.
 
-Status: the storage abstraction, both backends, the migration/sync commands, and the
-wiring into the LightGBM and LSTM save/load paths are implemented and tested. The
-default backend is `local`, so nothing changes until you deploy MinIO and cut over.
+Status: **deployed and cut over (2026-10-10).** MinIO runs on the NAS as
+`finance_artifacts_minio` (`192.168.31.8:9000`, bucket `finance-analysis-artifacts`,
+versioning on, a least-privilege scoped key); all 170 on-disk artifacts were migrated,
+`verify_artifact_store` reports every ACTIVE artifact resolving (cold-load from MinIO
+verified), `models/` is untracked and gitignored (now a local cache), and the app runs
+`ARTIFACT_STORE_BACKEND=s3`. The `local` backend stays the default for CI/tests (no
+MinIO required). NAS deployment detail: HomeServer `docs/runbooks/minio.md`.
 
 ## Design
 
@@ -92,8 +96,9 @@ Then, once:
    `docs/reference/secrets-inventory.md`, and add a `minio.md` runbook + `inventory.md`
    / `live-state.md` rows in the HomeServer repo.
 
-The ZFS pool was ~89% full (~1 TB free) at the time of writing; model artifacts are
-GB-scale, so this is negligible, but keep it on the capacity watch.
+The ZFS pool was ~66% used (~3.1 TB free) at the 2026-10-10 deployment; the ~86 MB of
+artifacts is negligible, but `DefaultMirror/minio` stays on the capacity watch and under
+sanoid snapshots.
 
 ## Operations
 
