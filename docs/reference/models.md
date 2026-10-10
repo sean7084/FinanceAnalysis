@@ -6,30 +6,32 @@
 
 # Model Registry and Artifacts
 
-_Generated: 2026-09-16T15:25:01Z_
+_Generated: 2026-10-10T00:11:10Z_
 
 Read this sheet before trusting any accuracy or feature count quoted in prose. `LightGBMModelArtifact` is the authority for per-horizon LightGBM deployment; `ModelVersion` is a higher-level registry that does **not** keep one simultaneously active row per horizon. The rationale for that split, and the version-tag naming convention, are explained in `TECHNICAL_GUIDE.md`; the promote/rollback procedure is in `docs/how-to/retrain.md`.
 
 ## Active LightGBM artifacts
 
-| Horizon | Version | Status | Trained at | Window | Samples | Accuracy | Features | Pruning rule | Missing-value strategy | Path resolves here? |
+| Horizon | Version | Status | Trained at | Window | Samples | Accuracy | Features | Pruning rule | Missing-value strategy | Present in store? |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 3 | `lgb-3d-2024-12-31-stored-ti-v2` | READY | 2026-05-23 16:38:49 | 2016-06-01 → 2024-12-31 | 635,185 | 0.566561 | 20 | latest_snapshot_cumulative_80_core20_25 | native_nan | yes |
-| 7 | `lgb-7d-2024-12-31-stored-ti-v2` | READY | 2026-05-23 16:39:03 | 2016-06-01 → 2024-12-31 | 635,139 | 0.49292 | 20 | latest_snapshot_cumulative_80_core20_25 | native_nan | yes |
-| 30 | `lgb-30d-2024-12-31-stored-ti-v2` | READY | 2026-05-23 16:39:18 | 2016-06-01 → 2024-12-31 | 634,850 | 0.577996 | 20 | latest_snapshot_cumulative_80_core20_25 | native_nan | yes |
+| 3 | `lgb-3d-2020-01-01` | READY | 2026-09-25 12:15:19 | 2010-01-01 → 2020-01-01 | 1,075,892 | 0.521064 | 39 | none | native_nan | yes |
+| 7 | `lgb-7d-2020-01-01` | READY | 2026-09-25 12:15:43 | 2010-01-01 → 2020-01-01 | 1,075,818 | 0.501229 | 39 | none | native_nan | yes |
+| 30 | `lgb-30d-2020-01-01` | READY | 2026-09-25 12:16:09 | 2010-01-01 → 2020-01-01 | 1,075,269 | 0.630868 | 39 | none | native_nan | yes |
 
-Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
+Registry totals: **29** `LightGBMModelArtifact` rows, **3** active.
 
 
 ## ModelVersion registry
 
 | ID | Type | Version | Active | Status | Trained at | Accuracy | Artifact path |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 42 | ENSEMBLE | `ensemble-2026-05-23` | ACTIVE | READY | 2026-05-24 05:17:21 | &mdash; | models/ensemble/latest.json |
-| 45 | LIGHTGBM | `lgb-30d-2024-12-31-stored-ti-v2` | ACTIVE | READY | 2026-05-23 16:39:18 | 0.577996 | C:\Users\sean_\Documents\FinanceAnalysis\models\lightgbm\30d_lgb-30d-2024-12-31-stored-ti-v2 |
-| 44 | LIGHTGBM | `lgb-7d-2024-12-31-stored-ti-v2` | ACTIVE | READY | 2026-05-23 16:39:03 | 0.49292 | C:\Users\sean_\Documents\FinanceAnalysis\models\lightgbm\7d_lgb-7d-2024-12-31-stored-ti-v2 |
-| 43 | LIGHTGBM | `lgb-3d-2024-12-31-stored-ti-v2` | ACTIVE | READY | 2026-05-23 16:38:49 | 0.566561 | C:\Users\sean_\Documents\FinanceAnalysis\models\lightgbm\3d_lgb-3d-2024-12-31-stored-ti-v2 |
-| 46 | LSTM | `lstm-2024-12-31-stored-ti-v2` | ACTIVE | READY | 2026-05-23 16:41:47 | 0.476722 | C:\Users\sean_\Documents\FinanceAnalysis\models\lstm\lstm-2024-12-31-stored-ti-v2 |
+| 58 | ENSEMBLE | `ensemble-2020-01-01` | ACTIVE | READY | 2026-09-25 12:17:32 | &mdash; | models/ensemble/latest.json |
+| 57 | LIGHTGBM | `lgb-30d-2020-01-01` | ACTIVE | READY | 2026-09-25 12:16:10 | 0.630868 | models/lightgbm/30d_lgb-30d-2020-01-01 |
+| 56 | LIGHTGBM | `lgb-7d-2020-01-01` | ACTIVE | READY | 2026-09-25 12:15:43 | 0.501229 | models/lightgbm/7d_lgb-7d-2020-01-01 |
+| 55 | LIGHTGBM | `lgb-3d-2020-01-01` | ACTIVE | READY | 2026-09-25 12:15:20 | 0.521064 | models/lightgbm/3d_lgb-3d-2020-01-01 |
+| 59 | LSTM | `lstm-2020-01-01` | ACTIVE | READY | 2026-09-25 12:17:32 | 0.447333 | models/lstm/lstm-2020-01-01 |
+| 53 | ENSEMBLE | `ensemble-2026-09-21` |  | READY | 2026-09-22 06:30:02 | &mdash; | models/ensemble/latest.json |
+| 42 | ENSEMBLE | `ensemble-2026-05-23` |  | READY | 2026-05-24 05:17:21 | &mdash; | models/ensemble/latest.json |
 | 33 | ENSEMBLE | `ensemble-2026-05-16` |  | READY | 2026-05-16 04:00:00 | 0.5 | models/ensemble/2026-05-16.bin |
 | 30 | ENSEMBLE | `ensemble-2026-05-09` |  | READY | 2026-05-09 09:08:44 | 0.5 | models/ensemble/2026-05-09.bin |
 | 27 | ENSEMBLE | `ensemble-2026-05-02` |  | READY | 2026-05-02 04:00:00 | 0.5 | models/ensemble/2026-05-02.bin |
@@ -37,6 +39,12 @@ Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
 | 14 | ENSEMBLE | `ensemble-2024-12-31` |  | READY | 2026-05-23 16:41:47 | &mdash; | models/ensemble/latest.json |
 | 9 | ENSEMBLE | `ensemble-2026-04-18` |  | READY | 2026-04-18 04:00:00 | 0.5 | models/ensemble/2026-04-18.bin |
 | 1 | ENSEMBLE | `ensemble-2026-04-15` |  | READY | 2026-04-15 01:45:38 | &mdash; | models/ensemble/latest.json |
+| 52 | LIGHTGBM | `lgb-30d-2026-09-21` |  | READY | 2026-09-22 06:28:49 | 0.563817 | models/lightgbm/30d_lgb-30d-2026-09-21 |
+| 51 | LIGHTGBM | `lgb-7d-2026-09-21` |  | READY | 2026-09-22 06:28:21 | 0.480272 | models/lightgbm/7d_lgb-7d-2026-09-21 |
+| 50 | LIGHTGBM | `lgb-3d-2026-09-21` |  | READY | 2026-09-22 06:27:51 | 0.54648 | models/lightgbm/3d_lgb-3d-2026-09-21 |
+| 45 | LIGHTGBM | `lgb-30d-2024-12-31-stored-ti-v2` |  | READY | 2026-05-23 16:39:18 | 0.577996 | C:\Users\sean_\Documents\FinanceAnalysis\models\lightgbm\30d_lgb-30d-2024-12-31-stored-ti-v2 |
+| 44 | LIGHTGBM | `lgb-7d-2024-12-31-stored-ti-v2` |  | READY | 2026-05-23 16:39:03 | 0.49292 | C:\Users\sean_\Documents\FinanceAnalysis\models\lightgbm\7d_lgb-7d-2024-12-31-stored-ti-v2 |
+| 43 | LIGHTGBM | `lgb-3d-2024-12-31-stored-ti-v2` |  | READY | 2026-05-23 16:38:49 | 0.566561 | C:\Users\sean_\Documents\FinanceAnalysis\models\lightgbm\3d_lgb-3d-2024-12-31-stored-ti-v2 |
 | 40 | LIGHTGBM | `lgb-30d-2024-12-31-stored-ti-v1` |  | READY | 2026-05-18 13:59:35 | 0.577996 | /home/chang-liu/Documents/FinanceAnalysis/models/lightgbm/30d_lgb-30d-2024-12-31-stored-ti-v1 |
 | 39 | LIGHTGBM | `lgb-7d-2024-12-31-stored-ti-v1` |  | READY | 2026-05-18 13:59:19 | 0.49292 | /home/chang-liu/Documents/FinanceAnalysis/models/lightgbm/7d_lgb-7d-2024-12-31-stored-ti-v1 |
 | 38 | LIGHTGBM | `lgb-3d-2024-12-31-stored-ti-v1` |  | READY | 2026-05-18 13:59:02 | 0.566561 | /home/chang-liu/Documents/FinanceAnalysis/models/lightgbm/3d_lgb-3d-2024-12-31-stored-ti-v1 |
@@ -58,6 +66,8 @@ Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
 | 4 | LIGHTGBM | `lgb-3d-2026-04-15` |  | READY | 2026-04-16 08:56:36 | 0.585669 | /app/models/lightgbm/3d_lgb-3d-2026-04-15 |
 | 3 | LIGHTGBM | `lgb-7d-2026-04-11` |  | READY | 2026-04-15 14:24:09 | 0.882889 | /app/models/lightgbm/7d_lgb-7d-2026-04-11 |
 | 2 | LIGHTGBM | `lgb-3d-2026-04-11` |  | READY | 2026-04-15 14:24:06 | 0.949667 | /app/models/lightgbm/3d_lgb-3d-2026-04-11 |
+| 54 | LSTM | `lstm-2026-09-21` |  | READY | 2026-09-22 06:30:02 | 0.476111 | models/lstm/lstm-2026-09-21 |
+| 46 | LSTM | `lstm-2024-12-31-stored-ti-v2` |  | READY | 2026-05-23 16:41:47 | 0.476722 | C:\Users\sean_\Documents\FinanceAnalysis\models\lstm\lstm-2024-12-31-stored-ti-v2 |
 | 41 | LSTM | `lstm-2024-12-31-stored-ti-v1` |  | READY | 2026-05-18 14:01:40 | 0.472 | /home/chang-liu/Documents/FinanceAnalysis/models/lstm/lstm-2024-12-31-stored-ti-v1 |
 | 37 | LSTM | `lstm-2024-12-31-sec5b-v1` |  | READY | 2026-05-17 05:49:25 | 0.480556 | /home/chang-liu/Documents/FinanceAnalysis/models/lstm/lstm-2024-12-31-sec5b-v1 |
 | 32 | LSTM | `lstm-2026-05-16` |  | READY | 2026-05-16 04:00:00 | 0.5 | models/lstm/2026-05-16.bin |
@@ -67,18 +77,20 @@ Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
 
 | ID | Date | LightGBM weight | LSTM weight | Heuristic weight | Lookback (d) | basis: LightGBM acc | basis: LSTM acc | basis: heuristic acc |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5 | 2026-09-21 | 0.3520 | 0.3161 | 0.3319 | 60 | 0.53019 | 0.476111 | 0.5 |
 | 4 | 2026-05-23 | 0.3560 | 0.3143 | 0.3297 | 60 | 0.53999 | 0.476722 | 0.5 |
 | 2 | 2026-04-15 | 0.5058 | 0.0000 | 0.4942 | 60 | 0.511747 | 0 | 0.5 |
 | 1 | 2026-04-11 | 0.6470 | 0.0000 | 0.3530 | 60 | 0.916278 | 0 | 0.5 |
 | 3 | 2024-12-31 | 0.3585 | 0.3131 | 0.3284 | 60 | 0.545826 | 0.476722 | 0.5 |
 
-`FeatureImportanceSnapshot`: **720** rows, latest id `1315`.
+`FeatureImportanceSnapshot`: **954** rows, latest id `1666`.
 
 
 ## On-disk LightGBM artifacts
 
 | Directory | Version | Horizon | Trained at | Window | Features | Pruning rule | Missing-value strategy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `30d_lgb-30d-2020-01-01` | lgb-30d-2020-01-01 | 30 | 2026-09-25 12:16:09 | 2010-01-01 → 2020-01-01 | 39 | none | native_nan |
 | `30d_lgb-30d-2024-12-31` | lgb-30d-2024-12-31 | 30 | 2026-05-02 00:59:35 | 2016-06-01 → 2024-12-31 | 39 | none | ABSENT |
 | `30d_lgb-30d-2024-12-31-core80-v1` | lgb-30d-2024-12-31-core80-v1 | 30 | 2026-04-26 09:43:51 | 2016-06-01 → 2024-12-31 | 20 | latest_snapshot_cumulative_80_core20_25 | ABSENT |
 | `30d_lgb-30d-2024-12-31-regstrong-v1` | lgb-30d-2024-12-31-regstrong-v1 | 30 | 2026-04-26 08:38:57 | 2016-06-01 → 2024-12-31 | 37 | &mdash; | ABSENT |
@@ -87,6 +99,8 @@ Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
 | `30d_lgb-30d-2024-12-31-stored-ti-v2` | lgb-30d-2024-12-31-stored-ti-v2 | 30 | 2026-05-23 16:39:18 | 2016-06-01 → 2024-12-31 | 20 | latest_snapshot_cumulative_80_core20_25 | native_nan |
 | `30d_lgb-30d-2026-04-15` |  | 30 | 2026-04-16 08:57:22 |  →  | 39 | &mdash; | ABSENT |
 | `30d_lgb-30d-2026-05-23` | lgb-30d-2026-05-23 | 30 | 2026-05-24 05:17:21 | 2010-01-01 → 2026-05-23 | 39 | none | native_nan |
+| `30d_lgb-30d-2026-09-21` | lgb-30d-2026-09-21 | 30 | 2026-09-22 06:28:49 | 2016-06-01 → 2026-09-21 | 39 | none | native_nan |
+| `3d_lgb-3d-2020-01-01` | lgb-3d-2020-01-01 | 3 | 2026-09-25 12:15:18 | 2010-01-01 → 2020-01-01 | 39 | none | native_nan |
 | `3d_lgb-3d-2024-12-31` | lgb-3d-2024-12-31 | 3 | 2026-05-02 00:58:45 | 2016-06-01 → 2024-12-31 | 39 | none | ABSENT |
 | `3d_lgb-3d-2024-12-31-core80-v1` | lgb-3d-2024-12-31-core80-v1 | 3 | 2026-04-26 09:43:27 | 2016-06-01 → 2024-12-31 | 20 | latest_snapshot_cumulative_80_core20_25 | ABSENT |
 | `3d_lgb-3d-2024-12-31-regstrong-v1` | lgb-3d-2024-12-31-regstrong-v1 | 3 | 2026-04-26 08:38:25 | 2016-06-01 → 2024-12-31 | 37 | &mdash; | ABSENT |
@@ -96,6 +110,8 @@ Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
 | `3d_lgb-3d-2026-04-11` |  | 3 | 2026-04-15 14:24:06 |  →  | 39 | &mdash; | ABSENT |
 | `3d_lgb-3d-2026-04-15` |  | 3 | 2026-04-16 08:56:36 |  →  | 39 | &mdash; | ABSENT |
 | `3d_lgb-3d-2026-05-23` | lgb-3d-2026-05-23 | 3 | 2026-05-24 05:15:24 | 2010-01-01 → 2026-05-23 | 39 | none | native_nan |
+| `3d_lgb-3d-2026-09-21` | lgb-3d-2026-09-21 | 3 | 2026-09-22 06:27:50 | 2016-06-01 → 2026-09-21 | 39 | none | native_nan |
+| `7d_lgb-7d-2020-01-01` | lgb-7d-2020-01-01 | 7 | 2026-09-25 12:15:43 | 2010-01-01 → 2020-01-01 | 39 | none | native_nan |
 | `7d_lgb-7d-2024-12-31` | lgb-7d-2024-12-31 | 7 | 2026-05-02 00:59:11 | 2016-06-01 → 2024-12-31 | 39 | none | ABSENT |
 | `7d_lgb-7d-2024-12-31-core80-v1` | lgb-7d-2024-12-31-core80-v1 | 7 | 2026-04-26 09:43:40 | 2016-06-01 → 2024-12-31 | 20 | latest_snapshot_cumulative_80_core20_25 | ABSENT |
 | `7d_lgb-7d-2024-12-31-regstrong-v1` | lgb-7d-2024-12-31-regstrong-v1 | 7 | 2026-04-26 08:38:39 | 2016-06-01 → 2024-12-31 | 37 | &mdash; | ABSENT |
@@ -105,15 +121,18 @@ Registry totals: **23** `LightGBMModelArtifact` rows, **3** active.
 | `7d_lgb-7d-2026-04-11` |  | 7 | 2026-04-15 14:24:09 |  →  | 39 | &mdash; | ABSENT |
 | `7d_lgb-7d-2026-04-15` |  | 7 | 2026-04-16 08:57:02 |  →  | 39 | &mdash; | ABSENT |
 | `7d_lgb-7d-2026-05-23` | lgb-7d-2026-05-23 | 7 | 2026-05-24 05:16:22 | 2010-01-01 → 2026-05-23 | 39 | none | native_nan |
+| `7d_lgb-7d-2026-09-21` | lgb-7d-2026-09-21 | 7 | 2026-09-22 06:28:21 | 2016-06-01 → 2026-09-21 | 39 | none | native_nan |
 
 ## On-disk LSTM artifacts
 
-| Directory | Version | Window | Aggregate accuracy | Features | Missing-value strategy | Stored path resolves here? |
+| Directory | Version | Window | Aggregate accuracy | Features | Missing-value strategy | Present in store? |
 | --- | --- | --- | --- | --- | --- | --- |
+| `lstm-2020-01-01` | lstm-2020-01-01 | 2010-01-01 → 2020-01-01 | 0.447333 | 78 | mask_and_zero_impute | yes |
 | `lstm-2024-12-31` | lstm-2024-12-31 | 2016-06-01 → 2024-12-31 | 0.460611 | 39 | ABSENT | NO |
 | `lstm-2024-12-31-sec5b-v1` | lstm-2024-12-31-sec5b-v1 | 2016-06-01 → 2024-12-31 | 0.480556 | 78 | mask_and_zero_impute | NO |
 | `lstm-2024-12-31-stored-ti-v1` | lstm-2024-12-31-stored-ti-v1 | 2016-06-01 → 2024-12-31 | 0.472 | 78 | mask_and_zero_impute | NO |
 | `lstm-2024-12-31-stored-ti-v2` | lstm-2024-12-31-stored-ti-v2 | 2016-06-01 → 2024-12-31 | 0.476722 | 78 | mask_and_zero_impute | NO |
+| `lstm-2026-09-21` | lstm-2026-09-21 | 2016-06-01 → 2026-09-21 | 0.476111 | 78 | mask_and_zero_impute | yes |
 
-> **Portability warning.** Stored `artifact_path` values are absolute and were written on the host that trained them. 4 of 4 do not resolve on this machine. Retraining rewrites them; see `docs/how-to/retrain.md`.
+> **Portability warning.** Stored `artifact_path` values are absolute and were written on the host that trained them. 4 of 6 do not resolve on this machine. Retraining rewrites them; see `docs/how-to/retrain.md`.
 

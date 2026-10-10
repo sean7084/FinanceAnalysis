@@ -1,5 +1,25 @@
 # Changelog
 
+### version 0.1.16
+
+#### Changed:
+
+- **Model artifacts moved out of git into a MinIO S3 object store** — completing the
+  git-bloat half of the artifact-storage backlog (the storage abstraction + the
+  migrate/sync/verify commands were merged earlier). MinIO is deployed on the NAS
+  (`finance_artifacts_minio` @ `192.168.31.8:9000`, ZFS dataset `DefaultMirror/minio`,
+  LAN-scoped `DOCKER-USER` firewall, bucket `finance-analysis-artifacts` with versioning,
+  a least-privilege scoped key). All 170 on-disk artifacts (38 families, ~86 MB) were
+  migrated with `migrate_artifacts_to_store --execute --normalize-registry`; the app now
+  runs `ARTIFACT_STORE_BACKEND=s3`, and `verify_artifact_store` confirms every ACTIVE
+  artifact resolves in the store (cold-load from MinIO verified via `ensure_dir_local`).
+  `models/` is untracked and gitignored — now a retrainable local cache; fresh clones
+  repopulate via `sync_artifacts_from_store`. Forward-only: existing history keeps its
+  ~58 MB of blobs, but `.git` stops growing one retained family per retrain (§6.2). The
+  `models.md` reference column was renamed `Path resolves here?` -> `Present in store?`
+  to match the store-aware check. Docs: `docs/how-to/artifact-store.md`; NAS runbook:
+  HomeServer `docs/runbooks/minio.md`.
+
 ### version 0.1.15
 
 #### Fixed:

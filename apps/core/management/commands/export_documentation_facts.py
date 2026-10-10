@@ -516,7 +516,7 @@ def build_models():
             parts.append(_md_table(
                 [
                     'Horizon', 'Version', 'Status', 'Trained at', 'Window', 'Samples',
-                    'Accuracy', 'Features', 'Pruning rule', 'Missing-value strategy', 'Path resolves here?',
+                    'Accuracy', 'Features', 'Pruning rule', 'Missing-value strategy', 'Present in store?',
                 ],
                 rows,
             ))
@@ -597,7 +597,7 @@ def build_models():
     parts.append('\n## On-disk LSTM artifacts\n')
     if lstm_disk:
         parts.append(_md_table(
-            ['Directory', 'Version', 'Window', 'Aggregate accuracy', 'Features', 'Missing-value strategy', 'Stored path resolves here?'],
+            ['Directory', 'Version', 'Window', 'Aggregate accuracy', 'Features', 'Missing-value strategy', 'Present in store?'],
             [
                 (
                     f'`{row["dir"]}`', row['version'], row['window'], row['aggregate_accuracy'],
