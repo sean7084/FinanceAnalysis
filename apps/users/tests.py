@@ -213,6 +213,162 @@ class AuthThrottleTests(TestCase):
             cache.clear()
 
 
+class CookieAuthTests(TestCase):
+    """
+    Coverage for the cookie-based auth endpoints used by the SPA:
+      POST /api/v1/auth/login/    -> sets HttpOnly refresh cookie, returns access in body
+      POST /api/v1/auth/refresh/  -> rotates cookie, returns new access in body
+      POST /api/v1/auth/logout/   -> blacklists + clears cookie
+      GET  /api/v1/auth/session/  -> reports whether a valid refresh cookie is present
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = make_user(
+            username='cookieuser',
+            email='cookie@example.com',
+            password='TestPass123!',
+        )
+        self.credentials = {'username': 'cookieuser', 'password': 'TestPass123!'}
+        self.cookie_name = settings.AUTH_COOKIE_NAME
+
+    def _login(self):
+        return self.client.post('/api/v1/auth/login/', self.credentials, format='json')
+
+    def _read_cookie_value(self, response):
+        morsel = response.cookies.get(self.cookie_name)
+        return morsel.value if morsel else None
+
+    def test_login_sets_refresh_cookie_and_returns_access_only(self):
+        response = self._login()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Access token stays in the body; refresh token is stripped.
+        self.assertIn('access', response.data)
+        self.assertNotIn('refresh', response.data)
+        # Refresh cookie is present with the security attributes we require.
+        morsel = response.cookies.get(self.cookie_name)
+        self.assertIsNotNone(morsel, 'login must set the refresh cookie')
+        self.assertTrue(morsel.value)
+        self.assertTrue(morsel['httponly'])
+        self.assertEqual(morsel['path'], '/')
+        self.assertEqual(str(morsel['samesite']), settings.AUTH_COOKIE_SAMESITE)
+        self.assertEqual(int(morsel['max-age']), settings.AUTH_COOKIE_MAX_AGE)
+        # 30 days = 2_592_000 seconds; guard against accidental retuning.
+        self.assertEqual(settings.AUTH_COOKIE_MAX_AGE, 30 * 24 * 60 * 60)
+
+    def test_login_rejects_bad_credentials_and_sets_no_cookie(self):
+        response = self.client.post(
+            '/api/v1/auth/login/',
+            {'username': 'cookieuser', 'password': 'wrong'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIsNone(response.cookies.get(self.cookie_name))
+
+    def test_refresh_rotates_cookie_and_returns_new_access(self):
+        login = self._login()
+        first_refresh = self._read_cookie_value(login)
+        self.assertTrue(first_refresh)
+
+        # APIClient persists cookies across calls, so the second request
+        # automatically carries the login cookie.
+        refresh_response = self.client.post('/api/v1/auth/refresh/')
+        self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', refresh_response.data)
+        self.assertNotIn('refresh', refresh_response.data)
+
+        rotated = self._read_cookie_value(refresh_response)
+        self.assertTrue(rotated)
+        self.assertNotEqual(rotated, first_refresh, 'refresh token must rotate')
+
+        # SimpleJWT blacklists the previous refresh token on rotation; trying
+        # to reuse it must fail with 401 and clear the cookie.
+        self.client.cookies.clear()
+        self.client.cookies[self.cookie_name] = first_refresh
+        reuse = self.client.post('/api/v1/auth/refresh/')
+        self.assertEqual(reuse.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(reuse.data.get('code'), 'refresh_revoked')
+
+    def test_refresh_without_cookie_returns_401(self):
+        response = self.client.post('/api/v1/auth/refresh/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(response.data.get('code'), 'not_authenticated')
+
+    def test_refresh_accepts_body_refresh_for_non_browser_clients(self):
+        login = self._login()
+        # Simulate a legacy client that sends the refresh token in the body
+        # and does not carry the cookie.
+        raw_refresh = self._read_cookie_value(login)
+        self.client.cookies.clear()
+        response = self.client.post(
+            '/api/v1/auth/refresh/',
+            {'refresh': raw_refresh},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+        # The rotated token should also be surfaced as a cookie so subsequent
+        # calls from the same client can use the cookie flow.
+        self.assertIsNotNone(self._read_cookie_value(response))
+
+    def test_logout_blacklists_and_clears_cookie(self):
+        self._login()
+        logout = self.client.post('/api/v1/auth/logout/')
+        self.assertEqual(logout.status_code, status.HTTP_204_NO_CONTENT)
+        # delete_cookie emits an empty value with Max-Age=0.
+        morsel = logout.cookies.get(self.cookie_name)
+        self.assertIsNotNone(morsel)
+        self.assertEqual(morsel.value, '')
+        self.assertEqual(int(morsel['max-age']), 0)
+
+        # A subsequent refresh with the pre-logout token must fail because
+        # logout blacklisted it server-side.
+        self.client.cookies.clear()
+        refresh_after = self.client.post('/api/v1/auth/refresh/')
+        self.assertEqual(refresh_after.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_without_cookie_is_a_noop(self):
+        response = self.client.post('/api/v1/auth/logout/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_session_view_reports_authenticated_state_from_cookie(self):
+        anonymous = self.client.get('/api/v1/auth/session/')
+        self.assertEqual(anonymous.status_code, status.HTTP_200_OK)
+        self.assertEqual(anonymous.data, {'authenticated': False})
+
+        self._login()
+        authed = self.client.get('/api/v1/auth/session/')
+        self.assertEqual(authed.status_code, status.HTTP_200_OK)
+        self.assertTrue(authed.data['authenticated'])
+        self.assertEqual(authed.data['username'], 'cookieuser')
+        self.assertEqual(authed.data['user_id'], self.user.id)
+        self.assertIn('refresh_expires_at', authed.data)
+
+    def test_session_view_returns_false_for_garbage_cookie(self):
+        self.client.cookies[self.cookie_name] = 'not-a-real-jwt'
+        response = self.client.get('/api/v1/auth/session/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'authenticated': False})
+
+    def test_access_token_from_login_authenticates_api_calls(self):
+        login = self._login()
+        access = login.data['access']
+        # Sanity check: the access token in the body works with the standard
+        # Bearer scheme used across the rest of the API.
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        profile = self.client.get('/api/v1/users/profile/me/')
+        self.assertEqual(profile.status_code, status.HTTP_200_OK)
+
+    def test_legacy_token_endpoint_still_returns_both_tokens_in_body(self):
+        response = self.client.post('/api/v1/auth/token/', self.credentials, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+        self.assertIn('refresh', response.data)
+        # Legacy endpoint must not set the SPA cookie.
+        self.assertIsNone(response.cookies.get(self.cookie_name))
+
+
 class UserProfileTests(TestCase):
     def setUp(self):
         cache.clear()

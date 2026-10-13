@@ -324,7 +324,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/day',      # Anonymous users
-        'auth': '100/day',      # JWT auth endpoints
+        'auth': '500/day',      # JWT auth endpoints (login/refresh/logout/session)
         'free': '100/day',      # Free tier users
         'pro': '1000/day',      # Pro tier users
         'premium': '10000/day', # Premium tier users
@@ -336,9 +336,16 @@ REST_FRAMEWORK = {
 # ------------------------------------------------------------------------------
 from datetime import timedelta
 
+# 8h access / 30d sliding refresh keeps the SPA signed in across a working
+# day (and across a long weekend) without stretching the blast radius of a
+# leaked access token too far. Rotation stays on so every successful refresh
+# re-issues a fresh refresh token with a full 30-day window, giving a true
+# sliding session for active users; blacklisting keeps logout/revocation real.
+# The refresh token itself is transported in an HttpOnly cookie (see the
+# AUTH_COOKIE_* block below and apps/users/views.py), so JS can never read it.
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': True,
@@ -351,6 +358,23 @@ SIMPLE_JWT = {
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
+
+# AUTH COOKIE (refresh-token transport)
+# ------------------------------------------------------------------------------
+# The SPA never sees the refresh token: /auth/login/ and /auth/refresh/ set it
+# as an HttpOnly cookie that only the browser can send back. Same-origin
+# deployment (Django serves the SPA) means SameSite=Lax is enough; if the SPA
+# is ever moved to a different origin, upgrade to 'None' + Secure=True and add
+# django-cors-headers. Domain stays empty (host-only) so the Vite dev proxy at
+# http://localhost:5173 keeps the cookie scoped to that host -- http-proxy does
+# not rewrite Set-Cookie domains and neither do we.
+AUTH_COOKIE_NAME = env('AUTH_COOKIE_NAME', default='fa_refresh')
+AUTH_COOKIE_HTTP_ONLY = True
+AUTH_COOKIE_SECURE = env.bool('AUTH_COOKIE_SECURE', default=not DEBUG)
+AUTH_COOKIE_SAMESITE = env('AUTH_COOKIE_SAMESITE', default='Lax')
+AUTH_COOKIE_PATH = '/'
+AUTH_COOKIE_DOMAIN = env('AUTH_COOKIE_DOMAIN', default='')
+AUTH_COOKIE_MAX_AGE = int(SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
 
 # CACHING
 # ------------------------------------------------------------------------------

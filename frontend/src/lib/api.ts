@@ -2,9 +2,43 @@ import type { DashboardCandidateFilters } from './dashboardCandidateFilters'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const AUTH_MODE_KEY = 'finance_auth_persistence'
-const JWT_KEY = 'finance_jwt'
-const JWT_REFRESH_KEY = 'finance_jwt_refresh'
 const API_KEY = 'finance_api_key'
+// Legacy storage keys from the pre-cookie auth flow. Nothing reads or writes
+// them any more; bootstrapSession() wipes them so a stale token from an older
+// build cannot shadow the new flow.
+const LEGACY_JWT_KEY = 'finance_jwt'
+const LEGACY_JWT_REFRESH_KEY = 'finance_jwt_refresh'
+
+// In-memory access-token cache. The refresh token lives in an HttpOnly cookie
+// set by /api/v1/auth/login/ and rotated by /api/v1/auth/refresh/, so JS never
+// sees it. `sessionActive` mirrors "the browser is believed to hold a valid
+// refresh cookie" -- true after a successful login/refresh, false after a
+// rejected refresh or explicit logout.
+let accessToken: string | null = null
+let sessionActive = false
+let sessionKnown = false
+let proactiveRefreshTimer: number | null = null
+
+// Cross-tab coordination: the first tab to observe a 401 (or fire the proactive
+// timer) claims the refresh mutex by broadcasting `refresh-start`; other tabs
+// park on that broadcast instead of racing. With BLACKLIST_AFTER_ROTATION on,
+// a lost race would otherwise wipe both tabs' session. BroadcastChannel is
+// available in every browser we target (Chrome 54+, Firefox 38+, Safari 15.4+);
+// when missing we degrade to per-tab single-flight only.
+const AUTH_CHANNEL_NAME = 'fa-auth'
+const TAB_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `tab-${Math.random().toString(36).slice(2)}-${Date.now()}`
+type AuthBroadcast =
+  | { type: 'refresh-start'; tabId: string }
+  | { type: 'refresh-done'; tabId: string; access: string }
+  | { type: 'refresh-failed'; tabId: string }
+  | { type: 'signed-in'; tabId: string; access: string }
+  | { type: 'signed-out'; tabId: string; reason?: string }
+let authChannel: BroadcastChannel | null = null
+let pendingCrossTabRefresh: Promise<string | null> | null = null
+let pendingCrossTabResolvers: Array<(value: string | null) => void> = []
 
 let jwtRefreshPromise: Promise<string | null> | null = null
 
@@ -462,7 +496,7 @@ async function toApiRequestError(response: Response, prefix: string): Promise<Ap
 }
 
 export function readAuthToken(): string {
-  return sessionStorage.getItem(JWT_KEY) ?? localStorage.getItem(JWT_KEY) ?? ''
+  return accessToken ?? ''
 }
 
 export function getAuthTokenForSocket(): string {
@@ -482,10 +516,6 @@ export function readApiKey(): string {
   return sessionStorage.getItem(API_KEY) ?? localStorage.getItem(API_KEY) ?? ''
 }
 
-export function readRefreshToken(): string {
-  return sessionStorage.getItem(JWT_REFRESH_KEY) ?? localStorage.getItem(JWT_REFRESH_KEY) ?? ''
-}
-
 export function readAuthPersistenceMode(): AuthPersistenceMode {
   const val = localStorage.getItem(AUTH_MODE_KEY)
   if (val === 'session' || val === 'none' || val === 'local') {
@@ -494,80 +524,218 @@ export function readAuthPersistenceMode(): AuthPersistenceMode {
   return 'local'
 }
 
-export function saveAuthSettings(token: string, apiKey: string, mode: AuthPersistenceMode, refreshToken = ''): void {
-  localStorage.removeItem(JWT_KEY)
-  localStorage.removeItem(JWT_REFRESH_KEY)
+/**
+ * Persist the API key and the persistence-mode preference. The JWT access
+ * token is held in memory only and the refresh token in an HttpOnly cookie,
+ * so neither is written to storage any more.
+ *
+ * The leading `_token` parameter is accepted (and ignored) so existing
+ * three-argument call sites keep compiling unchanged.
+ *
+ * @deprecated JWT persistence is now cookie-driven; this function only manages
+ * the API key. Retained for call-site compatibility.
+ */
+export function saveAuthSettings(
+  _token: string,
+  apiKey: string,
+  mode: AuthPersistenceMode,
+): void {
   localStorage.removeItem(API_KEY)
-  sessionStorage.removeItem(JWT_KEY)
-  sessionStorage.removeItem(JWT_REFRESH_KEY)
   sessionStorage.removeItem(API_KEY)
 
-  if (mode === 'local') {
-    if (token.trim()) localStorage.setItem(JWT_KEY, token.trim())
-    if (refreshToken.trim()) localStorage.setItem(JWT_REFRESH_KEY, refreshToken.trim())
-    if (apiKey.trim()) localStorage.setItem(API_KEY, apiKey.trim())
-  } else if (mode === 'session') {
-    if (token.trim()) sessionStorage.setItem(JWT_KEY, token.trim())
-    if (refreshToken.trim()) sessionStorage.setItem(JWT_REFRESH_KEY, refreshToken.trim())
-    if (apiKey.trim()) sessionStorage.setItem(API_KEY, apiKey.trim())
+  if (mode === 'local' && apiKey.trim()) {
+    localStorage.setItem(API_KEY, apiKey.trim())
+  } else if (mode === 'session' && apiKey.trim()) {
+    sessionStorage.setItem(API_KEY, apiKey.trim())
   }
 
   localStorage.setItem(AUTH_MODE_KEY, mode)
 }
 
 export function clearAuthSettings(): void {
-  clearStoredJwtTokens()
   localStorage.removeItem(API_KEY)
   sessionStorage.removeItem(API_KEY)
+  accessToken = null
+  sessionActive = false
+  cancelProactiveRefresh()
 }
 
-function clearStoredJwtTokens(): void {
-  localStorage.removeItem(JWT_KEY)
-  localStorage.removeItem(JWT_REFRESH_KEY)
-  sessionStorage.removeItem(JWT_KEY)
-  sessionStorage.removeItem(JWT_REFRESH_KEY)
+/** True once bootstrapSession() has resolved at least once. */
+export function isSessionKnown(): boolean {
+  return sessionKnown
 }
 
+/**
+ * True when the client holds an access token, a believed-valid refresh cookie,
+ * or an API key. Pages use this to choose between "please sign in" copy and a
+ * generic load-error message.
+ */
 export function hasAnyAuthCredential(): boolean {
-  return Boolean(readAuthToken() || readApiKey())
+  return Boolean(accessToken || sessionActive || readApiKey())
 }
 
-function persistJwtTokens(accessToken: string, refreshToken: string): void {
-  const mode = readAuthPersistenceMode()
-  const apiKey = readApiKey()
-  saveAuthSettings(accessToken, apiKey, mode, refreshToken)
+function cancelProactiveRefresh(): void {
+  if (proactiveRefreshTimer !== null) {
+    window.clearTimeout(proactiveRefreshTimer)
+    proactiveRefreshTimer = null
+  }
+}
+
+/**
+ * Decode the `exp` claim from a JWT without pulling in a library. Returns null
+ * on malformed input so callers can treat an undecodable token as "refresh now".
+ */
+function decodeJwtExp(token: string): number | null {
+  const parts = token.split('.')
+  if (parts.length < 2) return null
+  try {
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=')
+    const binary = atob(padded)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as { exp?: number }
+    return typeof payload.exp === 'number' ? payload.exp : null
+  } catch {
+    return null
+  }
+}
+
+function scheduleProactiveRefresh(): void {
+  cancelProactiveRefresh()
+  if (!accessToken) return
+  const exp = decodeJwtExp(accessToken)
+  if (exp === null) return
+  // Fire 2-2.5 minutes before expiry. The random jitter desynchronises tabs so
+  // the first one to fire claims the BroadcastChannel mutex and the others park
+  // on its result instead of racing a second refresh against the blacklist.
+  const jitter = Math.floor(Math.random() * 30_000)
+  const refreshAt = exp * 1000 - 120_000 - jitter
+  const delay = Math.max(0, refreshAt - Date.now())
+  proactiveRefreshTimer = window.setTimeout(() => {
+    proactiveRefreshTimer = null
+    void refreshJwtAccessToken()
+  }, delay)
+}
+
+function broadcast(message: AuthBroadcast): void {
+  if (!authChannel) return
+  try {
+    authChannel.postMessage(message)
+  } catch {
+    // Channel closed or serialization failed -- safe to ignore.
+  }
+}
+
+function resolvePendingCrossTabRefresh(value: string | null): void {
+  const resolvers = pendingCrossTabResolvers
+  pendingCrossTabRefresh = null
+  pendingCrossTabResolvers = []
+  for (const resolve of resolvers) {
+    resolve(value)
+  }
+}
+
+function initAuthChannel(): void {
+  if (authChannel !== null) return
+  if (typeof BroadcastChannel === 'undefined') return
+  try {
+    authChannel = new BroadcastChannel(AUTH_CHANNEL_NAME)
+  } catch {
+    authChannel = null
+    return
+  }
+  authChannel.onmessage = (event: MessageEvent<AuthBroadcast>) => {
+    const message = event.data
+    if (!message || message.tabId === TAB_ID) return
+    switch (message.type) {
+      case 'refresh-start':
+        // Another tab is refreshing; park our own attempts on its result.
+        if (!pendingCrossTabRefresh) {
+          pendingCrossTabRefresh = new Promise<string | null>((resolve) => {
+            pendingCrossTabResolvers.push(resolve)
+          })
+        }
+        break
+      case 'refresh-done':
+        accessToken = message.access
+        sessionActive = true
+        scheduleProactiveRefresh()
+        resolvePendingCrossTabRefresh(message.access)
+        break
+      case 'refresh-failed':
+        resolvePendingCrossTabRefresh(null)
+        break
+      case 'signed-out':
+        accessToken = null
+        sessionActive = false
+        cancelProactiveRefresh()
+        resolvePendingCrossTabRefresh(null)
+        break
+      case 'signed-in':
+        accessToken = message.access
+        sessionActive = true
+        scheduleProactiveRefresh()
+        break
+    }
+  }
 }
 
 async function refreshJwtAccessToken(): Promise<string | null> {
-  const refreshToken = readRefreshToken()
-  if (!refreshToken) return null
-
+  initAuthChannel()
+  // If another tab is already refreshing, wait for its broadcast instead of
+  // firing a second refresh that would lose the rotation race.
+  if (pendingCrossTabRefresh) {
+    return pendingCrossTabRefresh
+  }
   if (jwtRefreshPromise) {
     return jwtRefreshPromise
   }
 
-  jwtRefreshPromise = (async () => {
-    const response = await fetch(`${API_BASE}/auth/token/refresh/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ refresh: refreshToken }),
-    })
+  broadcast({ type: 'refresh-start', tabId: TAB_ID })
 
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        clearStoredJwtTokens()
-      }
+  jwtRefreshPromise = (async () => {
+    let response: Response
+    try {
+      response = await fetch(`${API_BASE}/auth/refresh/`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch {
+      broadcast({ type: 'refresh-failed', tabId: TAB_ID })
+      resolvePendingCrossTabRefresh(null)
       return null
     }
 
-    const payload = (await response.json()) as { access?: string; refresh?: string }
-    const access = payload.access?.trim()
-    if (!access) return null
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        accessToken = null
+        sessionActive = false
+        cancelProactiveRefresh()
+        broadcast({ type: 'signed-out', tabId: TAB_ID, reason: 'refresh_rejected' })
+      } else {
+        broadcast({ type: 'refresh-failed', tabId: TAB_ID })
+      }
+      resolvePendingCrossTabRefresh(null)
+      return null
+    }
 
-    const rotatedRefreshToken = payload.refresh?.trim() || refreshToken
-    persistJwtTokens(access, rotatedRefreshToken)
+    const payload = (await response.json()) as { access?: string }
+    const access = payload.access?.trim()
+    if (!access) {
+      broadcast({ type: 'refresh-failed', tabId: TAB_ID })
+      resolvePendingCrossTabRefresh(null)
+      return null
+    }
+
+    accessToken = access
+    sessionActive = true
+    scheduleProactiveRefresh()
+    broadcast({ type: 'refresh-done', tabId: TAB_ID, access })
+    resolvePendingCrossTabRefresh(access)
     return access
   })().finally(() => {
     jwtRefreshPromise = null
@@ -577,59 +745,131 @@ async function refreshJwtAccessToken(): Promise<string | null> {
 }
 
 async function fetchWithAuthRefresh(url: string, init: RequestInit): Promise<Response> {
-  let response = await fetch(url, init)
+  const withCredentials: RequestInit = {
+    ...init,
+    credentials: init.credentials ?? 'include',
+  }
+  let response = await fetch(url, withCredentials)
   if (response.status !== 401) return response
 
   const nextAccess = await refreshJwtAccessToken()
   if (!nextAccess) return response
 
-  const retryHeaders = new Headers(init.headers as HeadersInit | undefined)
+  const retryHeaders = new Headers(withCredentials.headers as HeadersInit | undefined)
   retryHeaders.set('Authorization', `Bearer ${nextAccess}`)
   response = await fetch(url, {
-    ...init,
+    ...withCredentials,
     headers: retryHeaders,
   })
   return response
 }
 
-export async function obtainJwtToken(username: string, password: string): Promise<string> {
-  const response = await fetch(`${API_BASE}/auth/token/`, {
+/**
+ * Exchange username/password for an access token. The refresh token is set by
+ * the backend as an HttpOnly cookie and is never visible to this code.
+ */
+export async function loginWithCredentials(username: string, password: string): Promise<string> {
+  initAuthChannel()
+  const response = await fetch(`${API_BASE}/auth/login/`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   })
 
   if (!response.ok) {
-    throw await toApiRequestError(response, 'AUTH token failed')
+    throw await toApiRequestError(response, 'AUTH login failed')
   }
 
   const data = (await response.json()) as { access?: string }
   if (!data.access) {
     throw new Error('No access token returned')
   }
+  accessToken = data.access
+  sessionActive = true
+  sessionKnown = true
+  scheduleProactiveRefresh()
+  broadcast({ type: 'signed-in', tabId: TAB_ID, access: data.access })
   return data.access
 }
 
-export async function obtainJwtTokenPair(username: string, password: string): Promise<{ access: string; refresh: string }> {
-  const response = await fetch(`${API_BASE}/auth/token/`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ username, password }),
+/**
+ * Blacklist the current refresh token server-side and clear the cookie. The
+ * network call is best-effort: even if it fails we drop local state so the UI
+ * reflects a signed-out session immediately.
+ */
+export async function logout(): Promise<void> {
+  initAuthChannel()
+  try {
+    await fetch(`${API_BASE}/auth/logout/`, {
+      method: 'POST',
+      credentials: 'include',
+    })
+  } catch {
+    // Ignore network failures during logout; local state is cleared below.
+  }
+  accessToken = null
+  sessionActive = false
+  cancelProactiveRefresh()
+  broadcast({ type: 'signed-out', tabId: TAB_ID, reason: 'explicit_logout' })
+}
+
+/**
+ * Called once at SPA boot. Probes /auth/session/ to learn whether the browser
+ * holds a valid refresh cookie; if so, immediately exchanges it for an access
+ * token so the first authenticated API call does not pay a 401 round-trip.
+ * Also wipes legacy pre-cookie tokens from storage.
+ */
+export async function bootstrapSession(): Promise<boolean> {
+  initAuthChannel()
+  localStorage.removeItem(LEGACY_JWT_KEY)
+  localStorage.removeItem(LEGACY_JWT_REFRESH_KEY)
+  sessionStorage.removeItem(LEGACY_JWT_KEY)
+  sessionStorage.removeItem(LEGACY_JWT_REFRESH_KEY)
+
+  let authenticated = false
+  try {
+    const response = await fetch(`${API_BASE}/auth/session/`, {
+      method: 'GET',
+      credentials: 'include',
+    })
+    if (response.ok) {
+      const payload = (await response.json()) as { authenticated?: boolean }
+      authenticated = Boolean(payload.authenticated)
+    }
+  } catch {
+    authenticated = false
+  }
+
+  if (authenticated) {
+    sessionActive = true
+    const access = await refreshJwtAccessToken()
+    if (!access) {
+      sessionActive = false
+    }
+  } else {
+    accessToken = null
+    sessionActive = false
+  }
+  sessionKnown = true
+  return Boolean(accessToken)
+}
+
+// Proactively refresh when the tab becomes visible and the access token is
+// within five minutes of expiry. Cheap enough to leave registered forever.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (!accessToken) {
+      if (sessionActive) void refreshJwtAccessToken()
+      return
+    }
+    const exp = decodeJwtExp(accessToken)
+    if (exp === null) return
+    if (exp * 1000 - Date.now() < 300_000) {
+      void refreshJwtAccessToken()
+    }
   })
-
-  if (!response.ok) {
-    throw await toApiRequestError(response, 'AUTH token failed')
-  }
-
-  const data = (await response.json()) as { access?: string; refresh?: string }
-  if (!data.access || !data.refresh) {
-    throw new Error('No access or refresh token returned')
-  }
-  return { access: data.access, refresh: data.refresh }
 }
 
 export async function createDeveloperApiKey(name = 'frontend-ui', jwtToken?: string): Promise<string> {
@@ -642,6 +882,7 @@ export async function createDeveloperApiKey(name = 'frontend-ui', jwtToken?: str
 
   const response = await fetch(`${API_BASE}/developer/keys/`, {
     method: 'POST',
+    credentials: 'include',
     headers,
     body: JSON.stringify({
       name,
