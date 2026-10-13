@@ -1,18 +1,24 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
     TokenVerifyView,
 )
+from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.conf import settings
 from django.db.models import Count
 from django.utils import timezone
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 import secrets
 
 from .models import UserProfile, Subscription, APIUsage, SubscriptionTier
@@ -39,6 +45,189 @@ class ScopedTokenRefreshView(TokenRefreshView):
 
 class ScopedTokenVerifyView(TokenVerifyView):
     throttle_classes = [AuthEndpointRateThrottle]
+
+
+# Cookie-based auth views
+# ------------------------------------------------------------------------------
+# The SPA no longer stores the refresh token in JS-readable storage: the login
+# and refresh endpoints below move it into an HttpOnly cookie (see the
+# AUTH_COOKIE_* block in config/settings/base.py). Access tokens stay in JS
+# memory on the client, so we still return them in the response body.
+#
+# The legacy /api/v1/auth/token/ and /api/v1/auth/token/refresh/ endpoints
+# above are kept intact so Swagger, curl scripts, and non-browser clients keep
+# working against the same JWT store.
+
+
+def _cookie_samesite() -> str:
+    """Normalise AUTH_COOKIE_SAMESITE to Django's expected title-case values."""
+    value = str(settings.AUTH_COOKIE_SAMESITE or '').strip().capitalize()
+    return value if value in ('Lax', 'Strict', 'None') else 'Lax'
+
+
+def _set_refresh_cookie(response, refresh_token: str) -> None:
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=settings.AUTH_COOKIE_MAX_AGE,
+        path=settings.AUTH_COOKIE_PATH,
+        domain=settings.AUTH_COOKIE_DOMAIN or None,
+        secure=settings.AUTH_COOKIE_SECURE,
+        httponly=settings.AUTH_COOKIE_HTTP_ONLY,
+        samesite=_cookie_samesite(),
+    )
+
+
+def _delete_refresh_cookie(response) -> None:
+    response.delete_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        path=settings.AUTH_COOKIE_PATH,
+        domain=settings.AUTH_COOKIE_DOMAIN or None,
+        samesite=_cookie_samesite(),
+    )
+
+
+class CookieTokenObtainPairView(TokenObtainPairView):
+    """
+    POST /api/v1/auth/login/
+
+    Same credentials flow as TokenObtainPairView, but the returned refresh
+    token is stripped from the response body and set as an HttpOnly cookie.
+    The access token stays in the JSON body so the SPA can cache it in memory.
+    """
+
+    throttle_classes = [AuthEndpointRateThrottle]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == status.HTTP_200_OK and isinstance(response.data, dict):
+            refresh = response.data.pop('refresh', None)
+            if refresh:
+                _set_refresh_cookie(response, refresh)
+        return response
+
+
+class CookieTokenRefreshView(APIView):
+    """
+    POST /api/v1/auth/refresh/
+
+    Reads the refresh token from the HttpOnly cookie set by /auth/login/ or a
+    previous /auth/refresh/ call. Rotates the cookie (SimpleJWT rotation is on,
+    blacklist-after-rotation is on) and returns only the new access token in
+    the response body. Falls back to a `{"refresh": ...}` body for non-browser
+    clients; the browser SPA never sends a body.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [AuthEndpointRateThrottle]
+
+    def _extract_refresh(self, request) -> str:
+        cookie_value = request.COOKIES.get(settings.AUTH_COOKIE_NAME, '') or ''
+        if cookie_value:
+            return cookie_value.strip()
+        body = request.data if isinstance(request.data, dict) else {}
+        body_value = body.get('refresh') if isinstance(body, dict) else None
+        if isinstance(body_value, str) and body_value.strip():
+            return body_value.strip()
+        return ''
+
+    def post(self, request, *args, **kwargs):
+        incoming = self._extract_refresh(request)
+        if not incoming:
+            return Response(
+                {'detail': 'no_refresh_token', 'code': 'not_authenticated'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        serializer = TokenRefreshSerializer(data={'refresh': incoming})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except (TokenError, DRFValidationError):
+            response = Response(
+                {'detail': 'invalid_refresh_token', 'code': 'refresh_revoked'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            _delete_refresh_cookie(response)
+            return response
+
+        data = dict(serializer.validated_data)
+        rotated = data.pop('refresh', None)
+        response = Response(data, status=status.HTTP_200_OK)
+        if rotated and rotated != incoming:
+            _set_refresh_cookie(response, rotated)
+        return response
+
+
+class CookieTokenLogoutView(APIView):
+    """
+    POST /api/v1/auth/logout/
+
+    Blacklists the current refresh token (best-effort -- already-blacklisted or
+    malformed tokens are silently ignored) and clears the cookie. Always
+    returns 204 so the SPA can rely on it during cleanup.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [AuthEndpointRateThrottle]
+
+    def post(self, request, *args, **kwargs):
+        raw = request.COOKIES.get(settings.AUTH_COOKIE_NAME, '') or ''
+        if raw:
+            try:
+                RefreshToken(raw).blacklist()
+            except TokenError:
+                pass
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        _delete_refresh_cookie(response)
+        return response
+
+
+class SessionStateView(APIView):
+    """
+    GET /api/v1/auth/session/
+
+    Cheap bootstrap probe used by the SPA on load. Reports whether a valid
+    refresh cookie is present so the client can decide to call /auth/refresh/
+    immediately. Never returns the refresh token itself.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = []
+
+    def get(self, request, *args, **kwargs):
+        raw = request.COOKIES.get(settings.AUTH_COOKIE_NAME, '') or ''
+        if not raw:
+            return Response({'authenticated': False})
+
+        try:
+            refresh = RefreshToken(raw)
+        except TokenError:
+            return Response({'authenticated': False})
+
+        user_id_claim = settings.SIMPLE_JWT.get('USER_ID_CLAIM', 'user_id')
+        user_id = refresh.payload.get(user_id_claim)
+        User = get_user_model()
+        try:
+            user = User.objects.get(id=user_id, is_active=True)
+        except (User.DoesNotExist, TypeError, ValueError):
+            return Response({'authenticated': False})
+
+        exp = refresh.payload.get('exp')
+        refresh_expires_at = (
+            datetime.fromtimestamp(int(exp), tz=dt_timezone.utc).isoformat()
+            if exp is not None
+            else None
+        )
+
+        return Response({
+            'authenticated': True,
+            'user_id': user.id,
+            'username': user.username,
+            'refresh_expires_at': refresh_expires_at,
+        })
 
 
 class UserRegistrationView(APIView):

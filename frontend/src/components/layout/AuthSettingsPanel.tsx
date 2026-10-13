@@ -3,10 +3,10 @@ import {
   ApiRequestError,
   clearAuthSettings,
   createDeveloperApiKey,
-  obtainJwtTokenPair,
+  loginWithCredentials,
+  logout,
   readApiKey,
   readAuthPersistenceMode,
-  readRefreshToken,
   readAuthToken,
   saveAuthSettings,
   type AuthPersistenceMode,
@@ -20,7 +20,6 @@ interface AuthSettingsPanelProps {
 export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
   const { t } = useI18n()
   const [token, setToken] = useState(readAuthToken())
-  const [refreshToken, setRefreshToken] = useState(readRefreshToken())
   const [apiKey, setApiKey] = useState(readApiKey())
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -85,11 +84,10 @@ export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
   }
 
   const onSave = () => {
-    saveAuthSettings(token, apiKey, mode, refreshToken)
+    saveAuthSettings(token, apiKey, mode)
     setSavedAt(new Date().toLocaleTimeString())
     setMessage('')
     if (mode === 'none') {
-      setToken('')
       setApiKey('')
     }
     onAuthChange?.()
@@ -98,7 +96,15 @@ export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
   const onClear = () => {
     clearAuthSettings()
     setToken('')
-    setRefreshToken('')
+    setApiKey('')
+    setSavedAt('')
+    setMessage('')
+    onAuthChange?.()
+  }
+
+  const onSignOut = async () => {
+    await logout()
+    setToken('')
     setApiKey('')
     setSavedAt('')
     setMessage('')
@@ -107,7 +113,7 @@ export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
 
   const onGetJwt = async () => {
     try {
-      const { access, refresh } = await obtainJwtTokenPair(username.trim(), password)
+      const access = await loginWithCredentials(username.trim(), password)
       let generatedApiKey = apiKey
       let apiKeyError: unknown = null
 
@@ -130,8 +136,7 @@ export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
       }
 
       setToken(access)
-      setRefreshToken(refresh)
-      saveAuthSettings(access, generatedApiKey, mode, refresh)
+      saveAuthSettings(access, generatedApiKey, mode)
       setSavedAt(new Date().toLocaleTimeString())
 
       if (generatedApiKey) {
@@ -149,7 +154,7 @@ export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
     try {
       const rawKey = await createDeveloperApiKey(apiKeyName.trim() || 'frontend-ui', token)
       setApiKey(rawKey)
-      saveAuthSettings(token, rawKey, mode, refreshToken)
+      saveAuthSettings(token, rawKey, mode)
       setSavedAt(new Date().toLocaleTimeString())
       setMessage(t('settings.apiKeySuccess'))
       onAuthChange?.()
@@ -248,6 +253,7 @@ export function AuthSettingsPanel({ onAuthChange }: AuthSettingsPanelProps) {
       <div className="auth-actions">
         <button type="button" onClick={onSave}>{t('settings.save')}</button>
         <button type="button" onClick={onClear}>{t('settings.clear')}</button>
+        <button type="button" onClick={onSignOut}>{t('settings.signOut')}</button>
       </div>
 
       {savedAt && <p className="auth-help">{t('settings.savedAt')}: {savedAt}</p>}

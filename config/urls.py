@@ -25,9 +25,13 @@ from apps.analytics.views import (
     SignalEventViewSet,
 )
 from apps.users.views import (
+    CookieTokenLogoutView,
+    CookieTokenObtainPairView,
+    CookieTokenRefreshView,
     ScopedTokenObtainPairView,
     ScopedTokenRefreshView,
     ScopedTokenVerifyView,
+    SessionStateView,
     UserRegistrationView,
     EmailVerificationView,
     PasswordResetRequestView,
@@ -119,10 +123,17 @@ urlpatterns = [
     path('api/v1/users/verify-email/', EmailVerificationView.as_view(), name='email_verify'),
     path('api/v1/users/password-reset/', PasswordResetRequestView.as_view(), name='password_reset'),
     path('api/v1/users/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
-    # JWT authentication
+    # JWT authentication -- legacy token endpoints (kept for Swagger / scripts).
     path('api/v1/auth/token/', ScopedTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/v1/auth/token/refresh/', ScopedTokenRefreshView.as_view(), name='token_refresh'),
     path('api/v1/auth/token/verify/', ScopedTokenVerifyView.as_view(), name='token_verify'),
+    # Cookie-based JWT authentication used by the SPA. The refresh token is
+    # transported in an HttpOnly cookie so it is never readable by JS; the
+    # access token is returned in the body and cached in memory client-side.
+    path('api/v1/auth/login/', CookieTokenObtainPairView.as_view(), name='auth_login'),
+    path('api/v1/auth/refresh/', CookieTokenRefreshView.as_view(), name='auth_refresh'),
+    path('api/v1/auth/logout/', CookieTokenLogoutView.as_view(), name='auth_logout'),
+    path('api/v1/auth/session/', SessionStateView.as_view(), name='auth_session'),
     # Browsable API authentication
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     # OpenAPI schema endpoints (drf-spectacular)
