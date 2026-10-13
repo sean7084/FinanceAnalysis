@@ -31,6 +31,13 @@ INDEX_WEIGHT_PROVIDER_CODES = {}
 MONTHLY_INDEX_SYNC_LOOKBACK_DAYS = 45
 DEFAULT_TRADING_CALENDAR_EXCHANGE_CODES = ('SSE', 'SZSE')
 TRADE_CAL_SYNC_WINDOW_DAYS = 365
+# TuShare's trade_cal can mark near-term dates provisionally open (e.g. a holiday window
+# before the official exchange schedule is published). The daily dispatcher used to sync
+# only "today", so a provisional row was never revisited and a stale open-flag persisted
+# indefinitely; downstream coverage validators then report phantom benchmark/PIT gaps for
+# days the market was actually closed. Re-sync a trailing window each day so corrected
+# upstream data overwrites the stale rows without a manual backfill.
+TRADING_CALENDAR_SYNC_LOOKBACK_DAYS = 60
 SUSPEND_D_SYNC_WINDOW_DAYS = 60
 SUSPEND_D_PAGE_LIMIT = 5000
 FULL_DAY_SUSPEND_TYPE = 'S'
@@ -1063,7 +1070,7 @@ def sync_daily_a_shares(target_date=None):
         today = _resolve_target_date(target_date)
         calendar_summary = sync_exchange_trading_calendar(
             exchange_codes=DEFAULT_TRADING_CALENDAR_EXCHANGE_CODES,
-            start_date=today,
+            start_date=today - timedelta(days=TRADING_CALENDAR_SYNC_LOOKBACK_DAYS),
             end_date=today,
         )
         benchmark_summary = sync_benchmark_index_history(
