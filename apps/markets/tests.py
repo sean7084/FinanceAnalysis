@@ -1,7 +1,7 @@
 import json
 import tempfile
 import csv
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
@@ -20,7 +20,7 @@ from apps.analytics.indicator_warmup import (
 from apps.analytics.technical_staleness import ordered_trading_dates_for_exchange
 from .benchmarking import PITMembershipCoverageError, build_point_in_time_union_benchmark_rows, ensure_pit_membership_coverage, point_in_time_union_asset_ids, refresh_latest_point_in_time_union_benchmark, refresh_point_in_time_union_benchmark, required_pit_index_codes_for_date, resolve_point_in_time_union_membership
 from .models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV, PointInTimeBenchmarkDaily
-from .tasks import run_post_sync_universal_refresh, sync_asset_suspensions, sync_benchmark_index_history, sync_daily_a_shares, sync_exchange_trading_calendar, sync_monthly_index_memberships
+from .tasks import TRADING_CALENDAR_SYNC_LOOKBACK_DAYS, run_post_sync_universal_refresh, sync_asset_suspensions, sync_benchmark_index_history, sync_daily_a_shares, sync_exchange_trading_calendar, sync_monthly_index_memberships
 
 
 class MarketApiPaginationTests(TestCase):
@@ -1034,7 +1034,11 @@ class IndexConstituentSyncTests(TestCase):
 
         self.assertIn('Dispatched 3 tasks', result)
         self.assertEqual(mock_signature.call_count, 3)
-        mock_calendar_sync.assert_called_once_with(exchange_codes=('SSE', 'SZSE'), start_date=date(2026, 4, 25), end_date=date(2026, 4, 25))
+        mock_calendar_sync.assert_called_once_with(
+            exchange_codes=('SSE', 'SZSE'),
+            start_date=date(2026, 4, 25) - timedelta(days=TRADING_CALENDAR_SYNC_LOOKBACK_DAYS),
+            end_date=date(2026, 4, 25),
+        )
         mock_benchmark_sync.assert_called_once()
         mock_suspension_sync.assert_called_once_with(start_date=date(2026, 4, 25), end_date=date(2026, 4, 25), ts_codes=['000001.SZ', '600001.SH', '600002.SH'])
         mock_chord.assert_called_once_with(['sig-a', 'sig-b', 'sig-c'])
@@ -1133,7 +1137,11 @@ class IndexConstituentSyncTests(TestCase):
         result = sync_daily_a_shares(target_date='2026-04-25')
 
         self.assertIn('queued post-sync refresh', result)
-        mock_calendar_sync.assert_called_once_with(exchange_codes=('SSE', 'SZSE'), start_date=date(2026, 4, 25), end_date=date(2026, 4, 25))
+        mock_calendar_sync.assert_called_once_with(
+            exchange_codes=('SSE', 'SZSE'),
+            start_date=date(2026, 4, 25) - timedelta(days=TRADING_CALENDAR_SYNC_LOOKBACK_DAYS),
+            end_date=date(2026, 4, 25),
+        )
         mock_benchmark_sync.assert_called_once()
         mock_suspension_sync.assert_called_once_with(start_date=date(2026, 4, 25), end_date=date(2026, 4, 25), ts_codes=['600999.SH'])
         mock_refresh_delay.assert_called_once_with(target_date='2026-04-25')
