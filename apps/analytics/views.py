@@ -4,6 +4,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Max
 from django.utils import timezone
@@ -117,9 +118,16 @@ def _normalize_dashboard_candidate_config(query_params):
 
 
 def _build_dashboard_candidate_rows(latest_date, candidate_config):
+    # Without this scope the process-local matrix-signal cache is bypassed and
+    # every request re-runs model inference. The cache key covers source, date,
+    # horizon, model identity and trade-decision policy but not up_threshold or
+    # top_n, so filter combinations sharing a source and horizon share one surface.
     pseudo_run = SimpleNamespace(
         strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
-        parameters=candidate_config,
+        parameters={
+            **candidate_config,
+            'matrix_signal_cache_key': settings.DASHBOARD_MATRIX_SIGNAL_SCOPE,
+        },
     )
     rows = _pick_candidates(pseudo_run, latest_date, cache={})
     return [
@@ -193,48 +201,85 @@ def _latest_by_asset(queryset, asset_attr='asset_id'):
     return results
 
 
+def _parse_dashboard_list_params(query_params):
+    prediction_horizon = _parse_int(query_params.get('prediction_horizon'), 7, minimum=1)
+    candidate_config = _normalize_dashboard_candidate_config(query_params)
+    model_family = str(query_params.get('model_family', 'both')).strip().lower()
+    if model_family not in {'both', 'heuristic', 'lightgbm', 'lstm'}:
+        model_family = 'both'
+    try:
+        page = max(1, int(query_params.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(query_params.get('page_size', 120))
+    except (TypeError, ValueError):
+        page_size = 120
+    return {
+        'prediction_horizon': _dashboard_prediction_horizon(prediction_horizon, candidate_config),
+        'candidate_config': candidate_config,
+        'model_family': model_family,
+        'suggested_only': _parse_bool(query_params.get('suggested_only')),
+        'search': str(query_params.get('search', '')).strip().lower(),
+        'ordering': str(query_params.get('ordering', '')).strip(),
+        'page': page,
+        'page_size': max(1, min(page_size, 300)),
+    }
+
+
+def _dashboard_stocks_cache_key(latest_date, params):
+    """Shared by ``list`` and ``refresh`` so the two cannot drift apart."""
+    candidate_config = params['candidate_config']
+    candidate_cache_fragment = (
+        hashlib.sha1(json.dumps(candidate_config, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]
+        if candidate_config else 'all'
+    )
+    return (
+        f'dashboard_stocks:{latest_date}:{params["prediction_horizon"]}:{params["model_family"]}:'
+        f'{int(params["suggested_only"])}:{candidate_cache_fragment}:{params["search"]}:'
+        f'{params["ordering"]}:{params["page"]}:{params["page_size"]}'
+    )
+
+
 class DashboardStockViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def list(self, request):
-        prediction_horizon = _parse_int(request.query_params.get('prediction_horizon'), 7, minimum=1)
-        candidate_config = _normalize_dashboard_candidate_config(request.query_params)
-        prediction_horizon = _dashboard_prediction_horizon(prediction_horizon, candidate_config)
-
-        model_family = str(request.query_params.get('model_family', 'both')).strip().lower()
-        if model_family not in {'both', 'heuristic', 'lightgbm', 'lstm'}:
-            model_family = 'both'
-
-        suggested_only = _parse_bool(request.query_params.get('suggested_only'))
-        search = str(request.query_params.get('search', '')).strip().lower()
-        ordering = str(request.query_params.get('ordering', '')).strip()
-        try:
-            page = max(1, int(request.query_params.get('page', 1)))
-        except (TypeError, ValueError):
-            page = 1
-        try:
-            page_size = int(request.query_params.get('page_size', 120))
-        except (TypeError, ValueError):
-            page_size = 120
-        page_size = max(1, min(page_size, 300))
+        params = _parse_dashboard_list_params(request.query_params)
 
         latest_date = FactorScore.objects.filter(mode=FactorScore.FactorMode.COMPOSITE).aggregate(latest=Max('date'))['latest']
         if latest_date is None:
             return Response({'count': 0, 'results': []})
 
-        candidate_rows = _build_dashboard_candidate_rows(latest_date, candidate_config) if candidate_config else None
-        candidate_asset_ids = [row['asset_id'] for row in candidate_rows] if candidate_rows else []
-        candidate_cache_fragment = (
-            hashlib.sha1(json.dumps(candidate_config, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]
-            if candidate_config else 'all'
-        )
-        cache_key = (
-            f'dashboard_stocks:{latest_date}:{prediction_horizon}:{model_family}:{int(suggested_only)}:'
-            f'{candidate_cache_fragment}:{search}:{ordering}:{page}:{page_size}'
-        )
+        cache_key = _dashboard_stocks_cache_key(latest_date, params)
+        # Checked before the candidate build on purpose: that build runs model
+        # inference, while the key depends only on request parameters. Checking
+        # afterwards paid the full inference cost on every hit, then discarded it.
         cached_payload = cache.get(cache_key)
         if cached_payload is not None:
             return Response(cached_payload)
+
+        payload = self.build_stocks_payload(latest_date, params)
+        cache.set(cache_key, payload, settings.DASHBOARD_STOCKS_CACHE_SECONDS)
+        return Response(payload)
+
+    def build_stocks_payload(self, latest_date, params):
+        """Assemble the dashboard stocks payload for one factor date.
+
+        Split out of ``list`` so the nightly pre-warm task can build and cache a
+        byte-identical body without going through the HTTP layer.
+        """
+        candidate_config = params['candidate_config']
+        prediction_horizon = params['prediction_horizon']
+        model_family = params['model_family']
+        suggested_only = params['suggested_only']
+        search = params['search']
+        ordering = params['ordering']
+        page = params['page']
+        page_size = params['page_size']
+
+        candidate_rows = _build_dashboard_candidate_rows(latest_date, candidate_config) if candidate_config else None
+        candidate_asset_ids = [row['asset_id'] for row in candidate_rows] if candidate_rows else []
 
         factor_queryset = FactorScore.objects.select_related('asset').filter(
             mode=FactorScore.FactorMode.COMPOSITE,
@@ -242,14 +287,12 @@ class DashboardStockViewSet(viewsets.ViewSet):
         )
         if candidate_rows is not None:
             if not candidate_asset_ids:
-                payload = {
+                return {
                     'count': 0,
                     'page': page,
                     'page_size': page_size,
                     'results': [],
                 }
-                cache.set(cache_key, payload, 60 * 5)
-                return Response(payload)
             factor_queryset = factor_queryset.filter(asset_id__in=candidate_asset_ids)
 
         factor_rows = list(factor_queryset.order_by('asset__symbol'))
@@ -411,14 +454,32 @@ class DashboardStockViewSet(viewsets.ViewSet):
         paged_rows = rows[start:end]
 
         serializer = DashboardStockRowSerializer(paged_rows, many=True)
-        payload = {
+        return {
             'count': total_count,
             'page': page,
             'page_size': page_size,
             'results': serializer.data,
         }
-        cache.set(cache_key, payload, 60 * 5)
-        return Response(payload)
+
+    @action(detail=False, methods=['post'], url_path='refresh')
+    def refresh(self, request):
+        """Drop the cached payload for this request's parameters.
+
+        Entries live for ``DASHBOARD_STOCKS_CACHE_SECONDS`` and the key is scoped
+        to the factor date, so a new trading day invalidates on its own. This is
+        the escape hatch for the case that does not: a backfill rewriting data
+        for a date already being served. It invalidates only -- it does not
+        recompute, because a rebuild runs model inference and takes minutes.
+        """
+        params = _parse_dashboard_list_params(request.query_params)
+        latest_date = FactorScore.objects.filter(
+            mode=FactorScore.FactorMode.COMPOSITE
+        ).aggregate(latest=Max('date'))['latest']
+        if latest_date is None:
+            return Response({'status': 'no_factor_data', 'date': None})
+
+        cache.delete(_dashboard_stocks_cache_key(latest_date, params))
+        return Response({'status': 'invalidated', 'date': latest_date})
 
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):

@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-10-13T14:47:15Z_
+_Generated: 2026-10-19T15:37:16Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -14,7 +14,7 @@ _Generated: 2026-10-13T14:47:15Z_
 
 | Variable | Type | Default | In `.env.example` | Read at |
 | --- | --- | --- | --- | --- |
-| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:490 |
+| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:506 |
 | `ARTIFACT_LOCAL_CACHE_ROOT` | `str` | `str(BASE_DIR)` | **no** | base.py:240 |
 | `ARTIFACT_S3_ACCESS_KEY_ID` | `str` | `''` | yes | base.py:243 |
 | `ARTIFACT_S3_ADDRESSING_STYLE` | `str` | `'path'` | yes | base.py:246 |
@@ -23,30 +23,32 @@ _Generated: 2026-10-13T14:47:15Z_
 | `ARTIFACT_S3_REGION` | `str` | `'us-east-1'` | yes | base.py:245 |
 | `ARTIFACT_S3_SECRET_ACCESS_KEY` | `str` | `''` | yes | base.py:244 |
 | `ARTIFACT_STORE_BACKEND` | `str` | `'local'` | yes | base.py:239 |
-| `AUTH_COOKIE_DOMAIN` | `str` | `''` | yes | base.py:376 |
-| `AUTH_COOKIE_NAME` | `str` | `'fa_refresh'` | yes | base.py:371 |
-| `AUTH_COOKIE_SAMESITE` | `str` | `'Lax'` | yes | base.py:374 |
-| `AUTH_COOKIE_SECURE` | `bool` | `not DEBUG` | yes | base.py:373 |
+| `AUTH_COOKIE_DOMAIN` | `str` | `''` | yes | base.py:392 |
+| `AUTH_COOKIE_NAME` | `str` | `'fa_refresh'` | yes | base.py:387 |
+| `AUTH_COOKIE_SAMESITE` | `str` | `'Lax'` | yes | base.py:390 |
+| `AUTH_COOKIE_SECURE` | `bool` | `not DEBUG` | yes | base.py:389 |
 | `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` | `int` | `2400` | yes | base.py:249 |
 | `CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS` | `int` | `20` | yes | base.py:226 |
 | `CELERY_BROKER_URL` | `str` | `'redis://localhost:6379/0'` | yes | base.py:190 |
+| `DASHBOARD_MATRIX_SIGNAL_SCOPE` | `str` | `'dashboard'` | yes | base.py:258 |
+| `DASHBOARD_STOCKS_CACHE_SECONDS` | `int` | `86400` | yes | base.py:254 |
 | `DATABASE_URL` | `db` | _required_ | yes | base.py:131 |
-| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:403 |
+| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:419 |
 | `DJANGO_ALLOWED_HOSTS` | `list` | `['localhost', '0.0.0.0', '127.0.0.1', '192.168.31.30']` | yes | local.py:9 |
 | `DJANGO_DEBUG` | `bool` | `False` | yes | base.py:37 |
 | `DJANGO_EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | local.py:17 |
 | `DJANGO_READ_DOT_ENV_FILE` | `bool` | `False` | yes | base.py:25 |
-| `DJANGO_SECRET_KEY` | `str` | `'django-insecure-change-this-in-production'` | yes | base.py:353, local.py:7 |
-| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:473 |
-| `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:477 |
-| `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:478 |
-| `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:399 |
-| `EMAIL_HOST` | `str` | `'localhost'` | yes | base.py:447 |
-| `EMAIL_HOST_PASSWORD` | `str` | `''` | yes | base.py:451 |
-| `EMAIL_HOST_USER` | `str` | `''` | yes | base.py:450 |
-| `EMAIL_PORT` | `str` | `587` | yes | base.py:448 |
-| `EMAIL_USE_TLS` | `bool` | `True` | yes | base.py:449 |
-| `FRONTEND_URL` | `str` | `'http://localhost:8000'` | yes | base.py:461 |
+| `DJANGO_SECRET_KEY` | `str` | `'django-insecure-change-this-in-production'` | yes | base.py:369, local.py:7 |
+| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:489 |
+| `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:493 |
+| `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:494 |
+| `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:415 |
+| `EMAIL_HOST` | `str` | `'localhost'` | yes | base.py:463 |
+| `EMAIL_HOST_PASSWORD` | `str` | `''` | yes | base.py:467 |
+| `EMAIL_HOST_USER` | `str` | `''` | yes | base.py:466 |
+| `EMAIL_PORT` | `str` | `587` | yes | base.py:464 |
+| `EMAIL_USE_TLS` | `bool` | `True` | yes | base.py:465 |
+| `FRONTEND_URL` | `str` | `'http://localhost:8000'` | yes | base.py:477 |
 | `HISTORICAL_DATA_FLOOR` | `str` | `'2010-01-01'` | yes | base.py:218 |
 | `MACRO_SYNC_FALLBACK_PROVIDER` | `str` | `'akshare'` | yes | base.py:220 |
 | `MACRO_SYNC_PRIMARY_PROVIDER` | `str` | `'tushare'` | yes | base.py:219 |
@@ -60,8 +62,8 @@ _Generated: 2026-10-13T14:47:15Z_
 | `NEWS_BACKFILL_FLOOR` | `str` | `'2021-04-15 00:00:00'` | yes | base.py:230 |
 | `NEWS_BACKFILL_LIMIT_PER_PROVIDER` | `int` | `0` | yes | base.py:231 |
 | `NEWS_BACKFILL_PROVIDER` | `str` | `'tushare_major'` | yes | base.py:228 |
-| `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:384, base.py:392 |
-| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:491 |
+| `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:400, base.py:408 |
+| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:507 |
 | `TUSHARE_TOKEN` | `str` | `None` | yes | base.py:30 |
 
 **1** variables are env-overridable but absent from `.env.example`: `ARTIFACT_LOCAL_CACHE_ROOT`. They all have defaults, so nothing breaks -- but they cannot be discovered from the example file.
@@ -75,5 +77,5 @@ These are not Django settings. A key consumed by a launcher under `scripts/` or 
 | --- | --- |
 | `CELERY_RESULT_BACKEND` | read by `scripts/_native_env.ps1`, `scripts/_native_env.sh` |
 | `CELERY_WORKER_QUEUES` | read by `scripts/run_celery_worker.ps1`, `scripts/run_celery_worker.sh`, `scripts/run_local_stack.sh`, `compose/local/django/start-celeryworker` |
-| `SMOKE_PASSWORD` | read by `scripts/smoke_api_check.sh` |
-| `SMOKE_USERNAME` | read by `scripts/smoke_api_check.sh` |
+| `SMOKE_PASSWORD` | read by `scripts/measure_page_api_latency.sh`, `scripts/smoke_api_check.sh` |
+| `SMOKE_USERNAME` | read by `scripts/measure_page_api_latency.sh`, `scripts/smoke_api_check.sh` |

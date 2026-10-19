@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-10-19T00:09:47Z_
+_Generated: 2026-10-19T15:37:16Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -39,13 +39,14 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `fetch-latest-market-news-daily` | `apps.sentiment.tasks.fetch_latest_market_news` | `35 16 * * *` | &mdash; |
 | `generate-lightgbm-predictions-daily` | `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | `30 18 * * *` | &mdash; |
 | `generate-predictions-daily` | `apps.prediction.tasks.generate_predictions_for_date` | `0 18 * * *` | &mdash; |
+| `prewarm-dashboard-stocks-cache` | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `15 19 * * *` | &mdash; |
 | `run-daily-sentiment-pipeline` | `apps.sentiment.tasks.run_daily_sentiment_pipeline` | `0 17 * * *` | &mdash; |
 | `run-hourly-historical-news-backfill` | `apps.sentiment.tasks.run_hourly_historical_news_backfill` | `12 * * * *` | &mdash; |
 | `sync-a-shares-daily-from-tushare` | `apps.markets.tasks.sync_daily_a_shares` | `10 16 * * *` | &mdash; |
 | `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 2 * 1 *` | &mdash; |
 | `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 0 * 2-8 *` | &mdash; |
 
-**44** registered project tasks, **9** beat entries, **35** reachable only through management commands, API actions, or other tasks.
+**45** registered project tasks, **10** beat entries, **35** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -70,6 +71,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.analytics.tasks.calculate_stochastic_for_asset` | `ops` | default | global | global | &mdash; |
 | `apps.analytics.tasks.calculate_volume_signals_for_asset` | `ops` | default | global | global | &mdash; |
 | `apps.analytics.tasks.check_alert_rules` | `ops` | default | global | global | `check-alert-rules-every-5-min` |
+| `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `ops` | default | **3600** | **3900** | `prewarm-dashboard-stocks-cache` |
 | `apps.analytics.tasks.send_alert_notifications` | `ops` | default | global | global | &mdash; |
 | `apps.backtest.tasks.run_backtest` | `backtest` | explicit | **1800** | **2100** | &mdash; |
 | `apps.factors.tasks.calculate_factor_scores_for_date` | `ops` | default | global | global | &mdash; |
@@ -101,6 +103,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 | Task | Soft limit | Hard limit |
 | --- | --- | --- |
+| `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | **3600** | **3900** |
 | `apps.backtest.tasks.run_backtest` | **1800** | **2100** |
 | `apps.markets.tasks.run_post_sync_universal_refresh` | **1800** | **2100** |
 

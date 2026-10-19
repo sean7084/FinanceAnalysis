@@ -1314,3 +1314,65 @@ def check_alert_rules():
         triggered_count += 1
 
     return f"Triggered {triggered_count} alert events"
+
+
+# The SPA's default Dashboard request: createDefaultDashboardCandidateFilters()
+# as sent by fetchDashboardStocks. Kept in sync with
+# frontend/src/lib/dashboardCandidateFilters.ts.
+DASHBOARD_PREWARM_QUERY_STRINGS = (
+    'prediction_horizon=7&page_size=120&prediction_source=lightgbm&horizon_days=7'
+    '&candidate_mode=top_n&up_threshold=0.45&top_n=8&top_n_metric=up_prob_7d'
+    '&trade_score_scope=independent&trade_score_threshold=1&max_positions=5'
+    '&use_macro_context=true',
+    # Indicator Board: no candidate filters, so no inference, but assembling the
+    # wide row over the whole universe still measured ~195s cold.
+    'prediction_horizon=7&page_size=120',
+)
+
+
+@shared_task(soft_time_limit=3600, time_limit=3900)
+def prewarm_dashboard_stocks_cache(query_strings=None):
+    """Build and cache the dashboard stocks payloads ahead of the first request.
+
+    The view cache is Redis-backed and so shared across processes, which means
+    warming it here lets the first user of the day get a hit instead of paying
+    for model inference inside the request. The matrix-signal inference cache in
+    ``apps/backtest/tasks`` is a process-local ``OrderedDict`` and cannot be
+    warmed from a worker -- only the resulting payload can.
+
+    The long limit mirrors measured cold-inference cost (~27 minutes for the
+    candidate path on an otherwise idle host); a warm worker finishes in under a
+    minute. Same reasoning as the ``run_post_sync_universal_refresh`` override.
+    """
+    # Deferred: apps/analytics/views.py imports this module at load time.
+    from django.core.cache import cache
+    from django.db.models import Max
+    from django.http import QueryDict
+
+    from apps.factors.models import FactorScore
+
+    from .views import (
+        DashboardStockViewSet,
+        _dashboard_stocks_cache_key,
+        _parse_dashboard_list_params,
+    )
+
+    latest_date = FactorScore.objects.filter(
+        mode=FactorScore.FactorMode.COMPOSITE
+    ).aggregate(latest=Max('date'))['latest']
+    if latest_date is None:
+        return {'status': 'skipped', 'reason': 'no_composite_factor_score'}
+
+    viewset = DashboardStockViewSet()
+    entries = []
+    for query_string in tuple(query_strings or DASHBOARD_PREWARM_QUERY_STRINGS):
+        params = _parse_dashboard_list_params(QueryDict(query_string))
+        payload = viewset.build_stocks_payload(latest_date, params)
+        cache.set(
+            _dashboard_stocks_cache_key(latest_date, params),
+            payload,
+            settings.DASHBOARD_STOCKS_CACHE_SECONDS,
+        )
+        entries.append({'query': query_string, 'count': payload.get('count')})
+
+    return {'status': 'warmed', 'date': latest_date.isoformat(), 'entries': entries}

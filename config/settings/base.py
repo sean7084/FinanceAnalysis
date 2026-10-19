@@ -247,6 +247,15 @@ ARTIFACT_S3_ADDRESSING_STYLE = env('ARTIFACT_S3_ADDRESSING_STYLE', default='path
 # Backtest task health: how long a RUNNING backtest run can sit with no progress
 # before it is considered orphaned. See apps/backtest/task_health.py.
 BACKTEST_STALE_TASK_MAX_AGE_SECONDS = env.int('BACKTEST_STALE_TASK_MAX_AGE_SECONDS', default=2400)
+# The dashboard stocks payload is cached in Redis, which is shared across
+# processes, so a nightly pre-warm can serve the first request of the day. The
+# key includes the factor date, so a new trading day invalidates naturally and a
+# long TTL does not serve stale rows across dates.
+DASHBOARD_STOCKS_CACHE_SECONDS = env.int('DASHBOARD_STOCKS_CACHE_SECONDS', default=86400)
+# Scope string that opts the dashboard's pseudo-run into the process-level
+# matrix-signal inference cache in apps/backtest/tasks.py. Without it every
+# request re-runs model inference from scratch.
+DASHBOARD_MATRIX_SIGNAL_SCOPE = env('DASHBOARD_MATRIX_SIGNAL_SCOPE', default='dashboard')
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
@@ -283,6 +292,13 @@ CELERY_BEAT_SCHEDULE = {
     'generate-lightgbm-predictions-daily': {
         'task': 'apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date',
         'schedule': crontab(hour='18', minute='30'),  # 30 min after heuristic predictions
+    },
+    'prewarm-dashboard-stocks-cache': {
+        'task': 'apps.analytics.tasks.prewarm_dashboard_stocks_cache',
+        # After both prediction jobs, so the warmed payload reflects the day's
+        # stored predictions. Without this the first dashboard request of the day
+        # runs model inference inline and takes minutes.
+        'schedule': crontab(hour='19', minute='15'),
     },
 }
 
