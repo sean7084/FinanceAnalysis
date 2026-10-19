@@ -1039,10 +1039,17 @@ def sync_asset_history(
         return f"Error for {stock_code}: {str(e)}"
 
 
-@shared_task
+@shared_task(soft_time_limit=1800, time_limit=2100)
 def run_post_sync_universal_refresh(sync_results=None, target_date=None):
     """
     Refresh cross-asset daily metrics after all OHLCV sync fan-out tasks complete.
+
+    Overrides the global 60s / 300s pair, same as ``run_backtest``: this task runs
+    the PIT benchmark refresh, capital-flow sync, factor scores, technical
+    indicators and signals across the whole effective universe in sequence. It fits
+    inside 60s only on an idle host, so a backlog replay or a concurrent retrain
+    used to kill it with ``SoftTimeLimitExceeded`` and leave the PIT benchmark and
+    daily predictions silently stuck on the last successful date.
     """
     as_of = _resolve_target_date(target_date)
     pit_benchmark_result = refresh_latest_point_in_time_union_benchmark(target_date=as_of.isoformat())

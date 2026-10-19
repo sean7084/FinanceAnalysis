@@ -1177,6 +1177,12 @@ class IndexConstituentSyncTests(TestCase):
         self.assertIn('factor_scores=factor-score-ok', result)
         self.assertIn('technical_indicators=technical-indicators-ok', result)
 
+    def test_run_post_sync_universal_refresh_overrides_global_time_limits(self):
+        # The global 60s soft limit kills the PIT benchmark refresh on a busy host,
+        # which strands PointInTimeBenchmarkDaily and daily predictions silently.
+        self.assertEqual(run_post_sync_universal_refresh.soft_time_limit, 1800)
+        self.assertEqual(run_post_sync_universal_refresh.time_limit, 2100)
+
     @patch('apps.markets.tasks.sync_asset_history.delay')
     @patch('apps.markets.tasks.ts.pro_api')
     def test_sync_index_constituents_can_dispatch_only_current_membership_changes(self, mock_pro_api, mock_delay):

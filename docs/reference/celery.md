@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-09-16T15:25:01Z_
+_Generated: 2026-10-19T00:09:47Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -76,7 +76,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.factors.tasks.sync_daily_capital_flow_snapshots` | `ops` | default | global | global | &mdash; |
 | `apps.macro.tasks.refresh_current_market_context` | `ops` | default | global | global | &mdash; |
 | `apps.macro.tasks.sync_macro_data_monthly` | `ops` | default | global | global | `sync-macro-data-monthly` |
-| `apps.markets.tasks.run_post_sync_universal_refresh` | `ops` | default | global | global | &mdash; |
+| `apps.markets.tasks.run_post_sync_universal_refresh` | `ops` | default | **1800** | **2100** | &mdash; |
 | `apps.markets.tasks.sync_asset_history` | `ops` | default | global | global | &mdash; |
 | `apps.markets.tasks.sync_daily_a_shares` | `ops` | default | global | global | `sync-a-shares-daily-from-tushare` |
 | `apps.markets.tasks.sync_monthly_index_memberships` | `ops` | default | global | global | `sync-index-memberships-monthly` |
@@ -102,6 +102,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | Task | Soft limit | Hard limit |
 | --- | --- | --- |
 | `apps.backtest.tasks.run_backtest` | **1800** | **2100** |
+| `apps.markets.tasks.run_post_sync_universal_refresh` | **1800** | **2100** |
 
-These overrides exist because the global soft limit is short enough to protect the `ops` queue from a stuck sync, while backtests and retrains legitimately run for tens of minutes.
+These overrides exist because the global soft limit is short enough to protect the `ops` queue from a stuck sync, while a backtest chunk and the post-sync universe refresh legitimately run for tens of minutes.
 

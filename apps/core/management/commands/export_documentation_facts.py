@@ -894,8 +894,9 @@ def build_celery():
         parts.append(_md_table(['Task', 'Soft limit', 'Hard limit'], [(row[0], row[3], row[4]) for row in overrides]))
         parts.append(
             '\nThese overrides exist because the global soft limit is short '
-            'enough to protect the `ops` queue from a stuck sync, while '
-            'backtests and retrains legitimately run for tens of minutes.\n',
+            'enough to protect the `ops` queue from a stuck sync, while a '
+            'backtest chunk and the post-sync universe refresh legitimately run '
+            'for tens of minutes.\n',
         )
 
     parts.append('')
