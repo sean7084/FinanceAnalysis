@@ -3,10 +3,13 @@ from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.core.management import call_command, CommandError
 from django.contrib.auth.models import User
+from django.conf import settings
 from django.db.utils import OperationalError
-from django.test import TestCase
+from django.http import QueryDict
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -18,6 +21,13 @@ from pathlib import Path
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import ExchangeTradingCalendar, Market, Asset, IndexMembership, OHLCV
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
+from .tasks import prewarm_dashboard_stocks_cache
+from .views import (
+    DashboardStockViewSet,
+    _build_dashboard_candidate_rows,
+    _dashboard_stocks_cache_key,
+    _parse_dashboard_list_params,
+)
 from .technical_staleness import asset_exchange_code
 from .management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand, DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import FactorScore
@@ -192,7 +202,13 @@ class Phase9ApiTests(TestCase):
         self.assertIn('screeners', response.data)
 
 
-class Phase17DashboardStockApiTests(TestCase):
+class DashboardStockFixtures:
+    """Shared seed data for the dashboard stocks endpoint.
+
+    A mixin rather than a TestCase so subclasses do not re-run each other's
+    tests the way inheriting from a TestCase would.
+    """
+
     def setUp(self):
         self.client = APIClient()
         self.user = User.objects.create_user(
@@ -382,6 +398,7 @@ class Phase17DashboardStockApiTests(TestCase):
             model_artifact=lightgbm_artifact,
         )
 
+class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
     def test_dashboard_stocks_requires_authentication(self):
         response = self.client.get('/api/v1/dashboard/stocks/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -1389,3 +1406,113 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
                 symbols=self.asset.symbol,
                 technical_indicators='RS_SCORE',
             )
+
+
+@override_settings(CACHES={
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'dashboard-stocks-cache-tests',
+    },
+})
+class DashboardStocksCacheTests(DashboardStockFixtures, TestCase):
+    """The view cache must be consulted before the inference-bearing build.
+
+    Isolated onto locmem because the project has no test settings module, so the
+    default Redis cache would otherwise be shared with a running dev server.
+    """
+
+    PATH = '/api/v1/dashboard/stocks/'
+    QUERY = 'prediction_horizon=7&page_size=120'
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.client.force_authenticate(user=self.user)
+
+    def _spy_on_payload_build(self):
+        original = DashboardStockViewSet.build_stocks_payload
+        patcher = patch.object(DashboardStockViewSet, 'build_stocks_payload', autospec=True)
+        spy = patcher.start()
+        self.addCleanup(patcher.stop)
+        spy.side_effect = lambda self_, latest_date, params: original(self_, latest_date, params)
+        return spy
+
+    def test_repeat_request_is_served_from_cache_without_rebuilding(self):
+        spy = self._spy_on_payload_build()
+
+        first = self.client.get(f'{self.PATH}?{self.QUERY}')
+        second = self.client.get(f'{self.PATH}?{self.QUERY}')
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(first.data['results'], second.data['results'])
+
+    def test_distinct_params_do_not_share_a_cache_entry(self):
+        spy = self._spy_on_payload_build()
+
+        self.client.get(f'{self.PATH}?{self.QUERY}')
+        self.client.get(f'{self.PATH}?{self.QUERY}&page_size=50')
+
+        self.assertEqual(spy.call_count, 2)
+
+    def test_refresh_action_invalidates_the_cached_payload(self):
+        spy = self._spy_on_payload_build()
+
+        self.client.get(f'{self.PATH}?{self.QUERY}')
+        self.assertEqual(spy.call_count, 1)
+
+        refreshed = self.client.post(f'{self.PATH}refresh/?{self.QUERY}')
+
+        self.assertEqual(refreshed.status_code, status.HTTP_200_OK)
+        self.assertEqual(refreshed.data['status'], 'invalidated')
+        self.assertEqual(refreshed.data['date'], self.as_of)
+
+        self.client.get(f'{self.PATH}?{self.QUERY}')
+        self.assertEqual(spy.call_count, 2)
+
+    def test_prewarm_task_makes_the_first_request_a_cache_hit(self):
+        result = prewarm_dashboard_stocks_cache(query_strings=[self.QUERY])
+
+        self.assertEqual(result['status'], 'warmed')
+        self.assertEqual(result['date'], self.as_of.isoformat())
+        self.assertEqual(result['entries'][0]['count'], 2)
+
+        spy = self._spy_on_payload_build()
+        response = self.client.get(f'{self.PATH}?{self.QUERY}')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 2)
+        self.assertEqual(spy.call_count, 0)
+
+    def test_prewarm_skips_when_no_factor_scores_exist(self):
+        FactorScore.objects.all().delete()
+
+        result = prewarm_dashboard_stocks_cache(query_strings=[self.QUERY])
+
+        self.assertEqual(result['status'], 'skipped')
+        self.assertEqual(result['reason'], 'no_composite_factor_score')
+
+    def test_candidate_build_opts_into_the_matrix_signal_cache(self):
+        with patch('apps.analytics.views._pick_candidates', return_value=[]) as pick:
+            _build_dashboard_candidate_rows(self.as_of, {'candidate_mode': 'top_n'})
+
+        pseudo_run = pick.call_args.args[0]
+        self.assertEqual(
+            pseudo_run.parameters['matrix_signal_cache_key'],
+            settings.DASHBOARD_MATRIX_SIGNAL_SCOPE,
+        )
+        # The original config must survive alongside the injected scope.
+        self.assertEqual(pseudo_run.parameters['candidate_mode'], 'top_n')
+
+    def test_cache_key_is_stable_and_param_sensitive(self):
+        def key_for(query):
+            return _dashboard_stocks_cache_key(self.as_of, _parse_dashboard_list_params(QueryDict(query)))
+
+        key = key_for(self.QUERY)
+
+        self.assertTrue(key.startswith(f'dashboard_stocks:{self.as_of}:'))
+        self.assertIn(':all:', key)
+        self.assertEqual(key, key_for(self.QUERY))
+        self.assertNotEqual(key, key_for(f'{self.QUERY}&page_size=50'))
+        self.assertNotEqual(key, key_for(f'{self.QUERY}&search=alpha'))
