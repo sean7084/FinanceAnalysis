@@ -67,8 +67,11 @@ export function StockDetailPage() {
           return
         }
 
-        const ohlcvRows = await fetchOhlcvByAsset(asset.id, 3000)
-        const [predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
+        // All four only need asset.id / asset.symbol, so none has to wait for
+        // another. OHLCV previously gated the rest behind up to three serial
+        // page round trips.
+        const [ohlcvResult, predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
+          fetchOhlcvByAsset(asset.id, 3000),
           fetchPredictionBySymbol(asset.symbol),
           fetchLightGBMPredictionBySymbol(asset.symbol),
           fetchSentimentByAsset(asset.id),
@@ -77,6 +80,13 @@ export function StockDetailPage() {
         if (!alive) {
           return
         }
+
+        // allSettled would otherwise turn an OHLCV failure into a silently empty
+        // chart; rethrow so the catch below reports it, as the serial version did.
+        if (ohlcvResult.status === 'rejected') {
+          throw ohlcvResult.reason
+        }
+        const ohlcvRows = ohlcvResult.value
 
         setStockName(asset.name)
         const points = [...ohlcvRows]

@@ -958,7 +958,58 @@ async function apiGetSafe<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+export interface DashboardSummaryDto {
+  macro_phase: string
+  hot_concepts: string
+  prediction_signals: number
+  alert_triggers: number
+  completed_backtests: number
+  avg_bottom_probability: number
+  generated_at: string
+}
+
+const DASHBOARD_SUMMARY_FALLBACK: DashboardSummaryDto = {
+  macro_phase: 'N/A',
+  hot_concepts: 'N/A',
+  prediction_signals: 0,
+  alert_triggers: 0,
+  completed_backtests: 0,
+  avg_bottom_probability: 0,
+  generated_at: '',
+}
+
+/**
+ * Single-call replacement for the seven requests `fetchDashboardDataLegacy`
+ * fires. Served by `GET /dashboard/stocks/summary/`, which computes the same six
+ * values server-side and caches them per user, because the alert count is
+ * owner-scoped.
+ *
+ * Two values may legitimately differ from the legacy result: `alertTriggers` and
+ * `completedBacktests` are true counts, where the legacy code tallied within a
+ * capped page (200 and 50 rows) and so silently saturated. `completedBacktests`
+ * is the visible one -- it reported at most 50 against a real total of 431.
+ *
+ * Uses `apiGetSafe` rather than `apiGet` to keep the legacy behaviour of
+ * degrading to placeholder values instead of failing the whole page.
+ */
 export async function fetchDashboardData() {
+  const summary = await apiGetSafe<DashboardSummaryDto>(
+    '/dashboard/stocks/summary/',
+    DASHBOARD_SUMMARY_FALLBACK,
+  )
+
+  return {
+    macroPhase: summary.macro_phase || 'N/A',
+    hotConcepts: summary.hot_concepts || 'N/A',
+    predictionSignals: summary.prediction_signals ?? 0,
+    alertTriggers: summary.alert_triggers ?? 0,
+    completedBacktests: summary.completed_backtests ?? 0,
+    avgBottomProbability: summary.avg_bottom_probability ?? 0,
+  }
+}
+
+/** Retained for one release so the switch to the summary endpoint is reversible. */
+export async function fetchDashboardDataLegacy() {
   const [macroCurrent, macroList, conceptsTop, recentSignals, recentAlerts, backtests, screener] = await Promise.all([
     apiGetSafe<MacroContextDto | { detail: string }>('/macro/contexts/current/', { detail: 'No active context found.' }),
     apiGetSafe<Paginated<MacroContextDto>>('/macro/contexts/?page_size=1', { count: 0, next: null, previous: null, results: [] }),
@@ -1114,19 +1165,45 @@ export async function fetchAssets(limit = 200, search = ''): Promise<AssetDto[]>
 }
 
 export async function fetchOhlcvByAsset(assetId: number, limit = 120): Promise<OhlcvDto[]> {
-  const rows: OhlcvDto[] = []
   const pageSize = Math.min(Math.max(limit, 1), 1000)
-  let nextUrl: string | null = `${API_BASE}/ohlcv/?asset=${assetId}&ordering=-date&page_size=${pageSize}`
+  const baseUrl = `${API_BASE}/ohlcv/?asset=${assetId}&ordering=-date&page_size=${pageSize}`
 
-  while (nextUrl && rows.length < limit) {
-    const response = await fetchWithAuthRefresh(nextUrl, { headers: getHeaders() })
+  const getPage = async (url: string): Promise<Paginated<OhlcvDto>> => {
+    const response = await fetchWithAuthRefresh(url, { headers: getHeaders() })
     if (!response.ok) {
       throw await toApiRequestError(response, 'API request failed')
     }
+    return (await response.json()) as Paginated<OhlcvDto>
+  }
 
-    const payload = (await response.json()) as Paginated<OhlcvDto>
-    rows.push(...payload.results)
-    nextUrl = payload.next
+  const first = await getPage(baseUrl)
+  const rows: OhlcvDto[] = [...first.results]
+
+  // Once `count` is known the remaining pages are independent, so request them
+  // together instead of walking `next` one round trip at a time. Promise.all
+  // preserves order, and each page is ordered -date, so the result stays
+  // newest-first exactly as the serial version produced it.
+  const total = typeof first.count === 'number' ? first.count : rows.length
+  const wanted = Math.min(total, limit)
+  const totalPages = Math.ceil(wanted / pageSize)
+  let nextUrl: string | null = first.next ?? null
+  if (totalPages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: totalPages - 1 }, (_, index) => getPage(`${baseUrl}&page=${index + 2}`)),
+    )
+    for (const page of rest) {
+      rows.push(...page.results)
+    }
+    nextUrl = rest[rest.length - 1]?.next ?? null
+  }
+
+  // `count` and `page_size` normally pin the page count exactly. If a page still
+  // came back short, fall back to walking `next` rather than silently returning
+  // truncated chart history.
+  while (nextUrl && rows.length < wanted) {
+    const page = await getPage(nextUrl)
+    rows.push(...page.results)
+    nextUrl = page.next
   }
 
   return rows.slice(0, limit)

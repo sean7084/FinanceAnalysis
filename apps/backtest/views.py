@@ -21,6 +21,8 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
+from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -64,6 +66,26 @@ def _parse_extra_compare_run_ids(query_params):
 
 def _has_stale_task_owner(run):
     return get_backtest_run_task_owner_state(run)['has_stale_task_owner']
+
+
+# Terminal statuses whose payloads can no longer change, so they are worth caching.
+_BACKTEST_CACHEABLE_STATUSES = frozenset({
+    BacktestRun.Status.COMPLETED,
+    BacktestRun.Status.FAILED,
+})
+
+
+def _backtest_payload_cache_key(run, suffix, extra_compare_run_ids=()):
+    """Cache key for a run's derived payload.
+
+    Includes status and ``updated_at`` so any transition or write produces a new
+    key rather than serving a stale body. Returns None for non-terminal runs,
+    whose trades and curve are still being written.
+    """
+    if run.status not in _BACKTEST_CACHEABLE_STATUSES:
+        return None
+    compare_fragment = ','.join(str(run_id) for run_id in sorted(extra_compare_run_ids))
+    return f'backtest_{suffix}:{run.id}:{run.status}:{run.updated_at.isoformat()}:{compare_fragment}'
 
 
 class BacktestRunPagination(PageNumberPagination):
@@ -198,14 +220,34 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def trades(self, request, pk=None):
         run = self.get_object()
+        cache_key = _backtest_payload_cache_key(run, 'trades')
+        if cache_key is not None:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         rows = run.trades.select_related('asset').all().order_by('trade_date', 'id')
-        return Response(BacktestTradeSerializer(rows, many=True).data)
+        # Stays a bare list: fetchBacktestTrades types it as an array, so wrapping
+        # it in a paginated envelope would ripple through BacktestWorkbenchPage.
+        payload = BacktestTradeSerializer(rows, many=True).data
+        if cache_key is not None:
+            cache.set(cache_key, payload, settings.BACKTEST_PAYLOAD_CACHE_SECONDS)
+        return Response(payload)
 
     @action(detail=True, methods=['get'])
     def comparison_curve(self, request, pk=None):
         run = self.get_object()
         extra_compare_run_ids = _parse_extra_compare_run_ids(request.query_params)
-        return Response(build_backtest_comparison_payload(run, extra_compare_run_ids=extra_compare_run_ids))
+        cache_key = _backtest_payload_cache_key(run, 'comparison_curve', extra_compare_run_ids)
+        if cache_key is not None:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
+        payload = build_backtest_comparison_payload(run, extra_compare_run_ids=extra_compare_run_ids)
+        if cache_key is not None:
+            cache.set(cache_key, payload, settings.BACKTEST_PAYLOAD_CACHE_SECONDS)
+        return Response(payload)
 
 
 class BacktestTradeViewSet(viewsets.ReadOnlyModelViewSet):

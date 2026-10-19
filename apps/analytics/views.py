@@ -29,9 +29,10 @@ from apps.backtest.models import BacktestRun
 from apps.backtest.tasks import _pick_candidates
 from apps.markets.models import Asset, OHLCV
 from apps.factors.models import FactorScore
+from apps.macro.models import MarketContext
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.models_lightgbm import LightGBMPrediction
-from apps.sentiment.models import SentimentScore
+from apps.sentiment.models import ConceptHeat, SentimentScore
 from .tasks import (
     calculate_rsi_for_asset,
     calculate_macd_for_asset,
@@ -239,6 +240,68 @@ def _dashboard_stocks_cache_key(latest_date, params):
         f'{int(params["suggested_only"])}:{candidate_cache_fragment}:{params["search"]}:'
         f'{params["ordering"]}:{params["page"]}:{params["page_size"]}'
     )
+
+
+def _build_dashboard_summary(user):
+    """The six KPI values the SPA currently derives from seven separate calls.
+
+    Querysets mirror the endpoints being replaced so the numbers do not shift:
+    ``MarketContextViewSet.current`` with its list fallback, ``ConceptHeatViewSet.top``,
+    ``SignalEventViewSet.recent`` at ``days=1``, the owner-scoped
+    ``AlertEventViewSet.get_queryset``, and ``BottomCandidateViewSet.get_queryset``
+    ordering. Two deliberate differences: alert and backtest counts are true
+    ``.count()`` values rather than tallies over a capped page, so they no longer
+    silently saturate at 200 and 50.
+    """
+    macro = (
+        MarketContext.objects.filter(context_key='current', is_active=True)
+        .order_by('-starts_at', '-updated_at')
+        .first()
+        or MarketContext.objects.order_by('-starts_at', '-updated_at').first()
+    )
+
+    latest_concept_date = ConceptHeat.objects.order_by('-date').values_list('date', flat=True).first()
+    concepts = []
+    if latest_concept_date is not None:
+        concepts = list(
+            ConceptHeat.objects.filter(date=latest_concept_date)
+            .order_by('-heat_score')
+            .values_list('concept_name', flat=True)[:3]
+        )
+
+    latest_factor_date = FactorScore.objects.filter(
+        mode=FactorScore.FactorMode.COMPOSITE
+    ).order_by('-date').values_list('date', flat=True).first()
+    bottom_scores = []
+    if latest_factor_date is not None:
+        bottom_scores = list(
+            FactorScore.objects.filter(
+                date=latest_factor_date,
+                mode=FactorScore.FactorMode.COMPOSITE,
+            )
+            .order_by('-bottom_probability_score', 'asset__symbol')
+            .values_list('bottom_probability_score', flat=True)[:20]
+        )
+
+    return {
+        'macro_phase': macro.macro_phase if macro else 'N/A',
+        'hot_concepts': ', '.join(concepts) if concepts else 'N/A',
+        'prediction_signals': SignalEvent.objects.filter(
+            timestamp__gte=timezone.now() - timedelta(days=1)
+        ).count(),
+        'alert_triggers': AlertEvent.objects.filter(alert_rule__owner=user).exclude(
+            status=AlertEvent.Status.SENT
+        ).count(),
+        'completed_backtests': BacktestRun.objects.filter(
+            status=BacktestRun.Status.COMPLETED
+        ).count(),
+        # float, not Decimal: the SPA previously averaged Numbers client-side and
+        # DRF would render a Decimal as a string.
+        'avg_bottom_probability': (
+            float(sum(bottom_scores) / Decimal(len(bottom_scores))) if bottom_scores else 0.0
+        ),
+        'generated_at': timezone.now().isoformat(),
+    }
 
 
 class DashboardStockViewSet(viewsets.ViewSet):
@@ -480,6 +543,23 @@ class DashboardStockViewSet(viewsets.ViewSet):
 
         cache.delete(_dashboard_stocks_cache_key(latest_date, params))
         return Response({'status': 'invalidated', 'date': latest_date})
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        """One call replacing the seven the SPA fires on dashboard load.
+
+        Cached per user because ``alert_triggers`` is owner-scoped. The other five
+        values are global, but splitting them into a second key would cost a round
+        trip to save one small query.
+        """
+        cache_key = f'dashboard_summary:{request.user.id}'
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        payload = _build_dashboard_summary(request.user)
+        cache.set(cache_key, payload, settings.DASHBOARD_SUMMARY_CACHE_SECONDS)
+        return Response(payload)
 
 
 class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):

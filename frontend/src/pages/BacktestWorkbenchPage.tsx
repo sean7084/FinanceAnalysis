@@ -29,6 +29,9 @@ type WeekdayLabel = (typeof WEEKDAY_LABELS)[number]
 const RUN_HISTORY_PAGE_SIZE_DEFAULT = 5
 const TRADE_HISTORY_PAGE_SIZE = 10
 const BACKTEST_AUTO_REFRESH_INTERVAL_MS = 10_000
+// Only a run in one of these can still change on its own, so polling is wasted
+// once every listed run has reached a terminal status.
+const BACKTEST_TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED'])
 
 function storedWeekdayToLabel(value: unknown): WeekdayLabel | null {
   if (typeof value === 'string') {
@@ -261,6 +264,9 @@ export function BacktestWorkbenchPage() {
   const isMountedRef = useRef(true)
   const runRequestIdRef = useRef(0)
   const tradeRequestIdRef = useRef(0)
+  // The poll effect mounts once with empty deps, so it reads the latest runs
+  // through a ref instead of closing over a stale snapshot.
+  const runsRef = useRef<BacktestRunDto[]>([])
   const [runnerForm, setRunnerForm] = useState({
     mode: 'single' as 'single' | 'batch',
     namePrefix: 'Validation',
@@ -388,10 +394,23 @@ export function BacktestWorkbenchPage() {
   }
 
   useEffect(() => {
+    runsRef.current = runs
+  }, [runs])
+
+  useEffect(() => {
     isMountedRef.current = true
     void loadRuns({ resetPage: true, showLoading: true })
     const intervalId = window.setInterval(() => {
       if (!hasAnyAuthCredential()) {
+        return
+      }
+      // A hidden tab has no observer, and each tick refetches up to 100 runs.
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+      // Nothing can change on its own once every listed run is terminal.
+      const hasLiveRun = runsRef.current.some((run) => !BACKTEST_TERMINAL_STATUSES.has(run.status))
+      if (!hasLiveRun) {
         return
       }
       void loadRuns({ showLoading: false })
