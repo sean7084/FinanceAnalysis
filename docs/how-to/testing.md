@@ -16,7 +16,7 @@ run's `Ran N tests` line says, and is deliberately not restated here.
 | Module | Tests |
 | --- | --- |
 | `apps/backtest/tests.py` | 75 |
-| `apps/analytics/tests.py` | 47 |
+| `apps/analytics/tests.py` | 48 |
 | `apps/markets/tests.py` | 43 |
 | `apps/prediction/tests.py` | 40 |
 | `apps/prediction/tests_lightgbm.py` | 27 |

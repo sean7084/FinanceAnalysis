@@ -157,6 +157,8 @@ Items here have no commitment attached. When something is done, move it to
   port nothing in this project listens on, while Vite pins 5173 with `strictPort: true`
   and so can never fall back to it. The setting builds the verification and
   password-reset links in `apps/users/views.py`, so both were dead out of the box.
+  (Both the setting and `apps/users` were deleted in v0.1.17; recorded here as the
+  history of the fix.)
 - **`.env.example` is now complete: 33 of 33 settings-read variables.** Previously 9
   declared keys against ~30 reads, so `HISTORICAL_DATA_FLOOR` — the governance control
   both main docs treat as canonical — was undiscoverable from the example file, along
