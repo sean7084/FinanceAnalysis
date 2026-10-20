@@ -62,7 +62,7 @@ jobs:
       CELERY_BROKER_URL: redis://localhost:6379/0
       # Raise this when tests are added. Lowering it should require a reason, because
       # the only way the count drops is discovery breaking or tests being deleted.
-      MIN_TEST_COUNT: "402"
+      MIN_TEST_COUNT: "421"
 
     steps:
       - uses: actions/checkout@v4

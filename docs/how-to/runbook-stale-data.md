@@ -219,7 +219,47 @@ calculate_indicators_for_all_assets.delay()
 Then re-run predictions for the affected dates if they were already generated
 against stale inputs. See [`runbook-sync-failure.md`](runbook-sync-failure.md) §3.
 
-### 4.4 Signal events
+### 4.4 Predictions: is the date missing, or only half-written?
+
+Stored predictions fail in two different ways and they look the same from the
+dashboard. Beat **never replays a missed occurrence with its original target
+date**, so if the scheduler was down at 18:00 that date is simply absent. And a
+universe sweep that hits its time budget leaves the date present but holding a
+handful of assets -- which a reader interprets as "almost nothing was tradeable
+today" rather than "the job was truncated".
+
+Ask the question with a read-only command:
+
+```bash
+python manage.py check_prediction_coverage --lookback 10
+2026-10-08 ensemble: 5/498 assets stored, 493 missing
+2026-10-08 lightgbm: 68/498 assets stored, 430 missing
+2026-10-13 ensemble: 5/498 assets stored, 493 missing
+2026-10-13 lightgbm: 13/498 assets stored, 485 missing
+2026-10-14 ensemble: 0/475 assets stored, 475 missing
+```
+
+Real output from a CSI 500 deployment on 2026-10-20: the best recent day held five
+of 498 assets. See [`backfill.md`](backfill.md) §4 for what the tables are supposed
+to hold.
+
+`--json` for scripts, `--fail-on-gaps` to use it as a gate, `--source` to check
+one model family. Both shapes are repaired by the same pass:
+
+```bash
+python manage.py shell -c "
+from apps.prediction.tasks import reconcile_prediction_coverage
+reconcile_prediction_coverage.delay(target_date='2026-10-16')
+"
+```
+
+It repairs the oldest hole first, one `(date, source)` pair per run, capped at
+`PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN` assets, and names what is still
+missing so the next run continues. Beat fires it hourly (`45 * * * *`), which is
+what makes a whole missing day converge over hours rather than needing a job with
+a time budget nobody would approve. Raise the cap to heal faster.
+
+### 4.5 Signal events
 
 Signal tasks apply the same freshness rules and **skip** a signal rather than
 emitting it from a stale window. So a missing signal on a date with a gapped
@@ -255,6 +295,7 @@ If stale stored features were consumed by inference before you repaired them:
 | Alert on findings | `validate_data_quality --alert --alert-recipients <...>` |
 | Keep the calendar authoritative | `backfill_trading_calendar` must cover the full range before any freshness reasoning is meaningful |
 | Checkpoint long runs | A resumed run is a complete run; an abandoned one leaves exactly this class of gap |
+| Reconcile stored predictions | `check_prediction_coverage --fail-on-gaps` as a gate; the hourly `reconcile_prediction_coverage` beat entry repairs what it finds (§4.4) |
 
 The generated coverage sheet is the cheapest early-warning system available: a
 `Latest` column that stops advancing is visible in a diff long before a model

@@ -2251,7 +2251,9 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days, cache=None):
     }
 
 
-@shared_task
+# Budget override for the same reason as generate_predictions_for_date: the 60s
+# global soft limit truncated the universe sweep.
+@shared_task(soft_time_limit=3600, time_limit=3900)
 def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
     """Generate LightGBM predictions for all assets on a given date."""
     if target_date:

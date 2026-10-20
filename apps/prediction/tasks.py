@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -11,6 +13,12 @@ from apps.markets.benchmarking import effective_universe_tradeable_assets
 from apps.markets.models import Asset
 from apps.macro.models import MarketContext
 from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
+from apps.prediction.reconciliation import (
+    ENSEMBLE,
+    RECONCILE_SOURCES,
+    gaps_for_date,
+    open_trading_dates,
+)
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
 from .odds import estimate_trade_decision
@@ -174,7 +182,12 @@ def train_prediction_models(target_date=None):
     )
 
 
-@shared_task
+# The global soft limit is 60s (config/settings/base.py), which is roughly five
+# assets at this loop's cost: the sweep was being killed mid-universe and leaving
+# a trading date with a handful of rows. A measured universe day is around two
+# hours of CPU, so this budget covers most of one day and
+# `reconcile_prediction_coverage` writes whatever is still missing.
+@shared_task(soft_time_limit=3600, time_limit=3900)
 def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=None, event_tag=None):
     if target_date:
         try:
@@ -324,3 +337,115 @@ def generate_prediction_for_asset(asset_id, target_date=None, horizons=None, mac
         event_tag=event_tag,
     )
     return f'Predictions generated for asset_id={asset_id}, rows={processed}, date={as_of}'
+
+
+def _first_repairable_gap(as_of, sources):
+    """Oldest incomplete (date, source) in the lookback window, plus its universe.
+
+    Date order matters: a week-old hole is what makes a backtest over that window
+    wrong, so it is repaired before today's.
+    """
+    for trade_date in open_trading_dates(
+        as_of,
+        settings.PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS,
+    ):
+        universe = effective_universe_tradeable_assets(
+            trade_date,
+            context=f'Prediction reconciliation for {trade_date}',
+        )
+        if not universe:
+            continue
+        for gap in gaps_for_date(trade_date, sources=sources, universe=universe):
+            if gap.missing_asset_ids:
+                return gap, universe
+    return None, []
+
+
+@shared_task(soft_time_limit=1500, time_limit=1800)
+def reconcile_prediction_coverage(target_date=None, sources=None, max_assets=None, horizons=None):
+    """Write the stored predictions the scheduled sweeps did not.
+
+    Covers both ways a trading date ends up short. Beat replays nothing: if the
+    scheduler was down at 18:00, that occurrence is gone and the date stays empty
+    forever. And a sweep that ran but hit its time budget leaves a date with a few
+    assets instead of the universe -- which looks, to every reader of the table,
+    like a day on which almost nothing was tradeable.
+
+    One (date, source) per run, capped at `max_assets` assets. The cap is the
+    point: at this cost a single job cannot close a universe-sized hole inside any
+    time budget worth having, so the beat cadence decides how fast the backlog
+    heals and each run reports what it left behind.
+    """
+    if target_date:
+        try:
+            as_of = date.fromisoformat(str(target_date))
+        except ValueError:
+            as_of = timezone.now().date()
+    else:
+        as_of = timezone.now().date()
+
+    resolved_sources = tuple(sources) if sources else RECONCILE_SOURCES
+    resolved_horizons = horizons or [3, 7, 30]
+    resolved_max_assets = (
+        settings.PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN
+        if max_assets is None
+        else int(max_assets)
+    )
+
+    gap, universe = _first_repairable_gap(as_of, resolved_sources)
+    if gap is None:
+        return (
+            f'Prediction reconciliation: complete through {as_of} '
+            f'({settings.PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS} trading days looked back)'
+        )
+    if resolved_max_assets <= 0:
+        return f'Prediction reconciliation disabled by max_assets=0; {gap.summary()}'
+
+    assets_by_id = {asset.id: asset for asset in universe}
+
+    def repair_asset(asset_id):
+        if gap.source == ENSEMBLE:
+            return _generate_predictions_for_single_asset(
+                asset=assets_by_id[asset_id],
+                as_of=gap.trade_date,
+                horizons=resolved_horizons,
+            )
+        # Local import: tasks_lightgbm pulls numpy/pandas/lightgbm, and the ops
+        # worker should not pay for that to serve the heuristic path.
+        from apps.prediction.tasks_lightgbm import generate_lightgbm_prediction_for_asset
+
+        return generate_lightgbm_prediction_for_asset(
+            asset_id,
+            gap.trade_date.isoformat(),
+            resolved_horizons,
+        )
+
+    repaired = 0
+    stopped_early = False
+    for asset_id in gap.missing_asset_ids[:resolved_max_assets]:
+        try:
+            repair_asset(asset_id)
+        except SoftTimeLimitExceeded:
+            stopped_early = True
+            break
+        repaired += 1
+
+    remaining = len(gap.missing_asset_ids) - repaired
+    stopped_note = ', soft time limit reached' if stopped_early else ''
+    if remaining <= 0:
+        outcome = f'{gap.source} complete for {gap.trade_date}'
+    else:
+        outcome = f'{remaining} assets still missing for {gap.trade_date}, next run continues'
+
+    if repaired:
+        # The dashboard stocks payload is cached for a day under a key that does
+        # not change when rows are added for the same factor date, so without
+        # this the repaired rows stay invisible until the TTL lapses.
+        from apps.analytics.tasks import prewarm_dashboard_stocks_cache
+
+        prewarm_dashboard_stocks_cache.delay()
+
+    return (
+        f'Prediction reconciliation wrote {gap.source} rows for {repaired} assets'
+        f'{stopped_note}; {outcome}'
+    )

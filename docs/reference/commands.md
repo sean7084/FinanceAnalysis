@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-09T15:53:18Z_
+_Generated: 2026-10-20T02:45:45Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**33** project commands across **8** apps.
+**34** project commands across **8** apps.
 
 
 ## `apps.analytics`
@@ -422,6 +422,19 @@ Backfill model input data over a historical date range for heuristic and LightGB
 | `--skip-sentiment` | flag | `False` |  |  |
 | `--checkpoint-file` | value | `""` |  |  |
 | `--resume-from-checkpoint` | flag | `False` |  |  |
+
+
+### `check_prediction_coverage`
+
+List which universe members have no stored prediction for each open trading date in the lookback window. Writes nothing.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--as-of` | value | &mdash; |  | Last date to check (default: today). |
+| `--lookback` | value | &mdash; |  | Trading days to check (default: settings.PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS = 5). |
+| `--source` | value | &mdash; |  | Restrict to one source. Repeatable. |
+| `--json` | flag | `False` |  | Machine-readable output. |
+| `--fail-on-gaps` | flag | `False` |  | Exit non-zero if any date is missing rows, for use as a gate. |
 
 
 ### `migrate_artifacts_to_store`
