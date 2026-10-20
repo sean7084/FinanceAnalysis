@@ -44,6 +44,11 @@
     global `alerts` group. `SIMPLE_JWT`, all `AUTH_COOKIE_*`, and `FRONTEND_URL`
     leave settings (only `DJANGO_SECRET_KEY` remains, still as Django's `SECRET_KEY`),
     and `djangorestframework-simplejwt` leaves `requirements/base.txt`.
+    **Configure `ALERT_NOTIFY_EMAILS` or the email channel goes quiet**: it defaults
+    to `[]`, and an event is only marked `SENT` when at least one channel actually
+    dispatched, so a rule whose only channel is `email` now records `FAILED` instead
+    of mailing its owner. Existing rules are affected silently — there is no error,
+    just a `FAILED` row per trigger.
   - **WebSockets are open**: `AuthMiddlewareStack` removed from `config/asgi.py`, so
     `/ws/alerts/` needs no session and no `?token=` — which also drops a per-connection
     DB round-trip. `config/routing.py` was deleted: it duplicated this wiring and was
@@ -66,8 +71,12 @@
     fake socket through open → close → backoff → give-up (it had no tests at all),
     and the surviving workbench test covers unconditional polling.
   - `scripts/smoke_api_check.sh` and `scripts/measure_page_api_latency.sh` no longer
-    require `SMOKE_USERNAME`/`SMOKE_PASSWORD`; the smoke check now additionally
-    asserts `/auth/login/` and `/developer/keys/` return 404.
+    require `SMOKE_USERNAME`/`SMOKE_PASSWORD` (both keys are now dead in `.env`).
+    The smoke check gained two assertions: `/auth/login/` and `/developer/keys/`
+    must return 404, and an **unauthenticated `POST /api/v1/alerts/` must return
+    201 with no `owner` in the response body** — followed by a `DELETE` that must
+    return 204, so the probe cleans up after itself. That write path had no
+    automated coverage at all before, only a hand-run `curl`.
   - **Deliberately untouched**: `has_stale_task_owner` and its helpers. "Task owner"
     in `apps/backtest/task_health.py` means **Celery worker** ownership, not
     authentication, and is unrelated to this removal.

@@ -484,19 +484,20 @@ There used to be a third, `frontend-static`, holding the two static checks under
 steps into `frontend`; both job names above are required status checks, so neither can be
 renamed without re-applying branch protection.
 
-Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`, currently 361 and 42)
-as well as a green result. This is the load-bearing part. A workflow that only checked
-the exit code would have reported success through the entire period when
-`manage.py test` was discovering zero tests, which is how 109 failures stayed hidden.
-The floor converts that class of silent success into a hard failure.
+Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`) as well as a green
+result. This is the load-bearing part. A workflow that only checked the exit code would
+have reported success through the entire period when `manage.py test` was discovering
+zero tests, which is how 109 failures stayed hidden. The floor converts that class of
+silent success into a hard failure.
 
 Raise the floors when tests are added. Lowering one should require a stated reason, since
 the count can only fall if discovery breaks or tests are deleted. The last lowering was
 v0.1.17's removal of the authentication module: backend 421 → 361 and frontend 48 → 42,
-with the reason recorded inline in the workflow. This paragraph lagged behind the
-workflow for a while — it still said 339 and 31 after both floors had been raised to the
-measured 421 and 48, which is the argument for treating the workflow as the source of
-truth here rather than this file.
+with the reason recorded inline in the workflow; the frontend floor has since been raised
+again by the alert-socket tests. The current numbers live only in
+`.github/workflows/ci.yml`, deliberately: this paragraph said 339 and 31 long after both
+floors had been raised to the measured 421 and 48, which is the argument for keeping the
+workflow as the single source of truth instead of restating counts here.
 
 Two notes on the service configuration. The Redis service runs unauthenticated: the
 development server requires an ACL user, but that is a property of that server's
@@ -515,9 +516,13 @@ stale-run threshold currently requires a code edit. Wire it through `env.int()`.
 
 ### OpenAPI schema metadata is stale
 
-- `SPECTACULAR_SETTINGS['VERSION'] = '1.2.0'` — a third version scheme alongside
-  the project version and the README footer, cross-referenced by nothing.
-- The schema description says "Chinese Markets **(CSI 300)**", omitting CSI A500.
+- `SPECTACULAR_SETTINGS['VERSION'] = '0.2.0'` — a third version scheme alongside
+  the project version and the README footer, cross-referenced by nothing. v0.1.17
+  bumped it `1.2.0` → `0.2.0` because removing the authentication module is a
+  breaking schema change, which narrowed but did not close the gap: it still does
+  not track `pyproject`/README.
+- ~~The schema description says "Chinese Markets **(CSI 300)**", omitting CSI
+  A500.~~ The description now reads "(CSI 500)", matching the migrated universe.
 
 ### Unpinned ML dependencies
 
@@ -681,6 +686,21 @@ The bar the model work is aiming at, against the 3.2 baseline:
 
 ### Notes with no owner yet
 
+- Four `localStorage`/`sessionStorage` keys outlive the code that read them:
+  `finance_jwt`, `finance_jwt_refresh`, `finance_api_key` and
+  `finance_auth_persistence` are still in the browser of anyone who used the
+  pre-v0.1.17 UI, and nothing reads or clears them now. No `removeItem` sweep was
+  added: the only browser that matters is the operator's own, and a migration for
+  one user's storage is code with no consumer. Clear them by hand if it bothers
+  you, or delete the whole key list if a second deployment ever appears.
+- Eight i18n keys are orphaned by the deleted `ScreenerPage.tsx` — `screener.title`,
+  `screener.desc`, `screener.loadError`, `screener.sortBy`, `screener.suggested`,
+  `screener.rr`, `screener.tradeScore` and `nav.screener`, in both dictionaries.
+  They are inert (`t()` returns the key string, and no call site asks for them), so
+  this is tidiness, not a bug. Note that `dict` is typed
+  `Record<Locale, Record<string, string>>`: an orphan passes `tsc`, and so does an
+  asymmetry between the two locales — only a *missing* key is user-visible. The
+  current 222 literals resolve against both dictionaries with zero asymmetry.
 - `ScreenerTemplate.is_public` gates nothing. With `owner` gone there is no
   private-vs-shared split to make: `ScreenerTemplateViewSet.get_queryset` returns
   every row, and the flag survives only in the serializer and the admin list.

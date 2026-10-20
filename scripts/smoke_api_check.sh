@@ -76,4 +76,32 @@ if [[ "$key_status" != "404" ]]; then
   exit 1
 fi
 
+# The write path is public now, so an unauthenticated create must succeed, the
+# payload must carry no owner, and the row must be deletable again. The probe is
+# inactive with an unreachable threshold so the beat-scheduled rule check can
+# never evaluate it, and it is removed before this script exits.
+probe_payload=$(printf '{"asset": %s, "name": "Smoke anonymous write probe", "condition_type": "PRICE_ABOVE", "threshold": "9999999.00", "channels": [], "is_active": false}' "$first_asset_id")
+probe_response=$(curl -sS -X POST "$API_BASE/alerts/" \
+  -H 'Content-Type: application/json' -d "$probe_payload" -w '\n%{http_code}')
+probe_status=${probe_response##*$'\n'}
+probe_rule=${probe_response%$'\n'*}
+
+if [[ "$probe_status" != "201" ]]; then
+  echo "Expected anonymous POST /alerts/ to return 201, got $probe_status: $probe_rule" >&2
+  exit 1
+fi
+if printf '%s' "$probe_rule" | grep -q '"owner'; then
+  echo 'The alert payload still exposes an owner field.' >&2
+  exit 1
+fi
+
+probe_id=$(printf '%s' "$probe_rule" | json_get id)
+probe_delete=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$API_BASE/alerts/$probe_id/")
+if [[ "$probe_delete" != "204" ]]; then
+  echo "Expected anonymous DELETE /alerts/$probe_id/ to return 204, got $probe_delete." >&2
+  echo "Leave the probe row deleted by hand: python manage.py shell -c \"from apps.analytics.models import AlertRule; AlertRule.objects.filter(pk=$probe_id).delete()\"" >&2
+  exit 1
+fi
+printf 'Anonymous write probe created and removed alert rule %s.\n' "$probe_id"
+
 echo 'Smoke API check passed.'

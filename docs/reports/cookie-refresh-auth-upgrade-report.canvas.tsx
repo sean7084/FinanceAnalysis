@@ -22,7 +22,9 @@ export default function CookieRefreshAuthUpgradeReport() {
 
       <Callout tone="warning" title="Superseded">
         Retained as a historical record only. The whole authentication module this
-        report describes was removed in v0.2.0 — the project is single-user, so the
+        report describes was removed in v0.1.17 — which bumps the OpenAPI schema
+        version to `0.2.0`, since removing authentication is schema-breaking —
+        because the project is single-user, so the
         cookie/refresh machinery had no second user to protect and was costing
         correctness. Nothing below is current.
       </Callout>

@@ -875,7 +875,7 @@ class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
 
 class ScreenerTemplateViewSet(viewsets.ModelViewSet):
     """
-    Saved screener templates for users.
+    Saved screener templates, in one shared collection.
     """
     serializer_class = ScreenerTemplateSerializer
 
