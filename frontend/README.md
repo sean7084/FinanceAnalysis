@@ -178,9 +178,12 @@ for everything else.
 
 There is no authentication anywhere in the frontend. The backend serves every
 endpoint anonymously, so `lib/api.ts` holds no credentials, reads none from
-storage, and attaches no `Authorization` or `X-API-Key` header. It never sets
-`credentials`, so no cookie is sent with SPA requests — which is what keeps the
-`/admin/` session cookie from interfering with same-origin writes.
+storage, and attaches no `Authorization` or `X-API-Key` header. It also passes no
+`credentials` option, which leaves `fetch`'s `same-origin` default in place: a
+browser logged into `/admin/` therefore *does* send its `sessionid` on same-origin
+API calls. That is harmless — `DEFAULT_AUTHENTICATION_CLASSES` is empty in the
+Django settings, so no authenticator ever reads it. That setting, not anything in
+this file, is what keeps an admin session from affecting the SPA.
 
 Generic transport is `apiGet` / `apiPost` / `apiDelete`, all typed and all
 funnelling through the same error handling:

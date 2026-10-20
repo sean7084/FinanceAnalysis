@@ -36,9 +36,22 @@ relative paths:
 
 The API is unauthenticated. `REST_FRAMEWORK['DEFAULT_PERMISSION_CLASSES']` is
 `AllowAny` and `DEFAULT_AUTHENTICATION_CLASSES` is `[]`, so **no credential is
-required for any method on any endpoint** — reads and writes alike. Send no
-`Authorization` header, no `X-API-Key`, no session cookie; the frontend's
-`lib/api.ts` sends none either.
+required for any method on any endpoint** — reads and writes alike. Nothing is
+sent and nothing is read: `lib/api.ts` attaches no `Authorization` header and no
+`X-API-Key`. A browser that is logged into `/admin/` does still send its
+`sessionid` cookie on same-origin API calls, because `fetch` defaults to
+`same-origin` credentials; that cookie is inert, since the empty authentication
+list means no authenticator ever consumes it. The empty list — not the omission of
+a `credentials` option — is what keeps an admin session from changing how the API
+behaves.
+
+**Writes and action routes are public too.** Twenty `@action` routes declared with
+`methods=['post']` — model training, news and macro ingestion, screener and factor
+recalculation, backtest pause / resume / restart — plus the ordinary
+create/update/destroy of every model viewset now execute on an unauthenticated
+request, and nothing rate-limits them. Any caller who can reach this API can start
+multi-minute training jobs or delete run history, so keep it on localhost or a
+network you control.
 
 Everything the previous revision of this section documented is gone — the paths
 under `/api/v1/` now return 404:
