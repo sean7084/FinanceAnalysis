@@ -60,13 +60,12 @@ class SPAFallbackRoutingTests(TestCase):
         self.assertIn("@vite/client", html)
 
     def test_spa_fallback_serves_deep_link(self):
-        """Deep links used in verification / password-reset emails render the shell.
+        """Client-side routes resolve through the catch-all and render the shell.
 
-        ``apps/users/views.py`` builds ``{FRONTEND_URL}/verify-email/<token>``
-        and ``{FRONTEND_URL}/reset-password/<token>``; both must resolve
-        through the catch-all so react-router-dom can pick them up client-side.
+        The SPA's react-router-dom handles ``/dashboard`` on the client, so the
+        catch-all in ``config/urls.py`` must serve the shell rather than 404.
         """
-        for path in ("/verify-email/some-token", "/reset-password/some-token", "/dashboard"):
+        for path in ("/dashboard",):
             with self.subTest(path=path):
                 response = self.client.get(path)
                 self.assertEqual(response.status_code, 200)
@@ -100,12 +99,6 @@ class SPAFallbackRoutingTests(TestCase):
         """`/admin/` must redirect to admin login, not render the SPA shell."""
         response = self.client.get("/admin/")
         self.assertIn(response.status_code, (301, 302))
-        self.assertNotIn('<div id="root"></div>', response.content.decode())
-
-    def test_spa_fallback_does_not_shadow_browsable_api_auth(self):
-        """`/api-auth/login/` must reach DRF's session login view."""
-        response = self.client.get("/api-auth/login/")
-        self.assertEqual(response.status_code, 200)
         self.assertNotIn('<div id="root"></div>', response.content.decode())
 
     def test_spa_fallback_does_not_shadow_static(self):

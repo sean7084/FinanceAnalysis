@@ -1,4 +1,4 @@
-import { fetchMacroContexts, hasAnyAuthCredential, type MacroContextDto } from '../lib/api'
+import { fetchMacroContexts, type MacroContextDto } from '../lib/api'
 import { TableSkeleton } from '../components/layout/TableSkeleton'
 import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
@@ -21,7 +21,7 @@ export function MacroContextPage() {
         {contextsResource.loading && <TableSkeleton columns={3} rows={6} />}
         {contextsResource.error && (
           <p className="status disconnected">
-            {hasAnyAuthCredential() ? t('macro.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+            {t('macro.loadError')}
           </p>
         )}
         <table className="data-table">

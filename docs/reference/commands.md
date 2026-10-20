@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-20T02:45:45Z_
+_Generated: 2026-10-20T09:59:25Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -94,7 +94,6 @@ Create and optionally queue the heuristic/lightgbm core-profile backtest matrix 
 | `--variants` | value | `top-n,trade-score-limit` |  | Comma-separated matrix variants: top-n,trade-score-limit. |
 | `--sources` | value | `heuristic,lightgbm` |  | Comma-separated prediction sources: heuristic,lightgbm. |
 | `--name-prefix` | value | `core18` |  | Prefix used for BacktestRun names. |
-| `--user-email` | value | `""` |  | Optional user email to attribute created runs. |
 | `--queue` | flag | `False` |  | Queue created runs asynchronously instead of executing the first chunk inline. |
 | `--execute-inline` | flag | `False` |  | Execute all matrix runs to completion in this process, round-robin by queued chunk while preserving the in-memory matrix signal cache. |
 | `--chunk-trading-days` | value | `60` |  | Per-run chunk size stamped into matrix BacktestRun parameters. Defaults to 60. |
@@ -122,7 +121,6 @@ Run a rolling benchmark backtest suite and export the resulting report bundle un
 | `--capital-fraction-per-entry` | value | `0.5` |  | Capital fraction used for each entry cohort. |
 | `--min-up-probability` | value | `0.0` |  | Minimum up probability threshold. |
 | `--name-prefix` | value | `validation` |  | Prefix used for BacktestRun names. |
-| `--user-email` | value | `""` |  | Optional user email to attribute created runs. |
 | `--queue` | flag | `False` |  | Queue runs asynchronously instead of running inline. |
 | `--output-dir` | value | `""` |  | Optional report output directory. Defaults to reports/<suite-name>. |
 | `--suite-name` | value | `""` |  | Optional suite name used for the output directory and manifest. |
@@ -146,7 +144,6 @@ Run systematic backtest validations over rolling windows for heuristic, LightGBM
 | `--capital-fraction-per-entry` | value | `0.5` |  | Capital fraction used for each entry cohort. |
 | `--min-up-probability` | value | `0.0` |  | Minimum up probability threshold. |
 | `--name-prefix` | value | `validation` |  | Prefix used for BacktestRun names. |
-| `--user-email` | value | `""` |  | Optional user email to attribute created runs. |
 | `--queue` | flag | `False` |  | Queue runs asynchronously instead of running inline. |
 
 

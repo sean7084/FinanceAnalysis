@@ -7,9 +7,9 @@ drf-spectacular and are always current:
 - ReDoc — `http://localhost:8000/api/v1/schema/redoc/`
 - Raw OpenAPI 3.0 — `http://localhost:8000/api/v1/schema/`
 
-This document covers the **contracts** the schema cannot express: which
-credential to use where, how pagination and throttling actually behave, and the
-WebSocket protocol.
+This document covers the **contracts** the schema cannot express: the fact that
+no credential is required anywhere, how pagination and caching actually behave,
+and the WebSocket protocol.
 
 The route inventory itself is generated — see [`commands.md`](commands.md) for
 management commands and [`celery.md`](celery.md) for background tasks.
@@ -19,7 +19,8 @@ management commands and [`celery.md`](celery.md) for background tasks.
 ## 1. Base URL and versioning
 
 All endpoints live under `/api/v1/`. There is no unversioned alias. Django admin
-is at `/admin/` and DRF's browsable-API session login at `/api-auth/`.
+is still at `/admin/`; DRF's browsable-API session login at `/api-auth/` is gone,
+because there is no API login for it to perform.
 
 Local development reaches the API through the Vite proxy, so frontend code uses
 relative paths:
@@ -31,107 +32,41 @@ relative paths:
 
 ---
 
-## 2. Authentication
+## 2. No authentication
 
-Three authentication classes are enabled, tried in this order
-(`REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES']`):
+The API is unauthenticated. `REST_FRAMEWORK['DEFAULT_PERMISSION_CLASSES']` is
+`AllowAny` and `DEFAULT_AUTHENTICATION_CLASSES` is `[]`, so **no credential is
+required for any method on any endpoint** — reads and writes alike. Send no
+`Authorization` header, no `X-API-Key`, no session cookie; the frontend's
+`lib/api.ts` sends none either.
 
-1. `JWTAuthentication` — `Authorization: Bearer <access>`
-2. `APIKeyAuthentication` — `X-API-Key: <key>`
-3. `SessionAuthentication` — Django session cookie (admin and browsable API)
+Everything the previous revision of this section documented is gone — the paths
+under `/api/v1/` now return 404:
 
-The default permission is `IsAuthenticatedOrReadOnly`: **GET/HEAD/OPTIONS are
-open to anonymous callers**, everything else requires a credential. Individual
-views may tighten this — `ScreenerViewSet` requires `IsAuthenticated` even for
-reads.
+- the JWT pair endpoints (`/auth/token/`, `/auth/token/refresh/`,
+  `/auth/token/verify/`) and the login/session endpoints (`/auth/login/`,
+  `/auth/refresh/`, `/auth/logout/`, `/auth/session/`)
+- the account endpoints under `/users/` (register, verify-email, password-reset,
+  password-reset-confirm, profile, subscriptions, usage)
+- the API-key portal `/developer/keys/`, and with it `X-API-Key` authentication
+- DRF's browsable-API login at `/api-auth/`, which is no longer routed at all
 
-### 2.1 JWT — for the dashboard and interactive use
+`djangorestframework-simplejwt` is no longer a dependency, and the `apps.users`
+app (user profiles, subscriptions, per-request usage counters) has been deleted.
+`django.contrib.auth` and `/admin/` remain — a superuser created with
+`python manage.py createsuperuser` is an **admin-only** account and grants no API
+access, because the API needs none.
 
-```bash
-# Obtain a token pair
-curl -s -X POST http://localhost:8000/api/v1/auth/token/ \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"<user>","password":"<password>"}'
-# -> {"access":"eyJ...","refresh":"eyJ..."}
+Rate limiting is gone with it: `DEFAULT_THROTTLE_CLASSES` and
+`DEFAULT_THROTTLE_RATES` are unset, so no request is ever throttled and the API
+produces no `429` responses.
 
-# Use it
-curl -s http://localhost:8000/api/v1/dashboard/stocks/ \
-  -H "Authorization: Bearer eyJ..."
-
-# Refresh (rotation is enabled; the old refresh token is blacklisted)
-curl -s -X POST http://localhost:8000/api/v1/auth/token/refresh/ \
-  -H 'Content-Type: application/json' \
-  -d '{"refresh":"eyJ..."}'
-
-# Verify without calling a resource
-curl -s -X POST http://localhost:8000/api/v1/auth/token/verify/ \
-  -H 'Content-Type: application/json' \
-  -d '{"token":"eyJ..."}'
-```
-
-| Endpoint | Method | Purpose |
-| --- | --- | --- |
-| `/api/v1/auth/token/` | POST | Obtain access + refresh |
-| `/api/v1/auth/token/refresh/` | POST | Rotate refresh → new access |
-| `/api/v1/auth/token/verify/` | POST | Validate a token |
-
-Token lifetimes (`SIMPLE_JWT`): access **60 minutes**, refresh **7 days**,
-`ROTATE_REFRESH_TOKENS=True`, `BLACKLIST_AFTER_ROTATION=True`. The
-`token_blacklist` app is installed, so used refresh tokens are persisted as
-revoked — do not reuse a refresh token after rotating it.
-
-### 2.2 API key — for programmatic and third-party use
-
-```bash
-# Issue a key (requires a JWT; the key is returned once, in plaintext)
-curl -s -X POST http://localhost:8000/api/v1/developer/keys/ \
-  -H "Authorization: Bearer eyJ..." \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"my-etl-job"}'
-
-# Use it
-curl -s http://localhost:8000/api/v1/ohlcv/?symbol=600519 \
-  -H 'X-API-Key: <key>'
-```
-
-Key management lives under `/api/v1/developer/keys/` (create, list, rotate,
-revoke) and includes sandbox keys for testing. Keys are hashed at rest; the
-plaintext is only available in the creation response.
-
-### 2.3 Registration and account flows
-
-| Endpoint | Method | Notes |
-| --- | --- | --- |
-| `/api/v1/users/register/` | POST | Creates the user and `UserProfile` |
-| `/api/v1/users/verify-email/` | POST | Confirms an emailed token |
-| `/api/v1/users/password-reset/` | POST | Sends the reset email |
-| `/api/v1/users/password-reset-confirm/` | POST | Completes the reset |
-| `/api/v1/users/profile/` | GET/PUT | `UserProfile`, incl. `subscription_tier` |
-| `/api/v1/users/subscriptions/` | GET | Subscription state |
-| `/api/v1/users/usage/` | GET | Per-day API usage counters |
-
-Registration payload:
-
-```json
-{
-  "username": "testuser",
-  "email": "test@example.com",
-  "password": "TestPassword123!",
-  "password_confirm": "TestPassword123!",
-  "first_name": "Test",
-  "last_name": "User"
-}
-```
-
-Outbound links in these emails are built from the `FRONTEND_URL` setting, which
-defaults to `http://localhost:8000` — Django now serves the built SPA itself
-through `django-vite` (see `apps/core/views.py`), so the email links land on the
-same origin that owns `/api` and `/ws`. Operators who still run the pure-Vite
-HMR flow and want links to land on `http://localhost:5173` should override the
-variable explicitly. See [`env.md`](env.md).
-
-Email is sent through the console backend by default, so reset and verification
-messages are printed to the Django process stdout rather than delivered.
+Resources that used to belong to someone no longer do: `ScreenerTemplate`,
+`AlertRule`, and `BacktestRun` have no owner or user foreign key, so every
+caller sees the same set of saved templates, alert rules, and backtest runs.
+Alert notifications are not addressed to a person either — the email channel
+sends to the comma-separated `ALERT_NOTIFY_EMAILS` setting (env-configurable;
+empty by default, which disables the channel). See [`env.md`](env.md).
 
 ---
 
@@ -187,44 +122,7 @@ bounds.
 
 ---
 
-## 5. Rate limiting
-
-Throttling is tier-based, keyed on `request.user.profile.subscription_tier`.
-
-| Scope | Limit | Applies to |
-| --- | --- | --- |
-| `anon` | 100/day | Unauthenticated callers, by IP |
-| `auth` | 100/day | JWT login/refresh endpoints only |
-| `free` | 100/day | Authenticated `FREE` tier |
-| `pro` | 1000/day | Authenticated `PRO` tier |
-| `premium` | 10000/day | Authenticated `PREMIUM` tier |
-| `user` | 1000/day | Legacy scope, kept for backward compatibility |
-
-The three tier throttles (`FreeUserRateThrottle`, `ProUserRateThrottle`,
-`PremiumUserRateThrottle`) each **short-circuit to allow** when the caller's
-tier does not match their scope, so exactly one tier limit applies per request.
-The `auth` scope is deliberately separate from `anon` so login traffic can be
-relaxed independently of the public API surface.
-
-When a limit is exceeded DRF returns:
-
-```http
-HTTP/1.1 429 Too Many Requests
-Allow: GET, HEAD, OPTIONS
-Retry-After: 43200
-Content-Type: application/json
-
-{"detail": "Request was throttled. Expected available in 43200 seconds."}
-```
-
-Counters live in the Redis cache (`REDIS_URL`, database 1 by default) and reset
-on the DRF throttle window, not at local midnight. Per-user request history is
-also persisted to `users_apiusage` by `apps.users.middleware.APIUsageMiddleware`
-and exposed at `/api/v1/users/usage/`.
-
----
-
-## 6. Response caching
+## 5. Response caching
 
 Several read endpoints are cached server-side with `cache_page`, so a response
 may be older than the underlying table. Current tiers:
@@ -242,7 +140,7 @@ database.
 
 ---
 
-## 7. WebSocket: live alert stream
+## 6. WebSocket: live alert stream
 
 | Property | Value |
 | --- | --- |
@@ -251,19 +149,22 @@ database.
 | Base class | `AsyncJsonWebsocketConsumer` (JSON frames, not text) |
 | Channel layer | `channels_redis.core.RedisChannelLayer` on `REDIS_URL` |
 | ASGI app | `config.asgi.application` |
+| Group | `alerts` — a single global group every client joins |
 
-### Authentication
+### Connection
 
-Two mechanisms, tried in order:
-
-1. **Session cookie.** `config/asgi.py` wraps the router in
-   `AuthMiddlewareStack`, so an existing Django session authenticates the socket.
-2. **JWT query parameter.** When the scope user is anonymous, the consumer reads
-   `?token=<access token>` and validates it as a SimpleJWT `AccessToken`.
+The stream is open. `config/asgi.py` routes `websocket` through a bare
+`URLRouter`, with no `AuthMiddlewareStack` in front of it, and the consumer reads
+no credential of any kind:
 
 ```
-ws://localhost:8000/ws/alerts/?token=eyJhbGciOiJIUzI1NiIs...
+ws://localhost:8000/ws/alerts/
 ```
+
+`connect()` accepts unconditionally — no session cookie, no `?token=` query
+parameter, nothing to expire and nothing to refresh on reconnect. Dropping the
+auth middleware also dropped a database round-trip per connection, so a socket
+now opens without touching `AUTH_USER`.
 
 When the dashboard is served by Django (default: `http://localhost:8000/`), the
 browser connects to `ws://localhost:8000/ws/alerts/` directly — same origin, no
@@ -271,18 +172,14 @@ proxy. When the pure-Vite HMR flow is used (`http://localhost:5173/`), the Vite
 dev server proxies `/ws` to Django, so the browser still sees
 `ws://localhost:5173/ws/alerts/`.
 
-If neither yields an authenticated, active user the consumer **closes the socket
-immediately without accepting it** — the client sees a close event, not a 401.
-Retry logic belongs on the client (`frontend/src/hooks/useAlertsSocket.ts`).
-
-The access token expires after 60 minutes. A long-lived socket opened with a
-query token is not re-validated after connect, but a reconnect needs a fresh
-token; `frontend/src/lib/api.ts` exposes `getSocketAuthToken()` for exactly this.
+Because every client joins the same group, **every connected client receives
+every alert**, whatever produced it. Reconnect logic stays on the client
+(`frontend/src/hooks/useAlertsSocket.ts`: five attempts, exponential backoff
+capped at 15 s).
 
 ### Message format
 
-On acceptance the consumer joins the per-user group `alerts_user_{user_id}`.
-Server-pushed frames:
+On acceptance the consumer joins the global `alerts` group. Server-pushed frames:
 
 ```json
 {
@@ -305,18 +202,19 @@ also persisted for history at `/api/v1/alert-events/`.
 
 ---
 
-## 8. Error format
+## 7. Error format
 
 DRF's default renderer is JSON, with the browsable renderer also enabled.
 
 | Status | Meaning |
 | --- | --- |
 | 400 | Validation failure. Body maps field names to lists of messages |
-| 401 | Missing or invalid credential on a write, or on a read requiring auth |
-| 403 | Authenticated but not permitted |
-| 404 | Unknown primary key, or a detail route that does not exist |
-| 429 | Throttled — see §5 |
+| 404 | Unknown primary key, or a route that no longer exists — including every former `/auth/` and `/users/` path |
 | 500 | Unhandled server error |
+
+With no authentication and no throttling there is no credential to reject and no
+limit to exceed, so the API returns no 401, no 403, and no 429. (Django's
+`/admin/` still enforces its own session and permission checks.)
 
 Validation errors:
 
@@ -329,7 +227,7 @@ Validation errors:
 
 ---
 
-## 9. Endpoint groups
+## 8. Endpoint groups
 
 Registered in `config/urls.py` on a single `DefaultRouter`. Full request and
 response schemas are in Swagger; this is the map.
@@ -350,8 +248,7 @@ response schemas are in Swagger; this is the map.
 | `/lightgbm-predictions/`, `/lightgbm-models/`, `/ensemble-weights/` | prediction | LightGBM surface |
 | `/lstm-predictions/` | prediction | LSTM surface |
 | `/backtest/`, `/backtest-trades/` | backtest | Runs, lifecycle actions, comparison curves, trade detail |
-| `/developer/keys/`, `/developer/changelog/` | developer | API key portal and public changelog |
-| `/users/profile/`, `/users/subscriptions/`, `/users/usage/` | users | Account surface |
+| `/developer/changelog/` | developer | Public, read-only API changelog |
 
 ### Backtest lifecycle actions
 

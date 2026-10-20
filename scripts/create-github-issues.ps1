@@ -188,12 +188,11 @@ BACKLOG.md -- Open > configuration and infrastructure
     },
     @{
         title = "OpenAPI schema metadata is stale"
-        labels = @("documentation", "P3 - Low", "component: api-auth")
+        labels = @("documentation", "P3 - Low")
         body = @"
 ## Description
 - ``SPECTACULAR_SETTINGS['VERSION'] = '1.2.0'`` -- a third version scheme alongside the project version and the README footer, cross-referenced by nothing.
 - The schema description says "Chinese Markets **(CSI 300)**", omitting CSI A500.
-- The published rate-limit table omits the ``auth`` and legacy ``user`` scopes.
 
 ## Source
 BACKLOG.md -- Open > configuration and infrastructure

@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
   fetchDashboardStocks,
-  hasAnyAuthCredential,
   type DashboardStockRowDto,
 } from '../lib/api'
 import { TableSkeleton } from '../components/layout/TableSkeleton'
@@ -112,7 +111,7 @@ export function IndicatorBoardPage() {
 
       {rowsResource.error && (
         <p className="status disconnected">
-          {hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+          {t('dash.loadError')}
         </p>
       )}
 

@@ -54,7 +54,7 @@ Define these custom fields for each issue/task:
 | Field Name | Type | Options | Purpose |
 |------------|------|---------|---------|
 | **Priority** | Single select | P0-Critical, P1-High, P2-Medium, P3-Low | Impact assessment |
-| **Component** | Multiple select | markets, analytics, prediction, backtest, sentiment, macro, factors, frontend, ml-pipeline, celery-tasks, docker-infra, api-auth | Area of code affected |
+| **Component** | Multiple select | markets, analytics, prediction, backtest, sentiment, macro, factors, frontend, ml-pipeline, celery-tasks, docker-infra | Area of code affected |
 | **Story Points** | Number | 1, 2, 3, 5, 8, 13 | Estimation metric |
 
 **How to Add Custom Fields:**

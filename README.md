@@ -139,7 +139,7 @@ Copy-Item .env.example .env               # or: cp .env.example .env
 
 # 4. Schema
 python manage.py migrate
-python manage.py createsuperuser
+python manage.py createsuperuser          # optional: /admin/ only, the API needs no account
 
 # 5. Frontend
 cd frontend && npm install && cd ..

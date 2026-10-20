@@ -478,14 +478,19 @@ There used to be a third, `frontend-static`, holding the two static checks under
 steps into `frontend`; both job names above are required status checks, so neither can be
 renamed without re-applying branch protection.
 
-Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`, currently 339 and 31)
+Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`, currently 361 and 42)
 as well as a green result. This is the load-bearing part. A workflow that only checked
 the exit code would have reported success through the entire period when
 `manage.py test` was discovering zero tests, which is how 109 failures stayed hidden.
 The floor converts that class of silent success into a hard failure.
 
 Raise the floors when tests are added. Lowering one should require a stated reason, since
-the count can only fall if discovery breaks or tests are deleted.
+the count can only fall if discovery breaks or tests are deleted. The last lowering was
+v0.1.17's removal of the authentication module: backend 421 → 361 and frontend 48 → 42,
+with the reason recorded inline in the workflow. This paragraph lagged behind the
+workflow for a while — it still said 339 and 31 after both floors had been raised to the
+measured 421 and 48, which is the argument for treating the workflow as the source of
+truth here rather than this file.
 
 Two notes on the service configuration. The Redis service runs unauthenticated: the
 development server requires an ACL user, but that is a property of that server's
@@ -507,7 +512,6 @@ stale-run threshold currently requires a code edit. Wire it through `env.int()`.
 - `SPECTACULAR_SETTINGS['VERSION'] = '1.2.0'` — a third version scheme alongside
   the project version and the README footer, cross-referenced by nothing.
 - The schema description says "Chinese Markets **(CSI 300)**", omitting CSI A500.
-- The published rate-limit table omits the `auth` and legacy `user` scopes.
 
 ### Unpinned ML dependencies
 
@@ -671,6 +675,11 @@ The bar the model work is aiming at, against the 3.2 baseline:
 
 ### Notes with no owner yet
 
+- `ScreenerTemplate.is_public` gates nothing. With `owner` gone there is no
+  private-vs-shared split to make: `ScreenerTemplateViewSet.get_queryset` returns
+  every row, and the flag survives only in the serializer and the admin list.
+  Either drop the column or give it a meaning (e.g. hide templates the operator
+  marks private from the list endpoint).
 - A backtest once ran 2061.9s and returned
   `'Backtest failed for run_id=578: SoftTimeLimitExceeded()'` while Celery logged
   it as `succeeded`. The soft limit is now 1800s for `run_backtest`, and

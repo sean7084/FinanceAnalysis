@@ -6,8 +6,8 @@
  * navigation path: a remount inside the TTL renders instantly, and two
  * components that ask for the same resource share one request.
  *
- * Deliberately has no dependency on `api.ts` so `api.ts` can import it for the
- * logout invalidation without a cycle.
+ * Deliberately has no dependency on `api.ts` so `api.ts` can import it without
+ * creating a cycle.
  */
 
 const DEFAULT_TTL_MS = 60_000
@@ -186,10 +186,9 @@ export function subscribeToCache(key: string, listener: () => void): () => void 
  * Drop cached entries. With a prefix, drops every key that starts with it;
  * without, drops everything.
  *
- * Called from `logout()` and from the cross-tab `signed-out` broadcast, because
- * `/dashboard/stocks/summary/` and `/alert-events/` are owner-scoped: a
- * different user signing in on the same tab must never see the previous user's
- * rows.
+ * Nothing calls this in production right now: the only reason to force a drop
+ * was signing out, and rows used to be owner-scoped. It stays because it is the
+ * cache's eviction API and the primitive a "refresh" control would call.
  */
 export function invalidate(prefix?: string): void {
   if (!prefix) {

@@ -64,9 +64,6 @@ class LightGBMPredictionTests(TestCase):
             name='LightGBM Asset',
         )
 
-    def _auth(self):
-        self.client.force_authenticate(user=self.user)
-
     def _seed_pit_membership(self, asset, trade_dates):
         memberships = []
         for trade_date in trade_dates:
@@ -724,21 +721,12 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(first_save_kwargs['extra_metadata']['version_tag'], 'regstrong-v1')
         self.assertEqual(first_save_kwargs['extra_metadata']['lgb_params']['num_leaves'], 15)
 
-    def test_lightgbm_endpoints_require_auth(self):
-        """LightGBM endpoints should require authentication."""
-        response = self.client.get(f'/api/v1/lightgbm-predictions/{self.asset.symbol}/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-        response = self.client.post('/api/v1/lightgbm-predictions/batch/', {'stock_codes': [self.asset.symbol]}, format='json')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_lightgbm_history_list_route_is_not_exposed(self):
         response = self.client.get('/api/v1/lightgbm-predictions/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_lightgbm_model_artifact_storage(self):
         """LightGBM model artifacts should be correctly stored and retrieved."""
-        self._auth()
         d = timezone.now().date()
 
         artifact = LightGBMModelArtifact.objects.create(
@@ -858,7 +846,6 @@ class LightGBMPredictionTests(TestCase):
 
     def test_lightgbm_batch_endpoint(self):
         """Batch endpoint should handle multiple stock_codes."""
-        self._auth()
         self._seed_features()
 
         artifact = LightGBMModelArtifact.objects.create(
@@ -890,7 +877,6 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn(self.asset.symbol, response.data['results'])
 
     def test_lightgbm_stock_endpoint_returns_symbol_predictions(self):
-        self._auth()
         d = timezone.now().date()
         artifact = LightGBMModelArtifact.objects.create(
             horizon_days=3,
@@ -929,7 +915,6 @@ class LightGBMPredictionTests(TestCase):
         self.assertTrue(response.data['results'][0]['suggested'])
 
     def test_feature_importance_trends_endpoint_groups_recent_history(self):
-        self._auth()
         d = timezone.now()
         artifact_latest = LightGBMModelArtifact.objects.create(
             horizon_days=3,
@@ -986,7 +971,6 @@ class LightGBMPredictionTests(TestCase):
     @patch('apps.prediction.views_lightgbm.generate_lightgbm_predictions_for_date.delay')
     def test_lightgbm_recalculate_queues_task(self, mock_delay):
         """Recalculate endpoint should queue prediction task."""
-        self._auth()
         response = self.client.post(
             '/api/v1/lightgbm-predictions/recalculate/',
             {'target_date': str(timezone.now().date()), 'horizons': [3, 7]},
@@ -998,7 +982,6 @@ class LightGBMPredictionTests(TestCase):
     @patch('apps.prediction.views_lightgbm.train_lightgbm_models.delay')
     def test_lightgbm_train_queues_task(self, mock_delay):
         """Train endpoint should queue training task."""
-        self._auth()
         response = self.client.post(
             '/api/v1/lightgbm-predictions/train/',
             {'training_start_date': '2021-04-12', 'training_end_date': '2026-04-11'},

@@ -12,9 +12,10 @@
   - **Endpoints deleted** (all now 404): `/api/v1/auth/token{,/refresh,/verify}/`,
     `/api/v1/auth/{login,refresh,logout,session}/`,
     `/api/v1/users/{register,verify-email,password-reset,password-reset-confirm}/`,
-    `/api/v1/users/{profile,subscriptions,usage}/`, `/api/v1/developer/keys/`, and
-    the DRF browsable-API login at `/api-auth/`. Nothing remains that issues or
-    accepts a credential.
+    `/api/v1/users/{profile,subscriptions,usage}/`, and `/api/v1/developer/keys/`.
+    `/api-auth/` is no longer routed either, but it is **not** a 404: the SPA
+    catch-all's negative lookahead no longer excludes that prefix, so the path
+    renders the app shell. Nothing remains that issues or accepts a credential.
   - `REST_FRAMEWORK` is now `DEFAULT_PERMISSION_CLASSES = [AllowAny]` with
     `DEFAULT_AUTHENTICATION_CLASSES = []`. SessionAuthentication was deliberately
     left out rather than demoted to last: with JWT gone it would become the first

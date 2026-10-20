@@ -121,7 +121,7 @@ describe('queryCache', () => {
     expect(cacheSnapshot('macro/contexts?limit=30').hasValue).toBe(true)
   })
 
-  it('invalidate without a prefix clears everything, which is what logout needs', async () => {
+  it('invalidate without a prefix clears every cached resource', async () => {
     await cachedGet('dashboard/summary', async () => 1)
     await cachedGet('alerts/history?limit=20', async () => 2)
 

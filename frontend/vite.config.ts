@@ -37,13 +37,6 @@ export default defineConfig({
     strictPort: true,  // 若端口被占用则报错，避免自动切换[reference:1]
     origin: 'http://localhost:5173',
     proxy: {
-      // The backend sets the JWT refresh token as an HttpOnly cookie
-      // (fa_refresh) on /api/v1/auth/login/ and rotates it on
-      // /api/v1/auth/refresh/. http-proxy forwards Set-Cookie unchanged and
-      // the backend leaves the cookie Domain unset (host-only), so the browser
-      // scopes it to localhost:5173 in the pure-Vite HMR flow and to the
-      // Django origin when the SPA is served by Django on :8000. No
-      // cookieDomainRewrite is needed.
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,

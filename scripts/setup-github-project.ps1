@@ -111,7 +111,7 @@ Write-Host "Click '+ New field' on your project board:" -ForegroundColor Gray
 Write-Host "  - Priority (Single select): P0-Critical, P1-High, P2-Medium, P3-Low" -ForegroundColor Gray
 Write-Host "  - Component (Multiple select): markets, analytics, prediction," -ForegroundColor Gray
 Write-Host "    backtest, sentiment, macro, factors, frontend, ml-pipeline," -ForegroundColor Gray
-Write-Host "    celery-tasks, docker-infra, api-auth" -ForegroundColor Gray
+Write-Host "    celery-tasks, docker-infra" -ForegroundColor Gray
 Write-Host "  - Story Points (Number): 1, 2, 3, 5, 8, 13" -ForegroundColor Gray
 
 # Summary

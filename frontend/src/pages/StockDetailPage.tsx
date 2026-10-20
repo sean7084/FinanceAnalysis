@@ -10,7 +10,6 @@ import {
   fetchOhlcvByAsset,
   fetchPredictionBySymbol,
   fetchSentimentByAsset,
-  hasAnyAuthCredential,
   type LightGBMPredictionStockDto,
   type PredictionStockDto,
 } from '../lib/api'
@@ -142,7 +141,7 @@ export function StockDetailPage() {
               setError(`${t('stock.loadError')} (HTTP ${err.status})`)
             }
           } else {
-            setError(hasAnyAuthCredential() ? t('stock.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
+            setError(t('stock.loadError'))
           }
         }
       } finally {

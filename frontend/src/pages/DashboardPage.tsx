@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   fetchDashboardData,
   fetchDashboardStocks,
-  hasAnyAuthCredential,
   type DashboardStockRowDto,
 } from '../lib/api'
 import {
@@ -285,7 +284,7 @@ export function DashboardPage() {
 
       {loadFailed && (
         <p className="status disconnected">
-          {hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+          {t('dash.loadError')}
         </p>
       )}
 

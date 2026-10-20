@@ -98,10 +98,9 @@ and `{% vite_asset 'src/main.tsx' %}`. Which URLs those tags produce depends on
 | `False` (prod) | `/static/assets/main-<hash>.js`, `/static/assets/main-<hash>.css`, modulepreload links | `frontend/dist/.vite/manifest.json` (produced by `npm run build`) |
 
 `../config/urls.py` mounts the shell at `/` and at a negative-lookahead
-catch-all `^(?!api/|admin/|api-auth/|static/|media/|ws/).*$`, so every
-client-side route (`/dashboard`, `/verify-email/<token>`, `/reset-password/<token>`,
-`/stock/<symbol>`, ...) resolves to the same shell and `react-router-dom`
-picks up from there.
+catch-all `^(?!api/|admin/|static/|media/|ws/).*$`, so every
+client-side route (`/dashboard`, `/stock/<symbol>`, `/macro`, ...) resolves to
+the same shell and `react-router-dom` picks up from there.
 
 ### Public assets
 
@@ -138,11 +137,11 @@ layout and lazy-loaded through `React.lazy` + `Suspense`.
 | `/models` | `ModelMonitoringPage` | Model registry, artifacts, ensemble weights, feature importance |
 | `/backtest` | `BacktestWorkbenchPage` | Run creation, rolling batches, comparison curves, trade detail |
 | `/alerts` | `AlertCenterPage` | Live WebSocket stream plus `/alert-events/` history |
-| `/settings` | `SettingsPage` | Credentials and auth persistence mode |
+| `/settings` | `SettingsPage` | Display language |
 
-> `pages/ScreenerPage.tsx` exists but is **not routed** — nothing imports it. The
-> screener workflow was absorbed into the dashboard. Remove it or wire it up;
-> tracked in `../BACKLOG.md`.
+> `pages/ScreenerPage.tsx` was removed in v0.1.17. It was never routed — nothing
+> imported it — and its only live code was a credential-presence check, so the
+> screener workflow stays where it was absorbed: the dashboard.
 
 ---
 
@@ -156,13 +155,12 @@ src/
   types.ts                    Shared DTO types
   App.css / index.css         Styling (no CSS framework)
   lib/
-    api.ts                    HTTP client, auth storage, all endpoint calls
+    api.ts                    HTTP client and all endpoint calls
     dashboardCandidateFilters.ts   Dashboard filter bundle <-> URL search params
   hooks/
     useAlertsSocket.ts        WebSocket alert stream
   components/
     layout/AppShell.tsx           Chrome, navigation
-    layout/AuthSettingsPanel.tsx  Credential entry and persistence mode
     charts/CandlestickChart.tsx        lightweight-charts
     charts/ProbabilityChart.tsx        recharts
     charts/BacktestComparisonChart.tsx recharts
@@ -176,43 +174,32 @@ for everything else.
 
 ---
 
-## Authentication
+## HTTP transport
 
-`lib/api.ts` owns all credential handling. Storage keys:
-
-| Key | Holds |
-| --- | --- |
-| `finance_jwt` | Access token |
-| `finance_jwt_refresh` | Refresh token |
-| `finance_api_key` | Developer API key |
-| `finance_auth_persistence` | The persistence mode itself |
-
-`AuthPersistenceMode` is `'local' | 'session' | 'none'`:
-
-| Mode | Storage | Survives | Use when |
-| --- | --- | --- | --- |
-| `local` | `localStorage` | Browser restart | Your own machine |
-| `session` | `sessionStorage` | Tab only | Shared machine |
-| `none` | memory only | Page lifetime | Untrusted environment |
-
-Reads check `sessionStorage` first, then `localStorage`, so a session-mode
-credential shadows a stale local one. `saveAuthSettings()` clears **all three**
-keys before writing, which is what makes switching modes safe — a mode change
-without the clear would leave the previous mode's token recoverable.
-
-Requests attach `Authorization: Bearer <jwt>` when a JWT is present, else
-`X-API-Key: <key>`. `hasAnyAuthCredential()` gates UI that requires auth.
-
-Token acquisition helpers: `obtainJwtToken()` (access only) and
-`obtainJwtTokenPair()` (access + refresh). `createDeveloperApiKey()` exchanges a
-JWT for a long-lived API key, which is the path the dashboard uses to avoid
-re-authenticating every hour.
-
-Access tokens live 60 minutes; refresh tokens 7 days with rotation and
-blacklisting. See [`../docs/reference/api.md`](../docs/reference/api.md) §2.
+There is no authentication anywhere in the frontend. The backend serves every
+endpoint anonymously, so `lib/api.ts` holds no credentials, reads none from
+storage, and attaches no `Authorization` or `X-API-Key` header. It never sets
+`credentials`, so no cookie is sent with SPA requests — which is what keeps the
+`/admin/` session cookie from interfering with same-origin writes.
 
 Generic transport is `apiGet` / `apiPost` / `apiDelete`, all typed and all
-funnelling through the same auth and error handling.
+funnelling through the same error handling:
+
+| Function | Sends | Returns |
+| --- | --- | --- |
+| `apiGet<T>(path)` | `GET`, `Content-Type: application/json` | parsed JSON as `T` |
+| `apiPost<T>(path, body)` | `POST` with `JSON.stringify(body)` | parsed JSON as `T` |
+| `apiDelete<T>(path)` | `DELETE` | `T`, or `null` on 204 / empty body |
+
+A non-2xx response becomes an `ApiRequestError` carrying the HTTP status and,
+when DRF returned one, the `detail` string — so pages can distinguish "no data"
+from "backend down" without inspecting a raw `Response`. Paths are relative to
+`API_BASE` (`VITE_API_BASE_URL`, default `/api/v1`) and each helper's `path`
+argument starts with its own `/`.
+
+Pagination is the shared `Paginated<T>` shape (`count` / `next` / `previous` /
+`results`); list helpers page through it themselves where a board needs more
+than one page.
 
 ---
 
@@ -231,11 +218,11 @@ const SOCKET_URL = import.meta.env.VITE_ALERTS_WS_URL ?? defaultSocketUrl()
 derives from `window.location` — choosing `wss:` under HTTPS and `ws:` under HTTP,
 so a production deployment behind TLS works without configuration.
 
-Authentication is a JWT access token passed as `?token=`, obtained through
-`getSocketAuthToken()` in `lib/api.ts`. The server accepts either a session or the
-query token; if neither yields an authenticated user it closes the socket without
-accepting it, so the client sees a close event rather than a 401. Reconnect and
-token-refresh logic therefore belongs in the hook.
+The socket is unauthenticated: `useAlertsSocket.ts` opens `wsUrl` with no query
+token and no session cookie, and `../config/asgi.py` mounts it without
+`AuthMiddlewareStack`, so the handshake always succeeds and every connected
+browser joins the single `alerts` group. Reconnect logic therefore belongs to the
+hook for transport reasons only — a dropped socket, not a rejected credential.
 
 Frames are JSON:
 
@@ -297,7 +284,7 @@ Vitest with `jsdom`, setup file `src/test/setup.ts`, `@testing-library/react` pl
 | --- | --- |
 | `pages/BacktestWorkbenchPage.test.tsx` | Runner form behaviour, parameter submission, horizon/metric coupling |
 | `pages/DashboardPage.test.tsx` | Filter application, candidate rendering |
-| `lib/api.test.ts` | Auth storage and transport helpers |
+| `lib/api.test.ts` | HTTP transport and error handling |
 | `pages/IndicatorBoardPage.test.tsx` | Board rendering |
 
 Tests colocate with their subject as `<Name>.test.tsx`. They mock `lib/api.ts`
@@ -325,7 +312,7 @@ a change requires a rebuild, not just a restart. Set them in `frontend/.env.loca
 
 | Topic | Location |
 | --- | --- |
-| API contracts, auth, pagination, throttling, WebSocket protocol | [`../docs/reference/api.md`](../docs/reference/api.md) |
+| API contracts, pagination, WebSocket protocol | [`../docs/reference/api.md`](../docs/reference/api.md) |
 | Backend setup and services | [`../docs/how-to/local-setup.md`](../docs/how-to/local-setup.md) |
 | Backtest parameter semantics | [`../TECHNICAL_GUIDE.md`](../TECHNICAL_GUIDE.md) §7 |
 | Model registry facts | [`../docs/reference/models.md`](../docs/reference/models.md) |

@@ -66,7 +66,7 @@ Add custom fields to track important information:
    - **Priority** (Single select): P0-Critical, P1-High, P2-Medium, P3-Low
    - **Component** (Multiple select): markets, analytics, prediction, backtest,
      sentiment, macro, factors, frontend, ml-pipeline, celery-tasks,
-     docker-infra, api-auth
+     docker-infra
    - **Story Points** (Number): 1, 2, 3, 5, 8, 13
 
 ---

@@ -4,12 +4,13 @@ from io import StringIO
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.core import mail
 from django.core.management import call_command, CommandError
 from django.contrib.auth.models import User
 from django.conf import settings
 from django.db.utils import OperationalError
 from django.http import QueryDict
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -20,6 +21,7 @@ import datetime
 from pathlib import Path
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import ExchangeTradingCalendar, Market, Asset, IndexMembership, OHLCV
+from .consumers import ALERTS_GROUP
 from .models import AlertRule, AlertEvent, TechnicalIndicator, SignalEvent
 from .tasks import prewarm_dashboard_stocks_cache
 from .views import (
@@ -36,6 +38,7 @@ from apps.prediction.models_lightgbm import LightGBMModelArtifact, LightGBMPredi
 from apps.sentiment.models import SentimentScore
 from .tasks import (
     check_alert_rules,
+    send_alert_notifications,
     calculate_fibonacci_retracement_for_asset,
     calculate_ma_signals_for_asset,
     calculate_bollinger_signals_for_asset,
@@ -75,7 +78,6 @@ class Phase9AlertTaskTests(TestCase):
     @patch('apps.analytics.tasks.send_alert_notifications.delay')
     def test_check_alert_rules_triggers_price_above(self, mock_delay):
         rule = AlertRule.objects.create(
-            owner=self.user,
             asset=self.asset,
             name='Price breakout',
             condition_type=AlertRule.ConditionType.PRICE_ABOVE,
@@ -97,7 +99,6 @@ class Phase9AlertTaskTests(TestCase):
     @patch('apps.analytics.tasks.send_alert_notifications.delay')
     def test_check_alert_rules_respects_cooldown(self, mock_delay):
         AlertRule.objects.create(
-            owner=self.user,
             asset=self.asset,
             name='Recent alert',
             condition_type=AlertRule.ConditionType.PRICE_ABOVE,
@@ -113,6 +114,74 @@ class Phase9AlertTaskTests(TestCase):
         self.assertIn('Triggered 0 alert events', result)
         self.assertEqual(AlertEvent.objects.count(), 0)
         mock_delay.assert_not_called()
+
+
+class Phase9AlertNotificationDispatchTests(TestCase):
+    """send_alert_notifications dispatches to configured targets, not a rule owner."""
+
+    def setUp(self):
+        self.market = Market.objects.create(code='NOTIF', name='Notification Test Market')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='600500',
+            ts_code='600500.SH',
+            name='Notify Bank',
+        )
+
+    def _rule(self, channels):
+        # Created without an owner to prove ownerless dispatch works.
+        return AlertRule.objects.create(
+            asset=self.asset,
+            name='Dispatch alert',
+            condition_type=AlertRule.ConditionType.PRICE_ABOVE,
+            threshold=Decimal('10.00'),
+            channels=channels,
+        )
+
+    def _event(self, rule):
+        return AlertEvent.objects.create(
+            alert_rule=rule,
+            asset=self.asset,
+            message='Price crossed threshold',
+            trigger_value=Decimal('10.20'),
+        )
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        ALERT_NOTIFY_EMAILS=['ops@example.com'],
+    )
+    def test_email_channel_notifies_configured_recipients(self):
+        rule = self._rule(['email'])
+        event = self._event(rule)
+
+        send_alert_notifications(event.id)
+
+        event.refresh_from_db()
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['ops@example.com'])
+        self.assertEqual(event.dispatched_channels, ['email'])
+        self.assertEqual(event.status, AlertEvent.Status.SENT)
+
+    def test_websocket_channel_group_sends_to_alerts_group(self):
+        rule = self._rule(['websocket'])
+        event = self._event(rule)
+
+        sent = {}
+
+        async def fake_group_send(group, message):
+            sent['group'] = group
+            sent['message'] = message
+
+        with patch('apps.analytics.tasks.get_channel_layer') as mock_get_layer:
+            mock_get_layer.return_value.group_send = fake_group_send
+            send_alert_notifications(event.id)
+
+        event.refresh_from_db()
+        self.assertEqual(sent['group'], ALERTS_GROUP)
+        self.assertEqual(sent['message']['alert_name'], 'Dispatch alert')
+        self.assertEqual(sent['message']['event_id'], event.id)
+        self.assertEqual(event.dispatched_channels, ['websocket'])
+        self.assertEqual(event.status, AlertEvent.Status.SENT)
 
 
 class Phase9ApiTests(TestCase):
@@ -136,9 +205,7 @@ class Phase9ApiTests(TestCase):
             name='PF Asset',
         )
 
-    def test_alert_rule_create_sets_owner(self):
-        self.client.force_authenticate(user=self.user)
-
+    def test_alert_rule_create_persists_without_owner(self):
         payload = {
             'asset': self.asset.id,
             'name': 'API price alert',
@@ -152,54 +219,17 @@ class Phase9ApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         alert = AlertRule.objects.get(id=response.data['id'])
-        self.assertEqual(alert.owner, self.user)
+        self.assertEqual(alert.name, 'API price alert')
+        self.assertEqual(alert.condition_type, AlertRule.ConditionType.PRICE_ABOVE)
 
-    def test_alert_events_are_user_scoped(self):
-        owner_rule = AlertRule.objects.create(
-            owner=self.user,
-            asset=self.asset,
-            name='Owner rule',
-            condition_type=AlertRule.ConditionType.PRICE_ABOVE,
-            threshold=Decimal('10.00'),
-            channels=['websocket'],
-        )
-        other_rule = AlertRule.objects.create(
-            owner=self.other_user,
-            asset=self.asset,
-            name='Other rule',
-            condition_type=AlertRule.ConditionType.PRICE_ABOVE,
-            threshold=Decimal('10.00'),
-            channels=['websocket'],
-        )
-
-        AlertEvent.objects.create(
-            alert_rule=owner_rule,
-            asset=self.asset,
-            message='Owner event',
-            trigger_value=Decimal('10.20'),
-        )
-        AlertEvent.objects.create(
-            alert_rule=other_rule,
-            asset=self.asset,
-            message='Other event',
-            trigger_value=Decimal('10.30'),
-        )
-
-        self.client.force_authenticate(user=self.user)
-        response = self.client.get('/api/v1/alert-events/')
+    def test_screener_prebuilt_lists_catalog_without_credential(self):
+        response = self.client.get('/api/v1/screeners/prebuilt/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['count'], 1)
-        self.assertEqual(response.data['results'][0]['message'], 'Owner event')
-
-    def test_screener_prebuilt_requires_authentication(self):
-        response = self.client.get('/api/v1/screeners/prebuilt/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-        self.client.force_authenticate(user=self.user)
-        response = self.client.get('/api/v1/screeners/prebuilt/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('screeners', response.data)
+        self.assertEqual(
+            response.data['screeners'],
+            ['breakout_candidates', 'high_volume', 'overbought_oversold', 'trend_reversal'],
+        )
 
 
 class DashboardStockFixtures:
@@ -399,12 +429,7 @@ class DashboardStockFixtures:
         )
 
 class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
-    def test_dashboard_stocks_requires_authentication(self):
-        response = self.client.get('/api/v1/dashboard/stocks/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_dashboard_stocks_returns_composite_rows(self):
-        self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -418,7 +443,6 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
         self.assertEqual(first['bb_upper'], '11.00000000')
 
     def test_dashboard_stocks_filters_and_orders_rows(self):
-        self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&model_family=lightgbm&suggested_only=true&ordering=-lightgbm_trade_score&search=alpha')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -426,7 +450,6 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
         self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
 
     def test_dashboard_stocks_filters_lstm_without_mixing_heuristic_rows(self):
-        self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&model_family=lstm&suggested_only=true')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -439,7 +462,6 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
         self.assertEqual(result['lstm_up_probability'], '0.690000')
 
     def test_dashboard_stocks_candidate_filter_honors_exact_small_page_size(self):
-        self.client.force_authenticate(user=self.user)
         response = self.client.get(
             '/api/v1/dashboard/stocks/'
             '?prediction_source=heuristic&candidate_mode=top_n&top_n=1&top_n_metric=up_prob_7d'
@@ -495,7 +517,6 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
             }
 
         mock_predict_with_lstm.side_effect = fake_lstm_prediction
-        self.client.force_authenticate(user=self.user)
         response = self.client.get(
             '/api/v1/dashboard/stocks/'
             '?prediction_source=lstm&candidate_mode=top_n&top_n=1&top_n_metric=up_prob_7d'
@@ -559,7 +580,6 @@ class Phase8IndicatorTests(TestCase):
 
     @patch('apps.analytics.views.calculate_fibonacci_retracement_for_asset.delay')
     def test_recalculate_endpoint_queues_with_custom_params(self, mock_delay):
-        self.client.force_authenticate(user=self.user)
         payload = {
             'asset_id': self.asset.id,
             'indicator_type': 'FIB_RET',
@@ -656,9 +676,6 @@ class Phase10SignalTests(TestCase):
         self.asset = Asset.objects.create(
             market=self.market, symbol='P10001', ts_code='P10001.SH', name='Phase10 Asset',
         )
-
-    def _auth(self):
-        self.client.force_authenticate(user=self.user)
 
     def test_calculate_rsi_for_asset_ignores_future_dated_ohlcv_rows(self):
         as_of = datetime.date(2024, 4, 30)
@@ -992,12 +1009,7 @@ class Phase10SignalTests(TestCase):
     # ------------------------------------------------------------------
     # API endpoint tests
     # ------------------------------------------------------------------
-    def test_signals_list_requires_authentication(self):
-        response = self.client.get('/api/v1/signals/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_signals_list_returns_results(self):
-        self._auth()
         ts = timezone.now()
         SignalEvent.objects.create(
             asset=self.asset,
@@ -1010,7 +1022,6 @@ class Phase10SignalTests(TestCase):
         self.assertGreaterEqual(response.data['count'], 1)
 
     def test_signals_recent_endpoint(self):
-        self._auth()
         ts = timezone.now() - timedelta(days=2)
         old_ts = timezone.now() - timedelta(days=30)
         SignalEvent.objects.create(
@@ -1026,7 +1037,6 @@ class Phase10SignalTests(TestCase):
         self.assertNotIn('DEATH_CROSS', symbols)
 
     def test_signals_filter_by_signal_type(self):
-        self._auth()
         ts = timezone.now()
         SignalEvent.objects.create(
             asset=self.asset, signal_type='GOLDEN_CROSS', timestamp=ts,
@@ -1042,7 +1052,6 @@ class Phase10SignalTests(TestCase):
 
     @patch('apps.analytics.views.calculate_signals_for_all_assets.delay')
     def test_signals_recalculate_endpoint(self, mock_delay):
-        self._auth()
         response = self.client.post('/api/v1/signals/recalculate/')
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_delay.assert_called_once()
@@ -1421,7 +1430,6 @@ class DashboardStocksCacheTests(DashboardStockFixtures, TestCase):
     def setUp(self):
         super().setUp()
         cache.clear()
-        self.client.force_authenticate(user=self.user)
 
     def _spy_on_payload_build(self):
         original = DashboardStockViewSet.build_stocks_payload
@@ -1524,15 +1532,9 @@ class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
     def setUp(self):
         super().setUp()
         cache.clear()
-        self.other = User.objects.create_user(
-            username='summary_other',
-            email='summary_other@example.com',
-            password='Passw0rd!123',
-        )
 
-    def _rule_for(self, owner, name):
+    def _rule_for(self, name):
         return AlertRule.objects.create(
-            owner=owner,
             asset=self.asset1,
             name=name,
             condition_type=AlertRule.ConditionType.PRICE_ABOVE,
@@ -1550,19 +1552,13 @@ class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
             **kwargs,
         )
 
-    def test_summary_requires_authentication(self):
-        self.assertEqual(self.client.get(self.URL).status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_summary_returns_every_key_the_spa_consumes(self):
-        self.client.force_authenticate(user=self.user)
-
         response = self.client.get(self.URL)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(set(response.data), self.EXPECTED_KEYS)
 
     def test_avg_bottom_probability_averages_the_top_twenty(self):
-        self.client.force_authenticate(user=self.user)
         seeded = FactorScore.objects.filter(mode=FactorScore.FactorMode.COMPOSITE).count()
         self.assertEqual(seeded, 2, 'fixture assumption for the hardcoded mean below')
 
@@ -1571,26 +1567,10 @@ class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
         # Fixtures seed 0.760000 and 0.520000.
         self.assertAlmostEqual(response.data['avg_bottom_probability'], 0.64, places=6)
 
-    def test_alert_triggers_are_owner_scoped_and_cached_per_user(self):
-        mine = self._rule_for(self.user, 'mine')
-        theirs = self._rule_for(self.other, 'theirs')
-        self._event(mine, 'a')
-        self._event(mine, 'b')
-        self._event(theirs, 'c')
-
-        self.client.force_authenticate(user=self.user)
-        own_response = self.client.get(self.URL)
-        self.client.force_authenticate(user=self.other)
-        other_response = self.client.get(self.URL)
-
-        self.assertEqual(own_response.data['alert_triggers'], 2)
-        self.assertEqual(other_response.data['alert_triggers'], 1)
-
     def test_sent_alerts_are_excluded_and_the_payload_is_cached(self):
-        rule = self._rule_for(self.user, 'sent-check')
+        rule = self._rule_for('sent-check')
         self._event(rule, 'triggered')
 
-        self.client.force_authenticate(user=self.user)
         first = self.client.get(self.URL)
         self.assertEqual(first.data['alert_triggers'], 1)
 

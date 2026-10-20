@@ -45,7 +45,7 @@ to streamline issue tracking, pull request management, and project workflow.
 
 ---
 
-### Component Labels (12)
+### Component Labels (11)
 
 | Label Name | Color | Description |
 |------------|-------|-------------|
@@ -60,7 +60,6 @@ to streamline issue tracking, pull request management, and project workflow.
 | `component: ml-pipeline` | #6F42C1 | Feature engineering, label generation |
 | `component: celery-tasks` | #D8744E | Celery workers, queues, Beat schedule |
 | `component: docker-infra` | #C6CFCF | Docker Compose, container config |
-| `component: api-auth` | #EB6420 | DRF endpoints, JWT, API-key auth |
 
 ---
 

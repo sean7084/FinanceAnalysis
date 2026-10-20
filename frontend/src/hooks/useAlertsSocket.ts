@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getSocketAuthToken, hasAnyAuthCredential } from '../lib/api'
 
 export interface AlertMessage {
   id: string
@@ -33,10 +32,8 @@ export function useAlertsSocket() {
     let reconnectTimer: number | undefined
     let attempt = 0
 
-    const connect = async () => {
-      const token = await getSocketAuthToken()
-      const url = token ? `${wsUrl}?token=${encodeURIComponent(token)}` : wsUrl
-      ws = new WebSocket(url)
+    const connect = () => {
+      ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {
         if (!active) {
@@ -53,7 +50,7 @@ export function useAlertsSocket() {
         }
         setConnected(false)
 
-        if (!hasAnyAuthCredential() || attempt >= MAX_RECONNECT_ATTEMPTS) {
+        if (attempt >= MAX_RECONNECT_ATTEMPTS) {
           setReconnecting(false)
           return
         }
