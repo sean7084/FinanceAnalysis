@@ -22,7 +22,13 @@
     authenticator to engage for a browser holding an `/admin/` session cookie, and
     its CSRF enforcement would 403 same-origin SPA writes — a new bug the removal
     would otherwise have introduced. All 23 per-route `IsAuthenticated` gates and the
-    implicit `IsAuthenticatedOrReadOnly` default are gone.
+    implicit `IsAuthenticatedOrReadOnly` default are gone. **This opens writes, not
+    just reads**: twenty `@action` routes declared `methods=['post']` (model
+    training, news and macro ingestion, screener and factor recalculation, backtest
+    pause / resume / restart) plus every viewset's create/update/destroy used to
+    refuse an anonymous caller and now accept one, with no throttling left to bound
+    them. `docs/reference/api.md` §2 states the deployment consequence — keep this
+    API on localhost or a trusted network.
   - `apps/users` deleted outright (`UserProfile`, `Subscription`, `APIUsage`,
     `APIUsageMiddleware`, the cookie/JWT view layer, signals, admin overrides) and
     `apps/developer` reduced to `ChangelogEntry` (`DeveloperAPIKey` +
