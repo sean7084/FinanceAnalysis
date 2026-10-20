@@ -1,8 +1,8 @@
 # How to run the tests
 
 Two independent suites: Django's built-in runner for the backend, Vitest for the
-frontend. Neither is wired into CI — there is no CI configuration in the
-repository.
+frontend. Both are wired into CI — `.github/workflows/ci.yml` runs them in parallel
+jobs, each guarded by a `MIN_TEST_COUNT` discovery floor.
 
 ---
 
@@ -34,12 +34,13 @@ run's `Ran N tests` line says, and is deliberately not restated here.
 `apps/prediction/tests.py` (sequence building, ensemble refresh, registry
 resolution) and `apps/backtest/tests.py` (LSTM as a prediction source).
 
-### Frontend — 42 tests across 5 files
+### Frontend — 45 tests across 6 files
 
 | File | Tests |
 | --- | --- |
 | `src/pages/BacktestWorkbenchPage.test.tsx` | 21 |
 | `src/lib/queryCache.test.ts` | 10 |
+| `src/hooks/useAlertsSocket.test.ts` | 3 |
 | `src/pages/DashboardPage.test.tsx` | 5 |
 | `src/lib/api.test.ts` | 5 |
 | `src/pages/IndicatorBoardPage.test.tsx` | 1 |

@@ -62,6 +62,9 @@
     unauthenticated visitor's alert stream never reconnected and backtest progress
     never live-updated, with no console error either time. A test had even been
     written asserting the polling suppression as desired behaviour; it is deleted.
+    Both paths are now asserted directly instead: `useAlertsSocket.test.ts` drives a
+    fake socket through open → close → backoff → give-up (it had no tests at all),
+    and the surviving workbench test covers unconditional polling.
   - `scripts/smoke_api_check.sh` and `scripts/measure_page_api_latency.sh` no longer
     require `SMOKE_USERNAME`/`SMOKE_PASSWORD`; the smoke check now additionally
     asserts `/auth/login/` and `/developer/keys/` return 404.

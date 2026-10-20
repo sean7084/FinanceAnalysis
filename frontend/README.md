@@ -283,12 +283,15 @@ Vitest with `jsdom`, setup file `src/test/setup.ts`, `@testing-library/react` pl
 | File | Focus |
 | --- | --- |
 | `pages/BacktestWorkbenchPage.test.tsx` | Runner form behaviour, parameter submission, horizon/metric coupling |
+| `lib/queryCache.test.ts` | Shared cache hits, invalidation by prefix and in total |
 | `pages/DashboardPage.test.tsx` | Filter application, candidate rendering |
 | `lib/api.test.ts` | HTTP transport and error handling |
+| `hooks/useAlertsSocket.test.ts` | Bare unauthenticated socket URL, reconnect backoff and give-up |
 | `pages/IndicatorBoardPage.test.tsx` | Board rendering |
 
-Tests colocate with their subject as `<Name>.test.tsx`. They mock `lib/api.ts`
-rather than the network, so no backend is needed.
+Tests colocate with their subject as `<Name>.test.tsx`. Page and library tests mock
+`lib/api.ts` rather than the network; the socket test replaces the `WebSocket` global
+with a fake it can drive open and closed. Neither needs a backend.
 
 Run the whole suite with `npm test`. There is no watch-mode script and no coverage
 configuration.

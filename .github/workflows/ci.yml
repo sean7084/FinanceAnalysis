@@ -140,8 +140,13 @@ jobs:
       # 48 -> 42: eight credential-storage tests and one per-page auth-gate test
       # went with the auth module; three transport tests replaced them (no
       # credential headers, no `credentials`, and apiDelete's 204/empty-body
-      # paths). Measured by `npm test`: 42 passed across 5 files.
-      MIN_TEST_COUNT: "42"
+      # paths).
+      # 42 -> 45: three tests for useAlertsSocket, which had none. Removing the
+      # credential check that suppressed reconnects is invisible to every other
+      # test in the suite, so the reconnect behaviour is now asserted directly:
+      # bare URL with no token, reconnect after a close, and the backoff cap
+      # followed by giving up. Measured by `npm test`: 45 passed across 6 files.
+      MIN_TEST_COUNT: "45"
 
     steps:
       - uses: actions/checkout@v4
