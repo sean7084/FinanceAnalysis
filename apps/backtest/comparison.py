@@ -12,7 +12,7 @@ point used by the API and by the export commands.
 
 from decimal import Decimal
 
-from apps.markets.models import BenchmarkIndexDaily, OHLCV
+from apps.markets.models import BenchmarkIndexDaily, ExchangeTradingCalendar, OHLCV
 
 from .models import BacktestRun
 
@@ -28,7 +28,35 @@ def _to_decimal(value):
     return Decimal(str(value))
 
 
+# Mirrors DEFAULT_TRADING_CALENDAR_EXCHANGE_CODES in apps/markets/tasks.py.
+# Copied by value because that module imports most of the project, and reaching it
+# from the backtest package would risk a circular import.
+TRADING_CALENDAR_EXCHANGE_CODES = ('SSE', 'SZSE')
+
+
 def _run_trading_dates(run):
+    """Trading dates covered by a run, oldest first.
+
+    Reads the exchange calendar instead of deduping OHLCV across every asset in
+    the table, which turned a few thousand dates into a multi-million-row scan.
+    The calendar stores one row per exchange per date, hence the distinct().
+    Falls back to OHLCV when the calendar holds nothing for the window, so runs
+    predating a calendar backfill still compare.
+    """
+    calendar_dates = list(
+        ExchangeTradingCalendar.objects.filter(
+            exchange_code__in=TRADING_CALENDAR_EXCHANGE_CODES,
+            trade_date__gte=run.start_date,
+            trade_date__lte=run.end_date,
+            is_open=True,
+        )
+        .order_by('trade_date')
+        .values_list('trade_date', flat=True)
+        .distinct()
+    )
+    if calendar_dates:
+        return calendar_dates
+
     return list(
         OHLCV.objects.filter(date__gte=run.start_date, date__lte=run.end_date)
         .values_list('date', flat=True)

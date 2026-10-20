@@ -5,15 +5,17 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import torch
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.core.management import call_command
 from django.db.utils import OperationalError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -30,6 +32,7 @@ from apps.prediction.tasks_lstm import LSTM_MISSING_VALUE_STRATEGY, _predict_wit
 from apps.prediction.tasks_lightgbm import IdentityCalibrator, _create_feature_matrix
 from apps.sentiment.models import SentimentScore
 from . import tasks as backtest_tasks
+from .comparison import _run_trading_dates
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer
 from .task_health import get_backtest_run_task_owner_state
@@ -228,6 +231,78 @@ class Phase15BacktestTests(TestCase):
     def test_backtest_endpoint_requires_auth(self):
         response = self.client.get('/api/v1/backtest/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_run_trading_dates_prefers_the_calendar_over_ohlcv(self):
+        ExchangeTradingCalendar.objects.bulk_create([
+            ExchangeTradingCalendar(exchange_code='SZSE', trade_date=self.d1, is_open=True),
+            ExchangeTradingCalendar(exchange_code='SZSE', trade_date=self.d2, is_open=True),
+        ])
+        OHLCV.objects.all().delete()
+
+        dates = _run_trading_dates(SimpleNamespace(start_date=self.d1, end_date=self.d2))
+
+        # The calendar wins even with no OHLCV at all, and the one row per
+        # exchange per date collapses to a single entry per date.
+        self.assertEqual(dates, [self.d1, self.d2])
+
+    def test_run_trading_dates_skips_closed_calendar_days(self):
+        ExchangeTradingCalendar.objects.filter(trade_date=self.d2).update(is_open=False)
+
+        dates = _run_trading_dates(SimpleNamespace(start_date=self.d1, end_date=self.d2))
+
+        self.assertEqual(dates, [self.d1])
+
+    def test_run_trading_dates_falls_back_to_ohlcv_without_a_calendar(self):
+        ExchangeTradingCalendar.objects.all().delete()
+        expected = list(
+            OHLCV.objects.filter(date__gte=self.d1, date__lte=self.d2)
+            .values_list('date', flat=True)
+            .distinct()
+            .order_by('date')
+        )
+        self.assertIn(self.d1, expected, 'fixture must seed at least one bar')
+
+        dates = _run_trading_dates(SimpleNamespace(start_date=self.d1, end_date=self.d2))
+
+        self.assertEqual(dates, expected)
+
+    @override_settings(CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'backtest-payload-cache-tests',
+        },
+    })
+    def test_trades_payload_is_cached_once_a_run_is_terminal(self):
+        cache.clear()
+        self._auth()
+        run = self._create_run(status=BacktestRun.Status.COMPLETED)
+
+        with patch('apps.backtest.views.BacktestTradeSerializer') as serializer:
+            serializer.return_value.data = []
+            first = self.client.get(f'/api/v1/backtest/{run.id}/trades/')
+            second = self.client.get(f'/api/v1/backtest/{run.id}/trades/')
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(serializer.call_count, 1)
+
+    @override_settings(CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'backtest-payload-cache-tests',
+        },
+    })
+    def test_trades_payload_is_not_cached_while_a_run_is_live(self):
+        cache.clear()
+        self._auth()
+        run = self._create_run(status=BacktestRun.Status.RUNNING)
+
+        with patch('apps.backtest.views.BacktestTradeSerializer') as serializer:
+            serializer.return_value.data = []
+            self.client.get(f'/api/v1/backtest/{run.id}/trades/')
+            self.client.get(f'/api/v1/backtest/{run.id}/trades/')
+
+        self.assertEqual(serializer.call_count, 2)
 
     def test_backtest_list_returns_up_to_100_runs_for_workbench(self):
         self._auth()

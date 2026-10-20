@@ -247,11 +247,19 @@ ARTIFACT_S3_ADDRESSING_STYLE = env('ARTIFACT_S3_ADDRESSING_STYLE', default='path
 # Backtest task health: how long a RUNNING backtest run can sit with no progress
 # before it is considered orphaned. See apps/backtest/task_health.py.
 BACKTEST_STALE_TASK_MAX_AGE_SECONDS = env.int('BACKTEST_STALE_TASK_MAX_AGE_SECONDS', default=2400)
+# TTL for cached backtest `trades` / `comparison_curve` payloads. Both are
+# immutable once a run reaches a terminal status, and the key includes the run's
+# status and updated_at, so this is a ceiling rather than a staleness window.
+BACKTEST_PAYLOAD_CACHE_SECONDS = env.int('BACKTEST_PAYLOAD_CACHE_SECONDS', default=3600)
 # The dashboard stocks payload is cached in Redis, which is shared across
 # processes, so a nightly pre-warm can serve the first request of the day. The
 # key includes the factor date, so a new trading day invalidates naturally and a
 # long TTL does not serve stale rows across dates.
 DASHBOARD_STOCKS_CACHE_SECONDS = env.int('DASHBOARD_STOCKS_CACHE_SECONDS', default=86400)
+# Short TTL: /dashboard/summary/ folds seven SPA calls into one, and its alert
+# count is owner-scoped, so the key is per user. Kept brief because signal and
+# alert events arrive throughout the session.
+DASHBOARD_SUMMARY_CACHE_SECONDS = env.int('DASHBOARD_SUMMARY_CACHE_SECONDS', default=60)
 # Scope string that opts the dashboard's pseudo-run into the process-level
 # matrix-signal inference cache in apps/backtest/tasks.py. Without it every
 # request re-runs model inference from scratch.

@@ -1516,3 +1516,99 @@ class DashboardStocksCacheTests(DashboardStockFixtures, TestCase):
         self.assertEqual(key, key_for(self.QUERY))
         self.assertNotEqual(key, key_for(f'{self.QUERY}&page_size=50'))
         self.assertNotEqual(key, key_for(f'{self.QUERY}&search=alpha'))
+
+
+@override_settings(CACHES={
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'dashboard-summary-tests',
+    },
+})
+class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
+    """The single call that replaces the SPA's seven dashboard requests."""
+
+    URL = '/api/v1/dashboard/stocks/summary/'
+    EXPECTED_KEYS = {
+        'macro_phase', 'hot_concepts', 'prediction_signals', 'alert_triggers',
+        'completed_backtests', 'avg_bottom_probability', 'generated_at',
+    }
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.other = User.objects.create_user(
+            username='summary_other',
+            email='summary_other@example.com',
+            password='Passw0rd!123',
+        )
+
+    def _rule_for(self, owner, name):
+        return AlertRule.objects.create(
+            owner=owner,
+            asset=self.asset1,
+            name=name,
+            condition_type=AlertRule.ConditionType.PRICE_ABOVE,
+            threshold=Decimal('10.00'),
+            channels=['websocket'],
+            is_active=True,
+        )
+
+    def _event(self, rule, message, **kwargs):
+        return AlertEvent.objects.create(
+            alert_rule=rule,
+            asset=self.asset1,
+            message=message,
+            trigger_value=Decimal('10.20'),
+            **kwargs,
+        )
+
+    def test_summary_requires_authentication(self):
+        self.assertEqual(self.client.get(self.URL).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_summary_returns_every_key_the_spa_consumes(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), self.EXPECTED_KEYS)
+
+    def test_avg_bottom_probability_averages_the_top_twenty(self):
+        self.client.force_authenticate(user=self.user)
+        seeded = FactorScore.objects.filter(mode=FactorScore.FactorMode.COMPOSITE).count()
+        self.assertEqual(seeded, 2, 'fixture assumption for the hardcoded mean below')
+
+        response = self.client.get(self.URL)
+
+        # Fixtures seed 0.760000 and 0.520000.
+        self.assertAlmostEqual(response.data['avg_bottom_probability'], 0.64, places=6)
+
+    def test_alert_triggers_are_owner_scoped_and_cached_per_user(self):
+        mine = self._rule_for(self.user, 'mine')
+        theirs = self._rule_for(self.other, 'theirs')
+        self._event(mine, 'a')
+        self._event(mine, 'b')
+        self._event(theirs, 'c')
+
+        self.client.force_authenticate(user=self.user)
+        own_response = self.client.get(self.URL)
+        self.client.force_authenticate(user=self.other)
+        other_response = self.client.get(self.URL)
+
+        self.assertEqual(own_response.data['alert_triggers'], 2)
+        self.assertEqual(other_response.data['alert_triggers'], 1)
+
+    def test_sent_alerts_are_excluded_and_the_payload_is_cached(self):
+        rule = self._rule_for(self.user, 'sent-check')
+        self._event(rule, 'triggered')
+
+        self.client.force_authenticate(user=self.user)
+        first = self.client.get(self.URL)
+        self.assertEqual(first.data['alert_triggers'], 1)
+
+        self._event(rule, 'sent', status=AlertEvent.Status.SENT)
+        second = self.client.get(self.URL)
+
+        self.assertEqual(second.data['alert_triggers'], 1)
+        # Identical timestamp proves the second call was served from cache.
+        self.assertEqual(first.data['generated_at'], second.data['generated_at'])
