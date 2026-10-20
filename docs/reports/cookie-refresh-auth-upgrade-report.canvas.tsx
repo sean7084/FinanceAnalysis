@@ -20,6 +20,15 @@ export default function CookieRefreshAuthUpgradeReport() {
         FinanceAnalysis · spec: Cookie_Refresh_Auth_Upgrade_task-27e · October 13, 2026
       </Text>
 
+      <Callout tone="warning" title="Superseded">
+        Retained as a historical record only. The whole authentication module this
+        report describes was removed in v0.1.17 — which bumps the OpenAPI schema
+        version to `0.2.0`, since removing authentication is schema-breaking —
+        because the project is single-user, so the
+        cookie/refresh machinery had no second user to protect and was costing
+        correctness. Nothing below is current.
+      </Callout>
+
       <Grid columns={4} gap={16}>
         <Stat value="124" label="Backend tests pass" tone="success" description="incl. 11 new CookieAuthTests" />
         <Stat value="35" label="Frontend tests pass" tone="success" description="incl. 8 rewritten auth tests" />

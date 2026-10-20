@@ -3,7 +3,7 @@ from datetime import date
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.core.cache import cache
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -34,7 +34,6 @@ class LightGBMModelArtifactViewSet(viewsets.ReadOnlyModelViewSet):
     GET /api/v1/lightgbm-models/{id}/
     """
     serializer_class = LightGBMModelArtifactSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = LightGBMModelArtifact.objects.all().order_by('-created_at')
@@ -131,7 +130,6 @@ class LightGBMPredictionViewSet(viewsets.GenericViewSet):
     GET /api/v1/lightgbm-predictions/{stock_code}/
     """
     serializer_class = LightGBMPredictionSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>(?!(?:train|recalculate|batch)(?:/|$))[^/.]+)')
     def stock(self, request, stock_code=None):
@@ -275,7 +273,6 @@ class EnsembleWeightSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
     GET /api/v1/ensemble-weights/
     """
     serializer_class = EnsembleWeightSnapshotSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return EnsembleWeightSnapshot.objects.all().order_by('-date')

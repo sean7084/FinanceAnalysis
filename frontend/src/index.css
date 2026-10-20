@@ -66,78 +66,6 @@ nav {
   color: #fff;
 }
 
-.auth-panel {
-  margin-top: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.auth-panel h3 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.auth-panel label {
-  font-size: 0.78rem;
-  color: #93a8c0;
-}
-
-.auth-panel textarea,
-.auth-panel input,
-.auth-panel select {
-  width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  background: rgba(6, 16, 28, 0.75);
-  color: #e8eef5;
-  padding: 0.45rem 0.55rem;
-  font-family: inherit;
-}
-
-.auth-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.auth-actions button {
-  border: 0;
-  border-radius: 8px;
-  background: rgba(57, 130, 255, 0.28);
-  color: #eef6ff;
-  padding: 0.42rem 0.7rem;
-  cursor: pointer;
-}
-
-.auth-actions button:hover {
-  background: rgba(57, 130, 255, 0.4);
-}
-
-.credential-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 0.45rem;
-}
-
-.credential-row button {
-  border: 0;
-  border-radius: 8px;
-  background: rgba(57, 130, 255, 0.28);
-  color: #eef6ff;
-  padding: 0.42rem 0.7rem;
-  cursor: pointer;
-}
-
-.credential-row button:hover {
-  background: rgba(57, 130, 255, 0.4);
-}
-
-.auth-help {
-  margin: 0;
-  color: #93a8c0;
-  font-size: 0.78rem;
-}
-
 .toast-banner {
   position: fixed;
   top: 1rem;
@@ -150,35 +78,6 @@ nav {
   box-shadow: 0 10px 26px rgba(6, 16, 28, 0.4);
   font-size: 0.84rem;
   font-weight: 600;
-}
-
-.auth-status-grid {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.55rem 0.8rem;
-  align-items: center;
-}
-
-.auth-status-grid p {
-  margin: 0;
-}
-
-.status-chip {
-  padding: 0.22rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  text-align: center;
-}
-
-.status-chip.connected {
-  color: #dfffee;
-  background: rgba(58, 212, 137, 0.25);
-}
-
-.status-chip.disconnected {
-  color: #ffe7e7;
-  background: rgba(255, 125, 125, 0.25);
 }
 
 .content-area {
@@ -488,10 +387,6 @@ nav {
 
   .nav-link {
     font-size: 0.92rem;
-  }
-
-  .credential-row {
-    grid-template-columns: 1fr;
   }
 
   .toast-banner {

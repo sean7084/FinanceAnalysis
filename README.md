@@ -50,11 +50,11 @@ python manage.py export_documentation_facts --check   # fail if stale
 
 ## Architecture
 
-Ten Django apps with a strict upstream → derived ordering.
+Nine Django apps with a strict upstream → derived ordering.
 
 | App | Responsibility |
 | --- | --- |
-| `core` | Pagination, tiered throttling, historical floor, data-quality validation, docs generation |
+| `core` | Pagination, historical floor, data-quality validation, docs generation |
 | `markets` | Universe and price foundation: assets, OHLCV, trading calendar, suspensions, index membership, benchmarks |
 | `analytics` | Stored technical indicators, signal events, alerts, screeners, dashboard DTO |
 | `factors` | Fundamentals, money flow, margin detail, capital flow, factor scores |
@@ -62,8 +62,7 @@ Ten Django apps with a strict upstream → derived ordering.
 | `sentiment` | News ingestion, article and aggregate scoring, concept heat |
 | `prediction` | Heuristic, LightGBM, and LSTM models; trade decisions; model registry |
 | `backtest` | Run engine, trades, comparison curves, benchmark export |
-| `users` | Authentication, subscriptions, usage metering |
-| `developer` | API key portal and public changelog |
+| `developer` | Public API changelog |
 
 ### Data flow
 
@@ -140,7 +139,7 @@ Copy-Item .env.example .env               # or: cp .env.example .env
 
 # 4. Schema
 python manage.py migrate
-python manage.py createsuperuser
+python manage.py createsuperuser          # optional: /admin/ only, the API needs no account
 
 # 5. Frontend
 cd frontend && npm install && cd ..

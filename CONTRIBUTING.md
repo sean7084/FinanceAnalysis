@@ -28,7 +28,7 @@ is what substitutes for a review gate.
 
 Types in use: `feat`, `fix`, `perf`, `refactor`, `chore`, `docs`, `test`.
 
-Scopes are app or area names: `backtest`, `celery`, `lightgbm`, `lstm`, `auth`,
+Scopes are app or area names: `backtest`, `celery`, `lightgbm`, `lstm`,
 `pagination`, `scripts`, `docker`, `env`, `readme`.
 
 Examples from history:
@@ -37,7 +37,7 @@ Examples from history:
 perf(backtest): group inline matrix runs by horizon and reset process caches
 feat(celery): split backtest and model training onto dedicated queues
 refactor(env): consolidate environment variable configuration to a single .env file
-fix(auth): implement scoped throttling for JWT authentication endpoints
+perf(frontend): share one query cache and stop blocking pages on their slowest call
 ```
 
 Rules that matter:

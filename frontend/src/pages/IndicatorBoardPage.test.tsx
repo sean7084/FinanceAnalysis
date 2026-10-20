@@ -14,7 +14,6 @@ vi.mock('../lib/api', async () => {
   return {
     ...actual,
     fetchDashboardStocks: apiMocks.fetchDashboardStocks,
-    hasAnyAuthCredential: vi.fn(() => true),
   }
 })
 

@@ -218,15 +218,10 @@ class Phase11FactorTests(TestCase):
             FactorScore.objects.filter(asset=self.asset2, date=target_date, mode=FactorScore.FactorMode.COMPOSITE).exists()
         )
 
-    def test_bottom_candidates_requires_auth(self):
-        response = self.client.get('/api/v1/screener/bottom-candidates/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_bottom_candidates_returns_ranked_results(self):
         target_date = timezone.now().date()
         self._seed_required_pit_membership(target_date)
         calculate_factor_scores_for_date(target_date=str(target_date))
-        self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/v1/screener/bottom-candidates/?top_n=1')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['count'], 1)
@@ -274,7 +269,6 @@ class Phase11FactorTests(TestCase):
             suggested=False,
             model_version=version,
         )
-        self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/v1/screener/bottom-candidates/?top_n=2&sort_by=trade_score&prediction_horizon=7')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
@@ -292,7 +286,6 @@ class Phase11FactorTests(TestCase):
 
     @patch('apps.factors.views.calculate_factor_scores_for_date.delay')
     def test_recalculate_endpoint_queues_task(self, mock_delay):
-        self.client.force_authenticate(user=self.user)
         payload = {
             'financial_weight': 0.5,
             'flow_weight': 0.2,

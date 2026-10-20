@@ -1,40 +1,48 @@
 # How to run the tests
 
 Two independent suites: Django's built-in runner for the backend, Vitest for the
-frontend. Neither is wired into CI — there is no CI configuration in the
-repository.
+frontend. Both are wired into CI — `.github/workflows/ci.yml` runs them in parallel
+jobs, each guarded by a `MIN_TEST_COUNT` discovery floor.
 
 ---
 
 ## 1. Suite inventory
 
-### Backend — 339 tests across 11 modules
+### Backend — 13 modules
+
+Per-module counts are from Django's suite discovery; the total is whatever the
+run's `Ran N tests` line says, and is deliberately not restated here.
 
 | Module | Tests |
 | --- | --- |
-| `apps/backtest/tests.py` | 71 |
-| `apps/markets/tests.py` | 41 |
-| `apps/prediction/tests.py` | 41 |
-| `apps/analytics/tests.py` | 39 |
-| `apps/users/tests.py` | 28 |
-| `apps/prediction/tests_lightgbm.py` | 28 |
+| `apps/backtest/tests.py` | 75 |
+| `apps/analytics/tests.py` | 49 |
+| `apps/markets/tests.py` | 43 |
+| `apps/prediction/tests.py` | 40 |
+| `apps/prediction/tests_lightgbm.py` | 27 |
+| `apps/prediction/tests_artifact_store.py` | 26 |
 | `apps/core/tests.py` | 23 |
-| `apps/factors/tests.py` | 20 |
-| `apps/macro/tests.py` | 20 |
-| `apps/developer/tests.py` | 16 |
-| `apps/sentiment/tests.py` | 12 |
+| `apps/factors/tests.py` | 19 |
+| `apps/macro/tests.py` | 19 |
+| `apps/prediction/tests_reconciliation.py` | 19 |
+| `apps/sentiment/tests.py` | 11 |
+| `apps/core/tests_frontend.py` | 6 |
+| `apps/developer/tests.py` | 5 |
 
+`apps/users/tests.py` is gone, with the app it tested.
 `apps/prediction/tests_lstm.py` does not exist. LSTM coverage lives inside
 `apps/prediction/tests.py` (sequence building, ensemble refresh, registry
 resolution) and `apps/backtest/tests.py` (LSTM as a prediction source).
 
-### Frontend — 31 tests across 4 files
+### Frontend — 45 tests across 6 files
 
 | File | Tests |
 | --- | --- |
-| `src/pages/BacktestWorkbenchPage.test.tsx` | 22 |
-| `src/pages/DashboardPage.test.tsx` | 4 |
-| `src/lib/api.test.ts` | 4 |
+| `src/pages/BacktestWorkbenchPage.test.tsx` | 21 |
+| `src/lib/queryCache.test.ts` | 10 |
+| `src/hooks/useAlertsSocket.test.ts` | 3 |
+| `src/pages/DashboardPage.test.tsx` | 5 |
+| `src/lib/api.test.ts` | 5 |
 | `src/pages/IndicatorBoardPage.test.tsx` | 1 |
 
 Run with `npm test`, which invokes `vitest run` (single pass, no watch).
@@ -102,7 +110,7 @@ python manage.py test --keepdb apps.backtest
 Without it, Django drops and recreates the test database on every run. Two
 consequences matter here:
 
-1. **It is slow.** This schema has many migrations across ten apps, and the
+1. **It is slow.** This schema has many migrations across nine apps, and the
    backtest and analytics tables carry large indexes.
 2. **It prompts interactively.** If a stale `test_finance_analysis` exists —
    common after an interrupted run — Django asks
@@ -186,10 +194,10 @@ Ran 0 tests in 0.000s
 ```
 
 Verified against a pristine checkout of the commit before the fix: `Ran 0 tests`,
-exit code 0. With the marker in place the same command discovers all 339. So the
-suite was not merely awkward to invoke by app label; the default invocation was a
-silent no-op that reported success, and every failure documented in §6 had been
-invisible.
+exit code 0. With the marker in place the same command discovers the whole suite —
+every module in §1's table. So the suite was not merely awkward to invoke by app
+label; the default invocation was a silent no-op that reported success, and every
+failure documented in §6 had been invisible.
 
 **Always read the `Ran N tests` line, never just the exit code.** A green run that
 executed nothing is the most dangerous possible outcome, and this repository
@@ -199,7 +207,9 @@ produced one by default.
 
 ## 6. Known failures and how to read them
 
-A full run currently reports **339 tests, OK**. There are no known failures.
+A full run currently ends **OK**, with no known failures. The `Ran N tests` count
+is read from the run rather than quoted here — it moves as modules are added and
+removed, and §1 lists what is in the suite right now.
 
 That was not true until recently: the count was **109**, and before that the suite was
 silently discovering *zero* tests, so it reported success while checking nothing. The
@@ -240,14 +250,25 @@ invisible. See `BACKLOG.md`.
 
 ### 6.1 Case study: the Redis failure (93 tests, resolved)
 
-Every test that made an API request failed, because DRF runs `check_throttles`
-during `initial()` and throttle counters live in the Redis cache. The traceback ended:
+Every test that made an API request failed, because the API views go through the
+default cache — `cache_page` decorators plus the dashboard's explicit cache reads —
+and that cache was the Redis instance named in `.env`. At the time DRF also ran
+`check_throttles` during `initial()`, and throttle counters lived in that same
+cache, which is where the traceback surfaced:
 
 ```
 rest_framework/views.py, in check_throttles
   -> redis/client.py, in execute_command
   -> redis.exceptions.AuthenticationError: invalid username-password pair or user is disabled.
 ```
+
+Two things have changed since, and neither weakens the lesson. Throttling was
+removed along with the auth module, so `check_throttles` no longer runs and the
+same stale credential now surfaces on the first cache get or set inside the view
+rather than in that DRF frame. And `config.settings.test` pins the cache to
+`LocMemCache` and the channel layer to `InMemoryChannelLayer` (§2, §3), so a test
+run cannot reach the development Redis at all — this failure is only reproducible
+against `config.settings.local`.
 
 **Diagnosis:** the password in `.env` had gone stale and the server rejected it.
 Tested directly, both with and without a username in the URL:
@@ -264,11 +285,11 @@ credential itself does not match the server. Confirm before changing anything:
 ./scripts/verify_local_stack.sh    # pings both Redis databases
 ```
 
-The blast radius is far wider than the test suite. The same credential backs the
-Django cache, `cache_page` responses, and the Channels layer, so while it is wrong:
+The blast radius is far wider than the test suite. Redis still backs the default
+Django cache and the Channels layer, so while the credential is wrong:
 
-- every authenticated API request fails at the throttle check;
-- server-side response caching does not work;
+- server-side response caching does not work, and any view that reads through the
+  cache fails instead of degrading;
 - the WebSocket alert stream has no functioning channel layer.
 
 Resolved by correcting the credential in `REDIS_URL`, `CELERY_BROKER_URL`, and

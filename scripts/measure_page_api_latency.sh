@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Times every endpoint the SPA calls on page load and reports p50/p95 per
-# endpoint plus a summed per-page budget. Modelled on smoke_api_check.sh's
-# login flow. Run before and after a change to prove the delta.
+# endpoint plus a summed per-page budget. Modelled on smoke_api_check.sh, and
+# like it, every request is unauthenticated. Run before and after a change to
+# prove the delta.
 #
 #   ITERATIONS=5 LABEL=baseline bash scripts/measure_page_api_latency.sh
 #
@@ -28,17 +29,6 @@ REPORT_ROOT="${LATENCY_REPORT_ROOT:-$PROJECT_ROOT/reports}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CURL_TIMEOUT="${CURL_TIMEOUT:-300}"
 
-SMOKE_USERNAME="${SMOKE_USERNAME:-}"
-SMOKE_PASSWORD="${SMOKE_PASSWORD:-}"
-# Tolerate CRLF-formatted .env files.
-SMOKE_USERNAME="${SMOKE_USERNAME//$'\r'/}"
-SMOKE_PASSWORD="${SMOKE_PASSWORD//$'\r'/}"
-
-if [[ -z "$SMOKE_USERNAME" || -z "$SMOKE_PASSWORD" ]]; then
-	echo "SMOKE_USERNAME and SMOKE_PASSWORD are required." >&2
-	exit 1
-fi
-
 OUT_DIR="$REPORT_ROOT/api_latency_$(date +%Y%m%d_%H%M%S)_$LABEL"
 mkdir -p "$OUT_DIR"
 
@@ -58,19 +48,8 @@ print(json.dumps(value) if isinstance(value, (dict, list)) else value)
 }
 
 get_json() {
-	curl -fsS --max-time "$CURL_TIMEOUT" -H "Authorization: Bearer $TOKEN" "$API_BASE$1"
+	curl -fsS --max-time "$CURL_TIMEOUT" "$API_BASE$1"
 }
-
-echo "Authenticating against $API_BASE ..."
-auth_body=$("$PYTHON_BIN" -c 'import json,sys; print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))' \
-	"$SMOKE_USERNAME" "$SMOKE_PASSWORD")
-auth_payload=$(curl -fsS --max-time "$CURL_TIMEOUT" -X POST "$API_BASE/auth/token/" \
-	-H 'Content-Type: application/json' -d "$auth_body")
-TOKEN=$(printf '%s' "$auth_payload" | json_get access)
-if [[ -z "$TOKEN" ]]; then
-	echo "Authentication failed; no access token returned." >&2
-	exit 1
-fi
 
 # Discover the identifiers the detail pages need, so the harness measures real
 # rows rather than empty result sets.
@@ -128,7 +107,7 @@ for entry in "${ENDPOINTS[@]}"; do
 	for i in $(seq 1 "$ITERATIONS"); do
 		result=$(curl -s -o /dev/null --max-time "$CURL_TIMEOUT" \
 			-w '%{time_total}|%{http_code}' \
-			-H "Authorization: Bearer $TOKEN" "$API_BASE$path" 2>/dev/null) || result="0|000"
+			"$API_BASE$path" 2>/dev/null) || result="0|000"
 		seconds=${result%%|*}
 		status=${result##*|}
 		printf '%s,%s,%s,%s,%s\n' "$page" "$label" "$i" "$seconds" "$status" >>"$RAW"

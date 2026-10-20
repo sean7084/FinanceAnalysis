@@ -71,9 +71,6 @@ class Phase14PredictionTests(TestCase):
             name='Prediction Asset',
         )
 
-    def _auth(self):
-        self.client.force_authenticate(user=self.user)
-
     def _seed_features(self):
         d = timezone.now().date()
         trade_dates = [d - timezone.timedelta(days=offset) for offset in range(30)]
@@ -197,13 +194,6 @@ class Phase14PredictionTests(TestCase):
             parameters={'timeperiod': 60},
         )
         return d
-
-    def test_prediction_endpoints_require_auth(self):
-        response = self.client.get(f'/api/v1/prediction/{self.asset.symbol}/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-        response = self.client.post('/api/v1/prediction/batch/', {'stock_codes': [self.asset.symbol]}, format='json')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_prediction_history_list_routes_are_not_exposed(self):
         response = self.client.get('/api/v1/prediction/')
@@ -487,7 +477,6 @@ class Phase14PredictionTests(TestCase):
         self.assertEqual(refreshed.up_probability, baseline_up)
 
     def test_single_stock_prediction_endpoint_shape(self):
-        self._auth()
         d = self._seed_features()
         generate_predictions_for_date(target_date=str(d), horizons=[3, 7, 30])
 
@@ -506,7 +495,6 @@ class Phase14PredictionTests(TestCase):
         self.assertIn('suggested', first)
 
     def test_batch_prediction_endpoint(self):
-        self._auth()
         d = self._seed_features()
         response = self.client.post(
             '/api/v1/prediction/batch/',
@@ -524,7 +512,6 @@ class Phase14PredictionTests(TestCase):
     @patch('apps.prediction.views.generate_predictions_for_date.delay')
     @patch('apps.prediction.views.train_prediction_models.delay')
     def test_recalculate_endpoint_queues_tasks(self, mock_train_delay, mock_predict_delay):
-        self._auth()
         response = self.client.post('/api/v1/prediction/recalculate/', {'target_date': str(timezone.now().date())}, format='json')
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_train_delay.assert_called_once()

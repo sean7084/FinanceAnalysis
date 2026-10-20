@@ -1,5 +1,5 @@
 import { useAlertsSocket } from '../hooks/useAlertsSocket'
-import { apiGet, hasAnyAuthCredential, type AlertEventDto, type Paginated } from '../lib/api'
+import { apiGet, type AlertEventDto, type Paginated } from '../lib/api'
 import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
@@ -26,7 +26,7 @@ export function AlertCenterPage() {
         </p>
         {historyResource.error && (
           <p className="status disconnected">
-            {hasAnyAuthCredential() ? t('alerts.historyError') : `${t('settings.desc')} (${t('nav.settings')})`}
+            {t('alerts.historyError')}
           </p>
         )}
         {historyResource.loading && <p className="status">{t('common.loading')}</p>}

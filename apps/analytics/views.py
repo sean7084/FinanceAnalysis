@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import viewsets, filters, status, permissions
+from rest_framework import viewsets, filters, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -242,12 +242,12 @@ def _dashboard_stocks_cache_key(latest_date, params):
     )
 
 
-def _build_dashboard_summary(user):
+def _build_dashboard_summary():
     """The six KPI values the SPA currently derives from seven separate calls.
 
     Querysets mirror the endpoints being replaced so the numbers do not shift:
     ``MarketContextViewSet.current`` with its list fallback, ``ConceptHeatViewSet.top``,
-    ``SignalEventViewSet.recent`` at ``days=1``, the owner-scoped
+    ``SignalEventViewSet.recent`` at ``days=1``,
     ``AlertEventViewSet.get_queryset``, and ``BottomCandidateViewSet.get_queryset``
     ordering. Two deliberate differences: alert and backtest counts are true
     ``.count()`` values rather than tallies over a capped page, so they no longer
@@ -289,7 +289,7 @@ def _build_dashboard_summary(user):
         'prediction_signals': SignalEvent.objects.filter(
             timestamp__gte=timezone.now() - timedelta(days=1)
         ).count(),
-        'alert_triggers': AlertEvent.objects.filter(alert_rule__owner=user).exclude(
+        'alert_triggers': AlertEvent.objects.exclude(
             status=AlertEvent.Status.SENT
         ).count(),
         'completed_backtests': BacktestRun.objects.filter(
@@ -305,8 +305,6 @@ def _build_dashboard_summary(user):
 
 
 class DashboardStockViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.IsAuthenticated]
-
     def list(self, request):
         params = _parse_dashboard_list_params(request.query_params)
 
@@ -548,16 +546,15 @@ class DashboardStockViewSet(viewsets.ViewSet):
     def summary(self, request):
         """One call replacing the seven the SPA fires on dashboard load.
 
-        Cached per user because ``alert_triggers`` is owner-scoped. The other five
-        values are global, but splitting them into a second key would cost a round
+        The values are global, but splitting them into a second key would cost a round
         trip to save one small query.
         """
-        cache_key = f'dashboard_summary:{request.user.id}'
+        cache_key = 'dashboard_summary'
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
 
-        payload = _build_dashboard_summary(request.user)
+        payload = _build_dashboard_summary()
         cache.set(cache_key, payload, settings.DASHBOARD_SUMMARY_CACHE_SECONDS)
         return Response(payload)
 
@@ -878,28 +875,18 @@ class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
 
 class ScreenerTemplateViewSet(viewsets.ModelViewSet):
     """
-    Saved screener templates for users.
+    Saved screener templates, in one shared collection.
     """
     serializer_class = ScreenerTemplateSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
-        if self.request.user.is_authenticated:
-            if self.action in ['list', 'retrieve']:
-                return (ScreenerTemplate.objects.filter(owner=self.request.user) | ScreenerTemplate.objects.filter(is_public=True)).distinct()
-            return ScreenerTemplate.objects.filter(owner=self.request.user)
-        return ScreenerTemplate.objects.filter(is_public=True)
-
-    def perform_create(self, serializer):
-        serializer.save(owner=self.request.user)
+        return ScreenerTemplate.objects.all()
 
 
 class ScreenerViewSet(viewsets.ViewSet):
     """
     Real-time stock screener endpoints.
     """
-    permission_classes = [permissions.IsAuthenticated]
-
     PREBUILT_SCREENERS = {
         'overbought_oversold',
         'breakout_candidates',
@@ -1004,13 +991,9 @@ class AlertRuleViewSet(viewsets.ModelViewSet):
     CRUD API for alert rules.
     """
     serializer_class = AlertRuleSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return AlertRule.objects.filter(owner=self.request.user).select_related('asset', 'owner')
-
-    def perform_create(self, serializer):
-        serializer.save(owner=self.request.user)
+        return AlertRule.objects.select_related('asset')
 
     @action(detail=False, methods=['get'])
     def active(self, request):
@@ -1024,14 +1007,13 @@ class AlertEventViewSet(viewsets.ReadOnlyModelViewSet):
     Alert history endpoint.
     """
     serializer_class = AlertEventSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['status', 'asset', 'alert_rule']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
 
     def get_queryset(self):
-        return AlertEvent.objects.filter(alert_rule__owner=self.request.user).select_related('alert_rule', 'asset')
+        return AlertEvent.objects.select_related('alert_rule', 'asset')
 
 
 class SignalEventViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1042,7 +1024,6 @@ class SignalEventViewSet(viewsets.ReadOnlyModelViewSet):
     POST /api/v1/signals/recalculate/       – queue signal recalculation for all assets
     """
     serializer_class = SignalEventSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['asset', 'signal_type']
     search_fields = ['description', 'asset__symbol', 'asset__name']

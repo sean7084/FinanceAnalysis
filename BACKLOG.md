@@ -157,6 +157,8 @@ Items here have no commitment attached. When something is done, move it to
   port nothing in this project listens on, while Vite pins 5173 with `strictPort: true`
   and so can never fall back to it. The setting builds the verification and
   password-reset links in `apps/users/views.py`, so both were dead out of the box.
+  (Both the setting and `apps/users` were deleted in v0.1.17; recorded here as the
+  history of the fix.)
 - **`.env.example` is now complete: 33 of 33 settings-read variables.** Previously 9
   declared keys against ~30 reads, so `HISTORICAL_DATA_FLOOR` — the governance control
   both main docs treat as canonical — was undiscoverable from the example file, along
@@ -390,23 +392,25 @@ design. Right now the features look broken rather than unconfigured.
 
 ## Open — frontend
 
-### Nine lint warnings remain, and nothing used to gate them
+### Three lint warnings remain, and the ratchet already tolerates them
 
 `npm run build` exits 0 and `npm run lint` exits 0. This entry previously recorded six
 TypeScript errors and one ESLint error, and both claims are now false: commit `5883eaf`
 (PR #17) fixed all seven, and `src/i18n.tsx` is 620 lines long, so the `629:17` it cited
 cannot exist. `frontend/dist` rebuilds from a clean checkout again.
 
-What is left is nine `react-hooks/exhaustive-deps` warnings. Unlike the errors they never
-failed anything — eslint exits 0 with all nine present because nothing passes
-`--max-warnings` — so a tenth would have arrived as silently as they did. That is the same
-blind-spot class as `manage.py test` once discovering zero tests and exiting 0, and it is
-what the ratchet in the next section closes.
+It also claimed nine `react-hooks/exhaustive-deps` warnings, and that number is what this
+revision corrects: `node scripts/check-static-baseline.mjs lint` now reports **three**,
+and `static-baseline.json` has recorded three since `13848f7` restructured the page
+effects. The six that went away were the missing-`t` class; the entry kept asserting them
+because nobody re-read the file after that commit. ESLint still exits 0 with all three
+present because nothing passes `--max-warnings`, so a fourth would arrive silently —
+which is the same blind-spot class as `manage.py test` once discovering zero tests and
+exiting 0, and what the ratchet in the next section closes.
 
 | Where | Diagnostic | Assessment |
 | --- | --- | --- |
-| `AlertCenterPage`, `IndicatorBoardPage`, `MacroContextPage`, `ModelMonitoringPage`, `ScreenerPage`, `StockDetailPage` | missing dependency `t` | Six of the nine are the same shape: the translation function is used inside an effect but absent from the dependency array. **Adding it is not the no-op it looks like.** `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — those effects would start re-running on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but make it deliberately rather than to silence a warning |
-| `DashboardPage` | `useMemo` missing `searchParams` | Same class, a memo rather than an effect. The memo does not recompute when the URL query changes, so it can serve a stale value — worth reading as a possible real bug, not just a lint nit |
+| `StockDetailPage:157` | missing dependency `t` | The last survivor of the six. `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — adding it makes the effect re-run on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but do it deliberately rather than to silence a warning |
 | `BacktestWorkbenchPage` (2) | missing `loadRuns`; conditional `extraComparisonOptions` | Neither is the `t` shape. One needs the callback in the array or wrapped in `useCallback`; the other needs its initialisation wrapped in `useMemo` so the effect's dependencies stop changing on every render |
 
 The six fixed errors are worth keeping as a near-miss rather than as work outstanding. One
@@ -425,10 +429,10 @@ two. Check for that before "fixing" a type error.
 directly. The script runs the command, parses its diagnostics, and fails only on something
 beyond what `frontend/static-baseline.json` records.
 
-The recorded baseline is **zero TypeScript errors, zero ESLint errors, nine
-`react-hooks/exhaustive-deps` warnings** — the nine itemised above. So the type-check is
+The recorded baseline is **zero TypeScript errors, zero ESLint errors, three
+`react-hooks/exhaustive-deps` warnings** — the three itemised above. So the type-check is
 exactly as strict as the bare `npm run build` it replaced, and the known warnings are
-tolerated on arrival while a tenth fails the job.
+tolerated on arrival while a fourth fails the job.
 
 A diagnostic is keyed by file, rule code and a 40-character fingerprint of its message —
 deliberately not by line and column. Line numbers move whenever code is edited above them,
@@ -459,9 +463,11 @@ the build-info files were removed — confirmed independently by
 from that first reading would have enshrined six errors the tree did not have. CI never
 hits this, because `npm ci` starts cold; a local `--update` would have.
 
-Clear the nine warnings and the ratchet is pure overhead: delete the script and the
+Clear the three warnings and the ratchet is pure overhead: delete the script and the
 baseline file, and put the plain `npm run build` and `npm run lint` back into the two
-steps.
+steps. The build half of that is already true — its baseline is 0 errors and 0 warnings,
+and `check-static-baseline.mjs build` says so and prints this same instruction. Only the
+lint gate still earns its keep.
 
 ### CI exists, and asserts a discovery floor
 
@@ -478,14 +484,20 @@ There used to be a third, `frontend-static`, holding the two static checks under
 steps into `frontend`; both job names above are required status checks, so neither can be
 renamed without re-applying branch protection.
 
-Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`, currently 339 and 31)
-as well as a green result. This is the load-bearing part. A workflow that only checked
-the exit code would have reported success through the entire period when
-`manage.py test` was discovering zero tests, which is how 109 failures stayed hidden.
-The floor converts that class of silent success into a hard failure.
+Both test jobs assert a **minimum test count** (`MIN_TEST_COUNT`) as well as a green
+result. This is the load-bearing part. A workflow that only checked the exit code would
+have reported success through the entire period when `manage.py test` was discovering
+zero tests, which is how 109 failures stayed hidden. The floor converts that class of
+silent success into a hard failure.
 
 Raise the floors when tests are added. Lowering one should require a stated reason, since
-the count can only fall if discovery breaks or tests are deleted.
+the count can only fall if discovery breaks or tests are deleted. The last lowering was
+v0.1.17's removal of the authentication module: backend 421 → 361 and frontend 48 → 42,
+with the reason recorded inline in the workflow; the frontend floor has since been raised
+again by the alert-socket tests. The current numbers live only in
+`.github/workflows/ci.yml`, deliberately: this paragraph said 339 and 31 long after both
+floors had been raised to the measured 421 and 48, which is the argument for keeping the
+workflow as the single source of truth instead of restating counts here.
 
 Two notes on the service configuration. The Redis service runs unauthenticated: the
 development server requires an ACL user, but that is a property of that server's
@@ -504,10 +516,13 @@ stale-run threshold currently requires a code edit. Wire it through `env.int()`.
 
 ### OpenAPI schema metadata is stale
 
-- `SPECTACULAR_SETTINGS['VERSION'] = '1.2.0'` — a third version scheme alongside
-  the project version and the README footer, cross-referenced by nothing.
-- The schema description says "Chinese Markets **(CSI 300)**", omitting CSI A500.
-- The published rate-limit table omits the `auth` and legacy `user` scopes.
+- `SPECTACULAR_SETTINGS['VERSION'] = '0.2.0'` — a third version scheme alongside
+  the project version and the README footer, cross-referenced by nothing. v0.1.17
+  bumped it `1.2.0` → `0.2.0` because removing the authentication module is a
+  breaking schema change, which narrowed but did not close the gap: it still does
+  not track `pyproject`/README.
+- ~~The schema description says "Chinese Markets **(CSI 300)**", omitting CSI
+  A500.~~ The description now reads "(CSI 500)", matching the migrated universe.
 
 ### Unpinned ML dependencies
 
@@ -671,6 +686,26 @@ The bar the model work is aiming at, against the 3.2 baseline:
 
 ### Notes with no owner yet
 
+- Four `localStorage`/`sessionStorage` keys outlive the code that read them:
+  `finance_jwt`, `finance_jwt_refresh`, `finance_api_key` and
+  `finance_auth_persistence` are still in the browser of anyone who used the
+  pre-v0.1.17 UI, and nothing reads or clears them now. No `removeItem` sweep was
+  added: the only browser that matters is the operator's own, and a migration for
+  one user's storage is code with no consumer. Clear them by hand if it bothers
+  you, or delete the whole key list if a second deployment ever appears.
+- Eight i18n keys are orphaned by the deleted `ScreenerPage.tsx` — `screener.title`,
+  `screener.desc`, `screener.loadError`, `screener.sortBy`, `screener.suggested`,
+  `screener.rr`, `screener.tradeScore` and `nav.screener`, in both dictionaries.
+  They are inert (`t()` returns the key string, and no call site asks for them), so
+  this is tidiness, not a bug. Note that `dict` is typed
+  `Record<Locale, Record<string, string>>`: an orphan passes `tsc`, and so does an
+  asymmetry between the two locales — only a *missing* key is user-visible. The
+  current 222 literals resolve against both dictionaries with zero asymmetry.
+- `ScreenerTemplate.is_public` gates nothing. With `owner` gone there is no
+  private-vs-shared split to make: `ScreenerTemplateViewSet.get_queryset` returns
+  every row, and the flag survives only in the serializer and the admin list.
+  Either drop the column or give it a meaning (e.g. hide templates the operator
+  marks private from the list endpoint).
 - A backtest once ran 2061.9s and returned
   `'Backtest failed for run_id=578: SoftTimeLimitExceeded()'` while Celery logged
   it as `succeeded`. The soft limit is now 1800s for `run_backtest`, and

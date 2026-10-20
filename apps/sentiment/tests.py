@@ -40,13 +40,6 @@ class Phase13SentimentTests(TestCase):
             name='Sentiment Asset',
         )
 
-    def _auth(self):
-        self.client.force_authenticate(user=self.user)
-
-    def test_sentiment_requires_auth(self):
-        response = self.client.get('/api/v1/sentiment/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_daily_sentiment_creates_article_and_asset_scores(self):
         article = NewsArticle.objects.create(
             source=NewsArticle.Source.SINA,
@@ -110,7 +103,6 @@ class Phase13SentimentTests(TestCase):
 
     @patch('apps.sentiment.views.run_daily_sentiment_pipeline.delay')
     def test_recalculate_endpoint_queues_pipeline(self, mock_delay):
-        self._auth()
         response = self.client.post('/api/v1/sentiment/recalculate/', {'target_date': str(timezone.now().date())}, format='json')
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_delay.assert_called_once()
@@ -160,7 +152,6 @@ class Phase13SentimentTests(TestCase):
         self.assertGreater(fs.sentiment_weight, 0)
 
     def test_sentiment_latest_endpoint(self):
-        self._auth()
         d = timezone.now().date()
         SentimentScore.objects.create(
             article=None,

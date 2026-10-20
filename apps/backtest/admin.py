@@ -10,7 +10,7 @@ class BacktestRunAdmin(admin.ModelAdmin):
         'initial_capital', 'final_value', 'total_return', 'win_rate', 'created_at',
     )
     list_filter = ('strategy_type', 'status', 'start_date', 'end_date')
-    search_fields = ('name', 'user__username')
+    search_fields = ('name',)
     date_hierarchy = 'created_at'
 
 

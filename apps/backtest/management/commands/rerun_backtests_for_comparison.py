@@ -119,7 +119,6 @@ class Command(BaseCommand):
             cloned_parameters['compare_backtest_run_id'] = source_run.id
 
             cloned_run = BacktestRun.objects.create(
-                user=source_run.user,
                 name=f'{source_run.name} [{name_suffix}]',
                 strategy_type=source_run.strategy_type,
                 status=BacktestRun.Status.PENDING,

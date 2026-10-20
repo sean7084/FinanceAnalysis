@@ -92,7 +92,7 @@ maxmemory-policy noeviction
 
 `noeviction` matters: Redis holds the Celery broker (db 0), the Django cache
 (db 1), and the Channels layer. Silent key eviction under `allkeys-lru` causes
-tasks to vanish and cache-backed throttle counters to reset.
+tasks to vanish and cached responses to be dropped mid-session.
 
 ### Getting the URL shape right
 
@@ -140,11 +140,11 @@ output, including failure messages. They previously shelled out to `pg_isready` 
 probes and still exited 0 — which is how a wrong Redis password survived
 undetected while the documented verification step reported success.
 
-A wrong credential is not a test-only concern. The same one backs DRF throttling,
-so a mismatch makes every authenticated API request fail, disables `cache_page`,
-and leaves the WebSocket alert stream without a channel layer. It accounted for 93
-of the 109 failing backend tests before it was corrected — see
-[`testing.md`](testing.md) §6.1.
+A wrong credential is not a test-only concern. The same one backs the default
+Django cache and the Channels layer, so a mismatch disables `cache_page`
+responses and leaves the WebSocket alert stream without a functioning channel
+layer. It accounted for 93 of the 109 failing backend tests before it was
+corrected — see [`testing.md`](testing.md) §6.1.
 
 Two related traps:
 
@@ -162,7 +162,7 @@ Three logical databases are in use:
 | URL setting | DB | Purpose |
 | --- | --- | --- |
 | `CELERY_BROKER_URL` | 0 | Celery broker **and** result backend |
-| `REDIS_URL` | 1 | Django cache, `cache_page` responses, throttle counters, Channels layer |
+| `REDIS_URL` | 1 | Django cache, `cache_page` responses, Channels layer |
 
 `CELERY_RESULT_BACKEND` is **not** read from the environment — `config/settings/base.py`
 assigns it from `CELERY_BROKER_URL`. Setting it in `.env` has no effect. See
@@ -290,14 +290,17 @@ DATABASE_URL=postgres://finance_analysis:finance_analysis@<db-host>:5432/finance
 REDIS_URL=redis://:<redis-password>@<redis-host>:6379/1
 CELERY_BROKER_URL=redis://:<redis-password>@<redis-host>:6379/0
 TUSHARE_TOKEN=<your-tushare-token>
-FRONTEND_URL=http://localhost:8000
 ```
 
-`FRONTEND_URL` defaults to `http://localhost:8000` because Django now serves the
-built SPA itself (see §12). Password-reset and email-verification links land on
-the same origin that owns `/api` and `/ws`. Operators who still run the pure-Vite
-HMR flow and want email links to land on `http://localhost:5173` should override
-the variable explicitly.
+There is no account or credential to configure for the API — every endpoint is
+open; see [`../reference/api.md`](../reference/api.md) §2. The only outbound mail
+left in the system is the alert **email** channel, which addresses the
+comma-separated `ALERT_NOTIFY_EMAILS` list; empty by default, which leaves the
+channel off. Leaving it off is not neutral: an event is marked `SENT` only when at
+least one channel actually dispatched, so a rule whose only channel is `email`
+records `FAILED` on every trigger, with no error raised. Both email backends
+default to the console backend, so those messages are printed to the Django process
+stdout rather than delivered.
 
 `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` automatically when `.env`
 exists. OS environment variables take precedence over `.env` values.
@@ -357,12 +360,16 @@ is what CI does.
 
 ---
 
-## 8. Migrate and create a superuser
+## 8. Migrate, and a superuser only if you want `/admin/`
 
 ```bash
 python manage.py migrate
-python manage.py createsuperuser
+python manage.py createsuperuser   # optional — /admin/ access only
 ```
+
+`createsuperuser` is no longer a setup step for anything else: the API requires
+no account, and the admin is the only consumer of Django's auth. Skip it entirely
+if you do not intend to browse `/admin/`.
 
 The database starts empty. Populating it is a separate, long-running workflow —
 see [`backfill.md`](backfill.md).
@@ -551,7 +558,7 @@ Django now ships the SPA itself (see `apps/core/views.py`,
 | Flow | URL | Vite needed? | HMR? | When to use |
 | --- | --- | --- | --- | --- |
 | Pure Vite (unchanged) | `http://localhost:5173/` | Yes | Yes | Frontend-only work; Vite serves `frontend/index.html` and proxies `/api` and `/ws` to Django on `:8000`. |
-| Django-served, dev mode | `http://localhost:8000/` | Yes | Yes | You want same-origin cookies/CSRF/WebSockets during development. Set `DJANGO_VITE_DEV_MODE=True` (default when `DJANGO_DEBUG=True`); Django renders the shell, `<script>` tags point at Vite on `:5173`. |
+| Django-served, dev mode | `http://localhost:8000/` | Yes | Yes | You want the dashboard and the API on one origin during development — same-origin `/api` and WebSockets, with no proxy in the path. No cookies or CSRF tokens are involved; the API is unauthenticated. Set `DJANGO_VITE_DEV_MODE=True` (default when `DJANGO_DEBUG=True`); Django renders the shell, `<script>` tags point at Vite on `:5173`. |
 | Django-served, prod mode | `http://localhost:8000/` | No | No | Verifying the built bundle. Run `npm run build` once, set `DJANGO_VITE_DEV_MODE=False`; Django reads `frontend/dist/.vite/manifest.json` and emits hashed `/static/` URLs. |
 
 In production (Docker), `DJANGO_VITE_DEV_MODE` is unset and `DEBUG=False`, so
@@ -655,9 +662,9 @@ python manage.py showmigrations | grep -c '\[ \]'   # expect 0 unapplied
 curl -s http://localhost:8000/api/v1/markets/ | head -c 400
 ```
 
-The last call is anonymous and read-only, so it exercises routing, pagination,
-and the cache without a credential. It returns an empty result set until the
-database is populated — see [`backfill.md`](backfill.md).
+The last call is read-only, and needs no credential — nothing in the API does —
+so it exercises routing, pagination, and the cache. It returns an empty result
+set until the database is populated — see [`backfill.md`](backfill.md).
 
 ---
 
@@ -710,9 +717,12 @@ only `ops` (see [`wsl-services.md`](wsl-services.md)).
 
 ### `smoke_api_check.sh`
 
-Runs a smoke test against the API endpoints using the credentials from `.env`
-(`SMOKE_USERNAME` and `SMOKE_PASSWORD`). Verifies that authentication, key
-endpoints, and pagination work correctly.
+Runs a smoke test against the API endpoints. It needs **no credentials**, because
+the API has none: markets, assets, OHLCV, macro contexts, the bottom-candidate
+screener, predictions, sentiment, and concept heat are all fetched anonymously,
+verifying that routing, the main endpoints, and pagination work. It also asserts
+that the removed auth surface stays gone — `POST /auth/login/` and
+`GET /developer/keys/` must both return 404.
 
 ```bash
 ./scripts/smoke_api_check.sh

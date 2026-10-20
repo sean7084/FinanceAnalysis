@@ -35,7 +35,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.core.management import call_command
-from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connections
 from django.db.utils import InterfaceError, OperationalError
@@ -122,11 +121,6 @@ class Command(BaseCommand):
             help='Prefix used for BacktestRun names.',
         )
         parser.add_argument(
-            '--user-email',
-            default='',
-            help='Optional user email to attribute created runs.',
-        )
-        parser.add_argument(
             '--queue',
             action='store_true',
             help='Queue created runs asynchronously instead of executing the first chunk inline.',
@@ -168,19 +162,6 @@ class Command(BaseCommand):
             action='store_true',
             help='Also export active LightGBM artifact metadata in the compact bundle.',
         )
-
-    def _resolve_user(self, user_email):
-        user_model = get_user_model()
-        if user_email:
-            user = user_model.objects.filter(email=user_email).first()
-            if user is None:
-                raise CommandError(f'No user found for email: {user_email}')
-            return user
-
-        user = user_model.objects.filter(is_superuser=True).order_by('id').first()
-        if user is not None:
-            return user
-        return user_model.objects.order_by('id').first()
 
     def _build_run_specs(self, start_date, end_date, variants, sources, name_prefix):
         specs = []
@@ -390,11 +371,9 @@ class Command(BaseCommand):
                 )
             return
 
-        user = self._resolve_user(options['user_email'])
         created_run_ids = []
         for spec in specs:
             run = BacktestRun.objects.create(
-                user=user,
                 name=spec['name'],
                 strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
                 start_date=spec['start_date'],

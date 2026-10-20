@@ -20,7 +20,6 @@ shareable evidence bundle rather than just the runs.
 
 from datetime import date, timedelta
 
-from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.backtest.models import BacktestRun
@@ -49,21 +48,7 @@ class Command(BaseCommand):
         parser.add_argument('--capital-fraction-per-entry', type=float, default=0.5, help='Capital fraction used for each entry cohort.')
         parser.add_argument('--min-up-probability', type=float, default=0.0, help='Minimum up probability threshold.')
         parser.add_argument('--name-prefix', default='validation', help='Prefix used for BacktestRun names.')
-        parser.add_argument('--user-email', default='', help='Optional user email to attribute created runs.')
         parser.add_argument('--queue', action='store_true', help='Queue runs asynchronously instead of running inline.')
-
-    def _resolve_user(self, user_email):
-        user_model = get_user_model()
-        if user_email:
-            user = user_model.objects.filter(email=user_email).first()
-            if user:
-                return user
-            raise CommandError(f'No user found for email: {user_email}')
-
-        user = user_model.objects.filter(is_superuser=True).order_by('id').first()
-        if user:
-            return user
-        return user_model.objects.order_by('id').first()
 
     def _build_windows(self, start_date, end_date, window_days, step_days):
         windows = []
@@ -95,7 +80,6 @@ class Command(BaseCommand):
         if horizon_days not in {3, 7, 30}:
             raise CommandError('horizon-days must be one of 3, 7, or 30.')
 
-        user = self._resolve_user(options['user_email'])
         windows = self._build_windows(start_date, end_date, window_days, step_days)
         if not windows:
             raise CommandError('No validation windows produced for the given date range and step settings.')
@@ -111,7 +95,6 @@ class Command(BaseCommand):
             for index, (window_start, window_end) in enumerate(windows, start=1):
                 name = f"{options['name_prefix']}-{source}-{window_start.isoformat()}-{window_end.isoformat()}"
                 backtest_run = BacktestRun.objects.create(
-                    user=user,
                     name=name,
                     strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
                     start_date=window_start,

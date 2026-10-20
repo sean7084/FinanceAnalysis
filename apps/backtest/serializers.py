@@ -46,7 +46,6 @@ class BacktestTradeSerializer(serializers.ModelSerializer):
 
 
 class BacktestRunSerializer(serializers.ModelSerializer):
-    user_username = serializers.CharField(source='user.username', read_only=True)
     trades_count = serializers.IntegerField(source='trades.count', read_only=True)
     task_state = serializers.SerializerMethodField()
     has_stale_task_owner = serializers.SerializerMethodField()
@@ -67,7 +66,7 @@ class BacktestRunSerializer(serializers.ModelSerializer):
     class Meta:
         model = BacktestRun
         fields = [
-            'id', 'user', 'user_username', 'name', 'strategy_type', 'status',
+            'id', 'name', 'strategy_type', 'status',
             'pending_control_action', 'task_state', 'has_stale_task_owner',
             'start_date', 'end_date', 'initial_capital', 'cash', 'final_value',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',

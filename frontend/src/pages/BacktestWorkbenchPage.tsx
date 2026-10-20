@@ -6,7 +6,6 @@ import {
   fetchBacktestComparisonCurve,
   fetchBacktestRuns,
   fetchBacktestTrades,
-  hasAnyAuthCredential,
   pauseBacktestRun,
   restartBacktestRun,
   resumeBacktestRun,
@@ -359,7 +358,7 @@ export function BacktestWorkbenchPage() {
           setRunPage(1)
         }
         setSelectedRunId(null)
-        setError(hasAnyAuthCredential() ? t('backtest.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
+        setError(t('backtest.loadError'))
       }
       return []
     } finally {
@@ -411,9 +410,6 @@ export function BacktestWorkbenchPage() {
     isMountedRef.current = true
     void loadRuns({ resetPage: true, showLoading: true })
     const intervalId = window.setInterval(() => {
-      if (!hasAnyAuthCredential()) {
-        return
-      }
       // A hidden tab has no observer, and each tick refetches up to 100 runs.
       if (document.visibilityState !== 'visible') {
         return
@@ -577,9 +573,6 @@ export function BacktestWorkbenchPage() {
 
     void loadTrades(selectedRunId, { resetPage: true, showLoading: true })
     const intervalId = window.setInterval(() => {
-      if (!hasAnyAuthCredential()) {
-        return
-      }
       void loadTrades(selectedRunId, { resetPage: false, showLoading: false })
     }, BACKTEST_AUTO_REFRESH_INTERVAL_MS)
 

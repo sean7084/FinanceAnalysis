@@ -10,7 +10,6 @@ import {
   fetchBacktestComparisonCurve,
   fetchBacktestRuns,
   fetchBacktestTrades,
-  hasAnyAuthCredential,
   pauseBacktestRun,
   restartBacktestRun,
   resumeBacktestRun,
@@ -319,7 +318,6 @@ vi.mock('../lib/api', async () => {
       available_series_keys: ['selected_run', 'csi500'],
       message: null,
     })),
-    hasAnyAuthCredential: vi.fn(() => true),
   }
 })
 
@@ -327,7 +325,6 @@ const mockFetchBacktestComparisonCurve = vi.mocked(fetchBacktestComparisonCurve)
 const mockFetchBacktestRuns = vi.mocked(fetchBacktestRuns)
 const mockFetchBacktestTrades = vi.mocked(fetchBacktestTrades)
 const mockCreateBacktestRun = vi.mocked(createBacktestRun)
-const mockHasAnyAuthCredential = vi.mocked(hasAnyAuthCredential)
 const mockPauseBacktestRun = vi.mocked(pauseBacktestRun)
 const mockResumeBacktestRun = vi.mocked(resumeBacktestRun)
 const mockRestartBacktestRun = vi.mocked(restartBacktestRun)
@@ -402,7 +399,6 @@ describe('BacktestWorkbenchPage runner controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useRealTimers()
-    mockHasAnyAuthCredential.mockReturnValue(true)
     localStorage.setItem('finance_locale', 'en-US')
   })
 
@@ -779,45 +775,6 @@ describe('BacktestWorkbenchPage runner controls', () => {
         expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(2)
         expect(mockFetchBacktestComparisonCurve).toHaveBeenCalledTimes(1)
       })
-    } finally {
-      setIntervalSpy.mockRestore()
-      clearIntervalSpy.mockRestore()
-    }
-  })
-
-  it('stops background polling when auth credentials are unavailable', async () => {
-    const intervalCallbacks: Array<() => void> = []
-    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler) => {
-      if (typeof handler === 'function') {
-        intervalCallbacks.push(handler as () => void)
-      }
-      return intervalCallbacks.length as unknown as number
-    }) as typeof window.setInterval)
-    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => {})
-
-    try {
-      mockFetchBacktestRuns.mockResolvedValueOnce([
-        buildBacktestRun({ id: 84, name: 'Validation-lightgbm-2023-01-01-2024-12-31', status: 'COMPLETED' }),
-      ])
-      mockFetchBacktestTrades.mockResolvedValueOnce([])
-
-      renderWorkbench()
-
-      await waitFor(() => {
-        expect(mockFetchBacktestRuns).toHaveBeenCalledTimes(1)
-        expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(1)
-      })
-
-      mockHasAnyAuthCredential.mockReturnValue(false)
-
-      for (const callback of intervalCallbacks) {
-        callback()
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      expect(mockFetchBacktestRuns).toHaveBeenCalledTimes(1)
-      expect(mockFetchBacktestTrades).toHaveBeenCalledTimes(1)
     } finally {
       setIntervalSpy.mockRestore()
       clearIntervalSpy.mockRestore()

@@ -208,12 +208,8 @@ class Phase15BacktestTests(TestCase):
             'train-lstm',
         )
 
-    def _auth(self):
-        self.client.force_authenticate(user=self.user)
-
     def _create_run(self, **overrides):
         payload = {
-            'user': self.user,
             'name': 'P15 Lifecycle Test Run',
             'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             'start_date': self.d1,
@@ -227,10 +223,6 @@ class Phase15BacktestTests(TestCase):
         }
         payload.update(overrides)
         return BacktestRun.objects.create(**payload)
-
-    def test_backtest_endpoint_requires_auth(self):
-        response = self.client.get('/api/v1/backtest/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_run_trading_dates_prefers_the_calendar_over_ohlcv(self):
         ExchangeTradingCalendar.objects.bulk_create([
@@ -268,7 +260,6 @@ class Phase15BacktestTests(TestCase):
 
     def test_trades_payload_is_cached_once_a_run_is_terminal(self):
         cache.clear()
-        self._auth()
         run = self._create_run(status=BacktestRun.Status.COMPLETED)
 
         with patch('apps.backtest.views.BacktestTradeSerializer') as serializer:
@@ -282,7 +273,6 @@ class Phase15BacktestTests(TestCase):
 
     def test_trades_payload_is_not_cached_while_a_run_is_live(self):
         cache.clear()
-        self._auth()
         run = self._create_run(status=BacktestRun.Status.RUNNING)
 
         with patch('apps.backtest.views.BacktestTradeSerializer') as serializer:
@@ -293,7 +283,6 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(serializer.call_count, 2)
 
     def test_backtest_list_returns_up_to_100_runs_for_workbench(self):
-        self._auth()
 
         for index in range(120):
             self._create_run(name=f'P15 Pagination Run {index}')
@@ -306,7 +295,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.run_backtest.delay')
     def test_create_backtest_queues_task(self, mock_delay):
-        self._auth()
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 '/api/v1/backtest/',
@@ -330,7 +318,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_pause_pending_backtest_marks_run_paused(self, mock_revoke):
-        self._auth()
         run = self._create_run(current_task_id='task-pending')
 
         response = self.client.post(f'/api/v1/backtest/{run.id}/pause/')
@@ -344,7 +331,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_pause_running_backtest_marks_pending_pause(self, mock_revoke):
-        self._auth()
         run = self._create_run(
             status=BacktestRun.Status.RUNNING,
             current_task_id='task-running',
@@ -361,7 +347,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.queue_backtest_run')
     def test_resume_paused_backtest_requeues_run(self, mock_queue):
-        self._auth()
         run = self._create_run(
             status=BacktestRun.Status.PAUSED,
             pending_control_action=BacktestRun.ControlAction.PAUSE,
@@ -383,7 +368,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_restart_running_backtest_marks_pending_restart(self, mock_revoke):
-        self._auth()
         run = self._create_run(
             status=BacktestRun.Status.RUNNING,
             current_task_id='task-running',
@@ -401,7 +385,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_destroy_running_backtest_marks_pending_delete(self, mock_revoke):
-        self._auth()
         run = self._create_run(
             status=BacktestRun.Status.RUNNING,
             current_task_id='task-running',
@@ -418,7 +401,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_destroy_paused_backtest_deletes_immediately(self, mock_revoke):
-        self._auth()
         run = self._create_run(status=BacktestRun.Status.PAUSED)
 
         response = self.client.delete(f'/api/v1/backtest/{run.id}/')
@@ -484,7 +466,6 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.views.queue_backtest_run')
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_restart_stale_running_backtest_requeues_immediately(self, mock_revoke, mock_queue, _mock_task_owner_state):
-        self._auth()
         run = self._create_run(
             status=BacktestRun.Status.RUNNING,
             current_task_id='task-stale',
@@ -510,7 +491,6 @@ class Phase15BacktestTests(TestCase):
     })
     @patch('apps.backtest.views.revoke_backtest_task')
     def test_destroy_stale_running_backtest_deletes_immediately(self, mock_revoke, _mock_task_owner_state):
-        self._auth()
         run = self._create_run(
             status=BacktestRun.Status.RUNNING,
             current_task_id='task-stale',
@@ -525,7 +505,6 @@ class Phase15BacktestTests(TestCase):
 
     def test_run_backtest_task_completes_and_creates_trades(self):
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Task Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -545,7 +524,6 @@ class Phase15BacktestTests(TestCase):
 
     def test_run_backtest_does_not_store_runtime_benchmark_payload(self):
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 No Runtime Benchmark Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -593,7 +571,6 @@ class Phase15BacktestTests(TestCase):
         )
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 PIT Bottom Candidate Run',
             strategy_type=BacktestRun.StrategyType.BOTTOM_CANDIDATE,
             start_date=self.d1,
@@ -678,7 +655,6 @@ class Phase15BacktestTests(TestCase):
         mock_predict.side_effect = _prediction_payload
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 PIT LightGBM Candidate Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -710,7 +686,6 @@ class Phase15BacktestTests(TestCase):
         IndexMembership.objects.all().delete()
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Missing PIT Coverage Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -729,7 +704,6 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._pick_candidates', side_effect=OperationalError('database connection dropped'))
     def test_run_backtest_persists_failure_after_database_error(self, _mock_pick_candidates):
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Database Error Failure Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -751,7 +725,6 @@ class Phase15BacktestTests(TestCase):
         PredictionResult.objects.all().delete()
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 On Demand Heuristic Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -824,7 +797,6 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._load_model_artifacts')
     def test_run_backtest_supports_lightgbm_prediction_source(self, mock_load_artifacts, _mock_extract_features):
         compare_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Compare Target',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -850,7 +822,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1012,7 +983,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Feature Parity Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=d,
@@ -1053,7 +1023,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM TP SL Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1109,7 +1078,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Selected Artifact Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1170,7 +1138,6 @@ class Phase15BacktestTests(TestCase):
         ]
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Stop Loss Priority Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1220,7 +1187,6 @@ class Phase15BacktestTests(TestCase):
         ]
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Cost Application Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1284,7 +1250,6 @@ class Phase15BacktestTests(TestCase):
         ]
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Default CN A Share Fees Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1357,7 +1322,6 @@ class Phase15BacktestTests(TestCase):
         ]
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Invalid Entry Price Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1426,7 +1390,6 @@ class Phase15BacktestTests(TestCase):
         ]
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Deferred Scheduled Exit Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1535,7 +1498,6 @@ class Phase15BacktestTests(TestCase):
         )
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Policy Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1587,7 +1549,6 @@ class Phase15BacktestTests(TestCase):
         ]
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Missing TP SL Backfill Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1618,7 +1579,6 @@ class Phase15BacktestTests(TestCase):
 
     def test_run_backtest_fails_without_active_lightgbm_artifact(self):
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Missing LightGBM Artifact',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1667,7 +1627,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LSTM Runtime Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1718,7 +1677,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LSTM Trade Score Runtime Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1780,7 +1738,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LSTM Selected Version Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1816,7 +1773,6 @@ class Phase15BacktestTests(TestCase):
             artifact_path='models/lstm/backtest-parity',
         )
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LSTM Parity Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1946,9 +1902,7 @@ class Phase15BacktestTests(TestCase):
         self.assertTrue(payload['generated_on_demand'])
 
     def test_backtest_trades_action_returns_rows(self):
-        self._auth()
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Trade View Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -1963,9 +1917,7 @@ class Phase15BacktestTests(TestCase):
         self.assertGreaterEqual(len(response.data), 2)
 
     def test_backtest_comparison_curve_returns_selected_and_benchmark_series(self):
-        self._auth()
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Comparison Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2004,9 +1956,7 @@ class Phase15BacktestTests(TestCase):
         self.assertAlmostEqual(csi500_series['points'][1]['value'], 104947.5)
 
     def test_backtest_comparison_curve_includes_compare_run_when_explicit_target_exists(self):
-        self._auth()
         compare_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Previous Version Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2020,7 +1970,6 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'lightgbm'},
         )
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Latest Version Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2055,9 +2004,7 @@ class Phase15BacktestTests(TestCase):
         self.assertAlmostEqual(compare_series['points'][1]['value'], 105000.0)
 
     def test_backtest_comparison_curve_includes_multiple_extra_compare_runs_from_query(self):
-        self._auth()
         compare_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Stored Compare Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2071,7 +2018,6 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'lightgbm'},
         )
         extra_run_one = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Extra Compare Run One',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2085,7 +2031,6 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'heuristic'},
         )
         extra_run_two = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Extra Compare Run Two',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2099,7 +2044,6 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'lstm'},
         )
         BacktestRun.objects.create(
-            user=self.user,
             name='P15 Pending Extra Compare Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.PENDING,
@@ -2113,7 +2057,6 @@ class Phase15BacktestTests(TestCase):
             parameters={'prediction_source': 'lightgbm'},
         )
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Latest Version Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2150,9 +2093,7 @@ class Phase15BacktestTests(TestCase):
         self.assertAlmostEqual(extra_series_two['points'][1]['value'], 110000.0)
 
     def test_backtest_serializer_rejects_incompatible_compare_target(self):
-        self._auth()
         compare_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Heuristic Compare Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -2186,7 +2127,6 @@ class Phase15BacktestTests(TestCase):
         self.assertIn('compare_backtest_run_id', str(response.data))
 
     def test_backtest_serializer_rejects_invalid_prediction_source(self):
-        self._auth()
         response = self.client.post(
             '/api/v1/backtest/',
             {
@@ -2207,7 +2147,6 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_backtest_serializer_rejects_invalid_trade_decision_policy(self):
-        self._auth()
         response = self.client.post(
             '/api/v1/backtest/',
             {
@@ -2230,7 +2169,6 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_backtest_serializer_rejects_mixed_legacy_and_structured_fee_params(self):
-        self._auth()
         response = self.client.post(
             '/api/v1/backtest/',
             {
@@ -2255,7 +2193,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.run_backtest.delay')
     def test_backtest_serializer_aligns_horizon_with_top_n_metric(self, mock_delay):
-        self._auth()
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 '/api/v1/backtest/',
@@ -2285,7 +2222,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.run_backtest.delay')
     def test_backtest_serializer_normalizes_lightgbm_runtime_params(self, mock_delay):
-        self._auth()
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 '/api/v1/backtest/',
@@ -2315,7 +2251,6 @@ class Phase15BacktestTests(TestCase):
 
     @patch('apps.backtest.views.run_backtest.delay')
     def test_backtest_serializer_accepts_windows_gpu_runtime_params(self, mock_delay):
-        self._auth()
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 '/api/v1/backtest/',
@@ -2407,7 +2342,6 @@ class Phase15BacktestTests(TestCase):
         mock_estimate_trade_decision.side_effect = _trade_decision_side_effect
 
         serial_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Serial Map',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2423,7 +2357,6 @@ class Phase15BacktestTests(TestCase):
             },
         )
         batched_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Batched Map',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2521,7 +2454,6 @@ class Phase15BacktestTests(TestCase):
         mock_estimate_trade_decision.side_effect = _trade_decision_side_effect
 
         serial_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Serial GPU Oracle',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2537,7 +2469,6 @@ class Phase15BacktestTests(TestCase):
             },
         )
         gpu_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Windows GPU Map',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2612,7 +2543,6 @@ class Phase15BacktestTests(TestCase):
 
         shared_scope = 'gpu-cache-preserve-scope'
         first_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Windows GPU Cache Builder',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2630,7 +2560,6 @@ class Phase15BacktestTests(TestCase):
             },
         )
         second_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Windows GPU Cache Hit',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2701,7 +2630,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 LightGBM Windows GPU Fallback',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2792,7 +2720,6 @@ class Phase15BacktestTests(TestCase):
         }
 
         top_n_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 TopN Ignores Max Positions',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2813,7 +2740,6 @@ class Phase15BacktestTests(TestCase):
         top_n_run.refresh_from_db()
 
         trade_score_run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 TradeScore Honors Max Positions',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.d1,
@@ -2874,7 +2800,6 @@ class Phase15BacktestTests(TestCase):
         ])
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Chunked Heuristic Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=trading_dates[0],
@@ -2954,7 +2879,6 @@ class Phase15BacktestTests(TestCase):
 
     def test_capital_fraction_defaults_to_full_allocation_even_with_entry_weekdays(self):
         run = BacktestRun.objects.create(
-            user=self.user,
             name='Weekday Legacy Config',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=self.today,
@@ -3030,7 +2954,6 @@ class Phase15BacktestTests(TestCase):
         IndexMembership.objects.bulk_create(membership_rows)
 
         run = BacktestRun.objects.create(
-            user=self.user,
             name='P15 Tue Thu Hold Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=schedule_start,
@@ -3069,13 +2992,6 @@ class Phase15BacktestTests(TestCase):
 
 
 class BacktestManagementCommandTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username='backtest_admin',
-            email='backtest_admin@example.com',
-            password='Passw0rd!123',
-        )
-
     @patch('apps.backtest.management.commands.run_validation_backtests.run_backtest')
     def test_run_validation_backtests_accepts_lstm_source(self, mock_run_backtest):
         output = StringIO()
@@ -3305,7 +3221,6 @@ class BacktestManagementCommandTests(TestCase):
         calls = []
         inline_date = date(2026, 1, 1)
         first_horizon_a = BacktestRun.objects.create(
-            user=self.user,
             name='Inline 3d A',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=inline_date,
@@ -3314,7 +3229,6 @@ class BacktestManagementCommandTests(TestCase):
             parameters={'horizon_days': 3},
         )
         first_horizon_b = BacktestRun.objects.create(
-            user=self.user,
             name='Inline 3d B',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=inline_date,
@@ -3323,7 +3237,6 @@ class BacktestManagementCommandTests(TestCase):
             parameters={'horizon_days': 3},
         )
         second_horizon_a = BacktestRun.objects.create(
-            user=self.user,
             name='Inline 7d A',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=inline_date,
@@ -3332,7 +3245,6 @@ class BacktestManagementCommandTests(TestCase):
             parameters={'horizon_days': 7},
         )
         second_horizon_b = BacktestRun.objects.create(
-            user=self.user,
             name='Inline 7d B',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             start_date=inline_date,
@@ -3414,7 +3326,6 @@ class BacktestManagementCommandTests(TestCase):
 
     def test_export_backtest_runs_includes_compare_backtest_run_id(self):
         compare_run = BacktestRun.objects.create(
-            user=self.user,
             name='Export Compare Target',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,
@@ -3425,7 +3336,6 @@ class BacktestManagementCommandTests(TestCase):
             parameters={'prediction_source': 'lightgbm'},
         )
         run = BacktestRun.objects.create(
-            user=self.user,
             name='Export Subject Run',
             strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
             status=BacktestRun.Status.COMPLETED,

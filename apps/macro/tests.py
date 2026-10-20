@@ -41,13 +41,6 @@ class Phase12MacroTests(TestCase):
             name='Macro Asset 2',
         )
 
-    def _auth(self):
-        self.client.force_authenticate(user=self.user)
-
-    def test_macro_snapshots_requires_auth(self):
-        response = self.client.get('/api/v1/macro/snapshots/')
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
     def test_refresh_context_infers_recession(self):
         snap = MacroSnapshot.objects.create(
             date=timezone.now().date(),
@@ -129,7 +122,6 @@ class Phase12MacroTests(TestCase):
         self.assertEqual(MarketContext.objects.filter(context_key='current', starts_at=snapshot.date, is_active=True).count(), 1)
 
     def test_market_context_current_endpoint(self):
-        self._auth()
         MarketContext.objects.create(
             context_key='current',
             macro_phase=MarketContext.MacroPhase.RECOVERY,
@@ -237,7 +229,6 @@ class Phase12MacroTests(TestCase):
         self.assertIn('MarketContext backfill completed: created=4, updated=0', output.getvalue())
 
     def test_event_impact_list_filter(self):
-        self._auth()
         EventImpactStat.objects.create(
             event_tag='trade_war',
             sector='technology',
@@ -261,7 +252,6 @@ class Phase12MacroTests(TestCase):
 
     @patch('apps.factors.views.calculate_factor_scores_for_date.delay')
     def test_bottom_candidates_recalculate_accepts_macro_context(self, mock_delay):
-        self._auth()
         payload = {
             'macro_context': 'RECESSION',
             'event_tag': 'trade_war',
@@ -276,7 +266,6 @@ class Phase12MacroTests(TestCase):
         mock_delay.assert_called_once()
 
     def test_bottom_candidates_list_with_context_exposes_adjusted_score(self):
-        self._auth()
         d = timezone.now().date()
         FactorScore.objects.create(
             asset=self.asset1,

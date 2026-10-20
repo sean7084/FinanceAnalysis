@@ -5,10 +5,15 @@ on:
     branches: [main]
   pull_request:
 
-# Both jobs need real services. 93 of the 109 test failures once found in this
-# repository were throttle-cache errors caused by an unreachable Redis, and the suite
-# cannot run at all without PostgreSQL, so stubbing either service would reproduce the
-# exact blind spot this workflow exists to close.
+# Both jobs need real services. The suite cannot run at all without PostgreSQL, and
+# Redis is still required because tasks are not forced eager -- a test that calls
+# `.delay()` fails against an unreachable broker. Stubbing either service would
+# reproduce the exact blind spot this workflow exists to close.
+#
+# Redis used to matter for a second reason: 93 of the 109 test failures once found in
+# this repository were throttle-cache errors from an unreachable Redis. DRF throttling
+# was removed in v0.1.17, so that failure mode no longer exists and the broker is the
+# only thing left depending on the service.
 #
 # The non-obvious requirement is the discovery floor in each job. Bare
 # `python manage.py test` once discovered ZERO tests and exited 0, because apps/ was a
@@ -62,7 +67,15 @@ jobs:
       CELERY_BROKER_URL: redis://localhost:6379/0
       # Raise this when tests are added. Lowering it should require a reason, because
       # the only way the count drops is discovery breaking or tests being deleted.
-      MIN_TEST_COUNT: "421"
+      # 421 -> 361: the authentication module was removed in v0.1.17, and the 60
+      # deleted tests were its permission gates, credential storage and API-key
+      # behaviour. Two replaced what they covered: alert notification dispatch
+      # (email recipients + the `alerts` group_send) and the un-gated screener
+      # catalogue.
+      # 361 -> 362: the no-recipients case, which is the one silent behaviour change
+      # of settings-driven alerting and had nothing asserting it.
+      # Discovery is verified at 362, so nothing is silently missing.
+      MIN_TEST_COUNT: "362"
 
     steps:
       - uses: actions/checkout@v4
@@ -132,7 +145,16 @@ jobs:
       run:
         working-directory: frontend
     env:
-      MIN_TEST_COUNT: "48"
+      # 48 -> 42: eight credential-storage tests and one per-page auth-gate test
+      # went with the auth module; three transport tests replaced them (no
+      # credential headers, no `credentials`, and apiDelete's 204/empty-body
+      # paths).
+      # 42 -> 45: three tests for useAlertsSocket, which had none. Removing the
+      # credential check that suppressed reconnects is invisible to every other
+      # test in the suite, so the reconnect behaviour is now asserted directly:
+      # bare URL with no token, reconnect after a close, and the backoff cap
+      # followed by giving up. Measured by `npm test`: 45 passed across 6 files.
+      MIN_TEST_COUNT: "45"
 
     steps:
       - uses: actions/checkout@v4

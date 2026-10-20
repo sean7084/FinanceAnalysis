@@ -11,16 +11,16 @@ class TechnicalIndicatorAdmin(admin.ModelAdmin):
 
 @admin.register(ScreenerTemplate)
 class ScreenerTemplateAdmin(admin.ModelAdmin):
-    list_display = ('name', 'owner', 'screener_type', 'is_public', 'updated_at')
+    list_display = ('name', 'screener_type', 'is_public', 'updated_at')
     list_filter = ('screener_type', 'is_public')
-    search_fields = ('name', 'owner__username')
+    search_fields = ('name',)
 
 
 @admin.register(AlertRule)
 class AlertRuleAdmin(admin.ModelAdmin):
-    list_display = ('name', 'owner', 'asset', 'condition_type', 'threshold', 'is_active', 'last_triggered_at')
+    list_display = ('name', 'asset', 'condition_type', 'threshold', 'is_active', 'last_triggered_at')
     list_filter = ('condition_type', 'is_active')
-    search_fields = ('name', 'owner__username', 'asset__symbol')
+    search_fields = ('name', 'asset__symbol')
 
 
 @admin.register(AlertEvent)

@@ -1,5 +1,5 @@
 # Automated GitHub Label Setup for FinanceAnalysis
-# This script creates all ~36 labels with proper colors and descriptions
+# This script creates all ~35 labels with proper colors and descriptions
 
 $repoOwner = "sean7084"
 $repoName = "FinanceAnalysis"
@@ -33,7 +33,7 @@ $labels = @(
     @{name="question"; color="CC3147"; description="More information needed"}
     @{name="discussion"; color="CCE329"; description="Topics requiring community input"}
 
-    # Component (12)
+    # Component (11)
     @{name="component: markets"; color="1D76EB"; description="Stock data, prices, technical indicators"}
     @{name="component: analytics"; color="0052CC"; description="WebSocket alerts, real-time analytics"}
     @{name="component: prediction"; color="5457FF"; description="LightGBM/LSTM model training and inference"}
@@ -45,7 +45,6 @@ $labels = @(
     @{name="component: ml-pipeline"; color="6F42C1"; description="Feature engineering, label generation"}
     @{name="component: celery-tasks"; color="D8744E"; description="Celery workers, queues, Beat schedule"}
     @{name="component: docker-infra"; color="C6CFCF"; description="Docker Compose, container config"}
-    @{name="component: api-auth"; color="EB6420"; description="DRF endpoints, JWT, API-key auth"}
 
     # Impact (3)
     @{name="breaking change"; color="B60205"; description="Incompatible API/model changes"}

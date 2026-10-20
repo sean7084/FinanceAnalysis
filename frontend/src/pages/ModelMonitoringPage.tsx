@@ -5,7 +5,6 @@ import {
   fetchLightGBMModels,
   fetchModelVersions,
   type FeatureImportanceTrendGroupDto,
-  hasAnyAuthCredential,
   type EnsembleWeightSnapshotDto,
   type LightGBMModelArtifactDto,
   type ModelVersionDto,
@@ -89,7 +88,7 @@ export function ModelMonitoringPage() {
       {resource.loading && <TableSkeleton columns={5} rows={4} />}
       {resource.error && (
         <p className="status disconnected">
-          {hasAnyAuthCredential() ? t('models.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+          {t('models.loadError')}
         </p>
       )}
 

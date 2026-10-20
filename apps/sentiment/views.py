@@ -24,7 +24,7 @@ from datetime import date
 
 from django.db.models import Avg
 from django.utils import timezone
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -35,7 +35,6 @@ from .tasks import ingest_latest_news, run_daily_sentiment_pipeline
 
 class NewsArticleViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NewsArticleSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = NewsArticle.objects.prefetch_related('related_assets').all().order_by('-published_at')
@@ -55,7 +54,6 @@ class SentimentScoreViewSet(viewsets.ReadOnlyModelViewSet):
     Main Phase 13 endpoint: /api/v1/sentiment/
     """
     serializer_class = SentimentScoreSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = SentimentScore.objects.select_related('asset', 'article').all().order_by('-date', '-created_at')
@@ -99,7 +97,6 @@ class SentimentScoreViewSet(viewsets.ReadOnlyModelViewSet):
 
 class ConceptHeatViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ConceptHeatSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = ConceptHeat.objects.all().order_by('-date', '-heat_score')

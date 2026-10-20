@@ -2,7 +2,7 @@ from datetime import date
 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -14,7 +14,6 @@ from .tasks import generate_predictions_for_date, generate_prediction_for_asset,
 
 class ModelVersionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ModelVersionSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = ModelVersion.objects.all().order_by('-created_at')
@@ -32,7 +31,6 @@ class PredictionViewSet(viewsets.GenericViewSet):
     - POST /api/v1/prediction/recalculate/
     """
     serializer_class = PredictionResultSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>[^/.]+)')
     def stock(self, request, stock_code=None):
