@@ -37,6 +37,9 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # `config.settings.test` moves the cache and the channel layer in-process, so
+      # this Redis exists only for `CELERY_BROKER_URL`: tasks are not forced eager,
+      # and a test that calls `.delay()` would otherwise fail on the connection.
       redis:
         image: redis:7
         ports:
@@ -48,7 +51,7 @@ jobs:
           --health-retries 5
 
     env:
-      DJANGO_SETTINGS_MODULE: config.settings.local
+      DJANGO_SETTINGS_MODULE: config.settings.test
       DJANGO_READ_DOT_ENV_FILE: "False"
       DJANGO_SECRET_KEY: ci-only-not-a-secret
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/finance_analysis

@@ -371,16 +371,33 @@ see [`backfill.md`](backfill.md).
 
 ## 9. Settings module
 
-Two names are in play and both resolve to the same content:
+Three names are in play, and the first two resolve to the same content:
 
 | Entry point | `DJANGO_SETTINGS_MODULE` |
 | --- | --- |
 | `manage.py` | `config.settings` |
 | `scripts/run_*.ps1` / `.sh` | `config.settings.local` |
+| test suite, CI | `config.settings.test` |
 
 `config/settings/__init__.py` is `from .local import *`, so they are equivalent.
 `config/settings/production.py` exists but is not selected by any launcher and
 has no deployment story behind it yet.
+
+`config/settings/test.py` inherits `local.py` and replaces two things: `CACHES`
+becomes `LocMemCache` and `CHANNEL_LAYERS` becomes `InMemoryChannelLayer`. Both
+are Redis-backed in development, and the test suite ran against that same shared
+instance — cache keys written by a test landed in the Redis that a running
+development server reads, so a test could serve a stale dashboard payload to the
+browser, and the real instance's contents were never reproducible. The database
+is deliberately left pointing at the real PostgreSQL: these queries depend on
+vendor-specific behaviour (`ArrayAgg`, `DistinctExpr`, window functions) and an
+SQLite stand-in would pass a different suite than the one that ships.
+
+Run the suite with it explicitly:
+
+```bash
+.venv/bin/python manage.py test --keepdb --settings=config.settings.test
+```
 
 ---
 
@@ -577,7 +594,7 @@ cp /mnt/c/Users/<you>/Documents/FinanceAnalysis/.env .env 2>/dev/null || cp .env
 python3 -m venv .venv
 .venv/bin/pip install -r requirements/local.txt
 bash scripts/verify_local_stack.sh           # every service must report "ready"
-.venv/bin/python manage.py test --keepdb     # full suite, expect OK
+.venv/bin/python manage.py test --keepdb --settings=config.settings.test   # full suite, expect OK
 ```
 
 Cloning from GitHub makes `origin` point at GitHub directly, so the WSL clone syncs with no
