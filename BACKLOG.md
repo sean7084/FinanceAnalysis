@@ -390,23 +390,25 @@ design. Right now the features look broken rather than unconfigured.
 
 ## Open — frontend
 
-### Nine lint warnings remain, and nothing used to gate them
+### Three lint warnings remain, and the ratchet already tolerates them
 
 `npm run build` exits 0 and `npm run lint` exits 0. This entry previously recorded six
 TypeScript errors and one ESLint error, and both claims are now false: commit `5883eaf`
 (PR #17) fixed all seven, and `src/i18n.tsx` is 620 lines long, so the `629:17` it cited
 cannot exist. `frontend/dist` rebuilds from a clean checkout again.
 
-What is left is nine `react-hooks/exhaustive-deps` warnings. Unlike the errors they never
-failed anything — eslint exits 0 with all nine present because nothing passes
-`--max-warnings` — so a tenth would have arrived as silently as they did. That is the same
-blind-spot class as `manage.py test` once discovering zero tests and exiting 0, and it is
-what the ratchet in the next section closes.
+It also claimed nine `react-hooks/exhaustive-deps` warnings, and that number is what this
+revision corrects: `node scripts/check-static-baseline.mjs lint` now reports **three**,
+and `static-baseline.json` has recorded three since `13848f7` restructured the page
+effects. The six that went away were the missing-`t` class; the entry kept asserting them
+because nobody re-read the file after that commit. ESLint still exits 0 with all three
+present because nothing passes `--max-warnings`, so a fourth would arrive silently —
+which is the same blind-spot class as `manage.py test` once discovering zero tests and
+exiting 0, and what the ratchet in the next section closes.
 
 | Where | Diagnostic | Assessment |
 | --- | --- | --- |
-| `AlertCenterPage`, `IndicatorBoardPage`, `MacroContextPage`, `ModelMonitoringPage`, `ScreenerPage`, `StockDetailPage` | missing dependency `t` | Six of the nine are the same shape: the translation function is used inside an effect but absent from the dependency array. **Adding it is not the no-op it looks like.** `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — those effects would start re-running on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but make it deliberately rather than to silence a warning |
-| `DashboardPage` | `useMemo` missing `searchParams` | Same class, a memo rather than an effect. The memo does not recompute when the URL query changes, so it can serve a stale value — worth reading as a possible real bug, not just a lint nit |
+| `StockDetailPage:157` | missing dependency `t` | The last survivor of the six. `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — adding it makes the effect re-run on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but do it deliberately rather than to silence a warning |
 | `BacktestWorkbenchPage` (2) | missing `loadRuns`; conditional `extraComparisonOptions` | Neither is the `t` shape. One needs the callback in the array or wrapped in `useCallback`; the other needs its initialisation wrapped in `useMemo` so the effect's dependencies stop changing on every render |
 
 The six fixed errors are worth keeping as a near-miss rather than as work outstanding. One
@@ -425,10 +427,10 @@ two. Check for that before "fixing" a type error.
 directly. The script runs the command, parses its diagnostics, and fails only on something
 beyond what `frontend/static-baseline.json` records.
 
-The recorded baseline is **zero TypeScript errors, zero ESLint errors, nine
-`react-hooks/exhaustive-deps` warnings** — the nine itemised above. So the type-check is
+The recorded baseline is **zero TypeScript errors, zero ESLint errors, three
+`react-hooks/exhaustive-deps` warnings** — the three itemised above. So the type-check is
 exactly as strict as the bare `npm run build` it replaced, and the known warnings are
-tolerated on arrival while a tenth fails the job.
+tolerated on arrival while a fourth fails the job.
 
 A diagnostic is keyed by file, rule code and a 40-character fingerprint of its message —
 deliberately not by line and column. Line numbers move whenever code is edited above them,
@@ -459,9 +461,11 @@ the build-info files were removed — confirmed independently by
 from that first reading would have enshrined six errors the tree did not have. CI never
 hits this, because `npm ci` starts cold; a local `--update` would have.
 
-Clear the nine warnings and the ratchet is pure overhead: delete the script and the
+Clear the three warnings and the ratchet is pure overhead: delete the script and the
 baseline file, and put the plain `npm run build` and `npm run lint` back into the two
-steps.
+steps. The build half of that is already true — its baseline is 0 errors and 0 warnings,
+and `check-static-baseline.mjs build` says so and prints this same instruction. Only the
+lint gate still earns its keep.
 
 ### CI exists, and asserts a discovery floor
 
