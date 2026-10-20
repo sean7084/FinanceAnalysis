@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Times every endpoint the SPA calls on page load and reports p50/p95 per
-# endpoint plus a summed per-page budget. Modelled on smoke_api_check.sh's
-# login flow. Run before and after a change to prove the delta.
+# endpoint plus a summed per-page budget. Modelled on smoke_api_check.sh, and
+# like it, every request is unauthenticated. Run before and after a change to
+# prove the delta.
 #
 #   ITERATIONS=5 LABEL=baseline bash scripts/measure_page_api_latency.sh
 #
