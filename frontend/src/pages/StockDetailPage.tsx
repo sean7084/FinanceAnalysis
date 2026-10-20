@@ -14,6 +14,7 @@ import {
   type LightGBMPredictionStockDto,
   type PredictionStockDto,
 } from '../lib/api'
+import { cachedGet } from '../lib/queryCache'
 import { useI18n } from '../useI18n'
 
 export function StockDetailPage() {
@@ -35,7 +36,7 @@ export function StockDetailPage() {
     let alive = true
     ;(async () => {
       try {
-        const assets = await fetchAssets(150)
+        const assets = await cachedGet('assets?limit=150', () => fetchAssets(150))
         if (alive) {
           setAssetOptions(assets.map((x) => ({ symbol: x.symbol, name: x.name })))
         }
@@ -50,46 +51,62 @@ export function StockDetailPage() {
     }
   }, [])
 
+  // This page composes five requests, one of them up to 3000 OHLCV rows, and its
+  // error copy depends on the HTTP status. So it calls `cachedGet` directly
+  // instead of `useApiResource`: the composed payload is cached and shared with
+  // a remount, while the status-specific messaging below stays untouched.
   useEffect(() => {
     let alive = true
     ;(async () => {
       try {
         setLoading(true)
-        const asset = await fetchAssetBySymbol(symbol)
-        if (!asset) {
-          setError(t('stock.noAssetData'))
-          setStockName('')
-          setKlineData([])
-          setPredData([])
-          setHeuristicPrediction(null)
-          setLightgbmPrediction(null)
-          setSentimentLatest(null)
+        const payload = await cachedGet(`stock/${symbol}/detail`, async () => {
+          const asset = await fetchAssetBySymbol(symbol)
+          if (!asset) {
+            return null
+          }
+
+          // All four only need asset.id / asset.symbol, so none has to wait for
+          // another. OHLCV previously gated the rest behind up to three serial
+          // page round trips.
+          const [ohlcvResult, predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
+            fetchOhlcvByAsset(asset.id, 3000),
+            fetchPredictionBySymbol(asset.symbol),
+            fetchLightGBMPredictionBySymbol(asset.symbol),
+            fetchSentimentByAsset(asset.id),
+          ])
+
+          // allSettled would otherwise turn an OHLCV failure into a silently
+          // empty chart; rethrow so the catch below reports it, as the serial
+          // version did.
+          if (ohlcvResult.status === 'rejected') {
+            throw ohlcvResult.reason
+          }
+
+          return {
+            asset,
+            ohlcvRows: ohlcvResult.value,
+            prediction: predictionResult.status === 'fulfilled' ? predictionResult.value : null,
+            lightgbm: lightgbmResult.status === 'fulfilled' ? lightgbmResult.value : null,
+            sentimentRows: sentimentResult.status === 'fulfilled' ? sentimentResult.value : [],
+          }
+        })
+
+        if (!alive || !payload) {
+          if (payload === null && alive) {
+            setError(t('stock.noAssetData'))
+            setStockName('')
+            setKlineData([])
+            setPredData([])
+            setHeuristicPrediction(null)
+            setLightgbmPrediction(null)
+            setSentimentLatest(null)
+          }
           return
         }
 
-        // All four only need asset.id / asset.symbol, so none has to wait for
-        // another. OHLCV previously gated the rest behind up to three serial
-        // page round trips.
-        const [ohlcvResult, predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
-          fetchOhlcvByAsset(asset.id, 3000),
-          fetchPredictionBySymbol(asset.symbol),
-          fetchLightGBMPredictionBySymbol(asset.symbol),
-          fetchSentimentByAsset(asset.id),
-        ])
-
-        if (!alive) {
-          return
-        }
-
-        // allSettled would otherwise turn an OHLCV failure into a silently empty
-        // chart; rethrow so the catch below reports it, as the serial version did.
-        if (ohlcvResult.status === 'rejected') {
-          throw ohlcvResult.reason
-        }
-        const ohlcvRows = ohlcvResult.value
-
-        setStockName(asset.name)
-        const points = [...ohlcvRows]
+        setStockName(payload.asset.name)
+        const points = [...payload.ohlcvRows]
           .reverse()
           .map((row) => ({
             time: row.date,
@@ -100,14 +117,10 @@ export function StockDetailPage() {
           }))
         setKlineData(points)
 
-        const prediction = predictionResult.status === 'fulfilled' ? predictionResult.value : null
-        const lightgbm = lightgbmResult.status === 'fulfilled' ? lightgbmResult.value : null
-        const sentimentRows = sentimentResult.status === 'fulfilled' ? sentimentResult.value : []
-
-        setHeuristicPrediction(prediction)
-        setLightgbmPrediction(lightgbm)
+        setHeuristicPrediction(payload.prediction)
+        setLightgbmPrediction(payload.lightgbm)
         setPredData(
-          (prediction?.results ?? []).map((x) => ({
+          (payload.prediction?.results ?? []).map((x) => ({
             horizon: `${x.horizon_days}D`,
             up: Number(x.up),
             flat: Number(x.flat),
@@ -115,8 +128,8 @@ export function StockDetailPage() {
           })),
         )
 
-        if (sentimentRows.length > 0) {
-          setSentimentLatest(Number(sentimentRows[0].sentiment_score))
+        if (payload.sentimentRows.length > 0) {
+          setSentimentLatest(Number(payload.sentimentRows[0].sentiment_score))
         }
         setError(null)
       } catch (err) {

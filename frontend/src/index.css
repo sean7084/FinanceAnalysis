@@ -500,3 +500,49 @@ nav {
     text-align: center;
   }
 }
+
+.table-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.4rem 0;
+}
+
+.table-skeleton-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.table-skeleton-cell {
+  flex: 1;
+  height: 0.9rem;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-muted, rgba(125, 125, 125, 0.16)) 25%,
+    var(--surface, rgba(125, 125, 125, 0.28)) 50%,
+    var(--surface-muted, rgba(125, 125, 125, 0.16)) 75%
+  );
+  background-size: 200% 100%;
+  animation: table-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.table-skeleton-note {
+  color: var(--text-muted, #8a8f98);
+  font-size: 0.85rem;
+}
+
+@keyframes table-skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .table-skeleton-cell {
+    animation: none;
+  }
+}

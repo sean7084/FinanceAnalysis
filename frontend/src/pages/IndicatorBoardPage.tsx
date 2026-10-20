@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   fetchDashboardStocks,
   hasAnyAuthCredential,
   type DashboardStockRowDto,
 } from '../lib/api'
+import { TableSkeleton } from '../components/layout/TableSkeleton'
+import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 function renderValue(value: unknown, t: (key: string) => string) {
@@ -23,40 +25,20 @@ function renderValue(value: unknown, t: (key: string) => string) {
   return String(value)
 }
 
+// Module scope so the "no rows yet" value keeps one identity; a fresh `[]` each
+// render would recompute the memo that lists it as a dependency.
+const EMPTY_ROWS: DashboardStockRowDto[] = []
+
 export function IndicatorBoardPage() {
   const { t } = useI18n()
-  const [rows, setRows] = useState<DashboardStockRowDto[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const rowsResource = useApiResource<DashboardStockRowDto[]>(
+    'indicator-board/stocks?h=7&n=120',
+    () => fetchDashboardStocks({ predictionHorizon: 7, pageSize: 120 }),
+  )
+  const rows = rowsResource.data ?? EMPTY_ROWS
   const [sortField, setSortField] = useState<keyof DashboardStockRowDto>('composite_score')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const data = await fetchDashboardStocks({ predictionHorizon: 7, pageSize: 120 })
-        if (alive) {
-          setRows(data)
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      alive = false
-    }
-  }, [])
 
   const tableColumns: Array<{ key: keyof DashboardStockRowDto; label: string }> = [
     { key: 'asset_symbol', label: t('screener.symbol') },
@@ -128,8 +110,11 @@ export function IndicatorBoardPage() {
         <p>{t('indicatorBoard.desc')}</p>
       </header>
 
-      {loading && <p className="status">{t('common.loading')}</p>}
-      {error && <p className="status disconnected">{error}</p>}
+      {rowsResource.error && (
+        <p className="status disconnected">
+          {hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+        </p>
+      )}
 
       <div className="card">
         <h3>{t('dash.allStocks')}</h3>
@@ -166,7 +151,14 @@ export function IndicatorBoardPage() {
                   ))}
                 </tr>
               ))}
-              {displayedRows.length === 0 && !loading && (
+              {displayedRows.length === 0 && rowsResource.loading && (
+                <tr>
+                  <td colSpan={tableColumns.length}>
+                    <TableSkeleton columns={tableColumns.length} rows={8} />
+                  </td>
+                </tr>
+              )}
+              {displayedRows.length === 0 && !rowsResource.loading && (
                 <tr>
                   <td colSpan={tableColumns.length}>{t('common.noData')}</td>
                 </tr>

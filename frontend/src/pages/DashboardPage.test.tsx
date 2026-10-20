@@ -194,6 +194,17 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Filtered Candidates')).toBeInTheDocument()
   })
 
+  it('renders the KPI cards as soon as the summary lands, without waiting for candidates', async () => {
+    apiMocks.fetchDashboardStocks.mockReturnValue(new Promise(() => {}))
+    renderDashboard()
+
+    await waitFor(() => {
+      expect(screen.getByText('RECOVERY')).toBeInTheDocument()
+    })
+    expect(screen.getByText('AI, Banks')).toBeInTheDocument()
+    expect(screen.queryByText('Sample Asset')).not.toBeInTheDocument()
+  })
+
   it('sorts the filtered candidate list from sortable headers', async () => {
     const user = userEvent.setup()
     apiMocks.fetchDashboardStocks.mockResolvedValue([dashboardRow, secondDashboardRow])

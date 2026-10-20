@@ -13,14 +13,9 @@
       "command": "npm run lint -- --format json",
       "counts": {
         "error": 0,
-        "warning": 9
+        "warning": 3
       },
       "diagnostics": [
-        {
-          "key": "src/pages/AlertCenterPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
-          "severity": "warning",
-          "count": 1
-        },
         {
           "key": "src/pages/BacktestWorkbenchPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
           "severity": "warning",
@@ -28,31 +23,6 @@
         },
         {
           "key": "src/pages/BacktestWorkbenchPage.tsx::react-hooks/exhaustive-deps::The 'extraComparisonOptions' conditional",
-          "severity": "warning",
-          "count": 1
-        },
-        {
-          "key": "src/pages/DashboardPage.tsx::react-hooks/exhaustive-deps::React Hook useMemo has a missing depende",
-          "severity": "warning",
-          "count": 1
-        },
-        {
-          "key": "src/pages/IndicatorBoardPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
-          "severity": "warning",
-          "count": 1
-        },
-        {
-          "key": "src/pages/MacroContextPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
-          "severity": "warning",
-          "count": 1
-        },
-        {
-          "key": "src/pages/ModelMonitoringPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
-          "severity": "warning",
-          "count": 1
-        },
-        {
-          "key": "src/pages/ScreenerPage.tsx::react-hooks/exhaustive-deps::React Hook useEffect has a missing depen",
           "severity": "warning",
           "count": 1
         },

@@ -129,7 +129,7 @@ jobs:
       run:
         working-directory: frontend
     env:
-      MIN_TEST_COUNT: "36"
+      MIN_TEST_COUNT: "48"
 
     steps:
       - uses: actions/checkout@v4
