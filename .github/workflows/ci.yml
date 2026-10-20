@@ -5,10 +5,15 @@ on:
     branches: [main]
   pull_request:
 
-# Both jobs need real services. 93 of the 109 test failures once found in this
-# repository were throttle-cache errors caused by an unreachable Redis, and the suite
-# cannot run at all without PostgreSQL, so stubbing either service would reproduce the
-# exact blind spot this workflow exists to close.
+# Both jobs need real services. The suite cannot run at all without PostgreSQL, and
+# Redis is still required because tasks are not forced eager -- a test that calls
+# `.delay()` fails against an unreachable broker. Stubbing either service would
+# reproduce the exact blind spot this workflow exists to close.
+#
+# Redis used to matter for a second reason: 93 of the 109 test failures once found in
+# this repository were throttle-cache errors from an unreachable Redis. DRF throttling
+# was removed in v0.1.17, so that failure mode no longer exists and the broker is the
+# only thing left depending on the service.
 #
 # The non-obvious requirement is the discovery floor in each job. Bare
 # `python manage.py test` once discovered ZERO tests and exited 0, because apps/ was a
