@@ -1236,7 +1236,7 @@ def send_alert_notifications(event_id):
     channels = rule.channels or []
     sent_channels = []
 
-    if 'email' in channels and owner.email:
+    if 'email' in channels and owner and owner.email:
         send_mail(
             subject=f'Alert Triggered: {rule.name}',
             message=event.message,
@@ -1246,7 +1246,7 @@ def send_alert_notifications(event_id):
         )
         sent_channels.append('email')
 
-    if 'sms' in channels:
+    if 'sms' in channels and owner:
         sms_ok = _send_sms_via_webhook(
             {
                 'user_id': owner.id,
@@ -1258,7 +1258,7 @@ def send_alert_notifications(event_id):
         if sms_ok:
             sent_channels.append('sms')
 
-    if 'websocket' in channels:
+    if 'websocket' in channels and owner:
         channel_layer = get_channel_layer()
         if channel_layer:
             async_to_sync(channel_layer.group_send)(

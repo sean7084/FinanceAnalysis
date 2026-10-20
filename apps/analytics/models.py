@@ -96,6 +96,8 @@ class AlertRule(models.Model):
         on_delete=models.CASCADE,
         related_name='alert_rules',
         verbose_name=_('Owner'),
+        null=True,
+        blank=True,
     )
     asset = models.ForeignKey(
         Asset,
@@ -142,7 +144,7 @@ class AlertRule(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.owner.username} - {self.name}"
+        return self.name
 
 
 class AlertEvent(models.Model):
