@@ -76,31 +76,28 @@ class DashboardStockRowSerializer(serializers.Serializer):
 
 
 class ScreenerTemplateSerializer(serializers.ModelSerializer):
-    owner_username = serializers.CharField(source='owner.username', read_only=True)
-
     class Meta:
         model = ScreenerTemplate
         fields = [
-            'id', 'owner', 'owner_username', 'name', 'description',
+            'id', 'name', 'description',
             'screener_type', 'config', 'is_public', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['owner', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
 
 
 class AlertRuleSerializer(serializers.ModelSerializer):
-    owner_username = serializers.CharField(source='owner.username', read_only=True)
     asset_symbol = serializers.CharField(source='asset.symbol', read_only=True)
     asset_name = serializers.CharField(source='asset.name', read_only=True)
 
     class Meta:
         model = AlertRule
         fields = [
-            'id', 'owner', 'owner_username', 'asset', 'asset_symbol', 'asset_name',
+            'id', 'asset', 'asset_symbol', 'asset_name',
             'name', 'condition_type', 'indicator_type', 'threshold', 'custom_condition',
             'channels', 'cooldown_minutes', 'is_active', 'last_triggered_at',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['owner', 'last_triggered_at', 'created_at', 'updated_at']
+        read_only_fields = ['last_triggered_at', 'created_at', 'updated_at']
 
     def validate(self, attrs):
         condition_type = attrs.get('condition_type', getattr(self.instance, 'condition_type', None))

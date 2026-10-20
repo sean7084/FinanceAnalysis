@@ -43,7 +43,6 @@ class Command(BaseCommand):
         parser.add_argument('--capital-fraction-per-entry', type=float, default=0.5, help='Capital fraction used for each entry cohort.')
         parser.add_argument('--min-up-probability', type=float, default=0.0, help='Minimum up probability threshold.')
         parser.add_argument('--name-prefix', default='validation', help='Prefix used for BacktestRun names.')
-        parser.add_argument('--user-email', default='', help='Optional user email to attribute created runs.')
         parser.add_argument('--queue', action='store_true', help='Queue runs asynchronously instead of running inline.')
         parser.add_argument('--output-dir', default='', help='Optional report output directory. Defaults to reports/<suite-name>.')
         parser.add_argument('--suite-name', default='', help='Optional suite name used for the output directory and manifest.')
@@ -73,7 +72,6 @@ class Command(BaseCommand):
             capital_fraction_per_entry=options['capital_fraction_per_entry'],
             min_up_probability=options['min_up_probability'],
             name_prefix=run_name_prefix,
-            user_email=options['user_email'],
             queue=options['queue'],
             stdout=self.stdout,
         )

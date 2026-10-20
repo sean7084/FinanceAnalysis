@@ -24,22 +24,6 @@ from apps.analytics.views import (
     AlertEventViewSet,
     SignalEventViewSet,
 )
-from apps.users.views import (
-    CookieTokenLogoutView,
-    CookieTokenObtainPairView,
-    CookieTokenRefreshView,
-    ScopedTokenObtainPairView,
-    ScopedTokenRefreshView,
-    ScopedTokenVerifyView,
-    SessionStateView,
-    UserRegistrationView,
-    EmailVerificationView,
-    PasswordResetRequestView,
-    PasswordResetConfirmView,
-    UserProfileViewSet,
-    SubscriptionViewSet,
-    APIUsageViewSet,
-)
 from apps.factors.views import (
     FundamentalFactorSnapshotViewSet,
     CapitalFlowSnapshotViewSet,
@@ -72,7 +56,6 @@ from apps.backtest.views import (
     BacktestTradeViewSet,
 )
 from apps.developer.views import (
-    DeveloperAPIKeyViewSet,
     ChangelogEntryViewSet,
 )
 
@@ -88,9 +71,6 @@ router.register(r'screeners', ScreenerViewSet, basename='screener')
 router.register(r'alerts', AlertRuleViewSet, basename='alert-rule')
 router.register(r'alert-events', AlertEventViewSet, basename='alert-event')
 router.register(r'signals', SignalEventViewSet, basename='signal-event')
-router.register(r'users/profile', UserProfileViewSet, basename='userprofile')
-router.register(r'users/subscriptions', SubscriptionViewSet, basename='subscription')
-router.register(r'users/usage', APIUsageViewSet, basename='apiusage')
 router.register(r'factors/fundamentals', FundamentalFactorSnapshotViewSet, basename='fundamental-factor')
 router.register(r'factors/capital-flows', CapitalFlowSnapshotViewSet, basename='capital-flow-factor')
 router.register(r'screener/bottom-candidates', BottomCandidateViewSet, basename='bottom-candidates')
@@ -108,7 +88,6 @@ router.register(r'lightgbm-models', LightGBMModelArtifactViewSet, basename='ligh
 router.register(r'ensemble-weights', EnsembleWeightSnapshotViewSet, basename='ensemble-weight')
 router.register(r'backtest', BacktestRunViewSet, basename='backtest')
 router.register(r'backtest-trades', BacktestTradeViewSet, basename='backtest-trade')
-router.register(r'developer/keys', DeveloperAPIKeyViewSet, basename='developer-key')
 router.register(r'developer/changelog', ChangelogEntryViewSet, basename='developer-changelog')
 
 urlpatterns = [
@@ -118,31 +97,13 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     # API v1 endpoints
     path('api/v1/', include(router.urls)),
-    # User registration and authentication
-    path('api/v1/users/register/', UserRegistrationView.as_view(), name='user_register'),
-    path('api/v1/users/verify-email/', EmailVerificationView.as_view(), name='email_verify'),
-    path('api/v1/users/password-reset/', PasswordResetRequestView.as_view(), name='password_reset'),
-    path('api/v1/users/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
-    # JWT authentication -- legacy token endpoints (kept for Swagger / scripts).
-    path('api/v1/auth/token/', ScopedTokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/v1/auth/token/refresh/', ScopedTokenRefreshView.as_view(), name='token_refresh'),
-    path('api/v1/auth/token/verify/', ScopedTokenVerifyView.as_view(), name='token_verify'),
-    # Cookie-based JWT authentication used by the SPA. The refresh token is
-    # transported in an HttpOnly cookie so it is never readable by JS; the
-    # access token is returned in the body and cached in memory client-side.
-    path('api/v1/auth/login/', CookieTokenObtainPairView.as_view(), name='auth_login'),
-    path('api/v1/auth/refresh/', CookieTokenRefreshView.as_view(), name='auth_refresh'),
-    path('api/v1/auth/logout/', CookieTokenLogoutView.as_view(), name='auth_logout'),
-    path('api/v1/auth/session/', SessionStateView.as_view(), name='auth_session'),
-    # Browsable API authentication
-    path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     # OpenAPI schema endpoints (drf-spectacular)
     path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/v1/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/v1/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     # SPA fallback -- must stay LAST. The negative lookahead keeps DRF, admin,
-    # browsable-API auth, static, media, and Channels WebSocket paths out of
-    # the catch-all so those subsystems keep returning their own 404s and
-    # redirects instead of the SPA shell.
-    re_path(r'^(?!api/|admin/|api-auth/|static/|media/|ws/).*$', spa_fallback, name='spa-fallback'),
+    # static, media, and Channels WebSocket paths out of the catch-all so those
+    # subsystems keep returning their own 404s and redirects instead of the SPA
+    # shell.
+    re_path(r'^(?!api/|admin/|static/|media/|ws/).*$', spa_fallback, name='spa-fallback'),
 ]

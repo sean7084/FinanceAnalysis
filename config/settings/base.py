@@ -72,11 +72,9 @@ INSTALLED_APPS = [
     'django_vite',
     'rest_framework',
     'channels',
-    'rest_framework_simplejwt.token_blacklist',
     'django_filters',
     'django_celery_beat',
     'apps.core',
-    'apps.users',
     'apps.markets',
     'apps.analytics',
     'apps.factors',
@@ -102,7 +100,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'apps.users.middleware.APIUsageMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -256,9 +253,8 @@ BACKTEST_PAYLOAD_CACHE_SECONDS = env.int('BACKTEST_PAYLOAD_CACHE_SECONDS', defau
 # key includes the factor date, so a new trading day invalidates naturally and a
 # long TTL does not serve stale rows across dates.
 DASHBOARD_STOCKS_CACHE_SECONDS = env.int('DASHBOARD_STOCKS_CACHE_SECONDS', default=86400)
-# Short TTL: /dashboard/summary/ folds seven SPA calls into one, and its alert
-# count is owner-scoped, so the key is per user. Kept brief because signal and
-# alert events arrive throughout the session.
+# Short TTL: /dashboard/summary/ folds seven SPA calls into one, and its signal
+# and alert events arrive throughout the session.
 DASHBOARD_SUMMARY_CACHE_SECONDS = env.int('DASHBOARD_SUMMARY_CACHE_SECONDS', default=60)
 # Scope string that opts the dashboard's pseudo-run into the process-level
 # matrix-signal inference cache in apps/backtest/tasks.py. Without it every
@@ -351,73 +347,14 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticatedOrReadOnly',
+        'rest_framework.permissions.AllowAny',
     ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'apps.developer.authentication.APIKeyAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
-    ],
+    # SessionAuthentication must stay out, not merely be the last entry: a browser
+    # holding an /admin/ session cookie would send `sessionid` on same-origin SPA
+    # writes and its CSRF enforcement would 403 them.
+    'DEFAULT_AUTHENTICATION_CLASSES': [],
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
-    'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'apps.core.throttling.FreeUserRateThrottle',
-        'apps.core.throttling.ProUserRateThrottle',
-        'apps.core.throttling.PremiumUserRateThrottle',
-    ],
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/day',      # Anonymous users
-        'auth': '500/day',      # JWT auth endpoints (login/refresh/logout/session)
-        'free': '100/day',      # Free tier users
-        'pro': '1000/day',      # Pro tier users
-        'premium': '10000/day', # Premium tier users
-        'user': '1000/day',     # Legacy rate for backward compatibility
-    },
 }
-
-# SIMPLE JWT
-# ------------------------------------------------------------------------------
-from datetime import timedelta
-
-# 8h access / 30d sliding refresh keeps the SPA signed in across a working
-# day (and across a long weekend) without stretching the blast radius of a
-# leaked access token too far. Rotation stays on so every successful refresh
-# re-issues a fresh refresh token with a full 30-day window, giving a true
-# sliding session for active users; blacklisting keeps logout/revocation real.
-# The refresh token itself is transported in an HttpOnly cookie (see the
-# AUTH_COOKIE_* block below and apps/users/views.py), so JS can never read it.
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
-    'UPDATE_LAST_LOGIN': True,
-    'ALGORITHM': 'HS256',
-    'SIGNING_KEY': env('DJANGO_SECRET_KEY', default='django-insecure-change-this-in-production'),
-    'AUTH_HEADER_TYPES': ('Bearer',),
-    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
-    'USER_ID_FIELD': 'id',
-    'USER_ID_CLAIM': 'user_id',
-    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
-    'TOKEN_TYPE_CLAIM': 'token_type',
-}
-
-# AUTH COOKIE (refresh-token transport)
-# ------------------------------------------------------------------------------
-# The SPA never sees the refresh token: /auth/login/ and /auth/refresh/ set it
-# as an HttpOnly cookie that only the browser can send back. Same-origin
-# deployment (Django serves the SPA) means SameSite=Lax is enough; if the SPA
-# is ever moved to a different origin, upgrade to 'None' + Secure=True and add
-# django-cors-headers. Domain stays empty (host-only) so the Vite dev proxy at
-# http://localhost:5173 keeps the cookie scoped to that host -- http-proxy does
-# not rewrite Set-Cookie domains and neither do we.
-AUTH_COOKIE_NAME = env('AUTH_COOKIE_NAME', default='fa_refresh')
-AUTH_COOKIE_HTTP_ONLY = True
-AUTH_COOKIE_SECURE = env.bool('AUTH_COOKIE_SECURE', default=not DEBUG)
-AUTH_COOKIE_SAMESITE = env('AUTH_COOKIE_SAMESITE', default='Lax')
-AUTH_COOKIE_PATH = '/'
-AUTH_COOKIE_DOMAIN = env('AUTH_COOKIE_DOMAIN', default='')
-AUTH_COOKIE_MAX_AGE = int(SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
 
 # CACHING
 # ------------------------------------------------------------------------------
@@ -452,56 +389,23 @@ SPECTACULAR_SETTINGS = {
     'TITLE': 'FinanceAnalysis API',
     'DESCRIPTION': (
         'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 500).\n\n'
-        '## Authentication\n\n'
-        'Requests may be authenticated using either:\n'
-        '- **JWT Bearer token**: `Authorization: Bearer <token>`  '
-        '(obtained from `POST /api/v1/auth/token/`)\n'
-        '- **API Key**: `X-API-Key: <key>`  '
-        '(issued via `POST /api/v1/developer/keys/`)\n\n'
-        '## Rate Limits\n\n'
-        '| Scope | Daily Limit |\n'
-        '|-------|-------------|\n'
-        '| Anonymous | 100 requests |\n'
-        '| Auth endpoints | 100 requests |\n'
-        '| Free tier | 100 requests |\n'
-        '| Pro tier | 1 000 requests |\n'
-        '| Premium tier | 10 000 requests |\n'
-        '| Authenticated (default) | 1 000 requests |\n'
+        'This API is unauthenticated: no credential is required for any endpoint.\n'
     ),
-    'VERSION': '0.1.13',
+    'VERSION': '0.2.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,
-        'persistAuthorization': True,
         'displayOperationId': False,
         'defaultModelsExpandDepth': 1,
         'defaultModelExpandDepth': 2,
     },
-    'AUTHENTICATION_WHITELIST': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'apps.developer.authentication.APIKeyAuthentication',
-    ],
-    'SECURITY': [
-        {'jwtAuth': []},
-        {'apiKeyAuth': []},
-    ],
 }
 EMAIL_HOST = env('EMAIL_HOST', default='localhost')
 EMAIL_PORT = env('EMAIL_PORT', default=587)
 EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
-
-# FRONTEND
-# ------------------------------------------------------------------------------
-# Public origin of the SPA. Django now serves the built Vite bundle itself (see
-# apps/core/views.py and apps/templates/frontend/index.html), so outbound links
-# in verification and password-reset email (apps/users/views.py) point at the
-# same host that owns /api and /ws. Operators who still run the pure-Vite HMR
-# flow (visit http://localhost:5173 directly) should override this back to
-# http://localhost:5173 in their .env.
-FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:8000')
 
 # DJANGO-VITE
 # ------------------------------------------------------------------------------
@@ -532,4 +436,7 @@ DJANGO_VITE = {
 # ------------------------------------------------------------------------------
 ALERTS_ENABLE_SMS = env.bool('ALERTS_ENABLE_SMS', default=False)
 SMS_WEBHOOK_URL = env('SMS_WEBHOOK_URL', default='')
+# Alert recipients. Replaces the per-rule `owner.email` that no longer exists
+# now that alert rules are not owned by a user.
+ALERT_NOTIFY_EMAILS = env.list('ALERT_NOTIFY_EMAILS', default=[])
 

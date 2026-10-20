@@ -14,7 +14,6 @@ Filtering runs by a parameter means filtering in Python over the JSON, which is 
 the export commands read a bounded id range rather than querying by configuration.
 """
 
-from django.conf import settings
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
@@ -51,14 +50,6 @@ class BacktestRun(models.Model):
         RESTART = 'RESTART', _('Restart')
         DELETE = 'DELETE', _('Delete')
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        related_name='backtest_runs',
-        null=True,
-        blank=True,
-        verbose_name=_('User'),
-    )
     name = models.CharField(_('Name'), max_length=120)
     strategy_type = models.CharField(
         _('Strategy Type'),

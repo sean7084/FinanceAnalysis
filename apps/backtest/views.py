@@ -17,7 +17,7 @@ Note that ``queue_backtest_run`` is defined here and in ``tasks.py``. The two mu
 stay in sync; consolidating them is tracked in ``BACKLOG.md``.
 """
 
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -96,11 +96,10 @@ class BacktestRunPagination(PageNumberPagination):
 
 class BacktestRunViewSet(viewsets.ModelViewSet):
     serializer_class = BacktestRunSerializer
-    permission_classes = [permissions.IsAuthenticated]
     pagination_class = BacktestRunPagination
 
     def get_queryset(self):
-        qs = BacktestRun.objects.select_related('user').all().order_by('-created_at')
+        qs = BacktestRun.objects.all().order_by('-created_at')
         strategy = self.request.query_params.get('strategy_type')
         status_q = self.request.query_params.get('status')
         if strategy:
@@ -110,7 +109,7 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        run = serializer.save(user=self.request.user)
+        run = serializer.save()
         transaction.on_commit(lambda: queue_backtest_run(run))
 
     def create(self, request, *args, **kwargs):
@@ -252,7 +251,6 @@ class BacktestRunViewSet(viewsets.ModelViewSet):
 
 class BacktestTradeViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = BacktestTradeSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = BacktestTrade.objects.select_related('asset', 'backtest_run').all().order_by('trade_date', 'id')

@@ -11,18 +11,7 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
 fi
 
 API_BASE="${API_BASE:-http://localhost:8000/api/v1}"
-SMOKE_USERNAME="${SMOKE_USERNAME:-}"
-SMOKE_PASSWORD="${SMOKE_PASSWORD:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-
-# Tolerate CRLF-formatted .env files by stripping trailing carriage returns.
-SMOKE_USERNAME="${SMOKE_USERNAME//$'\r'/}"
-SMOKE_PASSWORD="${SMOKE_PASSWORD//$'\r'/}"
-
-if [[ -z "$SMOKE_USERNAME" || -z "$SMOKE_PASSWORD" ]]; then
-  echo "SMOKE_USERNAME and SMOKE_PASSWORD are required." >&2
-  exit 1
-fi
 
 json_get() {
   local key="$1"
@@ -45,15 +34,7 @@ else:
 ' "$key"
 }
 
-auth_request_body=$("$PYTHON_BIN" -c 'import json, sys; print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))' "$SMOKE_USERNAME" "$SMOKE_PASSWORD")
-
-auth_payload=$(curl -fsS -X POST "$API_BASE/auth/token/" \
-  -H 'Content-Type: application/json' \
-  -d "$auth_request_body")
-token=$(printf '%s' "$auth_payload" | json_get access)
-
-auth_header=( -H "Authorization: Bearer $token" )
-
+# Every endpoint is unauthenticated now, so a bare request must succeed.
 markets=$(curl -fsS "$API_BASE/markets/")
 assets=$(curl -fsS "$API_BASE/assets/?page_size=5")
 asset_count=$(printf '%s' "$assets" | json_get count)
@@ -61,11 +42,11 @@ first_asset_id=$(printf '%s' "$assets" | json_get results.0.id)
 first_asset_symbol=$(printf '%s' "$assets" | json_get results.0.symbol)
 
 ohlcv=$(curl -fsS "$API_BASE/ohlcv/?asset=$first_asset_id&page_size=5")
-macro=$(curl -fsS "${auth_header[@]}" "$API_BASE/macro/contexts/?page_size=5")
-screener=$(curl -fsS "${auth_header[@]}" "$API_BASE/screener/bottom-candidates/?top_n=5")
-prediction=$(curl -fsS "${auth_header[@]}" "$API_BASE/prediction/$first_asset_symbol/")
-sentiment=$(curl -fsS "${auth_header[@]}" "$API_BASE/sentiment/?score_type=ASSET_7D&page_size=5")
-concepts=$(curl -fsS "${auth_header[@]}" "$API_BASE/sentiment/concepts/top/?limit=5")
+macro=$(curl -fsS "$API_BASE/macro/contexts/?page_size=5")
+screener=$(curl -fsS "$API_BASE/screener/bottom-candidates/?top_n=5")
+prediction=$(curl -fsS "$API_BASE/prediction/$first_asset_symbol/")
+sentiment=$(curl -fsS "$API_BASE/sentiment/?score_type=ASSET_7D&page_size=5")
+concepts=$(curl -fsS "$API_BASE/sentiment/concepts/top/?limit=5")
 
 printf 'Markets count: %s\n' "$(printf '%s' "$markets" | json_get count)"
 printf 'Assets count: %s\n' "$asset_count"
@@ -80,5 +61,19 @@ printf '%s' "$asset_count" | "$PYTHON_BIN" -c 'import sys; assert int(sys.stdin.
 printf '%s' "$ohlcv" | json_get count | "$PYTHON_BIN" -c 'import sys; assert int(sys.stdin.read().strip()) > 0'
 printf '%s' "$screener" | json_get count | "$PYTHON_BIN" -c 'import sys; assert int(sys.stdin.read().strip()) > 0'
 printf '%s' "$prediction" | json_get results | "$PYTHON_BIN" -c 'import json,sys; assert len(json.load(sys.stdin)) > 0'
+
+# The auth endpoints must be gone, and an unauthenticated write must be accepted.
+auth_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API_BASE/auth/login/" \
+  -H 'Content-Type: application/json' -d '{"username":"x","password":"y"}')
+if [[ "$auth_status" != "404" ]]; then
+  echo "Expected POST /auth/login/ to return 404, got $auth_status." >&2
+  exit 1
+fi
+
+key_status=$(curl -s -o /dev/null -w '%{http_code}' "$API_BASE/developer/keys/")
+if [[ "$key_status" != "404" ]]; then
+  echo "Expected GET /developer/keys/ to return 404, got $key_status." >&2
+  exit 1
+fi
 
 echo 'Smoke API check passed.'

@@ -2,7 +2,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import date
 
 from django.utils import timezone
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -28,7 +28,6 @@ def _parse_decimal(value, default):
 
 class FundamentalFactorSnapshotViewSet(viewsets.ModelViewSet):
     serializer_class = FundamentalFactorSnapshotSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return FundamentalFactorSnapshot.objects.select_related('asset').order_by('-date', 'asset__symbol')
@@ -36,7 +35,6 @@ class FundamentalFactorSnapshotViewSet(viewsets.ModelViewSet):
 
 class CapitalFlowSnapshotViewSet(viewsets.ModelViewSet):
     serializer_class = CapitalFlowSnapshotSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return CapitalFlowSnapshot.objects.select_related('asset').order_by('-date', 'asset__symbol')
@@ -49,7 +47,6 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
     POST /api/v1/screener/bottom-candidates/recalculate/
     """
     serializer_class = FactorScoreSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         mode = self.request.query_params.get('mode', FactorScore.FactorMode.COMPOSITE).upper()

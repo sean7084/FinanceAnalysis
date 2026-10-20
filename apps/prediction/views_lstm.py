@@ -2,7 +2,7 @@ from datetime import date
 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -27,7 +27,6 @@ class LSTMPredictionViewSet(viewsets.GenericViewSet):
     """
 
     serializer_class = PredictionResultSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @action(detail=False, methods=['get'], url_path=r'(?P<stock_code>(?!(?:train|recalculate|batch)(?:/|$))[^/.]+)')
     def stock(self, request, stock_code=None):

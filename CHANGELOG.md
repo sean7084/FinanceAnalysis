@@ -1,5 +1,73 @@
 # Changelog
 
+### version 0.1.17
+
+#### Removed:
+
+- **The entire authentication module.** This is a single-user experimental project,
+  so the JWT + HttpOnly-cookie refresh stack, registration, email verification,
+  password reset, subscription tiers, usage metering and developer API keys had no
+  second user to protect and were actively costing correctness. **Breaking API
+  change**: `SPECTACULAR_SETTINGS['VERSION']` goes `0.1.13` → `0.2.0`.
+  - **Endpoints deleted** (all now 404): `/api/v1/auth/token{,/refresh,/verify}/`,
+    `/api/v1/auth/{login,refresh,logout,session}/`,
+    `/api/v1/users/{register,verify-email,password-reset,password-reset-confirm}/`,
+    `/api/v1/users/{profile,subscriptions,usage}/`, `/api/v1/developer/keys/`, and
+    the DRF browsable-API login at `/api-auth/`. Nothing remains that issues or
+    accepts a credential.
+  - `REST_FRAMEWORK` is now `DEFAULT_PERMISSION_CLASSES = [AllowAny]` with
+    `DEFAULT_AUTHENTICATION_CLASSES = []`. SessionAuthentication was deliberately
+    left out rather than demoted to last: with JWT gone it would become the first
+    authenticator to engage for a browser holding an `/admin/` session cookie, and
+    its CSRF enforcement would 403 same-origin SPA writes — a new bug the removal
+    would otherwise have introduced. All 23 per-route `IsAuthenticated` gates and the
+    implicit `IsAuthenticatedOrReadOnly` default are gone.
+  - `apps/users` deleted outright (`UserProfile`, `Subscription`, `APIUsage`,
+    `APIUsageMiddleware`, the cookie/JWT view layer, signals, admin overrides) and
+    `apps/developer` reduced to `ChangelogEntry` (`DeveloperAPIKey` +
+    `APIKeyAuthentication` deleted). App count ten → nine. `django.contrib.auth` and
+    `/admin/` stay, so `createsuperuser` still works — now for admin access only.
+  - **All DRF throttling removed** (`apps/core/throttling.py` deleted, no
+    `DEFAULT_THROTTLE_CLASSES`/`_RATES`). The tier throttles keyed on
+    `request.user.profile.subscription_tier`, so they were the last consumer of the
+    subscription model. No 429 responses anymore.
+  - **User foreign keys dropped from domain models**: `ScreenerTemplate.owner`,
+    `AlertRule.owner` (made nullable first, in its own commit, so the permission
+    change and the schema change could land separately), `BacktestRun.user`.
+    `AlertRule.__str__` returned `"{owner.username} - {name}"` and now returns the
+    name. `owner`/`owner_username`/`user`/`user_username` leave the API payloads, and
+    `run_summary.csv` loses its `user_id`/`user_email` columns.
+  - **Alerting is now settings-driven**: new `ALERT_NOTIFY_EMAILS` replaces
+    `rule.owner.email`; the SMS webhook payload carries `alert_rule_id` instead of
+    `user_id`; the Channels fan-out collapses from per-user `alerts_user_{id}` to one
+    global `alerts` group. `SIMPLE_JWT`, all `AUTH_COOKIE_*`, and `FRONTEND_URL`
+    leave settings (only `DJANGO_SECRET_KEY` remains, still as Django's `SECRET_KEY`),
+    and `djangorestframework-simplejwt` leaves `requirements/base.txt`.
+  - **WebSockets are open**: `AuthMiddlewareStack` removed from `config/asgi.py`, so
+    `/ws/alerts/` needs no session and no `?token=` — which also drops a per-connection
+    DB round-trip. `config/routing.py` was deleted: it duplicated this wiring and was
+    imported by nothing, so edits to it had never had any effect.
+  - **Frontend**: `lib/api.ts` sheds ~430 lines (in-memory access token,
+    `BroadcastChannel('fa-auth')` cross-tab refresh mutex, proactive-refresh timer,
+    hand-rolled `decodeJwtExp`, the 401→refresh→retry interceptor, login/logout/
+    session-bootstrap, API-key minting) and stops sending `credentials: 'include'`,
+    so the SPA no longer transmits `sessionid` to the API either. `main.tsx` renders
+    synchronously instead of blocking first paint on a `/auth/session/` probe plus a
+    possible `/auth/refresh/`. `AuthSettingsPanel.tsx` deleted; `/settings` is now
+    just the language selector.
+  - **Two silent bugs fixed as a side effect.** `useAlertsSocket.ts` suppressed
+    reconnection when no credential was present, and `BacktestWorkbenchPage.tsx`
+    early-returned from both `setInterval` callbacks on the same check — so an
+    unauthenticated visitor's alert stream never reconnected and backtest progress
+    never live-updated, with no console error either time. A test had even been
+    written asserting the polling suppression as desired behaviour; it is deleted.
+  - `scripts/smoke_api_check.sh` and `scripts/measure_page_api_latency.sh` no longer
+    require `SMOKE_USERNAME`/`SMOKE_PASSWORD`; the smoke check now additionally
+    asserts `/auth/login/` and `/developer/keys/` return 404.
+  - **Deliberately untouched**: `has_stale_task_owner` and its helpers. "Task owner"
+    in `apps/backtest/task_health.py` means **Celery worker** ownership, not
+    authentication, and is unrelated to this removal.
+
 ### version 0.1.16
 
 #### Changed:

@@ -16,6 +16,7 @@ from channels.layers import get_channel_layer
 
 from apps.markets.benchmarking import ensure_pit_membership_coverage, point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
+from .consumers import ALERTS_GROUP
 from .models import TechnicalIndicator, AlertRule, AlertEvent, SignalEvent
 from .technical_staleness import (
     exact_trading_window_available,
@@ -1230,26 +1231,26 @@ def _send_sms_via_webhook(payload):
 
 @shared_task
 def send_alert_notifications(event_id):
-    event = AlertEvent.objects.select_related('alert_rule', 'alert_rule__owner', 'asset').get(id=event_id)
+    event = AlertEvent.objects.select_related('alert_rule', 'asset').get(id=event_id)
     rule = event.alert_rule
-    owner = rule.owner
     channels = rule.channels or []
     sent_channels = []
 
-    if 'email' in channels and owner and owner.email:
+    recipients = list(getattr(settings, 'ALERT_NOTIFY_EMAILS', []))
+    if 'email' in channels and recipients:
         send_mail(
             subject=f'Alert Triggered: {rule.name}',
             message=event.message,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[owner.email],
+            recipient_list=recipients,
             fail_silently=True,
         )
         sent_channels.append('email')
 
-    if 'sms' in channels and owner:
+    if 'sms' in channels:
         sms_ok = _send_sms_via_webhook(
             {
-                'user_id': owner.id,
+                'alert_rule_id': rule.id,
                 'asset': event.asset.symbol,
                 'alert_name': rule.name,
                 'message': event.message,
@@ -1258,11 +1259,11 @@ def send_alert_notifications(event_id):
         if sms_ok:
             sent_channels.append('sms')
 
-    if 'websocket' in channels and owner:
+    if 'websocket' in channels:
         channel_layer = get_channel_layer()
         if channel_layer:
             async_to_sync(channel_layer.group_send)(
-                f'alerts_user_{owner.id}',
+                ALERTS_GROUP,
                 {
                     'type': 'alert.message',
                     'event_id': event.id,
@@ -1282,7 +1283,7 @@ def send_alert_notifications(event_id):
 
 @shared_task
 def check_alert_rules():
-    rules = AlertRule.objects.filter(is_active=True).select_related('asset', 'owner')
+    rules = AlertRule.objects.filter(is_active=True).select_related('asset')
     triggered_count = 0
 
     for rule in rules:

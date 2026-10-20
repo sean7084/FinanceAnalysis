@@ -1,4 +1,4 @@
-from rest_framework import permissions, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -13,7 +13,6 @@ from .tasks import sync_macro_data_monthly, refresh_current_market_context
 
 class MacroSnapshotViewSet(viewsets.ModelViewSet):
     serializer_class = MacroSnapshotSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return MacroSnapshot.objects.order_by('-date')
@@ -26,7 +25,6 @@ class MacroSnapshotViewSet(viewsets.ModelViewSet):
 
 class MarketContextViewSet(viewsets.ModelViewSet):
     serializer_class = MarketContextSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return MarketContext.objects.order_by('-starts_at', '-updated_at')
@@ -49,7 +47,6 @@ class MarketContextViewSet(viewsets.ModelViewSet):
 
 class EventImpactStatViewSet(viewsets.ModelViewSet):
     serializer_class = EventImpactStatSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         qs = EventImpactStat.objects.all().order_by('event_tag', 'sector', 'horizon_days')

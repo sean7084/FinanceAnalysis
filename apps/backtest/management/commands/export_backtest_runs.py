@@ -168,7 +168,6 @@ class Command(BaseCommand):
         output_dir = Path(options['output_dir'])
         runs = list(
             BacktestRun.objects.filter(id__gte=start_id, id__lte=end_id)
-            .select_related('user')
             .order_by('id')
         )
         if not runs:
@@ -206,8 +205,6 @@ class Command(BaseCommand):
         row = {
             'run_id': run.id,
             'name': run.name,
-            'user_id': run.user_id,
-            'user_email': getattr(run.user, 'email', '') if run.user else '',
             'strategy_type': run.strategy_type,
             'status': run.status,
             'start_date': run.start_date,
@@ -229,7 +226,7 @@ class Command(BaseCommand):
 
     def _export_run_summary(self, output_dir, runs, requested_ids):
         fields = [
-            'run_id', 'name', 'user_id', 'user_email', 'strategy_type', 'status',
+            'run_id', 'name', 'strategy_type', 'status',
             'start_date', 'end_date', 'initial_capital', 'cash', 'final_value',
             *METRIC_KEYS,
             'num_trading_days', 'trade_row_count',

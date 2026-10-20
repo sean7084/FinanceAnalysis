@@ -1,5 +1,4 @@
 from django.db import models
-from django.contrib.auth.models import User
 from django.utils.translation import gettext_lazy as _
 
 from apps.markets.models import Asset
@@ -50,14 +49,6 @@ class ScreenerTemplate(models.Model):
         PREBUILT = 'PREBUILT', _('Prebuilt')
         CUSTOM = 'CUSTOM', _('Custom')
 
-    owner = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='screener_templates',
-        verbose_name=_('Owner'),
-        null=True,
-        blank=True,
-    )
     name = models.CharField(_('Name'), max_length=120)
     description = models.TextField(_('Description'), blank=True)
     screener_type = models.CharField(
@@ -76,7 +67,7 @@ class ScreenerTemplate(models.Model):
         verbose_name_plural = _('Screener Templates')
         ordering = ['-updated_at']
         indexes = [
-            models.Index(fields=['owner', 'is_public']),
+            models.Index(fields=['is_public']),
             models.Index(fields=['screener_type']),
         ]
 
@@ -91,14 +82,6 @@ class AlertRule(models.Model):
         INDICATOR_ABOVE = 'INDICATOR_ABOVE', _('Indicator Above')
         INDICATOR_BELOW = 'INDICATOR_BELOW', _('Indicator Below')
 
-    owner = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='alert_rules',
-        verbose_name=_('Owner'),
-        null=True,
-        blank=True,
-    )
     asset = models.ForeignKey(
         Asset,
         on_delete=models.CASCADE,
@@ -139,7 +122,7 @@ class AlertRule(models.Model):
         verbose_name_plural = _('Alert Rules')
         ordering = ['-updated_at']
         indexes = [
-            models.Index(fields=['owner', 'is_active']),
+            models.Index(fields=['is_active']),
             models.Index(fields=['asset', 'is_active']),
         ]
 
