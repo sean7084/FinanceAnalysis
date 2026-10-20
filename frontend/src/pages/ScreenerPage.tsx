@@ -1,39 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { fetchScreenerRows, hasAnyAuthCredential, type CandidateDto } from '../lib/api'
+import { TableSkeleton } from '../components/layout/TableSkeleton'
+import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 export function ScreenerPage() {
   const { t } = useI18n()
-  const [rows, setRows] = useState<CandidateDto[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState('bottom_probability_score')
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const data = await fetchScreenerRows(30, sortBy, 7)
-        if (alive) {
-          setRows(data)
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('screener.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      alive = false
-    }
-  }, [sortBy])
+  const rowsResource = useApiResource<CandidateDto[]>(
+    `screener/bottom-candidates?n=30&sort=${sortBy}&h=7`,
+    () => fetchScreenerRows(30, sortBy, 7),
+  )
+  const rows = rowsResource.data ?? []
 
   return (
     <section>
@@ -48,8 +26,12 @@ export function ScreenerPage() {
           <option value="trade_score">{t('screener.tradeScore')}</option>
           <option value="risk_reward_ratio">{t('screener.rr')}</option>
         </select>
-        {loading && <p className="status">{t('common.loading')}</p>}
-        {error && <p className="status disconnected">{error}</p>}
+        {rowsResource.loading && <TableSkeleton columns={7} rows={6} />}
+        {rowsResource.error && (
+          <p className="status disconnected">
+            {hasAnyAuthCredential() ? t('screener.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+          </p>
+        )}
         <table className="data-table">
           <thead>
             <tr>

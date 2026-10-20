@@ -23,6 +23,7 @@ import {
   type PredictionSource,
   type TopNMetric,
 } from '../lib/dashboardCandidateFilters'
+import { cachedGet } from '../lib/queryCache'
 import { useI18n } from '../useI18n'
 
 type WeekdayLabel = (typeof WEEKDAY_LABELS)[number]
@@ -326,7 +327,16 @@ export function BacktestWorkbenchPage() {
     }
 
     try {
-      const data = await fetchBacktestRuns(100)
+      // The run list is a progress feed, so it is never served from cache:
+      // `ttlMs: 0` keeps every poll on the network. What the cache buys here is
+      // in-flight de-duplication, so a slow poll cannot stack up behind the next
+      // one, plus `force` so a refresh triggered by a user action never waits on
+      // the freshness window at all.
+      const data = await cachedGet('backtest/runs?limit=100', () => fetchBacktestRuns(100), {
+        ttlMs: 0,
+        staleMs: 0,
+        force: showLoading,
+      })
       if (!isMountedRef.current || requestId !== runRequestIdRef.current) {
         return []
       }

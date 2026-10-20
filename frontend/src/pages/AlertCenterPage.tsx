@@ -1,34 +1,18 @@
-import { useEffect, useState } from 'react'
 import { useAlertsSocket } from '../hooks/useAlertsSocket'
 import { apiGet, hasAnyAuthCredential, type AlertEventDto, type Paginated } from '../lib/api'
+import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 export function AlertCenterPage() {
   const { t } = useI18n()
   const { connected, reconnecting, messages } = useAlertsSocket()
-  const [history, setHistory] = useState<AlertEventDto[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        const payload = await apiGet<Paginated<AlertEventDto>>('/alert-events/?page_size=20')
-        if (alive) {
-          setHistory(payload.results)
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('alerts.historyError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      }
-    })()
-
-    return () => {
-      alive = false
-    }
-  }, [])
+  const historyResource = useApiResource<AlertEventDto[]>(
+    'alerts/history?limit=20',
+    async () => (await apiGet<Paginated<AlertEventDto>>('/alert-events/?page_size=20')).results,
+    [],
+    { ttlMs: 30_000 },
+  )
+  const history = historyResource.data ?? []
 
   return (
     <section>
@@ -40,7 +24,13 @@ export function AlertCenterPage() {
         <p className={connected ? 'status connected' : 'status disconnected'}>
           {connected ? t('alerts.connected') : reconnecting ? t('alerts.reconnecting') : t('alerts.disconnected')}
         </p>
-        {error && <p className="status disconnected">{error}</p>}
+        {historyResource.error && (
+          <p className="status disconnected">
+            {hasAnyAuthCredential() ? t('alerts.historyError') : `${t('settings.desc')} (${t('nav.settings')})`}
+          </p>
+        )}
+        {historyResource.loading && <p className="status">{t('common.loading')}</p>}
+        {historyResource.isRefreshing && <p className="status">{t('common.updating')}</p>}
         <ul className="stack-list">
           {messages.length === 0 && <li><span>{t('alerts.noLive')}</span></li>}
           {messages.map((msg) => (

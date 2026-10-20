@@ -173,6 +173,41 @@ This is the most common source of wasted hours:
 metrics that LightGBM, LSTM, and runtime backtests all read, so it must run
 **after** `backfill_technical_indicators`.
 
+### What the stored prediction tables are supposed to hold
+
+The contract is a **full universe × horizons** materialisation: every asset in
+the effective universe, every horizon in `{3, 7, 30}`, for every open trading
+date, in both `PredictionResult` and `LightGBMPrediction`. That is not an
+aspiration — it is what the writing code already does, since both daily sweeps
+iterate `effective_universe_tradeable_assets()` and write all three horizons per
+asset. And it is what readers assume: the dashboard joins on
+`(asset, date, horizon)` and shows a probability column for **every** candidate
+row, so a sparse table holding only `suggested=True` trades would not be cheaper
+for readers, it would be missing them.
+
+What the tables actually hold is a different story. Measured on 2026-10-20 across
+the ten most recent open trading dates, the largest single day was 15 ensemble
+rows (5 assets) and 204 LightGBM rows (68 assets), against roughly 1,500 expected
+rows for a CSI 500 universe. No date has ever held a complete universe. The cause
+is throughput, not semantics: the global 60-second soft time limit truncated each
+sweep to a handful of assets, and even at the current one-hour budget a full day
+is about two hours of CPU.
+
+Two consequences worth stating plainly:
+
+- **The dashboard's inline inference path is load-bearing and stays that way.**
+  Cache-first request handling can only be an improvement over a warm cache, not a
+  replacement for stored coverage, because there is almost nothing to read.
+- **A pre-computed dashboard snapshot table has no input.** Building one over these
+  tables would snapshot the same 5 assets.
+
+Repair is deliberately incremental rather than a one-shot mass backfill. The
+hourly `reconcile_prediction_coverage` beat entry closes gaps inside its lookback
+window (`docs/how-to/runbook-stale-data.md` §4.4), which heals the dates that
+matter as they fall into the window; `check_prediction_coverage` measures the rest.
+Backfilling months of history is a separate, explicitly scheduled job — see
+`apps/prediction/management/commands/` for the per-asset entry points.
+
 ---
 
 ## 5. Checkpointing and resume

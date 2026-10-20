@@ -1,6 +1,7 @@
 import { Suspense, lazy, type ReactElement } from 'react'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
+import { TableSkeleton } from './components/layout/TableSkeleton'
 import { useI18n } from './useI18n'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
@@ -18,7 +19,12 @@ function withSuspense(element: ReactElement) {
 
 function RouteLoadingFallback() {
   const { t } = useI18n()
-  return <div className="card">{t('common.loading')}</div>
+  return (
+    <div className="card">
+      <p>{t('common.loading')}</p>
+      <TableSkeleton columns={6} rows={5} />
+    </div>
+  )
 }
 
 const router = createBrowserRouter([

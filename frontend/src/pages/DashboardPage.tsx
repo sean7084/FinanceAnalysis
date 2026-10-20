@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   fetchDashboardData,
@@ -17,6 +17,8 @@ import {
   type DashboardCandidateFilters,
   type TopNMetric,
 } from '../lib/dashboardCandidateFilters'
+import { TableSkeleton } from '../components/layout/TableSkeleton'
+import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 type SortDirection = 'asc' | 'desc'
@@ -90,102 +92,71 @@ function compareDashboardValues(leftValue: unknown, rightValue: unknown, directi
   return direction === 'asc' ? leftText.localeCompare(rightText) : rightText.localeCompare(leftText)
 }
 
+type DashboardSummaryPayload = Awaited<ReturnType<typeof fetchDashboardData>>
+
+// Module scope, so the "no rows yet" value keeps one identity. A fresh `[]` on
+// every render makes any memo that lists it as a dependency recompute forever.
+const EMPTY_DASHBOARD_ROWS: DashboardStockRowDto[] = []
+
 export function DashboardPage() {
   const { t } = useI18n()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [dashboard, setDashboard] = useState({
-    macroPhase: 'N/A',
-    hotConcepts: 'N/A',
-    predictionSignals: 0,
-    alertTriggers: 0,
-    completedBacktests: 0,
-    avgBottomProbability: 0,
-  })
-  const [dashboardRows, setDashboardRows] = useState<DashboardStockRowDto[]>([])
   const searchKey = searchParams.toString()
-  const appliedBundle = useMemo(() => parseDashboardSearchParams(searchParams), [searchKey])
+  const appliedBundle = useMemo(() => parseDashboardSearchParams(new URLSearchParams(searchKey)), [searchKey])
   const appliedFilters = appliedBundle.filters
   const appliedCandidateLimit = dashboardCandidateLimit(appliedFilters)
   const appliedPredictionHorizon = dashboardPredictionHorizon(appliedFilters)
   const activePredictionSource = appliedFilters.predictionSource
   const selectedSuggestedField = modelField(activePredictionSource, 'suggested')
   const selectedTradeScoreField = modelField(activePredictionSource, 'trade_score')
-  const [draftFilters, setDraftFilters] = useState<DashboardCandidateFilters>(() => appliedFilters)
+  const [draftState, setDraftState] = useState<{ key: string; filters: DashboardCandidateFilters }>({
+    key: searchKey,
+    filters: appliedFilters,
+  })
   const initialSort = defaultCandidateSort()
-  const [sortField, setSortField] = useState<DashboardSortField>(initialSort.field)
-  const [sortDirection, setSortDirection] = useState<SortDirection>(initialSort.direction)
+  const [sortState, setSortState] = useState<{ key: string; field: DashboardSortField; direction: SortDirection }>({
+    key: searchKey,
+    field: initialSort.field,
+    direction: initialSort.direction,
+  })
+  // Draft filters and sort order are stored together with the URL key they were
+  // derived from, so a newly applied bundle (or a back/forward navigation) makes
+  // them fall back to that bundle instead of needing an effect to re-sync.
+  const draftFilters = draftState.key === searchKey ? draftState.filters : appliedFilters
+  const setDraftFilters = (update: (current: DashboardCandidateFilters) => DashboardCandidateFilters) => {
+    setDraftState({ key: searchKey, filters: update(draftFilters) })
+  }
+  const sortField = sortState.key === searchKey ? sortState.field : initialSort.field
+  const sortDirection = sortState.key === searchKey ? sortState.direction : initialSort.direction
 
-  useEffect(() => {
-    setDraftFilters(appliedFilters)
-  }, [appliedFilters, searchKey])
+  // Two independent resources on purpose. The summary is a single cheap
+  // endpoint and the candidate table is the slow one; sharing a `loading` flag
+  // would hide the KPI cards behind a spinner until the slower call finished.
+  const summaryResource = useApiResource<DashboardSummaryPayload>(
+    'dashboard/summary',
+    () => fetchDashboardData(),
+  )
+  const rowsResource = useApiResource<DashboardStockRowDto[]>(
+    `dashboard/stocks?${appliedPredictionHorizon}/${appliedCandidateLimit}/${searchKey}`,
+    () => fetchDashboardStocks({
+      predictionHorizon: appliedPredictionHorizon,
+      pageSize: appliedCandidateLimit,
+      candidateFilters: appliedFilters,
+    }),
+    [appliedPredictionHorizon, appliedCandidateLimit, searchKey],
+  )
 
-  useEffect(() => {
-    const nextSort = defaultCandidateSort()
-    setSortField(nextSort.field)
-    setSortDirection(nextSort.direction)
-  }, [searchKey])
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const data = await fetchDashboardData()
-
-        if (alive) {
-          setDashboard(data)
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-
-    })()
-
-    return () => {
-      alive = false
-    }
-  }, [t])
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const rows = await fetchDashboardStocks({
-          predictionHorizon: appliedPredictionHorizon,
-          pageSize: appliedCandidateLimit,
-          candidateFilters: appliedFilters,
-        })
-
-        if (alive) {
-          setDashboardRows(rows)
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      alive = false
-    }
-  }, [searchKey, appliedCandidateLimit, appliedFilters, appliedPredictionHorizon, t])
+  const dashboard = summaryResource.data ?? {
+    macroPhase: 'N/A',
+    hotConcepts: 'N/A',
+    predictionSignals: 0,
+    alertTriggers: 0,
+    completedBacktests: 0,
+    avgBottomProbability: 0,
+  }
+  const dashboardRows = rowsResource.data ?? EMPTY_DASHBOARD_ROWS
+  const loadFailed = summaryResource.error !== null || rowsResource.error !== null
 
   const showHorizonSelector = draftFilters.candidateMode === 'trade_score' || draftFilters.topNMetric === 'trade_score'
   const effectiveHorizon = draftFilters.candidateMode === 'top_n'
@@ -224,18 +195,23 @@ export function DashboardPage() {
   ].filter((item): item is { label: string; value: string } => item !== null)
 
   const translatedMetrics = [
-    { label: t('dash.macro'), value: dashboard.macroPhase },
-    { label: t('dash.hotConcepts'), value: dashboard.hotConcepts },
-    { label: t('dash.predSignals'), value: `${dashboard.predictionSignals} ${t('dash.today')}` },
-    { label: t('dash.alertTriggers'), value: `${dashboard.alertTriggers} ${t('dash.live')}` },
-    { label: t('dash.completedBacktests'), value: String(dashboard.completedBacktests) },
-    { label: t('dash.avgBottomProb'), value: `${(dashboard.avgBottomProbability * 100).toFixed(1)}%` },
-    { label: t('dash.suggestedSetups'), value: String(dashboardRows.filter((row) => Boolean(row[selectedSuggestedField])).length) },
+    { label: t('dash.macro'), value: dashboard.macroPhase, pending: summaryResource.loading },
+    { label: t('dash.hotConcepts'), value: dashboard.hotConcepts, pending: summaryResource.loading },
+    { label: t('dash.predSignals'), value: `${dashboard.predictionSignals} ${t('dash.today')}`, pending: summaryResource.loading },
+    { label: t('dash.alertTriggers'), value: `${dashboard.alertTriggers} ${t('dash.live')}`, pending: summaryResource.loading },
+    { label: t('dash.completedBacktests'), value: String(dashboard.completedBacktests), pending: summaryResource.loading },
+    { label: t('dash.avgBottomProb'), value: `${(dashboard.avgBottomProbability * 100).toFixed(1)}%`, pending: summaryResource.loading },
+    {
+      label: t('dash.suggestedSetups'),
+      value: String(dashboardRows.filter((row) => Boolean(row[selectedSuggestedField])).length),
+      pending: rowsResource.loading,
+    },
     {
       label: t('dash.topTradeScore'),
       value: dashboardRows.length
         ? formatMaybeNumber(Math.max(...dashboardRows.map((row) => Number(row[selectedTradeScoreField] ?? 0))))
         : '--',
+      pending: rowsResource.loading,
     },
   ]
 
@@ -269,11 +245,10 @@ export function DashboardPage() {
 
   const handleSort = (column: CandidateTableColumn) => {
     if (sortField === column.key) {
-      setSortDirection((value) => value === 'asc' ? 'desc' : 'asc')
+      setSortState({ key: searchKey, field: column.key, direction: sortDirection === 'asc' ? 'desc' : 'asc' })
       return
     }
-    setSortField(column.key)
-    setSortDirection(column.initialDirection ?? 'desc')
+    setSortState({ key: searchKey, field: column.key, direction: column.initialDirection ?? 'desc' })
   }
 
   const applyFilters = () => {
@@ -285,7 +260,7 @@ export function DashboardPage() {
 
   const resetFilters = () => {
     const defaults = createDefaultDashboardCandidateFilters()
-    setDraftFilters(defaults)
+    setDraftState({ key: searchKey, filters: defaults })
     setSearchParams(buildDashboardSearchParams({
       filters: defaults,
       reminders: {},
@@ -303,12 +278,16 @@ export function DashboardPage() {
         {translatedMetrics.map((m) => (
           <article key={m.label} className="card metric-card">
             <span>{m.label}</span>
-            <strong>{loading ? t('common.loading') : m.value}</strong>
+            <strong>{m.pending ? t('common.loading') : m.value}</strong>
           </article>
         ))}
       </div>
 
-      {error && <p className="status disconnected">{hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}</p>}
+      {loadFailed && (
+        <p className="status disconnected">
+          {hasAnyAuthCredential() ? t('dash.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+        </p>
+      )}
 
       <div className="card runner-card">
         <h3>{t('dash.filterTitle')}</h3>
@@ -489,6 +468,7 @@ export function DashboardPage() {
 
       <div className="card">
         <h3>{t('dash.topCandidate')}</h3>
+        {rowsResource.isRefreshing && <p className="status">{t('common.updating')}</p>}
         <div className="table-wrap">
           <table className="data-table">
             <thead>
@@ -511,7 +491,17 @@ export function DashboardPage() {
                   ))}
                 </tr>
               ))}
-              {displayedRows.length === 0 && !loading && (
+              {displayedRows.length === 0 && rowsResource.loading && (
+                <tr>
+                  <td colSpan={candidateColumns.length}>
+                    <TableSkeleton
+                      columns={candidateColumns.length}
+                      rows={Math.min(appliedCandidateLimit, 8)}
+                    />
+                  </td>
+                </tr>
+              )}
+              {displayedRows.length === 0 && !rowsResource.loading && (
                 <tr>
                   <td colSpan={candidateColumns.length}>{t('common.noData')}</td>
                 </tr>

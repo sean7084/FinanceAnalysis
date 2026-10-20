@@ -1,38 +1,15 @@
-import { useEffect, useState } from 'react'
 import { fetchMacroContexts, hasAnyAuthCredential, type MacroContextDto } from '../lib/api'
+import { TableSkeleton } from '../components/layout/TableSkeleton'
+import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 export function MacroContextPage() {
   const { t } = useI18n()
-  const [contexts, setContexts] = useState<MacroContextDto[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const data = await fetchMacroContexts(30)
-        if (alive) {
-          setContexts(data)
-          setError(null)
-        }
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('macro.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      alive = false
-    }
-  }, [])
+  const contextsResource = useApiResource<MacroContextDto[]>(
+    'macro/contexts?limit=30',
+    () => fetchMacroContexts(30),
+  )
+  const contexts = contextsResource.data ?? []
 
   return (
     <section>
@@ -41,8 +18,12 @@ export function MacroContextPage() {
         <p>{t('macro.desc')}</p>
       </header>
       <div className="card">
-        {loading && <p className="status">{t('common.loading')}</p>}
-        {error && <p className="status disconnected">{error}</p>}
+        {contextsResource.loading && <TableSkeleton columns={3} rows={6} />}
+        {contextsResource.error && (
+          <p className="status disconnected">
+            {hasAnyAuthCredential() ? t('macro.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+          </p>
+        )}
         <table className="data-table">
           <thead>
             <tr>
@@ -59,7 +40,7 @@ export function MacroContextPage() {
                 <td>{ctx.is_active ? t('macro.active') : t('macro.inactive')}</td>
               </tr>
             ))}
-            {contexts.length === 0 && !loading && (
+            {contexts.length === 0 && !contextsResource.loading && (
               <tr>
                 <td colSpan={3}>{t('common.noData')}</td>
               </tr>

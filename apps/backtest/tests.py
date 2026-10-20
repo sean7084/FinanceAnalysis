@@ -15,7 +15,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.management import call_command
 from django.db.utils import OperationalError
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -266,12 +266,6 @@ class Phase15BacktestTests(TestCase):
 
         self.assertEqual(dates, expected)
 
-    @override_settings(CACHES={
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-            'LOCATION': 'backtest-payload-cache-tests',
-        },
-    })
     def test_trades_payload_is_cached_once_a_run_is_terminal(self):
         cache.clear()
         self._auth()
@@ -286,12 +280,6 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(second.status_code, status.HTTP_200_OK)
         self.assertEqual(serializer.call_count, 1)
 
-    @override_settings(CACHES={
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-            'LOCATION': 'backtest-payload-cache-tests',
-        },
-    })
     def test_trades_payload_is_not_cached_while_a_run_is_live(self):
         cache.clear()
         self._auth()

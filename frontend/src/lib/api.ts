@@ -1,4 +1,5 @@
 import type { DashboardCandidateFilters } from './dashboardCandidateFilters'
+import { invalidate } from './queryCache'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const AUTH_MODE_KEY = 'finance_auth_persistence'
@@ -672,6 +673,10 @@ function initAuthChannel(): void {
         accessToken = null
         sessionActive = false
         cancelProactiveRefresh()
+        // Owner-scoped endpoints (/dashboard/stocks/summary/, /alert-events/)
+        // are cached per key, so another tab signing out must not leave this
+        // tab free to render the previous user's rows.
+        invalidate()
         resolvePendingCrossTabRefresh(null)
         break
       case 'signed-in':
@@ -811,6 +816,7 @@ export async function logout(): Promise<void> {
   accessToken = null
   sessionActive = false
   cancelProactiveRefresh()
+  invalidate()
   broadcast({ type: 'signed-out', tabId: TAB_ID, reason: 'explicit_logout' })
 }
 

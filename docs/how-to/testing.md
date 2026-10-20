@@ -50,7 +50,8 @@ The backend suite needs:
 - A reachable PostgreSQL with `CREATE` privilege for the configured role —
   Django builds and tears down `test_finance_analysis`.
 - A `.env` present, or the equivalent variables exported.
-- No Redis or network access for most tests, but see §6.
+- Nothing else. `config.settings.test` puts the cache and the channel layer
+  in-process, so no test can read from or write to the development Redis.
 
 The frontend suite needs only `npm install`. It does not touch the backend.
 
@@ -61,9 +62,20 @@ The frontend suite needs only `npm install`. It does not touch the backend.
 Always run from the activated `.venv` at the repository root. Docker is not part
 of the test path.
 
+Pass `--settings=config.settings.test` (or export `DJANGO_SETTINGS_MODULE`):
+
+```bash
+python manage.py test --settings=config.settings.test
+```
+
+CI sets the same module in its environment. Running without it uses
+`config.settings.local`, whose cache is the shared development Redis — the tests
+still pass, but they pollute (and are polluted by) the live cache, which is the
+thing this module exists to prevent.
+
 ```bash
 # Everything
-python manage.py test
+python manage.py test --settings=config.settings.test
 
 # One app
 python manage.py test apps.backtest

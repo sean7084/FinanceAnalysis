@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   fetchEnsembleWeights,
   fetchLightGBMFeatureImportanceTrends,
@@ -10,7 +10,23 @@ import {
   type LightGBMModelArtifactDto,
   type ModelVersionDto,
 } from '../lib/api'
+import { TableSkeleton } from '../components/layout/TableSkeleton'
+import { useApiResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
+
+interface ModelMonitoringData {
+  modelVersions: ModelVersionDto[]
+  lightgbmModels: LightGBMModelArtifactDto[]
+  ensembleWeights: EnsembleWeightSnapshotDto[]
+  featureTrends: FeatureImportanceTrendGroupDto[]
+}
+
+const EMPTY_MONITORING: ModelMonitoringData = {
+  modelVersions: [],
+  lightgbmModels: [],
+  ensembleWeights: [],
+  featureTrends: [],
+}
 
 function topFeatureSummary(featureImportance: Record<string, number>) {
   const entries = Object.entries(featureImportance)
@@ -26,49 +42,25 @@ function topFeatureSummary(featureImportance: Record<string, number>) {
 
 export function ModelMonitoringPage() {
   const { t } = useI18n()
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [modelVersions, setModelVersions] = useState<ModelVersionDto[]>([])
-  const [lightgbmModels, setLightgbmModels] = useState<LightGBMModelArtifactDto[]>([])
-  const [ensembleWeights, setEnsembleWeights] = useState<EnsembleWeightSnapshotDto[]>([])
-  const [featureTrends, setFeatureTrends] = useState<FeatureImportanceTrendGroupDto[]>([])
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        setLoading(true)
-        const [versions, models, weights, trends] = await Promise.all([
-          fetchModelVersions(undefined, 20),
-          fetchLightGBMModels(20),
-          fetchEnsembleWeights(20),
-          fetchLightGBMFeatureImportanceTrends(undefined, 5, 5),
-        ])
-
-        if (!alive) {
-          return
-        }
-
-        setModelVersions(versions)
-        setLightgbmModels(models)
-        setEnsembleWeights(weights)
-        setFeatureTrends(trends.results)
-        setError(null)
-      } catch {
-        if (alive) {
-          setError(hasAnyAuthCredential() ? t('models.loadError') : `${t('settings.desc')} (${t('nav.settings')})`)
-        }
-      } finally {
-        if (alive) {
-          setLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      alive = false
+  // One resource whose loader keeps the four calls in flight together: they all
+  // describe the same thing (current model state), so they share one cache key
+  // and one revalidation instead of four independent page-level effects.
+  const resource = useApiResource<ModelMonitoringData>('models/monitoring', async () => {
+    const [versions, models, weights, trends] = await Promise.all([
+      fetchModelVersions(undefined, 20),
+      fetchLightGBMModels(20),
+      fetchEnsembleWeights(20),
+      fetchLightGBMFeatureImportanceTrends(undefined, 5, 5),
+    ])
+    return {
+      modelVersions: versions,
+      lightgbmModels: models,
+      ensembleWeights: weights,
+      featureTrends: trends.results,
     }
-  }, [])
+  })
+
+  const { modelVersions, lightgbmModels, ensembleWeights, featureTrends } = resource.data ?? EMPTY_MONITORING
 
   const featureTrendRows = useMemo(() => {
     return featureTrends.flatMap((group) => {
@@ -94,8 +86,12 @@ export function ModelMonitoringPage() {
         <p>{t('models.desc')}</p>
       </header>
 
-      {loading && <p className="status">{t('common.loading')}</p>}
-      {error && <p className="status disconnected">{error}</p>}
+      {resource.loading && <TableSkeleton columns={5} rows={4} />}
+      {resource.error && (
+        <p className="status disconnected">
+          {hasAnyAuthCredential() ? t('models.loadError') : `${t('settings.desc')} (${t('nav.settings')})`}
+        </p>
+      )}
 
       <div className="card">
         <h3>{t('models.versions')}</h3>
@@ -119,7 +115,7 @@ export function ModelMonitoringPage() {
                 <td>{row.feature_schema.length}</td>
               </tr>
             ))}
-            {modelVersions.length === 0 && !loading && (
+            {modelVersions.length === 0 && !resource.loading && (
               <tr>
                 <td colSpan={5}>{t('common.noData')}</td>
               </tr>
@@ -150,7 +146,7 @@ export function ModelMonitoringPage() {
                 <td>{topFeatureSummary(row.feature_importance)}</td>
               </tr>
             ))}
-            {lightgbmModels.length === 0 && !loading && (
+            {lightgbmModels.length === 0 && !resource.loading && (
               <tr>
                 <td colSpan={5}>{t('common.noData')}</td>
               </tr>
@@ -183,7 +179,7 @@ export function ModelMonitoringPage() {
                 <td>{row.trainedAt}</td>
               </tr>
             ))}
-            {featureTrendRows.length === 0 && !loading && (
+            {featureTrendRows.length === 0 && !resource.loading && (
               <tr>
                 <td colSpan={6}>{t('common.noData')}</td>
               </tr>
@@ -214,7 +210,7 @@ export function ModelMonitoringPage() {
                 <td>{Object.entries(row.basis_metrics).map(([key, value]) => `${key}: ${Number(value).toFixed(3)}`).join(', ') || '--'}</td>
               </tr>
             ))}
-            {ensembleWeights.length === 0 && !loading && (
+            {ensembleWeights.length === 0 && !resource.loading && (
               <tr>
                 <td colSpan={5}>{t('common.noData')}</td>
               </tr>

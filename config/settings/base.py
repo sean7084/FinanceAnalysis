@@ -264,6 +264,17 @@ DASHBOARD_SUMMARY_CACHE_SECONDS = env.int('DASHBOARD_SUMMARY_CACHE_SECONDS', def
 # matrix-signal inference cache in apps/backtest/tasks.py. Without it every
 # request re-runs model inference from scratch.
 DASHBOARD_MATRIX_SIGNAL_SCOPE = env('DASHBOARD_MATRIX_SIGNAL_SCOPE', default='dashboard')
+# Prediction completeness reconciliation. Beat never replays a missed occurrence
+# with its original target date, and a universe sweep that runs out of its time
+# budget leaves a date with a few rows rather than none, so "the task ran" is not
+# evidence that the rows exist. This pass looks back over open trading dates and
+# writes what is missing, a bounded number of assets per run.
+#
+# The lookback is in trading days, not calendar days, so a long holiday does not
+# shrink the window to nothing. Raise `max_assets_per_run` to heal a backlog
+# faster at the cost of a longer task; the worker cadence is what makes progress.
+PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS = env.int('PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS', default=5)
+PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN = env.int('PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN', default=20)
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
@@ -307,6 +318,14 @@ CELERY_BEAT_SCHEDULE = {
         # stored predictions. Without this the first dashboard request of the day
         # runs model inference inline and takes minutes.
         'schedule': crontab(hour='19', minute='15'),
+    },
+    'reconcile-prediction-coverage-hourly': {
+        'task': 'apps.prediction.tasks.reconcile_prediction_coverage',
+        # Hourly, offset from the :00/:15 nightly chain so it is not competing
+        # with the sweeps it exists to cover for. One bounded batch per run: a
+        # date missed entirely heals over several hours rather than in one job
+        # that would have to be given an unreasonable time budget.
+        'schedule': crontab(minute='45'),
     },
 }
 

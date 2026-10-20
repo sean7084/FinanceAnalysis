@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-10-19T16:41:32Z_
+_Generated: 2026-10-20T02:45:45Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -40,13 +40,14 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `generate-lightgbm-predictions-daily` | `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | `30 18 * * *` | &mdash; |
 | `generate-predictions-daily` | `apps.prediction.tasks.generate_predictions_for_date` | `0 18 * * *` | &mdash; |
 | `prewarm-dashboard-stocks-cache` | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `15 19 * * *` | &mdash; |
+| `reconcile-prediction-coverage-hourly` | `apps.prediction.tasks.reconcile_prediction_coverage` | `45 * * * *` | &mdash; |
 | `run-daily-sentiment-pipeline` | `apps.sentiment.tasks.run_daily_sentiment_pipeline` | `0 17 * * *` | &mdash; |
 | `run-hourly-historical-news-backfill` | `apps.sentiment.tasks.run_hourly_historical_news_backfill` | `12 * * * *` | &mdash; |
 | `sync-a-shares-daily-from-tushare` | `apps.markets.tasks.sync_daily_a_shares` | `10 16 * * *` | &mdash; |
 | `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 2 * 1 *` | &mdash; |
 | `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 0 * 2-8 *` | &mdash; |
 
-**45** registered project tasks, **10** beat entries, **35** reachable only through management commands, API actions, or other tasks.
+**46** registered project tasks, **11** beat entries, **35** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -84,10 +85,11 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.markets.tasks.sync_monthly_index_memberships` | `ops` | default | global | global | `sync-index-memberships-monthly` |
 | `apps.markets.tasks.sync_official_benchmark_index_history` | `ops` | default | global | global | &mdash; |
 | `apps.prediction.tasks.generate_prediction_for_asset` | `ops` | default | global | global | &mdash; |
-| `apps.prediction.tasks.generate_predictions_for_date` | `ops` | default | global | global | `generate-predictions-daily` |
+| `apps.prediction.tasks.generate_predictions_for_date` | `ops` | default | **3600** | **3900** | `generate-predictions-daily` |
+| `apps.prediction.tasks.reconcile_prediction_coverage` | `ops` | default | **1500** | **1800** | `reconcile-prediction-coverage-hourly` |
 | `apps.prediction.tasks.train_prediction_models` | `ops` | default | global | global | &mdash; |
 | `apps.prediction.tasks_lightgbm.generate_lightgbm_prediction_for_asset` | `ops` | default | global | global | &mdash; |
-| `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | `ops` | default | global | global | `generate-lightgbm-predictions-daily` |
+| `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | `ops` | default | **3600** | **3900** | `generate-lightgbm-predictions-daily` |
 | `apps.prediction.tasks_lightgbm.train_lightgbm_models` | `train-lightgbm` | explicit | global | global | &mdash; |
 | `apps.prediction.tasks_lstm.generate_lstm_prediction_for_asset` | `ops` | default | global | global | &mdash; |
 | `apps.prediction.tasks_lstm.generate_lstm_predictions_for_date` | `ops` | default | global | global | &mdash; |
@@ -106,6 +108,9 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | **3600** | **3900** |
 | `apps.backtest.tasks.run_backtest` | **1800** | **2100** |
 | `apps.markets.tasks.run_post_sync_universal_refresh` | **1800** | **2100** |
+| `apps.prediction.tasks.generate_predictions_for_date` | **3600** | **3900** |
+| `apps.prediction.tasks.reconcile_prediction_coverage` | **1500** | **1800** |
+| `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | **3600** | **3900** |
 
 These overrides exist because the global soft limit is short enough to protect the `ops` queue from a stuck sync, while a backtest chunk and the post-sync universe refresh legitimately run for tens of minutes.
 

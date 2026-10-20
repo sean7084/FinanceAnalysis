@@ -9,7 +9,7 @@ from django.contrib.auth.models import User
 from django.conf import settings
 from django.db.utils import OperationalError
 from django.http import QueryDict
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -1408,17 +1408,11 @@ class TechnicalIndicatorBackfillCommandTests(TestCase):
             )
 
 
-@override_settings(CACHES={
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'dashboard-stocks-cache-tests',
-    },
-})
 class DashboardStocksCacheTests(DashboardStockFixtures, TestCase):
     """The view cache must be consulted before the inference-bearing build.
 
-    Isolated onto locmem because the project has no test settings module, so the
-    default Redis cache would otherwise be shared with a running dev server.
+    Runs on the locmem cache that config.settings.test installs, so nothing here
+    can reach the Redis instance a development server is using.
     """
 
     PATH = '/api/v1/dashboard/stocks/'
@@ -1518,12 +1512,6 @@ class DashboardStocksCacheTests(DashboardStockFixtures, TestCase):
         self.assertNotEqual(key, key_for(f'{self.QUERY}&search=alpha'))
 
 
-@override_settings(CACHES={
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'dashboard-summary-tests',
-    },
-})
 class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
     """The single call that replaces the SPA's seven dashboard requests."""
 

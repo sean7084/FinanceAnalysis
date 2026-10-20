@@ -13,6 +13,7 @@ import {
   readAuthToken,
   saveAuthSettings,
 } from './api'
+import { cacheSnapshot, seed } from './queryCache'
 
 vi.stubGlobal('fetch', vi.fn())
 
@@ -208,6 +209,16 @@ describe('cookie-based auth flow', () => {
     const logoutCall = vi.mocked(fetch).mock.calls[1]!
     expect(logoutCall[0]).toBe('/api/v1/auth/logout/')
     expect(logoutCall[1]?.credentials).toBe('include')
+  })
+
+  it('drops cached queries on logout, because the summary and alert rows are owner-scoped', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(emptyResponse(204))
+    seed('dashboard/summary', { macroPhase: 'RECOVERY' })
+    expect(cacheSnapshot('dashboard/summary').hasValue).toBe(true)
+
+    await logout()
+
+    expect(cacheSnapshot('dashboard/summary').hasValue).toBe(false)
   })
 
   it('requests larger OHLCV pages to avoid excessive stock-detail request fan-out', async () => {
