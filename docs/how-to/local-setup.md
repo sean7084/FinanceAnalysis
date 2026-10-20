@@ -296,8 +296,11 @@ There is no account or credential to configure for the API — every endpoint is
 open; see [`../reference/api.md`](../reference/api.md) §2. The only outbound mail
 left in the system is the alert **email** channel, which addresses the
 comma-separated `ALERT_NOTIFY_EMAILS` list; empty by default, which leaves the
-channel off. Both email backends default to the console backend, so those
-messages are printed to the Django process stdout rather than delivered.
+channel off. Leaving it off is not neutral: an event is marked `SENT` only when at
+least one channel actually dispatched, so a rule whose only channel is `email`
+records `FAILED` on every trigger, with no error raised. Both email backends
+default to the console backend, so those messages are printed to the Django process
+stdout rather than delivered.
 
 `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` automatically when `.env`
 exists. OS environment variables take precedence over `.env` values.

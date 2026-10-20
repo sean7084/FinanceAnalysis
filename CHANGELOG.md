@@ -54,7 +54,8 @@
     to `[]`, and an event is only marked `SENT` when at least one channel actually
     dispatched, so a rule whose only channel is `email` now records `FAILED` instead
     of mailing its owner. Existing rules are affected silently — there is no error,
-    just a `FAILED` row per trigger.
+    just a `FAILED` row per trigger. `test_email_channel_without_recipients_records_failed_dispatch`
+    asserts that outcome so it cannot be softened into a silent success by accident.
   - **WebSockets are open**: `AuthMiddlewareStack` removed from `config/asgi.py`, so
     `/ws/alerts/` needs no session and no `?token=` — which also drops a per-connection
     DB round-trip. `config/routing.py` was deleted: it duplicated this wiring and was

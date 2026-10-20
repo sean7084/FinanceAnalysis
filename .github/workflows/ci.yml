@@ -66,8 +66,11 @@ jobs:
       # deleted tests were its permission gates, credential storage and API-key
       # behaviour. Two replaced what they covered: alert notification dispatch
       # (email recipients + the `alerts` group_send) and the un-gated screener
-      # catalogue. Discovery is verified at 361, so nothing is silently missing.
-      MIN_TEST_COUNT: "361"
+      # catalogue.
+      # 361 -> 362: the no-recipients case, which is the one silent behaviour change
+      # of settings-driven alerting and had nothing asserting it.
+      # Discovery is verified at 362, so nothing is silently missing.
+      MIN_TEST_COUNT: "362"
 
     steps:
       - uses: actions/checkout@v4

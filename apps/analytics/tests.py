@@ -162,6 +162,24 @@ class Phase9AlertNotificationDispatchTests(TestCase):
         self.assertEqual(event.dispatched_channels, ['email'])
         self.assertEqual(event.status, AlertEvent.Status.SENT)
 
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        ALERT_NOTIFY_EMAILS=[],
+    )
+    def test_email_channel_without_recipients_records_failed_dispatch(self):
+        # With the owner gone there is no fallback address, so an email-only rule
+        # on an unconfigured deployment dispatches nothing and the event lands
+        # FAILED rather than quietly succeeding.
+        rule = self._rule(['email'])
+        event = self._event(rule)
+
+        send_alert_notifications(event.id)
+
+        event.refresh_from_db()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(event.dispatched_channels, [])
+        self.assertEqual(event.status, AlertEvent.Status.FAILED)
+
     def test_websocket_channel_group_sends_to_alerts_group(self):
         rule = self._rule(['websocket'])
         event = self._event(rule)
