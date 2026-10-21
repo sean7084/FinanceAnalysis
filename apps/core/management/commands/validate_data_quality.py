@@ -148,7 +148,16 @@ REPORT_DESCRIPTIONS = {
 }
 INDEX_CODE_LABELS = {
     '000905.SH': 'CSI 500',
+    'H00905.CSI': 'CSI 500 Total Return',
 }
+# Total-return alpha benchmarks (ETF rotation) consumed as a daily series but defining no
+# membership universe. They stay out of required_pit_index_codes_for_date() because that set
+# also drives the IndexMembership checks and TuShare publishes no weights for these codes, so
+# requiring it there would report a critical gap that can never be closed. They are required for
+# benchmark-daily coverage instead, from the moment ingestion writes their first row, so a
+# half-synced benchmark surfaces as a backfill gap rather than going unchecked.
+# Sync list: apps/markets/tasks.py DEFAULT_INDEX_CODES.
+ALPHA_BENCHMARK_INDEX_CODES = ('H00905.CSI',)
 USABLE_ASSET_CLIFF_DROP_RATIO = 0.2
 FACTOR_SCORE_FIELDS = (
     'pe_ttm_percentile_score',
@@ -864,7 +873,7 @@ class Command(BaseCommand):
             field_counters,
         )
         self._validate_benchmark_index_daily_history(
-            required_trade_dates_by_code,
+            self._required_benchmark_trade_dates_by_code(trading_dates, required_trade_dates_by_code),
             writer,
             counters,
             table_counters,
@@ -949,6 +958,27 @@ class Command(BaseCommand):
             for index_code in required_pit_index_codes_for_date(trading_date):
                 required_dates_by_code[index_code].append(trading_date)
         return {index_code: dates for index_code, dates in required_dates_by_code.items()}
+
+    def _required_benchmark_trade_dates_by_code(self, trading_dates, required_trade_dates_by_code):
+        """Return the index codes whose daily rows BenchmarkIndexDaily must carry.
+
+        Starts from the PIT-universe codes, then adds any ALPHA_BENCHMARK_INDEX_CODES code that
+        already has a row in the validated window: once ingestion promises the series, a partial
+        history is a gap worth reporting rather than something to skip while waiting for it.
+        """
+        benchmark_dates_by_code = dict(required_trade_dates_by_code)
+        alpha_dates = [trading_date for trading_date in trading_dates if required_pit_index_codes_for_date(trading_date)]
+        if not alpha_dates:
+            return benchmark_dates_by_code
+
+        synced_alpha_codes = BenchmarkIndexDaily.objects.filter(
+            index_code__in=ALPHA_BENCHMARK_INDEX_CODES,
+            trade_date__gte=alpha_dates[0],
+            trade_date__lte=alpha_dates[-1],
+        ).values_list('index_code', flat=True).distinct()
+        for index_code in synced_alpha_codes:
+            benchmark_dates_by_code[index_code] = alpha_dates
+        return benchmark_dates_by_code
 
     def _validate_index_membership_history(self, trading_dates, required_trade_dates_by_code, writer, counters, table_counters, field_counters):
         if not required_trade_dates_by_code:
@@ -1052,6 +1082,18 @@ class Command(BaseCommand):
             if not missing_dates:
                 continue
 
+            # Say which contract is broken: an alpha-benchmark gap is our own sync promise, not
+            # the PIT universe contract, and naming the backfill command keeps the row actionable
+            # instead of reading like a universe defect.
+            if index_code in ALPHA_BENCHMARK_INDEX_CODES:
+                details = (
+                    f'BenchmarkIndexDaily is missing required PIT trading dates for this alpha benchmark; '
+                    f'the code is in the sync list but its history is incomplete. Run '
+                    f'sync_benchmark_index_history --index-codes {index_code} over the full window.'
+                )
+            else:
+                details = 'BenchmarkIndexDaily is missing required PIT trading dates for this index.'
+
             self._increment(counters, issue_type, severity, len(missing_dates))
             table_counters[('benchmark_index_daily', severity, issue_type)] += len(missing_dates)
             field_counters[('benchmark_index_daily', 'trade_date', issue_type, severity)] += len(missing_dates)
@@ -1068,7 +1110,7 @@ class Command(BaseCommand):
                     'gap_start': gap_start,
                     'gap_end': gap_end,
                     'gap_missing_count': len(window_dates),
-                    'details': 'BenchmarkIndexDaily is missing required PIT trading dates for this index.',
+                    'details': details,
                 })
 
     def _validate_pit_benchmark_daily_history(self, trading_dates, writer, counters, table_counters, field_counters):
