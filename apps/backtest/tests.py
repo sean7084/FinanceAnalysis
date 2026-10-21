@@ -197,7 +197,9 @@ class Phase15BacktestTests(TestCase):
         queue_names = [queue.name for queue in settings.CELERY_TASK_QUEUES]
 
         self.assertEqual(settings.CELERY_TASK_DEFAULT_QUEUE, 'ops')
-        self.assertCountEqual(queue_names, ['ops', 'backtest', 'train-lightgbm', 'train-lstm'])
+        self.assertCountEqual(
+            queue_names, ['ops', 'backtest', 'train-lightgbm', 'train-lstm', 'etf-rotation']
+        )
         self.assertEqual(settings.CELERY_TASK_ROUTES['apps.backtest.tasks.run_backtest']['queue'], 'backtest')
         self.assertEqual(
             settings.CELERY_TASK_ROUTES['apps.prediction.tasks_lightgbm.train_lightgbm_models']['queue'],

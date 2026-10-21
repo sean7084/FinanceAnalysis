@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     'apps.sentiment',
     'apps.prediction',
     'apps.backtest',
+    'apps.etf_rotation',
     'apps.developer',
     'drf_spectacular',
 ]
@@ -197,6 +198,7 @@ CELERY_TASK_QUEUES = (
     Queue("backtest", routing_key="backtest"),
     Queue("train-lightgbm", routing_key="train-lightgbm"),
     Queue("train-lstm", routing_key="train-lstm"),
+    Queue("etf-rotation", routing_key="etf-rotation"),
 )
 CELERY_TASK_ROUTES = {
     "apps.backtest.tasks.run_backtest": {"queue": "backtest", "routing_key": "backtest"},
@@ -205,6 +207,45 @@ CELERY_TASK_ROUTES = {
         "routing_key": "train-lightgbm",
     },
     "apps.prediction.tasks_lstm.train_lstm_models": {
+        "queue": "train-lstm",
+        "routing_key": "train-lstm",
+    },
+    "apps.etf_rotation.tasks.sync_etf_universe": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.refresh_etf_first_trade_dates": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.sync_etf_daily_by_date": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.sync_etf_daily_recent": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.compute_etf_features_daily": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.generate_etf_rotation_signal_daily": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.run_etf_rotation_backtest": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    # ETF retrains share the stock training queues, so an ETF training run can occupy a
+    # worker slot a stock retrain is waiting for. Accepted: both are GPU/CPU-bound jobs on
+    # the same host, and a separate queue pair would double the number of idle workers.
+    "apps.etf_rotation.tasks.train_etf_rotation_lightgbm": {
+        "queue": "train-lightgbm",
+        "routing_key": "train-lightgbm",
+    },
+    "apps.etf_rotation.tasks.train_etf_rotation_lstm": {
         "queue": "train-lstm",
         "routing_key": "train-lstm",
     },
@@ -226,6 +267,35 @@ NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
 NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
 NEWS_BACKFILL_FLOOR = env('NEWS_BACKFILL_FLOOR', default='2021-04-15 00:00:00')
 NEWS_BACKFILL_LIMIT_PER_PROVIDER = env.int('NEWS_BACKFILL_LIMIT_PER_PROVIDER', default=0)
+
+# ETF rotation -- see apps/etf_rotation/tasks.py. Every name here is read with
+# getattr(settings, NAME, fallback), so the app stays importable without this block.
+# TuShare pacing: a short sleep between calls, and a long one on the 频率超限 rate-limit
+# error because the per-minute quota window has to expire before retrying is useful.
+ETF_SYNC_REQUEST_SLEEP_SECONDS = env.float('ETF_SYNC_REQUEST_SLEEP_SECONDS', default=0.15)
+ETF_SYNC_RETRY_SLEEP_SECONDS = env.float('ETF_SYNC_RETRY_SLEEP_SECONDS', default=65.0)
+ETF_SYNC_MAX_RETRIES = env.int('ETF_SYNC_MAX_RETRIES', default=5)
+# Universe floor: roughly six months of trading history before a fund may be ranked.
+ETF_MIN_LISTING_AGE_DAYS = env.int('ETF_MIN_LISTING_AGE_DAYS', default=183)
+# Liquidity floor in YUAN, not TuShare 千元: the sync layer converts amount to 元 on
+# ingest, so a value written in the wrong unit is a 1000x error that admits dead funds.
+ETF_MIN_AVG_AMOUNT_YUAN = env.int('ETF_MIN_AVG_AMOUNT_YUAN', default=50_000_000)
+# A single position may not exceed this multiple of the turnover its own legs consume.
+ETF_LIQUIDITY_FLOOR_MULTIPLE = env.float('ETF_LIQUIDITY_FLOOR_MULTIPLE', default=10.0)
+# Book weight not held in the ranked positions sits in the defensive asset.
+ETF_MAX_POSITIONS = env.int('ETF_MAX_POSITIONS', default=5)
+# Cash-substitute ETF the strategy rotates into when momentum is risk-off.
+ETF_DEFENSIVE_ASSET = env('ETF_DEFENSIVE_ASSET', default='511880.SH')
+# Index the rotation signal and backtest are scored against.
+ETF_BENCHMARK_CODE = env('ETF_BENCHMARK_CODE', default='H00905.CSI')
+# Forward-return window the label builder and the models both predict.
+ETF_LABEL_HORIZON_DAYS = env.int('ETF_LABEL_HORIZON_DAYS', default=20)
+# Per-side transaction costs charged to the backtest's simulated fills.
+ETF_COMMISSION_RATE = env.float('ETF_COMMISSION_RATE', default=0.0003)
+# YUAN commission floor per order; it dominates the rate term on small legs.
+ETF_MIN_COMMISSION = env.int('ETF_MIN_COMMISSION', default=5)
+# Per-side adverse-price haircut applied on top of the commission.
+ETF_SLIPPAGE = env.float('ETF_SLIPPAGE', default=0.001)
 
 # Model artifact store -- see apps/prediction/artifact_store.py.
 # `local` (default) keeps artifacts on the filesystem under BASE_DIR (the historical
@@ -322,6 +392,22 @@ CELERY_BEAT_SCHEDULE = {
         # date missed entirely heals over several hours rather than in one job
         # that would have to be given an unreasonable time budget.
         'schedule': crontab(minute='45'),
+    },
+    # ETF rotation sits after the 16:10 A-share sync (which refreshes the trading
+    # calendar the bar sync walks) and after the 19:15 cache warm. The two :45 slots
+    # share the clock with reconcile-prediction-coverage-hourly above but route to the
+    # etf-rotation queue, so they contend for the database rather than a worker slot.
+    'sync-etf-daily-bars-daily': {
+        'task': 'apps.etf_rotation.tasks.sync_etf_daily_recent',
+        'schedule': crontab(hour='16', minute='45'),
+    },
+    'compute-etf-features-daily': {
+        'task': 'apps.etf_rotation.tasks.compute_etf_features_daily',
+        'schedule': crontab(hour='17', minute='20'),
+    },
+    'generate-etf-rotation-signal-daily': {
+        'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
+        'schedule': crontab(hour='19', minute='45'),
     },
 }
 

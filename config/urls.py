@@ -55,6 +55,14 @@ from apps.backtest.views import (
     BacktestRunViewSet,
     BacktestTradeViewSet,
 )
+from apps.etf_rotation.views import (
+    ETFUniverseViewSet,
+    ETFDailyViewSet,
+    ETFFeatureSnapshotViewSet,
+    ETFRotationSignalViewSet,
+    ETFRotationPositionViewSet,
+    ETFRotationBacktestViewSet,
+)
 from apps.developer.views import (
     ChangelogEntryViewSet,
 )
@@ -88,6 +96,15 @@ router.register(r'lightgbm-models', LightGBMModelArtifactViewSet, basename='ligh
 router.register(r'ensemble-weights', EnsembleWeightSnapshotViewSet, basename='ensemble-weight')
 router.register(r'backtest', BacktestRunViewSet, basename='backtest')
 router.register(r'backtest-trades', BacktestTradeViewSet, basename='backtest-trade')
+# The ETF rotation endpoints are namespaced under ``etf/`` because ``signals`` and
+# ``positions`` are already taken by the stock-side SignalEventViewSet and by the
+# prediction surface; a second registration on those prefixes would shadow them.
+router.register(r'etf/universe', ETFUniverseViewSet, basename='etf-universe')
+router.register(r'etf/daily', ETFDailyViewSet, basename='etf-daily')
+router.register(r'etf/features', ETFFeatureSnapshotViewSet, basename='etf-feature')
+router.register(r'etf/signals', ETFRotationSignalViewSet, basename='etf-signal')
+router.register(r'etf/positions', ETFRotationPositionViewSet, basename='etf-position')
+router.register(r'etf/backtests', ETFRotationBacktestViewSet, basename='etf-backtest')
 router.register(r'developer/changelog', ChangelogEntryViewSet, basename='developer-changelog')
 
 urlpatterns = [
