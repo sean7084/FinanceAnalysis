@@ -1,5 +1,146 @@
 # Changelog
 
+### version 0.1.18
+
+#### Added:
+
+- **ETF rotation module** (`apps/etf_rotation/`, ~10,800 lines) — a standalone
+  cross-sectional rotation pipeline for exchange-traded funds. It deliberately
+  does **not** reuse the `apps/prediction` stock pipeline: ETFs are not in
+  `Asset`, and putting them there would have polluted the CSI 500 fan-out in
+  `apps/markets/tasks.py:sync_daily_a_shares`. Six models — `ETFUniverse`,
+  `ETFDaily`, `ETFFeatureSnapshot`, `ETFRotationSignal`,
+  `ETFRotationPosition`, `ETFRotationBacktest` — plus `etf_universe.py`
+  (classification + point-in-time pool), `features.py`, `walk_forward.py`,
+  `train_lightgbm.py`, `train_lstm.py`, `rotation_engine.py`,
+  `backtest_engine.py`, `signals.py`, `tasks.py`.
+- **Ingestion by trade date, not by fund.** TuShare's `fund_daily(trade_date=)`
+  returns the whole market in one call (~2,139 rows, 0.16 s), so the primary
+  path is `sync_etf_daily_by_date()`; per-`ts_code` syncing survives only as a
+  gap-filler. Backfill 2016-01-04 → 2026-10-20 wrote **2,606,858 `ETFDaily`
+  rows** across 2,586 sessions and 2,727 funds. `sync_etf_universe` never
+  filters on `status`, so delisted funds keep their history and the pool can be
+  reconstructed point-in-time (25 of 40 sampled delisted funds still carry bars)
+  — survivorship bias is designed out rather than adjusted for later.
+- **Unit conversion at ingest.** `fund_daily` publishes `vol` in 手 and
+  `amount` in 千元; both are converted on the way in (×100 → 份, ×1000 → 元) so
+  the stored identity `amount / (volume / 100) ≈ close` holds (4.2168 vs 4.22 on
+  510300.SH, 0.077%). `TuShareDailyIngestUnitTests` pins this permanently — a
+  silent 1000× error here would have made the 50,000,000 元 liquidity floor
+  either admit every fund or none.
+- **Features** (`features.py`): 24 whitelisted columns — momentum 5/10/20/60/
+  120/250d, momentum acceleration, volatility 20/60d, Sharpe, relative strength
+  vs the total-return benchmark, cross-sectional `rank_pct`, RSI-14, MA ratios,
+  Bollinger position, 20d average amount, volume ratio, drawdown from high,
+  60d correlation. TA-Lib is called directly on DataFrames rather than through
+  `apps/analytics/tasks.py`, whose wrappers are `asset_id`-bound. Cross-sectional
+  ranks use only the day's eligible pool, and labels
+  (`fwd_return`/`label_rank_pct`/`label_top_bucket`) are strictly forward-shifted.
+  Full run: 359,236 eligible and 349,353 labelled snapshots in 429 s, with
+  `benchmark_missing_sessions=0`. `PointInTimeFeatureLeakTests` recomputes
+  date-`D` features from bars `<= D` only and asserts the labels come from `> D`.
+- **Walk-forward framework** (`walk_forward.py`) — 100% new; there was no
+  rolling-retrain code anywhere in the repo. Expanding window, 6 folds, with a
+  purge of at least the 20-session label horizon between train and validation so
+  adjacent folds cannot leak.
+- **Celery queue `etf-rotation`** with per-task routes (the repo routes by exact
+  task name, not by `tasks.*` wildcard), beat slots at **16:45** sync / **17:20**
+  features / **19:45** signal — chosen to avoid the existing 17:00 sentiment
+  pipeline and to land after the 19:15 cache warm. Every long task overrides the
+  global `CELERY_TASK_SOFT_TIME_LIMIT = 60` / `TIME_LIMIT = 300`, which would
+  otherwise have killed the backfill, backtest and training tasks silently.
+  `compose/local/django/start-celeryworker` and `scripts/run_local_stack.sh`
+  (+ `check_stack()`) were updated, because a queue with no consumer fails
+  silently.
+- **`apps/core/finance_metrics.py`** — shared Calmar, alpha/beta, information
+  ratio, annualized turnover, win rate, max drawdown and Sharpe. Previously
+  `_calc_max_drawdown` and `_calc_sharpe` existed only as module-private helpers
+  in `apps/backtest/tasks.py`; they are not duplicated inside the ETF app.
+- **ETF-specific backtest engine and fee model.** Commission 万三 with a ¥5
+  minimum, 10 bps slippage, and **no stamp duty on sells** — copying
+  `apps/backtest/tasks.py:_resolve_fee_config` verbatim would have
+  systematically overstated cost and understated alpha, since ETF sales are
+  stamp-duty exempt. A liquidity constraint rejects any signal whose trade value
+  exceeds 1/10 of that day's turnover. Verified by hand on a single-config run:
+  `total_return=-8.09%`, `sharpe=-1.1854`, `total_fees=1,724.23`,
+  `slippage=5,699.56`, 64 trades over 243 sessions, `fee_model.stamp_duty=0.0`.
+- **Read-only API** under `/etf/` — `universe`, `daily`, `features`, `signals`,
+  `positions`, `backtests`, registered on the single `config/urls.py`
+  `DefaultRouter` (no app-level `urls.py`, per repo convention). The `/etf/`
+  prefix is not cosmetic: `signals` and `positions` are already taken by the
+  analytics `SignalEventViewSet` and the prediction surface. Contracts the schema
+  cannot express are documented in a new `docs/reference/api.md` section.
+- **`ModelType` gains `ETF_LIGHTGBM` / `ETF_LSTM` / `ETF_ENSEMBLE`**
+  (migration `prediction.0006`). Per the design decision, the shared
+  `apps/prediction/models.py:ModelVersion` registry is reused instead of adding
+  an `ETFRotationModelVersion` table; validation windows live in the existing
+  `metadata` JSONField and artifacts under
+  `BASE_DIR/models/etf_rotation/{model_type}/{version}/` via `artifact_store`.
+
+#### Changed:
+
+- **`H00905.CSI` (CSI 500 Total Return) is now synced and is the alpha
+  benchmark**; the `000905.SH` price index is display-only. Measuring alpha
+  against a price index would have credited the strategy with the dividend yield
+  it never earned. Both series carry 4,076 rows (bounded by
+  `HISTORICAL_DATA_FLOOR` 2010-01-01), cumulative total return 0.8376 vs price
+  0.5168, 0 coverage violations.
+- **`validate_data_quality` handles alpha benchmarks.** `INDEX_CODE_LABELS`
+  learns `H00905.CSI`, and a new `ALPHA_BENCHMARK_INDEX_CODES` +
+  `_required_benchmark_trade_dates_by_code()` require daily coverage for a
+  total-return code from the moment ingestion writes its first row, so a
+  half-synced benchmark surfaces as a named backfill gap instead of passing
+  unnoticed. These codes stay **out** of
+  `required_pit_index_codes_for_date()`: that set also drives the
+  `IndexMembership` checks and TuShare publishes no constituents or weights for
+  a total-return series, so requiring it there would report a critical gap that
+  can never be closed. A scoped run (2026-09-01 → 2026-10-20, 1,783 assets,
+  ~7 min) writes zero rows to `benchmark_index_daily_gaps.csv` and
+  `pit_benchmark_daily_gaps.csv`, and no report mentions `H00905` — the change
+  adds no new failures. The 51,633 criticals it does report are pre-existing
+  stock-side gaps (`missing_factor_score` 34,239, `missing_ohlcv` 17,394).
+
+#### Result: the rule baseline ships, the ML models do not
+
+This is the part worth reading before trusting any number above.
+
+The RULE grid ran 144 combinations (140 executed, 4 reused) in 1,116 s. The
+winner — monthly rebalance, max 3 positions, `momentum_lookback=20`,
+absolute-momentum filter on, score weighting — returns **+77.56%** over the
+2024-01-01 → 2026-10-20 holdout: annualized **+25.37%**, alpha **+18.21%** vs
+`H00905.CSI`, information ratio 0.458, Sharpe 0.908, max drawdown 20.0%, beta
+0.607, ¥11,737 in fees.
+
+**Neither ML ranker cleared the gates that were specified for it:**
+
+- *Holdout rank IC* was required to be positive in **all 6** folds. LightGBM was
+  positive in 4/6 (mean 0.0306), LSTM in 4/6 (mean 0.0384). Both fail.
+- *Incremental alpha* — ML had to beat RULE on the same fold split, or not ship.
+  LightGBM lost all 3 grid configs (alpha −0.0141 / −0.0026 / +0.0338 against
+  RULE's +0.1821 / +0.1757 / +0.1752). ENSEMBLE lost all 3 (+0.0641 / +0.0712 /
+  +0.0355) — the 0.3 LightGBM weight drags the 0.3 LSTM weight below the pure
+  rule baseline. LSTM passed 2 of 3 but **lost the grid's #1 config** (+0.1646 vs
+  +0.1821), and bought its two passes with beta 1.08–1.19 and max drawdown
+  0.41–0.42 against RULE's 0.61–0.69 and 0.18–0.20. Its information ratio did
+  improve (0.74/0.88/1.02 vs 0.458/0.483/0.460), which makes it a candidate for
+  further work rather than a result to discard.
+
+All three ETF `ModelVersion` rows are therefore `status=READY` but
+**`is_active=False`**, each carrying a `deployment_note` recording exactly these
+numbers. With nothing active, `rotation_engine` resolves no predictor and serves
+RULE, and an ENSEMBLE request renormalises to `{'RULE': 1.0}` instead of
+crashing — behaviour pinned by `RegistryFallbackScoringTests` (10 tests), so the
+19:45 beat task cannot fail on a cold environment.
+
+Backtest rows 153–161 are retained for audit but must **not** be quoted: their
+models were trained through 2026-09-14, overlapping the holdout, so their
+apparent +513.76% / alpha +68.55% is in-sample memorisation. The honest numbers
+come from the `--end 2023-11-30` retrain (versions `*-oos23`, rows 162–170),
+which also purges the 20-session label horizon. Deleting the contaminated rows
+would be irreversible, so they are labelled instead.
+
+Backend test count is 431 against a `MIN_TEST_COUNT` floor of 362.
+
 ### version 0.1.17
 
 #### Removed:

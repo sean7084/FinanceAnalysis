@@ -9,9 +9,12 @@ per bar) and filters on the columns the migrations actually indexed -- ``date``,
 allowed but is the caller's problem; the index choice is documented per view.
 
 **No permission classes are declared.** ``config/settings/base.py`` sets
-``DEFAULT_PERMISSION_CLASSES`` to ``IsAuthenticatedOrReadOnly``, so reads here are public
-and any future write endpoint would require authentication. Stating ``IsAuthenticated``
-per view would silently tighten that; omitting it keeps one place to change.
+``DEFAULT_PERMISSION_CLASSES`` to ``AllowAny`` with an empty
+``DEFAULT_AUTHENTICATION_CLASSES``, so every route here is public and there is no
+credential to inherit. ``ReadOnlyModelViewSet`` is therefore the *only* thing keeping
+these surfaces read-only: adding a write action would make it publicly writable, with
+no permission layer in front of it. Declaring nothing per view keeps that a single
+decision in ``base.py`` instead of implying a protection this app does not have.
 
 Pagination is inherited from ``apps.core.pagination.ApiPageNumberPagination`` for the same
 reason. Only the backtest view overrides it, because a page of grid-search rows is a table

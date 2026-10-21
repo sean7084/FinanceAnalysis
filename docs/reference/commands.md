@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-20T09:59:25Z_
+_Generated: 2026-10-21T12:09:21Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**34** project commands across **8** apps.
+**40** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -195,6 +195,113 @@ Validate historical data quality and write actionable reports under reports/ wit
 | `--alert` | flag | `False` |  | Email a summary when critical data-quality issues are found. |
 | `--alert-recipients` | value | `""` |  | Comma-separated alert recipients. Falls back to settings. |
 | `--fail-on-critical` | flag | `False` |  |  |
+
+
+## `apps.etf_rotation`
+
+
+### `compute_etf_features`
+
+Compute point-in-time ETF features and labels into ETFFeatureSnapshot.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | &mdash; |  | YYYY-MM-DD, inclusive. |
+| `--end` | value | `""` |  | YYYY-MM-DD, inclusive. Defaults to today. |
+| `--years` | value | `0` |  | Trailing N calendar years ending today; replaces --start/--end. |
+| `--horizon` | value | `0` |  | Label horizon in trading sessions. |
+| `--min-amount` | value | `0.0` |  | Pool entry: 20-session average turnover in yuan (ETFDaily.amount is yuan, not thousands). |
+| `--min-age-days` | value | `0` |  | Pool entry: minimum days since listing. |
+| `--batch-size` | value | `0` |  | Rows per upsert batch. |
+| `--dry-run` | flag | `False` |  | Compute and report; write nothing. |
+| `--recompute-labels-only` | flag | `False` |  | Update the label columns of existing rows only; never insert, never touch a feature. |
+
+
+### `generate_etf_rotation_signal`
+
+Rank the point-in-time ETF pool and write the rotation signal for one date.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--date` | value | &mdash; |  | Trade date (YYYY-MM-DD). Default: newest session with a non-empty eligible cross-section. |
+| `--signal-type` | value | `MONTHLY` |  | Rebalance cadence the row is stored under (default MONTHLY). |
+| `--model-type` | value | `RULE` |  | Scorer: the rule blend, a trained LIGHTGBM/LSTM, or their ensemble. An ML type with no active ModelVersion fails instead of quietly falling back to RULE. |
+| `--max-positions` | value | &mdash; |  | Slots in the book. Default: settings.ETF_MAX_POSITIONS (5). |
+| `--momentum-lookback` | value | &mdash; |  | Momentum horizon in sessions, e.g. 60 -> mom_60d. Default: 60; the nearest stored horizon is substituted and recorded in metadata when it is absent. |
+| `--dry-run` | flag | `False` |  | Score, rank, verify and report; write nothing. |
+
+
+### `run_etf_rotation_backtest`
+
+Run a single ETF rotation backtest, or the 144-combination RULE grid search.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | &mdash; |  | YYYY-MM-DD, inclusive. |
+| `--end` | value | &mdash; |  | YYYY-MM-DD, inclusive. Required with --start. |
+| `--model` | value | &mdash; |  | Ranker to use. Default: RULE. |
+| `--frequency` | value | &mdash; |  | Rebalance frequency. Default: BacktestConfig (MONTHLY). |
+| `--max-positions` | value | &mdash; |  | Holding count. Default: BacktestConfig (5). |
+| `--momentum-lookback` | value | &mdash; |  | Ranking horizon in sessions. Default: BacktestConfig (60). |
+| `--no-absolute-momentum-filter` | flag | &mdash; |  | Drop the risk-on/risk-off absolute momentum gate (default: on). |
+| `--weighting` | value | &mdash; |  | Position sizing across the selected legs. Default: equal. |
+| `--defensive-asset` | value | &mdash; |  | TS code of the risk-off sleeve. Default: settings.ETF_DEFENSIVE_ASSET. |
+| `--initial-capital` | value | &mdash; |  | Starting equity in yuan. Default: settings.ETF_INITIAL_CAPITAL. A small value is how the min-commission floor gets exercised. |
+| `--name` | value | `""` |  | Name of the persisted row. |
+| `--persist` | flag | `True` |  | Persist an ETFRotationBacktest row (the default). |
+| `--no-persist` | flag | `True` |  | Run without writing anything; metrics go to stdout only. |
+| `--backtest-id` | value | &mdash; |  | Re-run an existing ETFRotationBacktest, using its columns as the config. |
+| `--queue` | flag | `False` |  | Enqueue tasks.run_etf_rotation_backtest on etf-rotation instead of running inline. |
+| `--sample-fills` | value | `5` |  | Filled trades to reprint with recomputed fees for the hand check (default 5). |
+| `--grid` | flag | `False` |  | Sweep the 144 RULE combinations (C25). Overrides --model. |
+| `--grid-top` | value | `10` |  | Rows of the ranked grid table (default 10). |
+| `--grid-limit` | value | `0` |  | Run only the first N combinations (0 = all). Cheap smoke of a long sweep. |
+| `--grid-plan` | flag | `False` |  | Print the combinations the grid would run and execute nothing. |
+| `--grid-force` | flag | `False` |  | Re-run grid rows that already COMPLETED under the same name (default: skip them). |
+
+
+### `sync_etf_daily`
+
+Sync TuShare ETF daily bars into ETFDaily over a date window or the trailing gaps.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | &mdash; |  | YYYY-MM-DD, inclusive. Required unless --recent is given. |
+| `--end` | value | `""` |  | YYYY-MM-DD, inclusive. Defaults to today. |
+| `--recent` | value | `0` |  | Fill gaps in the trailing N calendar days via sync_etf_daily_recent. Replaces --start/--end. |
+| `--force` | flag | `False` |  | Re-sync every open trading date, including dates that already have rows. |
+| `--queue` | flag | `False` |  | Dispatch one sync_etf_daily_by_date task per trading date instead of syncing inline. |
+| `--dry-run` | flag | `False` |  | Print the planned dates and current counts; calls no provider and writes nothing. |
+
+
+### `sync_etf_universe`
+
+Refresh ETFUniverse from TuShare fund_basic(market="E").
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--queue` | flag | `False` |  | Dispatch the sync to Celery instead of running inline. |
+| `--refresh-first-trade-dates` | flag | `False` |  | Only re-derive first_trade_date and repair blank list_date from stored bars; skip fund_basic. |
+| `--dry-run` | flag | `False` |  | Print the current universe counts; calls no provider and writes nothing. |
+
+
+### `train_etf_rotation_model`
+
+Walk-forward training and reporting for the ETF rotation models.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--type` | value | `lightgbm` |  | Which ETF model to act on (default lightgbm). |
+| `--start` | value | &mdash; |  | First snapshot date to consider (ISO). Default: earliest eligible row. |
+| `--end` | value | &mdash; |  | Last snapshot date to consider (ISO). Default: latest eligible row. |
+| `--folds` | value | `6` |  | Number of expanding-window validation steps (default 6). |
+| `--objective` | value | `lambdarank` |  | lambdarank on label_rank_pct grades (default), binary on label_top_bucket, or regression on label_rank_pct. |
+| `--boost-rounds` | value | &mdash; |  | Fixed lgb.train round count; no early stopping. |
+| `--horizon` | value | &mdash; |  | Label horizon in trading sessions. Default: settings.ETF_LABEL_HORIZON_DAYS (20). |
+| `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS (250). |
+| `--version-tag` | value | `""` |  | Suffix appended to the ModelVersion key. |
+| `--dry-run` | flag | `False` |  | Build the frames and fold plan, print sample/group counts, train nothing, write nothing. |
+| `--report` | flag | `False` |  | Print registered ETF model versions with their holdout metrics and exit. |
 
 
 ## `apps.factors`
@@ -381,11 +488,11 @@ Verify OHLCV/full-day suspension overlaps against AkShare Baidu suspension notic
 
 ### `sync_benchmark_index_history`
 
-Sync official benchmark index history for CSI 500.
+Sync official benchmark index history for the CSI 500 price and total-return series.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
-| `--index-codes` | value | &mdash; |  | Comma-separated benchmark index codes. Defaults to 000905.SH. |
+| `--index-codes` | value | &mdash; |  | Comma-separated benchmark index codes. Defaults to 000905.SH,H00905.CSI. |
 | `--start-date` | value | &mdash; |  | Start date in YYYY-MM-DD format. |
 | `--end-date` | value | &mdash; |  | End date in YYYY-MM-DD format. |
 
