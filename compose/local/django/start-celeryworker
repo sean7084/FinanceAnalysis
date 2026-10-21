@@ -14,7 +14,7 @@ set -o nounset
 # because it is meant to be started once per queue group, each with its own node
 # name. That model does not apply to a single-container Compose worker.
 CELERY_LOG_LEVEL="${CELERY_LOG_LEVEL:-info}"
-CELERY_WORKER_QUEUES="${CELERY_WORKER_QUEUES:-ops,backtest,train-lightgbm,train-lstm}"
+CELERY_WORKER_QUEUES="${CELERY_WORKER_QUEUES:-ops,backtest,train-lightgbm,train-lstm,etf-rotation}"
 
 # exec so celery replaces the shell as PID 1 and receives SIGTERM directly,
 # allowing a warm shutdown instead of being killed after the stop grace period.

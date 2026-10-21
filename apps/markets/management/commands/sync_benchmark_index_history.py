@@ -1,17 +1,17 @@
 from django.core.management.base import BaseCommand
 
-from apps.markets.tasks import sync_benchmark_index_history
+from apps.markets.tasks import DEFAULT_INDEX_CODES, sync_benchmark_index_history
 
 
 class Command(BaseCommand):
-    help = 'Sync official benchmark index history for CSI 500.'
+    help = 'Sync official benchmark index history for the CSI 500 price and total-return series.'
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--index-codes',
             dest='index_codes',
             default=None,
-            help='Comma-separated benchmark index codes. Defaults to 000905.SH.',
+            help=f'Comma-separated benchmark index codes. Defaults to {",".join(DEFAULT_INDEX_CODES)}.',
         )
         parser.add_argument(
             '--start-date',

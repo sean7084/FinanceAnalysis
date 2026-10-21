@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import Asset
-from apps.markets.tasks import DEFAULT_INDEX_CODES, INDEX_CODE_SPECS
+from apps.markets.tasks import DEFAULT_MEMBERSHIP_INDEX_CODES, INDEX_CODE_SPECS
 
 
 class Command(BaseCommand):
@@ -43,7 +43,10 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=self._default_start_date().isoformat())
         parser.add_argument('--end-date', default=self._default_end_date().isoformat())
-        parser.add_argument('--index-codes', default=','.join(DEFAULT_INDEX_CODES))
+        # Membership, benchmark history and the managed-tag resolution below all read this one
+        # flag, so it must stay price-index-only: H00905.CSI in the list would double-write
+        # IndexMembership rows and tag the universe CSI500TR.
+        parser.add_argument('--index-codes', default=','.join(DEFAULT_MEMBERSHIP_INDEX_CODES))
         parser.add_argument('--benchmark-start-date', default='')
         parser.add_argument('--benchmark-end-date', default='')
         parser.add_argument('--benchmark-window-days', type=int, default=180)

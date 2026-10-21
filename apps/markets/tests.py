@@ -1262,7 +1262,10 @@ class IndexConstituentSyncTests(TestCase):
         with patch('apps.markets.tasks.settings.TUSHARE_TOKEN', 'test-token'):
             summary = sync_benchmark_index_history(start_date='2026-04-24', end_date='2026-04-25')
 
-        self.assertEqual(summary['index_codes'], ['000905.SH'])
+        # Both CSI 500 series are benchmark prices, so the default sync covers the price index
+        # and the total-return index. The stub feeds bars for the price index only, which is why
+        # the row assertions below stay scoped to 000905.SH.
+        self.assertEqual(summary['index_codes'], ['000905.SH', 'H00905.CSI'])
         self.assertEqual(BenchmarkIndexDaily.objects.filter(index_code='000905.SH').count(), 2)
         self.assertEqual(
             BenchmarkIndexDaily.objects.get(index_code='000905.SH', trade_date='2026-04-25').close,

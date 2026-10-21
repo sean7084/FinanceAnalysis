@@ -3,14 +3,16 @@ from datetime import date, timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from apps.markets.tasks import DEFAULT_INDEX_CODES, sync_index_constituent_universe
+from apps.markets.tasks import DEFAULT_MEMBERSHIP_INDEX_CODES, sync_index_constituent_universe
 
 
 class Command(BaseCommand):
     help = 'Sync CSI 500 index constituents, persist membership history, refresh current tags, and dispatch unique asset syncs.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--index-codes', default=','.join(DEFAULT_INDEX_CODES))
+        # Price indices only. The total-return series H00905.CSI has an index_weight feed too,
+        # and syncing it would rewrite every IndexMembership row under a second index_code.
+        parser.add_argument('--index-codes', default=','.join(DEFAULT_MEMBERSHIP_INDEX_CODES))
         parser.add_argument(
             '--start-date',
             default=(timezone.now().date() - timedelta(days=30)).isoformat(),

@@ -13,8 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `wait -n` return on its exit 1, and the EXIT trap then tore the backend down
 # with it. Detect npm and skip the frontend when it is absent.
 #
-# Set STACK_ALL_QUEUES=0 to start only the `ops` worker and skip the backtest and
-# train workers. See docs/how-to/wsl-services.md.
+# Set STACK_ALL_QUEUES=0 to start only the `ops` worker and skip the backtest, train and
+# ETF workers. See docs/how-to/wsl-services.md.
 NPM_BIN="${NPM_BIN:-npm}"
 STACK_ALL_QUEUES="${STACK_ALL_QUEUES:-1}"
 
@@ -33,9 +33,9 @@ prefix_stream() {
 }
 
 # Resolve which services to start. Always: backend, the `ops` worker, and beat.
-# When STACK_ALL_QUEUES=1 (the default) also start the backtest and train workers,
-# so queued backtests and LightGBM/LSTM retrains are consumed with no extra steps.
-# The frontend joins only when npm is present.
+# When STACK_ALL_QUEUES=1 (the default) also start the backtest, train and ETF workers, so
+# queued backtests, LightGBM/LSTM retrains and ETF rotation jobs are consumed with no extra
+# steps. The frontend joins only when npm is present.
 build_services() {
   SERVICES=(
     "backend|bash|$SCRIPT_DIR/run_backend.sh|"
@@ -45,6 +45,7 @@ build_services() {
     SERVICES+=(
       "celery-worker-backtest|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=backtest"
       "celery-worker-train|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=train-lightgbm,train-lstm"
+      "celery-worker-etf|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=etf-rotation"
     )
   fi
   SERVICES+=("celery-beat|bash|$SCRIPT_DIR/run_celery_beat.sh|")
@@ -70,7 +71,7 @@ check_stack() {
 
   local queues="ops"
   if [[ "$STACK_ALL_QUEUES" == "1" ]]; then
-    queues="ops, backtest, train-lightgbm, train-lstm"
+    queues="ops, backtest, train-lightgbm, train-lstm, etf-rotation"
   fi
   echo "[stack] celery queues covered: $queues"
 

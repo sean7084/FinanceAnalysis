@@ -23,9 +23,19 @@ from .models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTrading
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_INDEX_CODES = ('000905.SH',)
+# H00905.CSI is the CSI 500 total-return series (000905.SH's constituents with dividends
+# reinvested) and the ETF-rotation module's alpha benchmark. It is a BenchmarkIndexDaily
+# series only: TuShare does publish an index_weight feed for it (500 rows for a sample month,
+# identical to 000905.SH), so letting it reach membership sync would rewrite every
+# IndexMembership row a second time under a different index_code -- the uniqueness key is
+# ['asset', 'index_code', 'trade_date'] -- and tag ~500 assets with CSI500TR. The PIT
+# universe contract in apps/markets/benchmarking.py therefore resolves from the price index
+# alone. See DEFAULT_MEMBERSHIP_INDEX_CODES.
+DEFAULT_INDEX_CODES = ('000905.SH', 'H00905.CSI')
+DEFAULT_MEMBERSHIP_INDEX_CODES = ('000905.SH',)
 INDEX_CODE_SPECS = {
     '000905.SH': {'name': 'CSI 500', 'tag': 'CSI500'},
+    'H00905.CSI': {'name': 'CSI 500 Total Return', 'tag': 'CSI500TR'},
 }
 INDEX_WEIGHT_PROVIDER_CODES = {}
 MONTHLY_INDEX_SYNC_LOOKBACK_DAYS = 45
@@ -658,7 +668,7 @@ def _build_asset_history_warmup_signatures(asset_map, ts_codes, target_date):
 
 
 def sync_index_constituent_universe(
-    index_codes=None,
+    index_codes=DEFAULT_MEMBERSHIP_INDEX_CODES,
     start_date=None,
     end_date=None,
     dispatch_assets=True,
@@ -1086,7 +1096,7 @@ def sync_daily_a_shares(target_date=None):
             end_date=today,
         )
         summary = sync_index_constituent_universe(
-            index_codes=DEFAULT_INDEX_CODES,
+            index_codes=DEFAULT_MEMBERSHIP_INDEX_CODES,
             start_date=today - timedelta(days=30),
             end_date=today,
             dispatch_assets=False,
@@ -1158,7 +1168,7 @@ def sync_monthly_index_memberships():
     try:
         today = timezone.now().date()
         summary = sync_index_constituent_universe(
-            index_codes=DEFAULT_INDEX_CODES,
+            index_codes=DEFAULT_MEMBERSHIP_INDEX_CODES,
             start_date=today - timedelta(days=MONTHLY_INDEX_SYNC_LOOKBACK_DAYS),
             end_date=today,
             dispatch_assets=True,

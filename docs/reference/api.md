@@ -261,6 +261,7 @@ response schemas are in Swagger; this is the map.
 | `/lightgbm-predictions/`, `/lightgbm-models/`, `/ensemble-weights/` | prediction | LightGBM surface |
 | `/lstm-predictions/` | prediction | LSTM surface |
 | `/backtest/`, `/backtest-trades/` | backtest | Runs, lifecycle actions, comparison curves, trade detail |
+| `/etf/universe/`, `/etf/daily/`, `/etf/features/`, `/etf/signals/`, `/etf/positions/`, `/etf/backtests/` | etf_rotation | ETF rotation: fund directory, daily bars, point-in-time features, rotation signals, position legs, backtest runs |
 | `/developer/changelog/` | developer | Public, read-only API changelog |
 
 ### Backtest lifecycle actions
@@ -270,3 +271,48 @@ pause, resume, restart, and delete transitions, a comparison-curve payload, and
 `/backtest/{id}/trades/`. Runs execute asynchronously on the `backtest` Celery
 queue; long runs resume through chunked state stored in `BacktestRun.report`.
 See [`celery.md`](celery.md) and `docs/how-to/backfill.md`.
+
+### ETF rotation surface
+
+All six `/etf/` routes are `ReadOnlyModelViewSet`, so they expose GET and
+nothing else — unlike `/backtest/` above. Rows are written by the `etf-rotation`
+Celery tasks and the `sync_etf_*` / `compute_etf_features` /
+`generate_etf_rotation_signal` / `run_etf_rotation_backtest` commands, never by
+HTTP, so there are no create, update or delete transitions to document. Being
+read-only is the only thing limiting them: under the global `AllowAny` default
+any caller who can reach the API can read the whole ETF surface without a
+credential.
+
+The prefixes are namespaced under `/etf/` because `signals` and `positions` are
+already registered by the analytics `SignalEventViewSet` and the prediction
+surface; a second registration on those prefixes would shadow them.
+
+Four contracts the schema does not express:
+
+- **Units.** `/etf/daily/` returns `volume` in 份 and `amount` in 元. TuShare's
+  `fund_daily` publishes 手 and 千元, and the conversion happens at ingest, so
+  `amount / (volume / 100) ≈ close` holds on every row.
+- **Label columns are look-only.** `/etf/features/` exposes `fwd_return`,
+  `label_rank_pct` and `label_top_bucket` alongside the features. They are
+  training targets derived from sessions *after* the snapshot `date`. Reading
+  them is safe; feeding them back into a live ranking decision is look-ahead
+  bias.
+- **Metric scale.** On `/etf/backtests/`, `total_return`, `annualized_return`,
+  `max_drawdown`, `win_rate`, `alpha_vs_benchmark` and `benchmark_return` are
+  fractions (`0.0775`, not `7.75`). `run_etf_rotation_backtest` prints the same
+  numbers as percents, so do not compare the console output to the API payload
+  without converting one of them.
+- **Delisted funds are included.** `/etf/universe/` returns funds with
+  `status='D'` and a `delist_date` on purpose — dropping them would make every
+  backtest survivorship-biased. Use `is_active=true`, or `listed_before` (which
+  falls back to `first_trade_date` when `list_date` is null), to reproduce a
+  point-in-time pool.
+
+`/etf/signals/latest/` returns the newest signal matching the same filters as
+the list route, and answers `404` rather than an empty page when none exists.
+`/etf/backtests/` paginates 20 rows at a time (`page_size`, capped at 200)
+instead of the global 50, because a `--grid` run writes hundreds of rows and the
+leaderboard is only readable ordered: `sort` accepts `alpha`, `sharpe`,
+`return`, `drawdown` and `created`, and anything else falls back to newest
+first. Runs that never computed a metric sort last on every key rather than
+first, so an aborted run cannot head the table.
