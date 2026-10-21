@@ -140,7 +140,10 @@ models were trained through 2026-09-14, overlapping the holdout, so their
 apparent +513.76% / alpha +68.55% is in-sample memorisation. The honest numbers
 come from the `--end 2023-11-30` retrain (versions `*-oos23`, rows 162–170),
 which also purges the 20-session label horizon. Deleting the contaminated rows
-would be irreversible, so they are labelled instead.
+would be irreversible, so they are labelled instead: each of the nine carries an
+`INSAMPLE-` name prefix and a `report.holdout_integrity` note, so sorting
+`/etf/backtests/?sort=alpha` shows them as what they are rather than as the best
+result the module ever produced.
 
 Backend test count is 434 against a `MIN_TEST_COUNT` floor of 362.
 
