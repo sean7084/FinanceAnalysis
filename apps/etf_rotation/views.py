@@ -21,7 +21,7 @@ reason. Only the backtest view overrides it, because a page of grid-search rows 
 of numbers and 50 is too small to read.
 """
 
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -294,12 +294,14 @@ class ETFRotationBacktestViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(name__icontains=name)
         # 'best' is the ordering the grid command prints, and a client should be able to
         # ask for the same thing rather than re-sorting a truncated page.
+        # nulls_last is not cosmetic: PostgreSQL defaults to NULLS FIRST for DESC, so an
+        # aborted run that never computed a metric would otherwise head the leaderboard.
         sort = (params.get('sort') or '').strip().lower()
         allowed_sorts = {
-            'alpha': '-alpha_vs_benchmark',
-            'sharpe': '-sharpe_ratio',
-            'return': '-total_return',
-            'drawdown': 'max_drawdown',
+            'alpha': F('alpha_vs_benchmark').desc(nulls_last=True),
+            'sharpe': F('sharpe_ratio').desc(nulls_last=True),
+            'return': F('total_return').desc(nulls_last=True),
+            'drawdown': F('max_drawdown').asc(nulls_last=True),
             'created': '-created_at',
         }
         if sort in allowed_sorts:

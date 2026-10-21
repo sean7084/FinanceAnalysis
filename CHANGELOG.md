@@ -69,7 +69,10 @@
   `DefaultRouter` (no app-level `urls.py`, per repo convention). The `/etf/`
   prefix is not cosmetic: `signals` and `positions` are already taken by the
   analytics `SignalEventViewSet` and the prediction surface. Contracts the schema
-  cannot express are documented in a new `docs/reference/api.md` section.
+  cannot express are documented in a new `docs/reference/api.md` section. The
+  `backtests` leaderboard sorts (`alpha`, `sharpe`, `return`, `drawdown`) pin
+  nulls last, because PostgreSQL defaults to `NULLS FIRST` for `DESC` and an
+  aborted run would otherwise head the table as the best result ever recorded.
 - **`ModelType` gains `ETF_LIGHTGBM` / `ETF_LSTM` / `ETF_ENSEMBLE`**
   (migration `prediction.0006`). Per the design decision, the shared
   `apps/prediction/models.py:ModelVersion` registry is reused instead of adding
@@ -139,7 +142,7 @@ come from the `--end 2023-11-30` retrain (versions `*-oos23`, rows 162–170),
 which also purges the 20-session label horizon. Deleting the contaminated rows
 would be irreversible, so they are labelled instead.
 
-Backend test count is 431 against a `MIN_TEST_COUNT` floor of 362.
+Backend test count is 434 against a `MIN_TEST_COUNT` floor of 362.
 
 ### version 0.1.17
 

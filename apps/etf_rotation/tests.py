@@ -54,6 +54,7 @@ from apps.etf_rotation.models import (
     ETFDaily,
     ETFFeatureSnapshot,
     ETFUniverse,
+    ETFRotationBacktest,
     ETFRotationSignal,
 )
 from apps.etf_rotation.tasks import (
@@ -1343,3 +1344,49 @@ class FinanceMetricsTests(SimpleTestCase):
         self.assertEqual(summary['observations'], 4)
         self.assertEqual(summary['sessions'], 5)
         self.assertIsNone(summary['benchmark_return'])
+
+
+class BacktestLeaderboardOrderingTests(TestCase):
+    """``?sort=`` must rank runs that produced a metric above runs that did not.
+
+    PostgreSQL defaults to NULLS FIRST for DESC, so a backtest that failed or was
+    abandoned before computing ``alpha_vs_benchmark`` headed the leaderboard and read as
+    the best result the module had produced. Every nullable metric sort pins nulls last.
+    """
+
+    def _backtest(self, name, **metrics):
+        return ETFRotationBacktest.objects.create(
+            name=name,
+            status=ETFRotationBacktest.Status.COMPLETED,
+            start_date=date(2024, 1, 1),
+            end_date=date(2026, 10, 20),
+            rebalance_frequency=ETFRotationBacktest.RebalanceFrequency.MONTHLY,
+            model_type=ETFRotationBacktest.ModelType.RULE,
+            **metrics,
+        )
+
+    def _names(self, sort):
+        response = self.client.get('/api/v1/etf/backtests/', {'sort': sort})
+        self.assertEqual(response.status_code, 200)
+        return [row['name'] for row in response.data['results']]
+
+    def test_descending_metric_sorts_put_a_run_with_no_metric_last(self):
+        self._backtest('aborted')
+        self._backtest('best', alpha_vs_benchmark=0.18, sharpe_ratio=0.91, total_return=0.78)
+        self._backtest('worst', alpha_vs_benchmark=-0.02, sharpe_ratio=-1.19, total_return=-0.08)
+        for sort in ('alpha', 'sharpe', 'return'):
+            with self.subTest(sort=sort):
+                self.assertEqual(self._names(sort), ['best', 'worst', 'aborted'])
+
+    def test_the_ascending_drawdown_sort_also_puts_a_run_with_no_metric_last(self):
+        """Worst drawdown first is the point of this sort, so nulls must not lead it."""
+        self._backtest('aborted')
+        self._backtest('shallow', max_drawdown=0.18)
+        self._backtest('deep', max_drawdown=0.42)
+        self.assertEqual(self._names('drawdown'), ['shallow', 'deep', 'aborted'])
+
+    def test_an_unrecognised_sort_falls_back_to_newest_first(self):
+        """An unknown key is ignored rather than erroring, and must not silently sort on a metric."""
+        self._backtest('older')
+        self._backtest('newer', alpha_vs_benchmark=0.18)
+        self.assertEqual(self._names('nonsense'), ['newer', 'older'])

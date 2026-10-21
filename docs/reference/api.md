@@ -314,4 +314,5 @@ the list route, and answers `404` rather than an empty page when none exists.
 instead of the global 50, because a `--grid` run writes hundreds of rows and the
 leaderboard is only readable ordered: `sort` accepts `alpha`, `sharpe`,
 `return`, `drawdown` and `created`, and anything else falls back to newest
-first.
+first. Runs that never computed a metric sort last on every key rather than
+first, so an aborted run cannot head the table.
