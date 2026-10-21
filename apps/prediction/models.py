@@ -9,6 +9,12 @@ class ModelVersion(models.Model):
         LIGHTGBM = 'LIGHTGBM', _('LightGBM')
         LSTM = 'LSTM', _('LSTM')
         ENSEMBLE = 'ENSEMBLE', _('Ensemble')
+        # ETF rotation models share this registry rather than getting their own
+        # table; the distinguishing metadata (validation window, pool size,
+        # feature schema version) lives in the existing ``metadata`` JSONField.
+        ETF_LIGHTGBM = 'ETF_LIGHTGBM', _('ETF LightGBM')
+        ETF_LSTM = 'ETF_LSTM', _('ETF LSTM')
+        ETF_ENSEMBLE = 'ETF_ENSEMBLE', _('ETF Ensemble')
 
     class Status(models.TextChoices):
         TRAINING = 'TRAINING', _('Training')
