@@ -78,8 +78,14 @@ jobs:
       # tests, three no-request-time-inference guards, two indicator-window and
       # SQL-pagination guards, and the harness-coverage drift guard that derives
       # required coverage from frontend/src.
-      # Discovery is verified at 447, so nothing is silently missing.
-      MIN_TEST_COUNT: "447"
+      # 447 -> 450: the two guards that keep the browser pass honest -- every route
+      # in App.tsx must appear in measure_browser_time_to_data.sh, and every page
+      # that reads the API must register with the time-to-data instrument (the hole
+      # that left Stock Detail and Backtest unmeasurable) -- plus the factors
+      # macro-context re-score test, which pins that the SQL annotation still equals
+      # the same weighted sum done in Decimal.
+      # Discovery is verified at 450, so nothing is silently missing.
+      MIN_TEST_COUNT: "450"
 
     steps:
       - uses: actions/checkout@v4
@@ -182,7 +188,17 @@ jobs:
       # test in the suite, so the reconnect behaviour is now asserted directly:
       # bare URL with no token, reconnect after a close, and the backoff cap
       # followed by giving up. Measured by `npm test`: 45 passed across 6 files.
-      MIN_TEST_COUNT: "45"
+      # 45 -> 51: the time-to-data instrument, which is the only source of the
+      # browser term of the 3s page budget and therefore of FRONTEND_OVERHEAD_SECONDS.
+      # Six tests in src/hooks/useApiResource.test.tsx: the stamp waits for the last
+      # first value rather than the first; a failed resource releases it anyway;
+      # data-tti survives an engine with no usable performance.measure (jsdom ships
+      # none); a resource mounted after the first quiet moment reopens the view
+      # instead of being ignored; the open offset and the wait are recorded
+      # separately so the round trip is not billed twice; and trackViewResource --
+      # the registering half of the hook, used by the two pages that compose their
+      # requests by hand -- stamps too. Measured by `npm test`: 51 across 7 files.
+      MIN_TEST_COUNT: "51"
 
     steps:
       - uses: actions/checkout@v4
