@@ -128,6 +128,15 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
                     'technical_weight': float(tw),
                 }
         else:
+            # get_queryset already orders by -bottom_probability_score, asset__symbol,
+            # which is the order this branch returns: the two `sort_by` values that
+            # change the order (trade_score, risk_reward_ratio) are overlaid from
+            # predictions below and cannot be answered in SQL. So on every other
+            # sort the top_n rows are known before the serializer runs -- take them
+            # in SQL and pay the serializer plus the prediction lookup for top_n
+            # assets instead of the whole universe.
+            if sort_by not in {'trade_score', 'risk_reward_ratio'}:
+                queryset = queryset[:top_n]
             queryset = list(queryset)
             serializer = self.get_serializer(queryset, many=True)
             data = serializer.data

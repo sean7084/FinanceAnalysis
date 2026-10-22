@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.markets.models import Asset
 from .models import ModelVersion, PredictionResult
+from .reconciliation import queue_asset_prediction_generation
 from .serializers import ModelVersionSerializer, PredictionResultSerializer
 from .tasks import generate_predictions_for_date, generate_prediction_for_asset, train_prediction_models
 
@@ -55,19 +56,15 @@ class PredictionViewSet(viewsets.GenericViewSet):
             horizon_days__in=horizons,
         ).order_by('horizon_days')
 
+        generation = None
         if not qs.exists():
-            generate_prediction_for_asset(
-                asset_id=asset.id,
-                target_date=str(target_date),
-                horizons=horizons,
-                macro_phase=request.query_params.get('macro_context'),
-                event_tag=request.query_params.get('event_tag'),
+            generation = queue_asset_prediction_generation(
+                generate_prediction_for_asset,
+                'heuristic',
+                asset.id,
+                target_date,
+                horizons,
             )
-            qs = PredictionResult.objects.select_related('asset', 'model_version').filter(
-                asset=asset,
-                date=target_date,
-                horizon_days__in=horizons,
-            ).order_by('horizon_days')
 
         results = PredictionResultSerializer(qs, many=True).data
         output = {
@@ -75,6 +72,8 @@ class PredictionViewSet(viewsets.GenericViewSet):
             'date': str(target_date),
             'results': [],
         }
+        if generation is not None:
+            output['generation'] = generation
         for row in results:
             output['results'].append({
                 'horizon_days': row['horizon_days'],

@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.markets.models import Asset
 from .models import PredictionResult
+from .reconciliation import queue_asset_prediction_generation
 from .serializers import PredictionResultSerializer
 from .tasks_lstm import (
     generate_lstm_prediction_for_asset,
@@ -52,18 +53,15 @@ class LSTMPredictionViewSet(viewsets.GenericViewSet):
             model_version__model_type='LSTM',
         ).order_by('horizon_days')
 
+        generation = None
         if not qs.exists():
-            generate_lstm_prediction_for_asset(
-                asset_id=asset.id,
-                target_date=str(target_date),
-                horizons=horizons,
+            generation = queue_asset_prediction_generation(
+                generate_lstm_prediction_for_asset,
+                'lstm',
+                asset.id,
+                target_date,
+                horizons,
             )
-            qs = PredictionResult.objects.select_related('asset', 'model_version').filter(
-                asset=asset,
-                date=target_date,
-                horizon_days__in=horizons,
-                model_version__model_type='LSTM',
-            ).order_by('horizon_days')
 
         serialized = PredictionResultSerializer(qs, many=True).data
         output = {
@@ -71,6 +69,8 @@ class LSTMPredictionViewSet(viewsets.GenericViewSet):
             'date': str(target_date),
             'results': [],
         }
+        if generation is not None:
+            output['generation'] = generation
         for row in serialized:
             output['results'].append({
                 'horizon_days': row['horizon_days'],

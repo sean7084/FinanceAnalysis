@@ -2,6 +2,7 @@ from celery import shared_task
 from django.utils import timezone
 from django.conf import settings
 from django.core.mail import send_mail
+import logging
 import pandas as pd
 import numpy as np
 import talib
@@ -25,6 +26,9 @@ from .technical_staleness import (
     trading_date_positions,
     trailing_indicator_window_is_fresh,
 )
+
+logger = logging.getLogger(__name__)
+
 
 def get_ohlcv_df(asset_id, days_history=200, end_date=None):
     """
@@ -1325,25 +1329,36 @@ DASHBOARD_PREWARM_QUERY_STRINGS = (
     '&candidate_mode=top_n&up_threshold=0.45&top_n=8&top_n_metric=up_prob_7d'
     '&trade_score_scope=independent&trade_score_threshold=1&max_positions=5'
     '&use_macro_context=true',
-    # Indicator Board: no candidate filters, so no inference, but assembling the
-    # wide row over the whole universe still measured ~195s cold.
+    # Indicator Board: no candidate filters. Its wide row over the universe used
+    # to measure ~195s cold because the technical-indicator lookup sorted every
+    # historical row per asset; the bounded window in build_stocks_payload made it
+    # a normal query, and this entry is what keeps it warm on the first click.
     'prediction_horizon=7&page_size=120',
 )
 
 
-@shared_task(soft_time_limit=3600, time_limit=3900)
+@shared_task(soft_time_limit=300, time_limit=330)
 def prewarm_dashboard_stocks_cache(query_strings=None):
     """Build and cache the dashboard stocks payloads ahead of the first request.
 
     The view cache is Redis-backed and so shared across processes, which means
     warming it here lets the first user of the day get a hit instead of paying
-    for model inference inside the request. The matrix-signal inference cache in
-    ``apps/backtest/tasks`` is a process-local ``OrderedDict`` and cannot be
-    warmed from a worker -- only the resulting payload can.
+    for the payload assembly. That payment is now small: candidate ranking reads
+    stored prediction rows, so the task measures ~4.4s cold (mostly the 500-row
+    Indicator Board payload) where it used to be a ~27-minute inference sweep,
+    and the limit was cut to match.
 
-    The long limit mirrors measured cold-inference cost (~27 minutes for the
-    candidate path on an otherwise idle host); a warm worker finishes in under a
-    minute. Same reasoning as the ``run_post_sync_universal_refresh`` override.
+    The matrix-signal inference cache in ``apps/backtest/tasks`` is a
+    process-local ``OrderedDict`` and is deliberately not warmed or shared. After
+    this task's own path stopped needing it, only backtests do, and moving a
+    universe-wide mapping into Redis would buy a large payload and an invalidation
+    surface for nothing.
+
+    The combos below are not generated from the SPA's filter panel: that panel
+    takes free-form thresholds, counts and horizons, so there is no closed set to
+    enumerate. These are the two shapes the dashboard actually sends -- the
+    default bundle and the Indicator Board's filterless request -- and any other
+    combination is a plain DB read rather than something worth pre-warming.
     """
     # Deferred: apps/analytics/views.py imports this module at load time.
     from django.core.cache import cache
@@ -1362,6 +1377,13 @@ def prewarm_dashboard_stocks_cache(query_strings=None):
         mode=FactorScore.FactorMode.COMPOSITE
     ).aggregate(latest=Max('date'))['latest']
     if latest_date is None:
+        # A scheduler that quietly returns here is how the dashboard goes cold
+        # unnoticed: no payload means the first request pays for it, and the
+        # operator sees a green beat entry.
+        logger.critical(
+            'Dashboard prewarm found no COMPOSITE FactorScore rows; the dashboard '
+            'cache stays cold and the first request of the day pays for the payload.'
+        )
         return {'status': 'skipped', 'reason': 'no_composite_factor_score'}
 
     viewset = DashboardStockViewSet()
@@ -1376,4 +1398,5 @@ def prewarm_dashboard_stocks_cache(query_strings=None):
         )
         entries.append({'query': query_string, 'count': payload.get('count')})
 
+    logger.info('Warmed dashboard stocks cache for %s: %s', latest_date, entries)
     return {'status': 'warmed', 'date': latest_date.isoformat(), 'entries': entries}

@@ -14,6 +14,7 @@ from .models_lightgbm import (
     LightGBMModelArtifact,
     LightGBMPrediction,
 )
+from .reconciliation import queue_asset_prediction_generation
 from .serializers_lightgbm import (
     LightGBMModelArtifactSerializer,
     LightGBMPredictionSerializer,
@@ -154,17 +155,15 @@ class LightGBMPredictionViewSet(viewsets.GenericViewSet):
             horizon_days__in=horizons,
         ).order_by('horizon_days')
 
+        generation = None
         if not qs.exists():
-            generate_lightgbm_prediction_for_asset(
-                asset_id=asset.id,
-                target_date=str(target_date),
-                horizons=horizons,
+            generation = queue_asset_prediction_generation(
+                generate_lightgbm_prediction_for_asset,
+                'lightgbm',
+                asset.id,
+                target_date,
+                horizons,
             )
-            qs = LightGBMPrediction.objects.select_related('asset', 'model_artifact').filter(
-                asset=asset,
-                date=target_date,
-                horizon_days__in=horizons,
-            ).order_by('horizon_days')
 
         results = LightGBMPredictionSerializer(qs, many=True).data
         output = {
@@ -172,6 +171,8 @@ class LightGBMPredictionViewSet(viewsets.GenericViewSet):
             'date': str(target_date),
             'results': [],
         }
+        if generation is not None:
+            output['generation'] = generation
         for row in results:
             output['results'].append({
                 'horizon_days': row['horizon_days'],

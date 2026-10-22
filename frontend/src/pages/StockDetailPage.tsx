@@ -280,6 +280,19 @@ export function StockDetailPage() {
     })
   }, [assetOptions, assetSearch])
 
+  // Only shown when there is nothing stored to display; a model family that has
+  // its rows says nothing, because there is nothing the reader needs excusing for.
+  const generationNotice = useMemo(() => {
+    const payloads = [heuristicPrediction, lightgbmPrediction]
+    if (payloads.some((payload) => payload?.generation?.status === 'queued' && (payload?.results.length ?? 0) === 0)) {
+      return t('stock.generating')
+    }
+    if (payloads.some((payload) => payload?.generation?.status === 'unavailable' && (payload?.results.length ?? 0) === 0)) {
+      return t('stock.generationUnavailable')
+    }
+    return null
+  }, [heuristicPrediction, lightgbmPrediction, t])
+
   return (
     <section>
       <header className="page-header">
@@ -315,6 +328,7 @@ export function StockDetailPage() {
         <span>{sentimentText}</span>
       </div>
       <CandlestickChart data={klineData} />
+      {generationNotice && <p className="status">{generationNotice}</p>}
       <ProbabilityChart title={t('stock.heuristicProbability')} data={predData} />
       <div className="card">
         <h3>{t('stock.tradeSignals')}</h3>

@@ -1,19 +1,23 @@
 import hashlib
 import json
-from datetime import timedelta
+import logging
+from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from types import SimpleNamespace
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Max
+from django.db.models import F, Max, Q
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django_filters.rest_framework import DjangoFilterBackend
+from kombu.exceptions import OperationalError
 from rest_framework import viewsets, filters, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+
+
+logger = logging.getLogger(__name__)
 
 from .models import TechnicalIndicator, ScreenerTemplate, AlertRule, AlertEvent, SignalEvent
 from .serializers import (
@@ -26,12 +30,13 @@ from .serializers import (
     SignalEventSerializer,
 )
 from apps.backtest.models import BacktestRun
-from apps.backtest.tasks import _pick_candidates
+from apps.backtest.tasks import _macro_rank_multiplier
 from apps.markets.models import Asset, OHLCV
 from apps.factors.models import FactorScore
 from apps.macro.models import MarketContext
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.models_lightgbm import LightGBMPrediction
+from apps.prediction.tasks import reconcile_prediction_coverage
 from apps.sentiment.models import ConceptHeat, SentimentScore
 from .tasks import (
     calculate_rsi_for_asset,
@@ -118,28 +123,230 @@ def _normalize_dashboard_candidate_config(query_params):
     }
 
 
-def _build_dashboard_candidate_rows(latest_date, candidate_config):
-    # Without this scope the process-local matrix-signal cache is bypassed and
-    # every request re-runs model inference. The cache key covers source, date,
-    # horizon, model identity and trade-decision policy but not up_threshold or
-    # top_n, so filter combinations sharing a source and horizon share one surface.
-    pseudo_run = SimpleNamespace(
-        strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
-        parameters={
-            **candidate_config,
-            'matrix_signal_cache_key': settings.DASHBOARD_MATRIX_SIGNAL_SCOPE,
-        },
+CANDIDATE_ROW_FIELDS = (
+    'asset_id',
+    'predicted_label',
+    'up_probability',
+    'flat_probability',
+    'down_probability',
+    'confidence',
+    'trade_score',
+    'target_price',
+    'stop_loss_price',
+    'risk_reward_ratio',
+    'suggested',
+)
+
+DASHBOARD_CANDIDATE_RECONCILE_LOCK_SECONDS = 15 * 60
+
+
+def _stored_prediction_map(source, latest_date, horizon):
+    """The newest stored prediction row per asset for one model family.
+
+    Read-only on purpose. Ranking candidates by computing predictions re-runs
+    inference across the whole universe on the request thread: 45 seconds of it
+    for a cold dashboard, and the cache that hides the cost is a process-local
+    OrderedDict that no external invalidation can reach.
+    """
+    lstm_filter = {'model_version__model_type': ModelVersion.ModelType.LSTM}
+    if source == 'lightgbm':
+        queryset = LightGBMPrediction.objects.filter(date=latest_date, horizon_days=horizon)
+    elif source == 'lstm':
+        queryset = PredictionResult.objects.filter(date=latest_date, horizon_days=horizon, **lstm_filter)
+    else:
+        queryset = PredictionResult.objects.filter(date=latest_date, horizon_days=horizon).exclude(**lstm_filter)
+
+    rows = queryset.order_by('asset_id', '-created_at').distinct('asset_id').values(*CANDIDATE_ROW_FIELDS)
+    return {row['asset_id']: row for row in rows}
+
+
+def _dashboard_candidate_macro_phase(latest_date):
+    context = (
+        MarketContext.objects.filter(
+            context_key='current',
+            is_active=True,
+            starts_at__lte=latest_date,
+        )
+        .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=latest_date))
+        .order_by('-starts_at', '-updated_at')
+        .values_list('macro_phase', flat=True)
+        .first()
     )
-    rows = _pick_candidates(pseudo_run, latest_date, cache={})
+    if context is None:
+        return (
+            MarketContext.objects.filter(context_key='current', is_active=True, starts_at__lte=latest_date)
+            .order_by('-starts_at', '-updated_at')
+            .values_list('macro_phase', flat=True)
+            .first()
+        )
+    return context
+
+
+def _candidate_signal_payload(row, source, candidate_config, horizon):
+    return {
+        'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+        'prediction_source': source,
+        'candidate_mode': candidate_config['candidate_mode'],
+        'top_n_metric': candidate_config['top_n_metric'],
+        'trade_score_scope': candidate_config['trade_score_scope'],
+        'horizon_days': horizon,
+        'predicted_label': row['predicted_label'],
+        'up_probability': row['up_probability'],
+        'flat_probability': row['flat_probability'],
+        'down_probability': row['down_probability'],
+        'confidence': row['confidence'],
+        'trade_score': row['trade_score'],
+        'target_price': row['target_price'],
+        'stop_loss_price': row['stop_loss_price'],
+        'risk_reward_ratio': row['risk_reward_ratio'],
+        'suggested': bool(row['suggested']),
+        'generated_on_demand': False,
+    }
+
+
+def _combine_candidate_scores(rows):
+    """Average the heuristic and LightGBM views of one asset, ignoring whichever is absent."""
+    scores = [row['trade_score'] for row in rows if row['trade_score'] is not None]
+    up_probabilities = [row['up_probability'] for row in rows if row['up_probability'] is not None]
+    if not scores or not up_probabilities:
+        return None
+    return {
+        'trade_score': sum(scores, Decimal('0')) / Decimal(len(scores)),
+        'up_probability': sum(up_probabilities, Decimal('0')) / Decimal(len(up_probabilities)),
+    }
+
+
+def _selected_candidates(candidates, limit):
+    """Order by rank and truncate. ``None`` ranks sort last, as they did under ``_pick_candidates``."""
+    candidates.sort(key=lambda item: (item['rank_value'] is None, item['rank_value'] or Decimal('0')), reverse=True)
     return [
         {
-            'asset_id': row['asset_id'],
+            'asset_id': item['asset_id'],
             'candidate_rank': index,
-            'candidate_rank_value': row.get('rank_value'),
-            'signal_payload': row.get('signal_payload') or {},
+            'candidate_rank_value': item['rank_value'],
+            'signal_payload': item['signal_payload'],
         }
-        for index, row in enumerate(rows, start=1)
+        for index, item in enumerate(candidates[:limit], start=1)
     ]
+
+
+def _build_dashboard_candidate_rows(latest_date, candidate_config):
+    """Rank entry candidates straight out of the stored prediction tables.
+
+    Mirrors the selection semantics ``_pick_candidates`` applies to computed
+    predictions: ``up_threshold`` gates both modes, ``top_n`` ranks on the metric
+    named by ``top_n_metric`` at that metric's own horizon, ``trade_score`` mode
+    gates on ``trade_score_threshold`` and caps at ``max_positions``, and a
+    ``combined`` scope averages the heuristic and LightGBM scores per asset.
+    ``use_macro_context`` rescales the rank by the same regime factor.
+
+    Returns ``(rows, coverage)``. Because nothing is computed here, a universe
+    whose nightly sweep did not finish simply yields fewer rows, so ``coverage``
+    reports how far short of the factor-scored universe the selected source is
+    instead of letting the page look selectively confident.
+    """
+    source = candidate_config['prediction_source']
+    candidate_mode = candidate_config['candidate_mode']
+    up_threshold = candidate_config['up_threshold']
+    horizon = _dashboard_prediction_horizon(candidate_config['horizon_days'], candidate_config)
+
+    source_map = _stored_prediction_map(source, latest_date, horizon)
+    universe_ids = list(
+        FactorScore.objects.filter(
+            mode=FactorScore.FactorMode.COMPOSITE,
+            date=latest_date,
+        ).order_by('asset_id').values_list('asset_id', flat=True)
+    )
+
+    candidates = []
+    if candidate_mode == 'trade_score':
+        threshold = candidate_config['trade_score_threshold']
+        if candidate_config['trade_score_scope'] == 'combined':
+            heuristic_map = source_map if source == 'heuristic' else _stored_prediction_map('heuristic', latest_date, horizon)
+            lightgbm_map = source_map if source == 'lightgbm' else _stored_prediction_map('lightgbm', latest_date, horizon)
+            for asset_id in sorted(set(heuristic_map) | set(lightgbm_map)):
+                combined = _combine_candidate_scores([row for row in (heuristic_map.get(asset_id), lightgbm_map.get(asset_id)) if row])
+                if combined is None or combined['trade_score'] < threshold or combined['up_probability'] < up_threshold:
+                    continue
+                candidates.append({
+                    'asset_id': asset_id,
+                    'rank_value': combined['trade_score'],
+                    'signal_payload': {
+                        'strategy': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+                        'prediction_source': source,
+                        'candidate_mode': 'trade_score',
+                        'trade_score_scope': 'combined',
+                        'horizon_days': horizon,
+                        'combined_trade_score': combined['trade_score'],
+                        'combined_up_probability': combined['up_probability'],
+                        'generated_on_demand': False,
+                    },
+                })
+        else:
+            for asset_id, row in source_map.items():
+                if row['up_probability'] is None or row['trade_score'] is None:
+                    continue
+                if row['up_probability'] < up_threshold or row['trade_score'] < threshold:
+                    continue
+                payload = _candidate_signal_payload(row, source, candidate_config, horizon)
+                payload['trade_score_scope'] = 'independent'
+                candidates.append({'asset_id': asset_id, 'rank_value': row['trade_score'], 'signal_payload': payload})
+
+        if candidate_config['use_macro_context']:
+            macro_phase = _dashboard_candidate_macro_phase(latest_date)
+            for item in candidates:
+                multiplier = _macro_rank_multiplier(macro_phase, item['signal_payload'].get('up_probability') or item['signal_payload'].get('combined_up_probability'))
+                item['rank_value'] = item['rank_value'] * multiplier
+                item['signal_payload']['macro_phase'] = macro_phase
+                item['signal_payload']['macro_rank_multiplier'] = multiplier
+        candidates = _selected_candidates(candidates, candidate_config['max_positions'])
+    else:
+        rank_field = 'trade_score' if candidate_config['top_n_metric'] == 'trade_score' else 'up_probability'
+        for asset_id, row in source_map.items():
+            if row['up_probability'] is None or row['up_probability'] < up_threshold:
+                continue
+            if row[rank_field] is None:
+                continue
+            payload = _candidate_signal_payload(row, source, candidate_config, horizon)
+            candidates.append({'asset_id': asset_id, 'rank_value': row[rank_field], 'signal_payload': payload})
+        candidates = _selected_candidates(candidates, candidate_config['top_n'])
+
+    missing = len([asset_id for asset_id in universe_ids if asset_id not in source_map])
+    coverage = {
+        'prediction_source': source,
+        'horizon_days': horizon,
+        'universe_size': len(universe_ids),
+        'stored_asset_count': len(source_map),
+        'missing': missing,
+        'prediction_coverage_incomplete': missing > 0,
+    }
+    return candidates, coverage
+
+
+def _queue_candidate_reconciliation(coverage):
+    """Ask the scheduler to fill the stored-prediction gap this page just read.
+
+    Locked for one reconcile pass's worth of time: a dashboard left open refreshes
+    on an interval, and each refresh would otherwise queue another universe-sized
+    job behind the one already running.
+    """
+    if not coverage['prediction_coverage_incomplete']:
+        return False
+
+    lock_key = f"dashboard_candidate_reconcile:{coverage['prediction_source']}:{coverage['horizon_days']}"
+    if not cache.add(lock_key, True, DASHBOARD_CANDIDATE_RECONCILE_LOCK_SECONDS):
+        return False
+
+    try:
+        reconcile_prediction_coverage.delay()
+    except OperationalError:
+        # The broker is the one part of this path that is not needed to answer
+        # the request. A dashboard with a gap still has to render the rows it
+        # has, and the hourly beat sweep will find the gap regardless.
+        logger.warning('Could not queue prediction reconciliation for %s', lock_key)
+        return False
+    return True
+
 
 
 def _prediction_row_fields(row, prefix):
@@ -339,8 +546,16 @@ class DashboardStockViewSet(viewsets.ViewSet):
         page = params['page']
         page_size = params['page_size']
 
-        candidate_rows = _build_dashboard_candidate_rows(latest_date, candidate_config) if candidate_config else None
+        candidate_rows = None
+        candidate_coverage = None
+        if candidate_config:
+            candidate_rows, candidate_coverage = _build_dashboard_candidate_rows(latest_date, candidate_config)
+            _queue_candidate_reconciliation(candidate_coverage)
         candidate_asset_ids = [row['asset_id'] for row in candidate_rows] if candidate_rows else []
+
+        effective_ordering = ordering or ('-composite_score' if candidate_rows is None else '')
+        descending = effective_ordering.startswith('-')
+        order_field = effective_ordering[1:] if descending else effective_ordering
 
         factor_queryset = FactorScore.objects.select_related('asset').filter(
             mode=FactorScore.FactorMode.COMPOSITE,
@@ -353,10 +568,37 @@ class DashboardStockViewSet(viewsets.ViewSet):
                     'page': page,
                     'page_size': page_size,
                     'results': [],
+                    'prediction_coverage': candidate_coverage,
                 }
             factor_queryset = factor_queryset.filter(asset_id__in=candidate_asset_ids)
 
-        factor_rows = list(factor_queryset.order_by('asset__symbol'))
+        # The per-asset lookups below (OHLCV, sentiment, three prediction
+        # families, indicators) are DISTINCT ON scans keyed on asset_id, so their
+        # cost is a function of how many ids they are handed. When every row
+        # filter and the ordering can be answered in SQL, take the page first and
+        # pay for 120 assets instead of the whole universe -- the Indicator
+        # Board's unfiltered request was 500 ids and 2.5s for exactly this reason.
+        # Anything that filters an assembled field (search, suggested_only) or
+        # orders on a computed column still needs the materialized universe.
+        paged_from_sql = (
+            candidate_rows is None
+            and not search
+            and not suggested_only
+            and order_field == 'composite_score'
+        )
+        total_count = None
+        start = (page - 1) * page_size
+        if paged_from_sql:
+            total_count = factor_queryset.count()
+            score_order = (
+                F('composite_score').desc(nulls_last=True)
+                if descending
+                else F('composite_score').asc(nulls_last=True)
+            )
+            factor_queryset = factor_queryset.order_by(score_order, 'asset__symbol')[start:start + page_size]
+            start = 0
+
+        factor_rows = list(factor_queryset)
         asset_ids = [row.asset_id for row in factor_rows]
 
         ohlcv_map = _latest_by_asset(
@@ -402,7 +644,21 @@ class DashboardStockViewSet(viewsets.ViewSet):
 
         indicator_queryset = TechnicalIndicator.objects.filter(
             asset_id__in=asset_ids,
-            timestamp__date__lte=latest_date,
+            # A bounded window, not `timestamp__date__lte`. The date transform
+            # cannot use the (asset, timestamp, indicator_type) index, so the
+            # DISTINCT ON below had to sort every historical indicator row for
+            # every asset on the page -- over 25 seconds, and the whole cold
+            # Indicator Board timeout. Indicators are recomputed daily, so the
+            # newest row per asset and type is inside this window; an asset whose
+            # backfill is older than it reads as absent rather than as months stale.
+            timestamp__lte=timezone.make_aware(
+                datetime.combine(latest_date, time(23, 59, 59)),
+                timezone.get_current_timezone(),
+            ),
+            timestamp__gte=timezone.make_aware(
+                datetime.combine(latest_date, time(0, 0, 0)) - timedelta(days=settings.DASHBOARD_INDICATOR_LOOKBACK_DAYS),
+                timezone.get_current_timezone(),
+            ),
             indicator_type__in=['RSI', 'MACD', 'BBANDS', 'SMA'],
         ).order_by('asset_id', 'indicator_type', '-timestamp').distinct('asset_id', 'indicator_type')
 
@@ -500,17 +756,14 @@ class DashboardStockViewSet(viewsets.ViewSet):
             else:
                 rows = [row for row in rows if row['heuristic_suggested'] or row['lightgbm_suggested'] or row['lstm_suggested']]
 
-        effective_ordering = ordering or ('-composite_score' if candidate_rows is None else '')
-        descending = effective_ordering.startswith('-')
-        order_field = effective_ordering[1:] if descending else effective_ordering
-        if rows and order_field and order_field in rows[0]:
-            rows.sort(
-                key=lambda row: (row.get(order_field) is None, row.get(order_field) or 0),
-                reverse=descending,
-            )
-
-        total_count = len(rows)
-        start = (page - 1) * page_size
+        if not paged_from_sql:
+            if rows and order_field and order_field in rows[0]:
+                rows.sort(
+                    key=lambda row: (row.get(order_field) is None, row.get(order_field) or 0),
+                    reverse=descending,
+                )
+            total_count = len(rows)
+            start = (page - 1) * page_size
         end = start + page_size
         paged_rows = rows[start:end]
 
@@ -520,6 +773,7 @@ class DashboardStockViewSet(viewsets.ViewSet):
             'page': page,
             'page_size': page_size,
             'results': serializer.data,
+            'prediction_coverage': candidate_coverage,
         }
 
     @action(detail=False, methods=['post'], url_path='refresh')
@@ -530,7 +784,8 @@ class DashboardStockViewSet(viewsets.ViewSet):
         to the factor date, so a new trading day invalidates on its own. This is
         the escape hatch for the case that does not: a backfill rewriting data
         for a date already being served. It invalidates only -- it does not
-        recompute, because a rebuild runs model inference and takes minutes.
+        recompute, because the rebuild is the expensive read path and the next
+        request can pay for it deliberately.
         """
         params = _parse_dashboard_list_params(request.query_params)
         latest_date = FactorScore.objects.filter(

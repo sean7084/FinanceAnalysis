@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import date
 
 from django.conf import settings
+from django.core.cache import cache
+from kombu.exceptions import OperationalError
 
 from apps.markets.benchmarking import effective_universe_tradeable_assets
 from apps.markets.models import ExchangeTradingCalendar
@@ -61,6 +63,34 @@ def stored_asset_ids(source, trade_date):
     indistinguishable from a correct one.
     """
     return set(MODELS[source].objects.filter(date=trade_date).values_list('asset_id', flat=True))
+
+
+def queue_asset_prediction_generation(task, scope, asset_id, target_date, horizons):
+    """Ask the broker for one asset's missing predictions, and say what happened.
+
+    The read paths used to call the generation task directly when they found no
+    rows, which put model loading and scoring on the request thread: the caller
+    waited for work that only decides what the page should say once it is done.
+    Returning `queued` lets the view answer immediately with what is stored --
+    which may be nothing -- while the SPA shows a generating state.
+
+    Locked per (scope, asset, date) so a page that polls does not stack identical
+    jobs behind the one already on the queue.
+    """
+    lock_key = f'prediction_generation_lock:{scope}:{asset_id}:{target_date}'
+    already_queued = not cache.add(lock_key, True, settings.PREDICTION_GENERATION_LOCK_SECONDS)
+    if already_queued:
+        return {'status': 'queued', 'scope': scope, 'already_queued': True}
+
+    try:
+        task.delay(asset_id=asset_id, target_date=str(target_date), horizons=list(horizons))
+    except OperationalError:
+        # A queue that is down cannot be repaired by retrying from the request,
+        # and the hourly sweeps will write these rows regardless.
+        cache.delete(lock_key)
+        return {'status': 'unavailable', 'scope': scope, 'reason': 'queue_unavailable'}
+
+    return {'status': 'queued', 'scope': scope, 'already_queued': False}
 
 
 @dataclass(frozen=True)

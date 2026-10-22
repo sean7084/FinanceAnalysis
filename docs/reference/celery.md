@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-10-21T12:09:21Z_
+_Generated: 2026-10-22T03:01:42Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -76,7 +76,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.analytics.tasks.calculate_stochastic_for_asset` | `ops` | default | global | global | &mdash; |
 | `apps.analytics.tasks.calculate_volume_signals_for_asset` | `ops` | default | global | global | &mdash; |
 | `apps.analytics.tasks.check_alert_rules` | `ops` | default | global | global | `check-alert-rules-every-5-min` |
-| `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `ops` | default | **3600** | **3900** | `prewarm-dashboard-stocks-cache` |
+| `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `ops` | default | **300** | **330** | `prewarm-dashboard-stocks-cache` |
 | `apps.analytics.tasks.send_alert_notifications` | `ops` | default | global | global | &mdash; |
 | `apps.backtest.tasks.run_backtest` | `backtest` | explicit | **1800** | **2100** | &mdash; |
 | `apps.etf_rotation.tasks.compute_etf_features_daily` | `etf-rotation` | explicit | **1800** | **2000** | `compute-etf-features-daily` |
@@ -117,7 +117,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 | Task | Soft limit | Hard limit |
 | --- | --- | --- |
-| `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | **3600** | **3900** |
+| `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | **300** | **330** |
 | `apps.backtest.tasks.run_backtest` | **1800** | **2100** |
 | `apps.etf_rotation.tasks.compute_etf_features_daily` | **1800** | **2000** |
 | `apps.etf_rotation.tasks.generate_etf_rotation_signal_daily` | **900** | **1000** |

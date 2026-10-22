@@ -602,6 +602,93 @@ class Phase14PredictionTests(TestCase):
         self.assertIn('retired 2 legacy stub model versions', result)
 
 
+class PredictionEndpointInferenceGuardTests(TestCase):
+    """A stock page load reads stored rows or queues work -- it never infers.
+
+    Until this guard, ``GET /api/v1/prediction/{symbol}/`` computed the missing
+    horizons inline when no row was stored, so a cold Stock Detail paid for model
+    inference on the request thread. The inference entry points raise here, so the
+    test fails loudly if inference ever re-enters a page-load path.
+    """
+
+    ENDPOINTS = (
+        (
+            'heuristic',
+            '/api/v1/prediction/',
+            'apps.prediction.views.generate_prediction_for_asset',
+            'apps.prediction.tasks._generate_predictions_for_single_asset',
+        ),
+        (
+            'lightgbm',
+            '/api/v1/lightgbm-predictions/',
+            'apps.prediction.views_lightgbm.generate_lightgbm_prediction_for_asset',
+            'apps.prediction.tasks_lightgbm._predict_with_lightgbm',
+        ),
+        (
+            'lstm',
+            '/api/v1/lstm-predictions/',
+            'apps.prediction.views_lstm.generate_lstm_prediction_for_asset',
+            'apps.prediction.tasks_lstm._predict_with_lstm',
+        ),
+    )
+
+    def setUp(self):
+        self.client = APIClient()
+        self.market = Market.objects.create(code='P14GUARD', name='Prediction Guard Market')
+        self.asset = Asset.objects.create(
+            market=self.market,
+            symbol='605002',
+            ts_code='605002.SH',
+            name='Guard Asset',
+        )
+        self.target_date = timezone.now().date()
+
+    def test_stock_endpoints_queue_instead_of_inferring(self):
+        for scope, base_path, task_target, inference_target in self.ENDPOINTS:
+            with self.subTest(scope=scope):
+                with patch(
+                    inference_target,
+                    side_effect=AssertionError(f'{scope} endpoint ran inference on the request thread'),
+                ) as mock_infer, patch(task_target) as mock_task:
+                    response = self.client.get(
+                        f'{base_path}{self.asset.symbol}/?date={self.target_date}&horizons=7'
+                    )
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(response.data['results'], [])
+                self.assertEqual(
+                    response.data['generation'],
+                    {'status': 'queued', 'scope': scope, 'already_queued': False},
+                )
+                mock_infer.assert_not_called()
+                mock_task.delay.assert_called_once_with(
+                    asset_id=self.asset.id,
+                    target_date=str(self.target_date),
+                    horizons=[7],
+                )
+
+    def test_a_second_request_reuses_the_queued_pass(self):
+        """The lock is what keeps a polling SPA from stacking universe-sized jobs."""
+        with patch('apps.prediction.views.generate_prediction_for_asset') as mock_task:
+            first = self.client.get(f'/api/v1/prediction/{self.asset.symbol}/?date={self.target_date}&horizons=7')
+            second = self.client.get(f'/api/v1/prediction/{self.asset.symbol}/?date={self.target_date}&horizons=7')
+
+        self.assertFalse(first.data['generation']['already_queued'])
+        self.assertTrue(second.data['generation']['already_queued'])
+        mock_task.delay.assert_called_once()
+
+    def test_broker_outage_degrades_to_empty_rather_than_500(self):
+        from kombu.exceptions import OperationalError
+
+        with patch('apps.prediction.views.generate_prediction_for_asset') as mock_task:
+            mock_task.delay.side_effect = OperationalError('no broker')
+            response = self.client.get(f'/api/v1/prediction/{self.asset.symbol}/?date={self.target_date}&horizons=7')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['results'], [])
+        self.assertEqual(response.data['generation']['status'], 'unavailable')
+
+
 class PurgePredictionModelStubsCommandTests(TestCase):
     def test_purge_prediction_model_stubs_dry_run_preserves_rows(self):
         inactive_lightgbm_stub = ModelVersion.objects.create(

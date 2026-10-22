@@ -2299,6 +2299,15 @@ def generate_lightgbm_predictions_for_date(target_date=None, horizons=None):
             )
             processed += 1
 
+    if processed:
+        # The payload cache key is the factor date, which does not change when the
+        # day's prediction rows land, so a prewarm on a fixed clock later races
+        # this sweep. Chaining here means the first dashboard request of the day
+        # reads a payload built from the day's stored predictions.
+        from apps.analytics.tasks import prewarm_dashboard_stocks_cache
+
+        prewarm_dashboard_stocks_cache.delay()
+
     return f'LightGBM predictions generated for {processed} asset-horizon pairs on {as_of}'
 
 
