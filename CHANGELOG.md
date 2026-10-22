@@ -86,6 +86,17 @@
   it, and `PageLoadLatencyHarnessTests` fails if any page that reads
   `frontend/src/lib/api.ts` stops registering. The probe's `settle` rule would
   have hidden this behind an approximation; the guard is what keeps it visible.
+- **The page promised a queued generation and never delivered it.** "Generation is
+  queued and will appear shortly" is in both locales, and the endpoints honour it --
+  200 with `generation.status='queued'` instead of a synchronous model run -- but
+  nothing re-read the rows, so "shortly" meant "on the next navigation". The task
+  writes rows; it does not push them. `StockDetailPage` now polls the two prediction
+  endpoints every 5s while a queued payload has nothing to show, merges whatever
+  landed back into the same composed cache entry the page reads from, and stops the
+  moment rows arrive or after twelve ticks -- a cold sweep that outruns a minute
+  should leave the notice up, not a background loop on the page. An `unavailable`
+  queue is deliberately not polled: that status means the broker is down, and
+  re-asking is not the fix.
 - **`useApiResource` could lose the one number the browser budget is read from.**
   It called `performance.measure` before writing `document.body.dataset`, so an
   engine without UserTiming -- jsdom, which ships no `mark`/`measure` at all, or

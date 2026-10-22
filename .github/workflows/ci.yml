@@ -198,7 +198,15 @@ jobs:
       # separately so the round trip is not billed twice; and trackViewResource --
       # the registering half of the hook, used by the two pages that compose their
       # requests by hand -- stamps too. Measured by `npm test`: 51 across 7 files.
-      MIN_TEST_COUNT: "51"
+      # 51 -> 54: Stock Detail's queued-generation refresh, in a new
+      # src/pages/StockDetailPage.test.tsx. The page tells the user generation is
+      # queued and will appear shortly, which is a promise only a re-read can keep
+      # -- the task writes rows, it does not push them -- so the three tests are
+      # that the poll exists and fills the rows in, that an 'unavailable' queue is
+      # not polled (retrying a down broker is not the fix), and that the wait is
+      # capped at twelve ticks rather than running forever. Measured by `npm test`:
+      # 54 across 8 files.
+      MIN_TEST_COUNT: "54"
 
     steps:
       - uses: actions/checkout@v4
