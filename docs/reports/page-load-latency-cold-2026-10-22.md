@@ -14,27 +14,34 @@ assets, `page_size=120`.
 - **Cold** = Redis emptied through Django's `cache.clear()` (never `redis-cli`, so
   the `REDIS_URL` password does not land on a command line), then Django, beat and
   all five worker pools restarted, per iteration. `COLD=1` in the harness.
-- **p95 at two iterations is the maximum.** Linear interpolation has nowhere to put
-  a 95th percentile with two samples. Read the cold column as "no cold run exceeded
-  this", not as a distribution.
+- **p95 at two or three cold iterations is the maximum.** Linear interpolation has
+  nowhere to put a 95th percentile with that few samples. Read the cold column as
+  "no cold run exceeded this", not as a distribution.
 - **A page's wall-clock floor is its slowest call, not the sum.** Cold runs are
   expensive enough that the harness reports both: `sum(p50)` is total server work,
   `max(p95)` is the critical path the browser waits on.
+- **`+browser` is `max(p95)` plus 0.625s**, the largest browser-only term measured
+  across the eight routes in Chrome against the production build -- not an
+  allowance. `page-load-latency-browser-2026-10-22.md` in this directory is that
+  pass, and it checks the same budget from the other side.
 
 ## After
 
-`ITERATIONS=2 COLD=1 LABEL=cold-final`, `reports/api_latency_20261022_105321_cold-final/`
+`ITERATIONS=3 COLD=1 FRONTEND_OVERHEAD_SECONDS=0.625 LABEL=cold-budget-final`,
+`reports/api_latency_20261022_163825_cold-budget-final/`. 66 calls, 66 HTTP 200.
+`+browser` is the column the budget is actually stated in: the API critical path plus
+the browser term measured in Chrome against the production build.
 
-| Page | Calls | sum(p50) | max(p95) | Budget | Verdict |
-| --- | --- | --- | --- | --- | --- |
-| Dashboard | 2 | 0.383s | 0.325s | <=3.0s p95 | PASS |
-| Indicator Board | 1 | 1.209s | 1.246s | <=3.0s p95 | PASS |
-| Stock Detail | 8 | 1.150s | 0.268s | <=3.0s p95 | PASS |
-| Macro Context | 1 | 0.066s | 0.068s | <=3.0s p95 | PASS |
-| Models | 4 | 0.449s | 0.298s | <=3.0s p95 | PASS |
-| Backtest | 3 | 0.896s | 0.518s | <=3.0s p95 | PASS |
-| Alert Center | 1 | 0.060s | 0.061s | <=3.0s p95 | PASS |
-| Settings | 2 | 0.053s | 0.051s | <=3.0s p95 | PASS |
+| Page | Calls | sum(p50) | max(p95) | +browser | Budget | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| Dashboard | 2 | 0.661s | 0.641s | 1.266s | <=3.0s p95 | PASS |
+| Indicator Board | 1 | 1.173s | 1.189s | 1.814s | <=3.0s p95 | PASS |
+| Stock Detail | 8 | 1.264s | 0.378s | 1.003s | <=3.0s p95 | PASS |
+| Macro Context | 1 | 0.063s | 0.150s | 0.775s | <=3.0s p95 | PASS |
+| Models | 4 | 0.347s | 0.205s | 0.830s | <=3.0s p95 | PASS |
+| Backtest | 3 | 0.906s | 0.463s | 1.088s | <=3.0s p95 | PASS |
+| Alert Center | 1 | 0.048s | 0.117s | 0.742s | <=3.0s p95 | PASS |
+| Settings | 2 | 0.043s | 0.038s | 0.663s | <=3.0s p95 | PASS |
 
 `ITERATIONS=12 LABEL=warm-all`, `reports/api_latency_20261022_103035_warm-all/`
 
@@ -53,11 +60,11 @@ Slowest five cold endpoints, so the ranking is visible:
 
 | Endpoint | cold p50 | cold p95 | warm p95 |
 | --- | --- | --- | --- |
-| Indicator Board `stocks (no candidate filter)` | 1.209s | 1.246s | 0.192s |
-| Backtest `trades` | 0.441s | 0.518s | 0.254s |
-| Models `feature importance` | 0.214s | 0.298s | 0.157s |
-| Dashboard `stocks (candidate filters)` | 0.312s | 0.325s | 0.315s |
-| Stock Detail `sentiment` | 0.264s | 0.268s | 0.401s |
+| Indicator Board `stocks (no candidate filter)` | 1.173s | 1.189s | 0.192s |
+| Dashboard `stocks (candidate filters)` | 0.565s | 0.641s | 0.315s |
+| Backtest `trades` | 0.462s | 0.463s | 0.254s |
+| Stock Detail `ohlcv page 1` | 0.328s | 0.378s | 0.141s |
+| Stock Detail `sentiment` | 0.272s | 0.348s | 0.401s |
 
 ## Before
 
@@ -95,7 +102,10 @@ ones reproducible on the reconciled tree:
 4. **The page slice moved into SQL.** Every per-asset lookup is a `DISTINCT ON`
    keyed on `asset_id`, so its cost is the number of ids handed to it; the
    unfiltered board materialized 500 assets to return 120. Same fix at
-   `/screener/bottom-candidates/`. 2.615s to 1.246s cold.
+   `/screener/bottom-candidates/`, including its macro-context branch, which had
+   been pulling the universe into Python to re-weight three `DecimalField`s by three
+   scalars -- the weights are now bound into one annotation, ordered and sliced in
+   SQL. 2.615s to 1.189s cold, `cold-all` against `cold-budget-final`.
 5. **Stock Detail queues instead of inferring.** The three prediction endpoints
    return 200 with stored rows, or empty plus
    `generation: {'status': 'queued' | 'unavailable'}`, under a per-asset-per-date
@@ -103,20 +113,21 @@ ones reproducible on the reconciled tree:
 
 ## What these numbers do not say
 
-- **Browser overhead is not charged.** `FRONTEND_OVERHEAD_SECONDS` is 0.000s. The
-  instrument is in place and guarded by
-  `frontend/src/hooks/useApiResource.test.tsx`: a cold route load stamps
-  `data-tti-open`, `data-tti` and `data-tti-path` on `<body>`, and the constant is
-  `data-tti-open` plus the part of `data-tti` that is not the request (read
-  `responseEnd - requestStart` off the matching
-  `performance.getEntriesByType('resource')` entry, or the round trip is billed
-  twice). Nothing has read them yet because there is no browser to read them
-  with -- this project deliberately has no Playwright, and this WSL2 image has no
-  Chrome, Chromium or Firefox binary either. So Indicator Board leaves 1.75s for
-  chunk load and render, and every other page more. Filling in that constant, and
-  a real-browser pass over the eight routes with it, is the open item.
-- **Two cold iterations is a floor, not a percentile.** Cold means a full stack
-  restart per iteration; more samples were not paid for.
+- **Browser overhead is now charged, and it was measured, not assumed.**
+  `FRONTEND_OVERHEAD_SECONDS` is **0.625s**, read off the production build in a real
+  browser by `scripts/measure_browser_time_to_data.sh` over all eight routes (two
+  cold iterations per route, sixteen probes, all usable), and
+  `page-load-latency-browser-2026-10-22.md` in this directory is that pass. The
+  number is the largest browser-only term across the routes that stamp --
+  `data-tti-open` plus the part of `data-tti` that is not the request (reading `tti`
+  alone bills the round trip twice, because the view is stamped when its last fetch
+  lands). This project still has no Playwright, and does not need one: the probe
+  drives the Chrome already installed on the Windows host. The two pages that
+  compose their own requests -- Stock Detail and Backtest -- had no time-to-data at
+  all until they registered with the instrument, so this bullet used to read
+  "nothing has read them yet" for reasons that were partly untrue.
+- **Two or three cold iterations is a floor, not a percentile.** Cold means a full
+  stack restart per iteration; more samples were not paid for.
 - **The universe is still only partly stored.** 120 of 500 assets have LightGBM
   rows for 2026-10-20 and 0 LSTM rows. The pages are fast because they no longer
   wait for that to be true; the data is not complete yet, and `prediction_coverage`
@@ -132,11 +143,16 @@ ones reproducible on the reconciled tree:
 ITERATIONS=2 COLD=1 LABEL=cold bash scripts/measure_page_api_latency.sh
 ITERATIONS=20 LABEL=warm bash scripts/measure_page_api_latency.sh
 ONLY_PAGES="Indicator Board,Dashboard" COLD=1 ITERATIONS=2 bash scripts/measure_page_api_latency.sh
+
+# the browser term those two are charged with
+COLD=1 ITERATIONS=2 LABEL=cold bash scripts/measure_browser_time_to_data.sh
+FRONTEND_OVERHEAD_SECONDS=0.625 COLD=1 ITERATIONS=3 bash scripts/measure_page_api_latency.sh
 ```
 
 Guards that keep it true: `apps.analytics.tests.DashboardStocksCacheTests`,
 `apps.prediction.tests.PredictionEndpointInferenceGuardTests`,
 `apps.core.tests_frontend.PageLoadLatencyHarnessTests` -- the last one derives the
 harness's required coverage from `frontend/src`, so a new page-load call that goes
-unmeasured fails CI instead of quietly going unmeasured, which is how the harness
-stayed wrong for a whole release before.
+unmeasured, a route missing from either harness, or a page that stops registering
+with the time-to-data instrument fails CI instead of quietly going unmeasured, which
+is how the harness stayed wrong for a whole release before.

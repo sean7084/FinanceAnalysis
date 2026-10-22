@@ -55,17 +55,37 @@
   drops none, so the window is indistinguishable from unbounded while staying
   inside the index. An asset whose backfill is older than the window reads as
   absent rather than as months stale.
-- **The payload assembled the whole universe before truncating.** Every per-asset
-  lookup is a `DISTINCT ON` keyed on `asset_id`, so its cost is the number of ids
-  handed to it; the unfiltered board materialized 500 assets to return 120. The
-  page slice now happens in SQL when the row filters and the ordering can be
-  answered there (no candidate filter, no `search`, no `suggested_only`, ordering
-  on `composite_score`), cutting cold Indicator Board from 2.615s to 1.246s. The
-  same fix applied to `/screener/bottom-candidates/`, whose default ordering is
-  already the queryset's own.
+- **A page-load payload assembled the whole universe before truncating.** Every
+  per-asset lookup is a `DISTINCT ON` keyed on `asset_id`, so its cost is the number
+  of ids handed to it; the unfiltered board materialized 500 assets to return 120.
+  The page slice now happens in SQL when the row filters and the ordering can be
+  answered there (no candidate filter, no `search`, no `suggested_only`, ordering on
+  `composite_score`), cutting cold Indicator Board from 2.615s to 1.189s. The same
+  fix applied to `/screener/bottom-candidates/`, whose default ordering is already
+  the queryset's own, and to its macro-context branch, which had been left sorting
+  in Python: the three weights are scalars, so the re-score is now one annotated
+  expression ordered and sliced in SQL, and
+  `Phase11FactorTests.test_bottom_candidates_macro_context_ranks_by_the_sql_weighted_sum`
+  pins that the annotated figure still equals the same sum done in `Decimal`.
 - **`docs/reference/env.md` no longer documents a setting that does not exist**
   (`DASHBOARD_MATRIX_SIGNAL_SCOPE`, removed with the request-time candidate
   inference it opted into).
+- **The time-to-data instrument latched early and under-reported the wait.**
+  `stampView` marked a view stamped at its first quiet moment, so a chained
+  resource -- the stock page cannot ask for predictions until the asset request
+  has returned its id -- was never waited for, and the page reported as ready
+  while it was still filling in. A view now reopens when a key mounts after the
+  stamp, which is the difference between a budget that can be trusted and one
+  biased toward passing.
+- **Two of the eight routes had no time-to-data at all.** `StockDetailPage` and
+  `BacktestWorkbenchPage` compose their requests with `cachedGet` directly --
+  status-specific error copy and a live progress feed -- so nothing registered
+  them with the view, `data-tti` never appeared, and the browser pass could only
+  report "no measurement" for the two heaviest pages. `useApiResource.ts` now
+  exports the registering half of the hook as `trackViewResource`, both pages use
+  it, and `PageLoadLatencyHarnessTests` fails if any page that reads
+  `frontend/src/lib/api.ts` stops registering. The probe's `settle` rule would
+  have hidden this behind an approximation; the guard is what keeps it visible.
 - **`useApiResource` could lose the one number the browser budget is read from.**
   It called `performance.measure` before writing `document.body.dataset`, so an
   engine without UserTiming -- jsdom, which ships no `mark`/`measure` at all, or
@@ -82,8 +102,36 @@
   `cache.clear()` so the `REDIS_URL` password never lands on a command line. It
   reports `sum(p50)` (total server work) and `max(p95)` (the realistic critical
   path, because a page fires its calls concurrently) against a 3.0s budget, and
-  states rather than hides that at two iterations an interpolated p95 is the
-  maximum.
+  states rather than hides that at two or three iterations an interpolated p95 is
+  the maximum.
+- **A real-browser time-to-data pass.**
+  `scripts/measure_browser_time_to_data.sh` plus
+  `scripts/browser_time_to_data.mjs` load each of the 8 routes in a fresh Chrome
+  profile against the production build and read the stamps the app writes, which
+  is the term `curl` cannot see. It runs the browser that is already installed on
+  the Windows host through WSL interop rather than adding Playwright: Chrome's
+  DevTools port is unreachable from WSL in NAT networking and
+  `--virtual-time-budget` distorts the `performance.now()` deltas being measured,
+  so the probe proxies the prod build through a one-page server, injects an
+  observer, and holds an `async` subresource open so the load event waits for the
+  stamp. Without a discoverable browser the script exits rather than reporting an
+  assumed overhead. Its output is the number
+  `FRONTEND_OVERHEAD_SECONDS` in the API harness is filled from.
+- **Two fallback rules in the probe, gated so they can only ever be late.** If no
+  `data-tti` appears, the probe reports the end of the first `/api/` burst from
+  Resource Timing (`settle`), or first paint for a page that asks for nothing
+  (`shell`, which is Settings by design). Both add the settle window the probe
+  actually waited, so a fallback figure can be late but never early -- and two
+  guards hold that promise, because firing one early is the only way this harness
+  could report a page faster than it is. Nothing may be in flight: the first warm
+  run labelled `/indicator-board` `shell` while its one request was still open. And
+  a fallback is only taken on a route the wrapper declares makes no page-load
+  request -- on a route that does, a fallback cannot be told apart from a page whose
+  first request had not started yet, so it waits for the deadline, exits non-zero,
+  and the wrapper re-runs the iteration once (resetting the stack first in cold
+  mode, since an attempt that navigated before hanging had already warmed Redis).
+  A route with no number is reported as **no measurement** and fails the run rather
+  than passing on a mixture of two probes' fields.
 - **Browser-side timing hooks.** `lib/queryCache.ts` emits a
   `performance.measure` per resolve source, and `useApiResource` stamps
   `data-tti-open` (navigationStart to the view opening: bundle, route chunk and
@@ -91,34 +139,45 @@
   included) and `data-tti-path` on `<body>`, plus a `page-data-ready` measure.
   Splitting the two intervals is what makes the browser term subtractable from an
   API number instead of billing the same round trip twice.
-- **Three CI guards** (`.github/workflows/ci.yml`, "Page-load budget guards"):
-  no request-time inference in `DashboardStocksCacheTests` /
-  `PredictionEndpointInferenceGuardTests`, and
-  `PageLoadLatencyHarnessTests`, which derives the harness's required coverage
-  from `frontend/src` so a new page-load call that goes unmeasured fails CI. The
-  harness had already gone stale for a whole release -- it kept timing the seven
-  calls of `fetchDashboardDataLegacy` after the SPA moved to one summary
+- **Page-load budget guards in CI** (`.github/workflows/ci.yml`, "Page-load
+  budget guards", run ahead of the full suite because they take seconds): no
+  request-time inference in `DashboardStocksCacheTests` /
+  `PredictionEndpointInferenceGuardTests`, and `PageLoadLatencyHarnessTests`,
+  which derives the harness's required coverage from `frontend/src` -- every
+  route in `App.tsx` in both harnesses, every page-load endpoint in the curl one,
+  every page that reads the API registered with the instrument -- so a new
+  page-load call or an uninstrumented page fails CI instead of going unmeasured.
+  The harness had already gone stale for a whole release: it kept timing the
+  seven calls of `fetchDashboardDataLegacy` after the SPA moved to one summary
   endpoint.
 
 #### Result: every page under 3s on a cold stack
 
-| Page | Cold before | Cold after (p95) | Warm (p95) |
-| --- | --- | --- | --- |
-| Dashboard | 46.3s | 0.325s | 0.315s |
-| Indicator Board | timed out (>151.7s in one query) | 1.246s | 0.192s |
-| Stock Detail | inferred on missing rows | 0.268s | 0.401s |
-| Macro Context | not measured | 0.068s | 0.125s |
-| Models | not measured | 0.298s | 0.157s |
-| Backtest | not measured | 0.518s | 0.324s |
-| Alert Center | not measured | 0.061s | 0.073s |
-| Settings | not measured | 0.051s | 0.086s |
+`ITERATIONS=3 COLD=1 FRONTEND_OVERHEAD_SECONDS=0.625`. `max(p95)` is the API
+critical path; `+browser` charges it with the browser term measured in a real
+browser against the production build, which is the quantity the budget is stated
+in. 66 calls, 66 HTTP 200.
 
-Two caveats, both honest: the budget is browser time-to-data while these are API
-critical paths with `FRONTEND_OVERHEAD_SECONDS` charged as **0.000s** (the mark is
-wired up; reading it needs a browser, which this project has deliberately not
-added), and each cold figure is two iterations of a restarted stack. The tightest
-page therefore has 1.75s of headroom against the browser, not 3.0s. Full tables in
-`docs/reports/page-load-latency-cold-2026-10-22.md`.
+| Page | Cold before | Cold after (p95) | +browser | Warm (p95) |
+| --- | --- | --- | --- | --- |
+| Dashboard | 46.3s | 0.641s | 1.266s | 0.315s |
+| Indicator Board | timed out (>151.7s in one query) | 1.189s | 1.814s | 0.192s |
+| Stock Detail | inferred on missing rows | 0.378s | 1.003s | 0.401s |
+| Macro Context | not measured | 0.150s | 0.775s | 0.125s |
+| Models | not measured | 0.205s | 0.830s | 0.157s |
+| Backtest | not measured | 0.463s | 1.088s | 0.324s |
+| Alert Center | not measured | 0.117s | 0.742s | 0.073s |
+| Settings | not measured | 0.038s | 0.663s | 0.086s |
+
+**All eight PASS against 3.0s, and independently so in the browser itself**: the
+cold pass over the eight routes -- two iterations each, full stack restart, fresh
+Chrome profile, prod build, sixteen probes all of which stamped or were labelled as
+Settings' shell -- put the worst page (`/indicator-board`) at **1860 ms**, so the
+tightest margin is 1.14s of headroom rather than the 1.81s an API-only figure would
+have claimed. Each cold API figure is three iterations of a restarted stack, and at
+n=3 an interpolated p95 is the maximum. Full tables in
+`docs/reports/page-load-latency-cold-2026-10-22.md` and
+`docs/reports/page-load-latency-browser-2026-10-22.md`.
 
 ### version 0.1.18
 
