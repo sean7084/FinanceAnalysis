@@ -59,10 +59,15 @@ COLD="${COLD:-0}"
 # scripts/measure_browser_time_to_data.sh produces it: the cold pass over all 8
 # routes prints the largest browser-only term as
 # `FRONTEND_OVERHEAD_SECONDS for measure_page_api_latency.sh is N.NNN`, and
-#   FRONTEND_OVERHEAD_SECONDS=0.625 COLD=1 bash scripts/measure_page_api_latency.sh
-# charges it here. The per-route number behind it is `data-tti-open` plus the part
-# of `data-tti` that is not the request itself -- `tti` alone would bill the round
-# trip twice, because the view is stamped when its last fetch lands. To read one
+#   FRONTEND_OVERHEAD_SECONDS=0.583 COLD=1 bash scripts/measure_page_api_latency.sh
+# charges it here -- the larger browser-only term of the two newest cold/warm runs,
+# because the column is charged to pages that were not measured. The term follows
+# the bundle, so it is re-read whenever the bundle changes;
+# docs/reports/page-load-latency-browser-2026-10-22.md names the artifacts. The
+# per-route number behind it is
+# `data-tti-open` plus the part of `data-tti` that is not the request itself --
+# `tti` alone would bill the round trip twice, because the view is stamped when
+# its last fetch lands. To read one
 # by hand instead, load the built SPA, open a route cold, and look at what
 # hooks/useApiResource stamped on <body>:
 #   copy([document.body.dataset.ttiOpen, document.body.dataset.tti,

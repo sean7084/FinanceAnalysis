@@ -63,8 +63,8 @@ than passing on a mixture of two probes.
 
 ## Cold
 
-`COLD=1 ITERATIONS=2 LABEL=cold-final2`,
-`reports/browser_tti_20261022_163155_cold-final2/`. Cold here is stricter than the API
+`COLD=1 ITERATIONS=2 LABEL=cold-head`,
+`reports/browser_tti_20261022_180918_cold-head/`. Cold here is stricter than the API
 report: `restart_cold_stack.sh` (Django, beat, all five worker pools) plus
 `cache.clear()` plus a **brand-new Chrome `--user-data-dir` per iteration**, so
 neither an HTTP cache nor `lib/queryCache.ts` survives. Sixteen probes, sixteen
@@ -72,57 +72,66 @@ usable: every route stamped, no fallback and no retry needed.
 
 | route | page | browser total | how | open (bundle+chunk) | wait (data) | network span | browser term (max) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/` | Dashboard | 1117 ms | stamp | 460 | 657 | 656 | 464 |
-| `/indicator-board` | Indicator Board | 1860 ms | stamp | 492 | 1368 | 1366 | 494 |
-| `/stock/000001` | Stock Detail | 1258 ms | stamp | 519 | 739 | 737 | 526 |
-| `/macro` | Macro Context | 662 ms | stamp | 511 | 151 | 150 | 589 |
-| `/models` | Models | 716 ms | stamp | 624 | 92 | 91 | 625 |
-| `/backtest` | Backtest | 838 ms | stamp | 547 | 291 | 288 | 550 |
-| `/alerts` | Alert Center | 618 ms | stamp | 548 | 70 | 58 | 560 |
-| `/settings` | Settings | 1062 ms | shell | -- | -- | -- | (shell) |
+| `/` | Dashboard | 782 ms | stamp | 502 | 280 | 278 | 504 |
+| `/indicator-board` | Indicator Board | 1652 ms | stamp | 538 | 1114 | 1112 | 540 |
+| `/stock/000001` | Stock Detail | 984 ms | stamp | 454 | 530 | 529 | 486 |
+| `/macro` | Macro Context | 535 ms | stamp | 483 | 52 | 51 | 484 |
+| `/models` | Models | 570 ms | stamp | 475 | 95 | 93 | 477 |
+| `/backtest` | Backtest | 794 ms | stamp | 549 | 245 | 242 | 552 |
+| `/alerts` | Alert Center | 628 ms | stamp | 467 | 161 | 160 | 468 |
+| `/settings` | Settings | 1058 ms | shell | -- | -- | -- | (shell) |
 
-**Worst page 1860 ms against a 3000 ms budget -- PASS on all eight, on the first
+**Worst page 1652 ms against a 3000 ms budget -- PASS on all eight, on the first
 request after a full stack restart.**
 
 Read the row one sample at a time for the total, but the last column is the
 largest browser-only term over *both* of the route's cold samples, because that is
-the quantity the constant below takes. `/macro` is the clearest case: its worst
-total (662 ms) came with a 512 ms browser term, while the other sample -- 640 ms
-total, 587 ms of it `open` -- shows what the route's browser cost can be.
+the quantity the constant below takes. `/stock/000001` is the clearest case: its
+worst total (984 ms) came with a 455 ms browser term, while the other sample --
+892 ms total, 484 ms of it `open` -- shows what the route's browser cost can be.
+
+This run supersedes `cold-final2` (worst page 1860 ms, constant 0.625 s) because it
+measures the bundle at HEAD: `3776675` rebuilt the Stock Detail chunk. The shape of
+the answer did not change -- eight PASS, one page an order of magnitude off the
+others -- and the constant moved the way a smaller bundle moves.
 
 ## Warm
 
-`COLD=0 ITERATIONS=3 LABEL=warm-final2`,
-`reports/browser_tti_20261022_163714_warm-final2/`, same fresh Chrome profile per
+`COLD=0 ITERATIONS=2 LABEL=warm-head`,
+`reports/browser_tti_20261022_183700_warm-head/`, same fresh Chrome profile per
 route. Twenty-four probes, all usable.
 
 | route | browser total | open | wait | network span | browser term (max) |
 | --- | --- | --- | --- | --- | --- |
-| `/` | 918 ms | 461 | 457 | 455 | 561 |
-| `/indicator-board` | 1610 ms | 447 | 1163 | 1161 | 462 |
-| `/stock/000001` | 972 ms | 588 | 384 | 382 | 590 |
-| `/macro` | 570 ms | 448 | 122 | 121 | 449 |
-| `/models` | 707 ms | 436 | 271 | 269 | 531 |
-| `/backtest` | 978 ms | 559 | 419 | 416 | 562 |
-| `/alerts` | 609 ms | 568 | 41 | 39 | 570 |
-| `/settings` | 1030 ms | -- | -- | -- | (shell) |
+| `/` | 759 ms | 582 | 177 | 176 | 583 |
+| `/indicator-board` | 501 ms | 446 | 55 | 54 | 447 |
+| `/stock/000001` | 962 ms | 478 | 484 | 483 | 479 |
+| `/macro` | 592 ms | 539 | 53 | 52 | 540 |
+| `/models` | 638 ms | 541 | 97 | 96 | 542 |
+| `/backtest` | 1371 ms | 425 | 946 | 943 | 475 |
+| `/alerts` | 582 ms | 535 | 47 | 45 | 537 |
+| `/settings` | 1042 ms | -- | -- | -- | (shell) |
 
-Cold and warm differ by about 250 ms on the one page that is actually slow --
-Indicator Board's own API term, 1368 ms cold against 1163 ms warm -- and are the
-same within run-to-run noise everywhere else. That is the finding: after the
-cold-path work, the "slow only on first load" symptom has no browser-side residue to
-hide in. Every page's first contentful paint lands in 172-364 ms, so the shell is
-never the wait, and the whole spread between pages is the API term.
+Cold and warm differ where they are supposed to -- Indicator Board's own wait is
+1114 ms cold against 55 ms warm -- and are the same within run-to-run noise
+everywhere else. That is the finding: after the cold-path work, the "slow only on
+first load" symptom has no browser-side residue to hide in. The exception worth
+saying out loud is `/backtest`, whose second warm sample caught a 946 ms wait
+against 245 ms cold: a warm Redis does not make every endpoint faster, and at two
+samples one slow request moves the row. Every page's first contentful paint lands
+between 156 and 328 ms (164-308 ms cold), so the shell is never the wait, and the
+whole spread between pages is the API term.
 
 ## The constant this feeds
 
-Largest browser-only term across the cold stamped routes: **0.625 s** (`/models`,
-whose four concurrent list requests are the slowest render after the last response).
-The warm pass reads 0.590 s on `/stock/000001`; the cold figure is the one charged.
-That is what `scripts/measure_page_api_latency.sh` charges:
+Largest browser-only term across the cold stamped routes: **0.552 s** (`/backtest`,
+whose bundle and route chunk paint after a 245 ms wait). The warm pass reads
+**0.583 s** on `/`. The figure charged is the larger of the two, because the column
+exists to be charged to a page that has not been measured yet and should not be
+beaten by one:
 
 ```bash
-FRONTEND_OVERHEAD_SECONDS=0.625 COLD=1 ITERATIONS=3 bash scripts/measure_page_api_latency.sh
+FRONTEND_OVERHEAD_SECONDS=0.583 COLD=1 ITERATIONS=3 bash scripts/measure_page_api_latency.sh
 ```
 
 Charged as one constant rather than per route on purpose: the API harness already
@@ -135,7 +144,7 @@ overhead is `data-tti-open` plus the part of `data-tti` that is not the network 
 - **Two cold iterations is a floor, not a percentile.** At n=2 the interpolated p95
   is the maximum, which the summary states rather than hides. The API harness ran
   three. A distribution would need ~20 full-stack restarts per page, which is a lot
-  of machine and would still say the same thing at 1.86 s against 3.0 s.
+  of machine and would still say the same thing at 1.65 s against 3.0 s.
 - **The probe proxies the HTML.** Requests for the document and its assets pass
   through a one-page Node server on the way to Django, and Chrome runs on the Windows
   host while the files are served from WSL. That costs some of the ~500 ms `open`
@@ -147,9 +156,15 @@ overhead is `data-tti-open` plus the part of `data-tti` that is not the network 
   iteration once and why a route with no number fails the run: on a shared developer
   machine the honest reading of "no data" is *not a measurement*, not a pass.
 - **`/settings` is a shell figure, not a data figure.** It makes no page-load request;
-  its 1062 ms is first paint (312 ms) plus the settle window the probe waited in, so
+  its 1058 ms is first paint plus the settle window the probe waited in, so
   the true value is nearer that paint. It is the one route allowed to be measured this
   way, and it is labelled in every table.
+- **Stock Detail's queued-generation refresh is not in these numbers.** The poll fires
+  at 5 s and the probe exits on the first stamp, so no cold or warm figure here pays for
+  it. What it does mean is that the browser pass proves the *first* answer while the
+  refresh itself is covered by `frontend/src/pages/StockDetailPage.test.tsx`, which
+  asserts the poll runs, fills the rows in, skips an `unavailable` queue and stops after
+  twelve ticks.
 - **Stock Detail's burst is measured, its chained re-render is not.** `data-tti` is
   stamped when the last resource's value is committed to React state, which is a frame
   before that frame paints. That is the same instant on every route, so it is

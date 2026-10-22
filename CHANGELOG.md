@@ -28,8 +28,9 @@
   (`PREDICTION_GENERATION_LOCK_SECONDS`, 120) so a polling SPA cannot stack
   universe-sized jobs. A broker that is unreachable is caught, logged and
   reported as `unavailable` -- it does not fail the page. `StockDetailPage`
-  renders a one-line "generating" notice in both locales; `useApiResource`'s
-  stale-while-revalidate picks the row up when the task lands.
+  renders a one-line "generating" notice in both locales and re-reads the two
+  prediction endpoints until rows land, which is what makes "will appear
+  shortly" true (see the refresh entry under Fixed).
 - **`PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN` 20 → 250.** Twenty assets per
   hourly run repairs 480 rows a day against an effective universe in the
   thousands, so gaps persisted for days and any read-stored-rows path quietly
@@ -60,7 +61,8 @@
   of ids handed to it; the unfiltered board materialized 500 assets to return 120.
   The page slice now happens in SQL when the row filters and the ordering can be
   answered there (no candidate filter, no `search`, no `suggested_only`, ordering on
-  `composite_score`), cutting cold Indicator Board from 2.615s to 1.189s. The same
+  `composite_score`), cutting cold Indicator Board from 2.615s (`cold-all`) to 1.184s
+  (`cold-head2`). The same
   fix applied to `/screener/bottom-candidates/`, whose default ordering is already
   the queryset's own, and to its macro-context branch, which had been left sorting
   in Python: the three weights are scalars, so the re-score is now one annotated
@@ -164,27 +166,27 @@
 
 #### Result: every page under 3s on a cold stack
 
-`ITERATIONS=3 COLD=1 FRONTEND_OVERHEAD_SECONDS=0.625`. `max(p95)` is the API
-critical path; `+browser` charges it with the browser term measured in a real
+`ITERATIONS=3 COLD=1 FRONTEND_OVERHEAD_SECONDS=0.583 LABEL=cold-head2`. `max(p95)` is
+the API critical path; `+browser` charges it with the browser term measured in a real
 browser against the production build, which is the quantity the budget is stated
 in. 66 calls, 66 HTTP 200.
 
 | Page | Cold before | Cold after (p95) | +browser | Warm (p95) |
 | --- | --- | --- | --- | --- |
-| Dashboard | 46.3s | 0.641s | 1.266s | 0.315s |
-| Indicator Board | timed out (>151.7s in one query) | 1.189s | 1.814s | 0.192s |
-| Stock Detail | inferred on missing rows | 0.378s | 1.003s | 0.401s |
-| Macro Context | not measured | 0.150s | 0.775s | 0.125s |
-| Models | not measured | 0.205s | 0.830s | 0.157s |
-| Backtest | not measured | 0.463s | 1.088s | 0.324s |
-| Alert Center | not measured | 0.117s | 0.742s | 0.073s |
-| Settings | not measured | 0.038s | 0.663s | 0.086s |
+| Dashboard | 46.3s | 0.500s | 1.083s | 0.315s |
+| Indicator Board | timed out (>151.7s in one query) | 1.184s | 1.767s | 0.192s |
+| Stock Detail | inferred on missing rows | 0.393s | 0.976s | 0.401s |
+| Macro Context | not measured | 0.169s | 0.752s | 0.125s |
+| Models | not measured | 0.216s | 0.799s | 0.157s |
+| Backtest | not measured | 0.397s | 0.980s | 0.324s |
+| Alert Center | not measured | 0.115s | 0.698s | 0.073s |
+| Settings | not measured | 0.048s | 0.631s | 0.086s |
 
 **All eight PASS against 3.0s, and independently so in the browser itself**: the
 cold pass over the eight routes -- two iterations each, full stack restart, fresh
 Chrome profile, prod build, sixteen probes all of which stamped or were labelled as
-Settings' shell -- put the worst page (`/indicator-board`) at **1860 ms**, so the
-tightest margin is 1.14s of headroom rather than the 1.81s an API-only figure would
+Settings' shell -- put the worst page (`/indicator-board`) at **1652 ms**, so the
+tightest margin is 1.35s of headroom rather than the 1.82s an API-only figure would
 have claimed. Each cold API figure is three iterations of a restarted stack, and at
 n=3 an interpolated p95 is the maximum. Full tables in
 `docs/reports/page-load-latency-cold-2026-10-22.md` and

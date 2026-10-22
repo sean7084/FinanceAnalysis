@@ -20,28 +20,28 @@ assets, `page_size=120`.
 - **A page's wall-clock floor is its slowest call, not the sum.** Cold runs are
   expensive enough that the harness reports both: `sum(p50)` is total server work,
   `max(p95)` is the critical path the browser waits on.
-- **`+browser` is `max(p95)` plus 0.625s**, the largest browser-only term measured
+- **`+browser` is `max(p95)` plus 0.583s**, the largest browser-only term measured
   across the eight routes in Chrome against the production build -- not an
   allowance. `page-load-latency-browser-2026-10-22.md` in this directory is that
   pass, and it checks the same budget from the other side.
 
 ## After
 
-`ITERATIONS=3 COLD=1 FRONTEND_OVERHEAD_SECONDS=0.625 LABEL=cold-budget-final`,
-`reports/api_latency_20261022_163825_cold-budget-final/`. 66 calls, 66 HTTP 200.
+`ITERATIONS=3 COLD=1 FRONTEND_OVERHEAD_SECONDS=0.583 LABEL=cold-head2`,
+`reports/api_latency_20261022_184111_cold-head2/`. 66 calls, 66 HTTP 200.
 `+browser` is the column the budget is actually stated in: the API critical path plus
 the browser term measured in Chrome against the production build.
 
 | Page | Calls | sum(p50) | max(p95) | +browser | Budget | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| Dashboard | 2 | 0.661s | 0.641s | 1.266s | <=3.0s p95 | PASS |
-| Indicator Board | 1 | 1.173s | 1.189s | 1.814s | <=3.0s p95 | PASS |
-| Stock Detail | 8 | 1.264s | 0.378s | 1.003s | <=3.0s p95 | PASS |
-| Macro Context | 1 | 0.063s | 0.150s | 0.775s | <=3.0s p95 | PASS |
-| Models | 4 | 0.347s | 0.205s | 0.830s | <=3.0s p95 | PASS |
-| Backtest | 3 | 0.906s | 0.463s | 1.088s | <=3.0s p95 | PASS |
-| Alert Center | 1 | 0.048s | 0.117s | 0.742s | <=3.0s p95 | PASS |
-| Settings | 2 | 0.043s | 0.038s | 0.663s | <=3.0s p95 | PASS |
+| Dashboard | 2 | 0.445s | 0.500s | 1.083s | <=3.0s p95 | PASS |
+| Indicator Board | 1 | 1.180s | 1.184s | 1.767s | <=3.0s p95 | PASS |
+| Stock Detail | 8 | 1.070s | 0.393s | 0.976s | <=3.0s p95 | PASS |
+| Macro Context | 1 | 0.076s | 0.169s | 0.752s | <=3.0s p95 | PASS |
+| Models | 4 | 0.321s | 0.216s | 0.799s | <=3.0s p95 | PASS |
+| Backtest | 3 | 0.789s | 0.397s | 0.980s | <=3.0s p95 | PASS |
+| Alert Center | 1 | 0.062s | 0.115s | 0.698s | <=3.0s p95 | PASS |
+| Settings | 2 | 0.055s | 0.048s | 0.631s | <=3.0s p95 | PASS |
 
 `ITERATIONS=12 LABEL=warm-all`, `reports/api_latency_20261022_103035_warm-all/`
 
@@ -60,11 +60,11 @@ Slowest five cold endpoints, so the ranking is visible:
 
 | Endpoint | cold p50 | cold p95 | warm p95 |
 | --- | --- | --- | --- |
-| Indicator Board `stocks (no candidate filter)` | 1.173s | 1.189s | 0.192s |
-| Dashboard `stocks (candidate filters)` | 0.565s | 0.641s | 0.315s |
-| Backtest `trades` | 0.462s | 0.463s | 0.254s |
-| Stock Detail `ohlcv page 1` | 0.328s | 0.378s | 0.141s |
-| Stock Detail `sentiment` | 0.272s | 0.348s | 0.401s |
+| Indicator Board `stocks (no candidate filter)` | 1.180s | 1.184s | 0.192s |
+| Dashboard `stocks (candidate filters)` | 0.368s | 0.500s | 0.315s |
+| Backtest `trades` | 0.385s | 0.397s | 0.254s |
+| Stock Detail `sentiment` | 0.282s | 0.393s | 0.401s |
+| Backtest `runs` | 0.315s | 0.352s | 0.324s |
 
 ## Before
 
@@ -105,7 +105,9 @@ ones reproducible on the reconciled tree:
    `/screener/bottom-candidates/`, including its macro-context branch, which had
    been pulling the universe into Python to re-weight three `DecimalField`s by three
    scalars -- the weights are now bound into one annotation, ordered and sliced in
-   SQL. 2.615s to 1.189s cold, `cold-all` against `cold-budget-final`.
+   SQL. 2.615s to 1.184s cold, `cold-all` against `cold-head2`; the same query read
+   1.189s in `cold-budget-final` and 1.400s in `cold-head`, so the spread between cold
+   runs of one restarted stack is a couple of hundred milliseconds, not the fix.
 5. **Stock Detail queues instead of inferring.** The three prediction endpoints
    return 200 with stored rows, or empty plus
    `generation: {'status': 'queued' | 'unavailable'}`, under a per-asset-per-date
@@ -114,7 +116,9 @@ ones reproducible on the reconciled tree:
 ## What these numbers do not say
 
 - **Browser overhead is now charged, and it was measured, not assumed.**
-  `FRONTEND_OVERHEAD_SECONDS` is **0.625s**, read off the production build in a real
+  `FRONTEND_OVERHEAD_SECONDS` is **0.583s** (the larger browser-only term of the two
+  HEAD passes, `LABEL=cold-head` 0.552s and `LABEL=warm-head` 0.583s), read off the
+  production build in a real
   browser by `scripts/measure_browser_time_to_data.sh` over all eight routes (two
   cold iterations per route, sixteen probes, all usable), and
   `page-load-latency-browser-2026-10-22.md` in this directory is that pass. The
@@ -146,7 +150,7 @@ ONLY_PAGES="Indicator Board,Dashboard" COLD=1 ITERATIONS=2 bash scripts/measure_
 
 # the browser term those two are charged with
 COLD=1 ITERATIONS=2 LABEL=cold bash scripts/measure_browser_time_to_data.sh
-FRONTEND_OVERHEAD_SECONDS=0.625 COLD=1 ITERATIONS=3 bash scripts/measure_page_api_latency.sh
+FRONTEND_OVERHEAD_SECONDS=0.583 COLD=1 ITERATIONS=3 bash scripts/measure_page_api_latency.sh
 ```
 
 Guards that keep it true: `apps.analytics.tests.DashboardStocksCacheTests`,
