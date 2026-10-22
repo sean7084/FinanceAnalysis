@@ -14,7 +14,10 @@ here: ``DjangoViteAssetLoader.instance()`` is a singleton populated once at
 We swap the client directly instead.
 """
 
-from django.test import TestCase
+import re
+from pathlib import Path
+
+from django.test import SimpleTestCase, TestCase
 from django_vite.core.asset_loader import (
     DjangoViteAppClient,
     DjangoViteAssetLoader,
@@ -110,3 +113,169 @@ class SPAFallbackRoutingTests(TestCase):
         response = self.client.get("/static/definitely-missing-asset.js")
         self.assertIn(response.status_code, (403, 404))
         self.assertNotIn('<div id="root"></div>', response.content.decode())
+
+
+class PageLoadLatencyHarnessTests(SimpleTestCase):
+    """Keep scripts/measure_page_api_latency.sh a true map of the SPA.
+
+    The harness is the only evidence behind the page-load budget, and it went
+    stale for a whole release without anything noticing: it kept timing the
+    seven calls ``fetchDashboardDataLegacy`` makes after ``fetchDashboardData``
+    had moved to a single ``/dashboard/stocks/summary/``, so every Dashboard
+    number described a request no page ever sends. Three of the eight routed
+    pages were never measured at all.
+
+    These tests derive the required coverage from the frontend source rather
+    than restating it, so the check cannot itself go stale.
+    """
+
+    FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
+    HARNESS = Path(__file__).resolve().parents[2] / "scripts" / "measure_page_api_latency.sh"
+
+    # The eight routed pages, per the router in frontend/src/App.tsx.
+    EXPECTED_GROUPS = {
+        "Dashboard",
+        "Indicator Board",
+        "Stock Detail",
+        "Macro Context",
+        "Models",
+        "Backtest",
+        "Alert Center",
+        "Settings",
+    }
+
+    def _page_files(self):
+        return sorted((self.FRONTEND / "pages").glob("*Page.tsx"))
+
+    def _harness_groups_and_routes(self):
+        text = self.HARNESS.read_text()
+        lines = text.splitlines()
+
+        # Endpoint entries live in the array literal and in `ENDPOINTS+=` lines.
+        # Matching is line-shaped rather than paren-depth for two reasons: the
+        # comments inside the array carry unbalanced parentheses, and the
+        # ONLY_PAGES filter reassigns `ENDPOINTS=("${filtered[@]}")`, which would
+        # otherwise reopen the block and let the markdown table's pipes match as
+        # entries. A real entry is a quoted triple whose third field is a path.
+        entry_lines = []
+        inside_array = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("ENDPOINTS=(\"$"):
+                # Reassignment from the filtered copy, not a definition.
+                continue
+            if stripped.startswith("ENDPOINTS=("):
+                inside_array = True
+                continue
+            if inside_array:
+                if stripped == ")":
+                    inside_array = False
+                    continue
+                if stripped.startswith("#"):
+                    continue
+                entry_lines.append(stripped)
+            elif stripped.startswith("ENDPOINTS+=("):
+                entry_lines.append(stripped)
+
+        groups, routes = set(), set()
+        for line in entry_lines:
+            match = re.search(r"""['"]([^'"]*\|[^'"]*\|[^'"]+)['"]""", line)
+            if not match:
+                continue
+            group, _label, path = match.group(1).split("|", 2)
+            if not group or not path.startswith(("/", "$")):
+                continue
+            groups.add(group)
+            first = path.lstrip("/").split("?")[0].split("/")[0]
+            if first and not first.startswith("$"):
+                routes.add(first)
+
+        # Paths held in shell variables: the entry text is "$DASHBOARD_STOCKS",
+        # so the route has to come from the assignment the array interpolates.
+        for var in ("DASHBOARD_STOCKS", "OHLCV_BASE"):
+            assignment = re.search(rf'^{var}="/([^/]+)/', text, re.MULTILINE)
+            referenced = re.search(rf"\|\${var}\b", text)
+            if assignment and referenced:
+                routes.add(assignment.group(1))
+        if "/dashboard/stocks/summary/" in text:
+            routes.add("dashboard")
+        return groups, routes
+
+    def _spa_read_routes(self):
+        """Routes the routed pages actually read, resolved through api.ts.
+
+        Derived from what the pages import and call, so a helper no page uses
+        cannot put a route on the load path. That is what excludes
+        ``fetchDashboardDataLegacy`` without naming it.
+        """
+        api_source = (self.FRONTEND / "lib" / "api.ts").read_text()
+        pages_source = "\n".join(path.read_text() for path in self._page_files())
+
+        called = set(re.findall(r"\b(fetch[A-Z][A-Za-z0-9]*)\s*\(", pages_source))
+        paths = set(re.findall(r"""apiGet(?:<[^>]*>)?\(\s*[`'"](/[^`'"?#]+)""", pages_source))
+
+        for name in called:
+            match = re.search(rf"export async function {name}\(", api_source)
+            if not match:
+                continue
+            body = api_source[match.end() :]
+            next_export = body.find("\nexport ")
+            body = body[: next_export if next_export != -1 else len(body)]
+            paths.update(re.findall(r"""apiGet(?:<[^>]*>)?\(\s*[`'"](/[^`'"]+)""", body))
+            paths.update(re.findall(r"`\$\{API_BASE\}(/[^`$]*)", body))
+            paths.update(re.findall(r"""[`'"](/[^`'"]*?/)\$\{""", body))
+
+        routes = set()
+        for path in paths:
+            first = path.lstrip("/").split("/")[0]
+            if first:
+                routes.add(first)
+        return routes
+
+    def test_every_route_a_page_reads_is_measured(self):
+        """A page-load read that the harness skips makes its cost invisible."""
+        missing = self._spa_read_routes() - self._harness_groups_and_routes()[1]
+        self.assertEqual(
+            missing,
+            set(),
+            f"SPA reads {sorted(missing)} on a page-load path but the harness "
+            "never times it. Add it to ENDPOINTS in scripts/measure_page_api_latency.sh.",
+        )
+
+    def test_harness_has_a_group_for_every_routed_page(self):
+        """Every route in App.tsx needs a page group, including ones with no API call."""
+        app_source = (self.FRONTEND / "App.tsx").read_text()
+        # Every lazy page is wrapped by withSuspense; the parent AppShell route is
+        # not, so counting wrappers counts pages rather than URL entries.
+        route_count = len(re.findall(r"withSuspense\(<\w+ />", app_source))
+        groups = self._harness_groups_and_routes()[0]
+        self.assertEqual(
+            groups,
+            self.EXPECTED_GROUPS,
+            f"harness groups {sorted(groups)} do not match the expected page set",
+        )
+        self.assertEqual(
+            len(groups),
+            route_count,
+            "App.tsx renders a different number of pages than the harness groups "
+            f"({route_count} vs {len(groups)}); a page was added or removed without "
+            "updating the latency harness.",
+        )
+
+    def test_dashboard_measures_the_summary_endpoint_not_the_legacy_seven(self):
+        """The specific regression that motivated this class.
+
+        ``fetchDashboardData`` is one request to ``/dashboard/stocks/summary/``.
+        If the harness stops measuring it, or resumes measuring a legacy-only
+        endpoint, the Dashboard row describes a page load that does not happen.
+        """
+        _groups, routes = self._harness_groups_and_routes()
+        harness = self.HARNESS.read_text()
+        self.assertIn("dashboard", routes)
+        self.assertIn("/dashboard/stocks/summary/", harness)
+        self.assertNotIn(
+            "Dashboard|macro current",
+            harness,
+            "the legacy seven-call Dashboard group was reintroduced; fetchDashboardData "
+            "makes one summary request, so these endpoints are not on the load path",
+        )

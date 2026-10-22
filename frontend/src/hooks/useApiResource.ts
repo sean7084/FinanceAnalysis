@@ -14,6 +14,62 @@ export interface ApiResource<T> {
 }
 
 /**
+ * Time-to-data for the page currently on screen.
+ *
+ * A view is one pathname plus the resource keys mounted under it. It opens when
+ * the first resource mounts and is stamped once no key is still waiting for its
+ * first value. `data-tti` on body is the signal FRONTEND_OVERHEAD_SECONDS in
+ * scripts/measure_page_api_latency.sh is derived from; nothing renders from it,
+ * so a browser without performance marks or a test without a document is simply
+ * uninstrumented rather than broken.
+ */
+interface TimingView {
+  pathname: string
+  startedAt: number
+  pending: Set<string>
+  stamped: boolean
+}
+
+const NO_VIEW: TimingView = { pathname: '', startedAt: 0, pending: new Set(), stamped: true }
+
+let view: TimingView = NO_VIEW
+
+function stampView(): void {
+  if (view.stamped || view.pending.size > 0) return
+  view.stamped = true
+  const duration = performance.now() - view.startedAt
+  try {
+    performance.measure('page-data-ready', {
+      start: view.startedAt,
+      end: duration,
+      detail: view.pathname,
+    })
+    document.body.dataset.tti = duration.toFixed(0)
+    document.body.dataset.ttiPath = view.pathname
+  } catch {
+    // Diagnostic only; a missing mark is not worth failing a render over.
+  }
+}
+
+/** Register `key` as awaiting its first value, and return its release. */
+function trackResource(pathname: string, key: string): () => void {
+  if (typeof document === 'undefined' || typeof performance === 'undefined') {
+    return () => undefined
+  }
+  if (view.pathname !== pathname) {
+    view = { pathname, startedAt: performance.now(), pending: new Set(), stamped: false }
+  }
+  view.pending.add(key)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    view.pending.delete(key)
+    stampView()
+  }
+}
+
+/**
  * Fetch one API resource through the shared query cache.
  *
  * Replaces the per-page `let alive = true` / `setLoading` / `setError` block,
@@ -51,6 +107,10 @@ export function useApiResource<T>(
 
   useEffect(() => {
     let alive = true
+    const release = trackResource(
+      typeof window === 'undefined' ? '' : window.location.pathname,
+      key,
+    )
 
     const publish = () => {
       if (!alive) return
@@ -58,6 +118,7 @@ export function useApiResource<T>(
       if (snapshot.hasValue) {
         setData(snapshot.value)
         setLoading(false)
+        release()
       }
       setRevalidating(snapshot.revalidating)
       setError(snapshot.hasValue || !snapshot.error ? null : 'request failed')
@@ -71,9 +132,13 @@ export function useApiResource<T>(
         setData(value)
         setLoading(false)
         setError(null)
+        release()
       })
       .catch(() => {
         // Only reachable when the cache holds no value at all for this key.
+        // Release regardless: a page that failed to load data is not waiting for
+        // it, and leaving the key pending would stall the stamp forever.
+        release()
         if (alive && !cacheSnapshot<T>(key).hasValue) {
           setError('request failed')
         }
@@ -84,6 +149,7 @@ export function useApiResource<T>(
     return () => {
       alive = false
       unsubscribe()
+      release()
     }
   }, [key, depSignature])
 
