@@ -1,5 +1,116 @@
 # Changelog
 
+### version 0.1.19
+
+#### Changed:
+
+- **A page-load request may read stored rows and Redis. It may not run model
+  inference.** This is now the contract, not an aspiration, and it is the whole
+  of why the cold numbers below moved. `GET /dashboard/stocks/` ranked its
+  candidate list by *computing* predictions for the universe when rows were
+  missing -- 45.6s measured for a cold Dashboard -- because the cache that hid
+  that cost was `_MATRIX_SIGNAL_CACHE`, a process-local `OrderedDict` in
+  `apps/backtest/tasks.py` that no external invalidation can reach and a worker
+  cannot warm. Candidate ranking now reads `LightGBMPrediction` /
+  `PredictionResult` and applies `candidate_mode`, `trade_score_scope`,
+  `up_threshold`, `top_n_metric`, `max_positions` and the macro multiplier
+  itself, mirroring `_pick_candidates` semantics. `apps/backtest/tasks.py` is
+  untouched: backtests keep exact behaviour, and the matrix cache stays
+  process-local and backtest-only on purpose -- sharing a universe-wide mapping
+  through Redis would buy a large payload and an invalidation surface for nothing.
+- **The three prediction stock endpoints queue instead of inferring.**
+  `apps/prediction/views.py`, `views_lightgbm.py` and `views_lstm.py` each had
+  `if not qs.exists(): generate_..._for_asset(...)` inline -- a cold Stock Detail
+  paid for a model pass before answering. They now return **HTTP 200** with
+  stored rows if present, else empty plus
+  `generation: {'status': 'queued' | 'unavailable', 'scope': ..., 'already_queued': ...}`,
+  dispatching the task under a Redis `SET NX` lock
+  (`PREDICTION_GENERATION_LOCK_SECONDS`, 120) so a polling SPA cannot stack
+  universe-sized jobs. A broker that is unreachable is caught, logged and
+  reported as `unavailable` -- it does not fail the page. `StockDetailPage`
+  renders a one-line "generating" notice in both locales; `useApiResource`'s
+  stale-while-revalidate picks the row up when the task lands.
+- **`PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN` 20 → 250.** Twenty assets per
+  hourly run repairs 480 rows a day against an effective universe in the
+  thousands, so gaps persisted for days and any read-stored-rows path quietly
+  fell back to computing them. Reading stored rows is only a contract if the
+  rows exist.
+- **The dashboard payload reports coverage instead of hiding it.** A date with
+  120 of 500 universes stored now returns the partial rows plus
+  `prediction_coverage: {missing: n, prediction_coverage_incomplete: true}` and
+  queues one `reconcile_prediction_coverage` pass, rather than spending 45
+  seconds making the difference invisible.
+
+#### Fixed:
+
+- **The Indicator Board's indicator lookup left its index.** The per-asset
+  technical-indicator query used `timestamp__date__lte`, a function-wrapped
+  predicate Postgres cannot satisfy with the
+  `(asset, indicator_type, timestamp)` index, so the `DISTINCT ON` sorted every
+  historical indicator row for every asset on the page: 151.7s measured for a
+  500-asset universe, and the whole cold-page timeout. It is now a plain
+  timestamp range bounded by `DASHBOARD_INDICATOR_LOOKBACK_DAYS` (default 60).
+  The window was chosen from measured staleness rather than guessed -- 14 days
+  drops 5 of 2000 `(asset, indicator_type)` pairs, 30 days drops 4, 60 days
+  drops none, so the window is indistinguishable from unbounded while staying
+  inside the index. An asset whose backfill is older than the window reads as
+  absent rather than as months stale.
+- **The payload assembled the whole universe before truncating.** Every per-asset
+  lookup is a `DISTINCT ON` keyed on `asset_id`, so its cost is the number of ids
+  handed to it; the unfiltered board materialized 500 assets to return 120. The
+  page slice now happens in SQL when the row filters and the ordering can be
+  answered there (no candidate filter, no `search`, no `suggested_only`, ordering
+  on `composite_score`), cutting cold Indicator Board from 2.615s to 1.246s. The
+  same fix applied to `/screener/bottom-candidates/`, whose default ordering is
+  already the queryset's own.
+- **`docs/reference/env.md` no longer documents a setting that does not exist**
+  (`DASHBOARD_MATRIX_SIGNAL_SCOPE`, removed with the request-time candidate
+  inference it opted into).
+
+#### Added:
+
+- **A cold page-load measurement harness.** `scripts/measure_page_api_latency.sh`
+  covers all eight routed pages with the request shapes the SPA actually sends,
+  and `COLD=1` restarts the stack through `scripts/restart_cold_stack.sh` --
+  Django, beat and all five worker pools, with Redis emptied through Django's
+  `cache.clear()` so the `REDIS_URL` password never lands on a command line. It
+  reports `sum(p50)` (total server work) and `max(p95)` (the realistic critical
+  path, because a page fires its calls concurrently) against a 3.0s budget, and
+  states rather than hides that at two iterations an interpolated p95 is the
+  maximum.
+- **Browser-side timing hooks.** `lib/queryCache.ts` emits a
+  `performance.measure` per resolve source and `useApiResource` records
+  `page-data-ready` plus `document.body.dataset.tti`, so the API number can be
+  reconciled against what a browser actually paints.
+- **Three CI guards** (`.github/workflows/ci.yml`, "Page-load budget guards"):
+  no request-time inference in `DashboardStocksCacheTests` /
+  `PredictionEndpointInferenceGuardTests`, and
+  `PageLoadLatencyHarnessTests`, which derives the harness's required coverage
+  from `frontend/src` so a new page-load call that goes unmeasured fails CI. The
+  harness had already gone stale for a whole release -- it kept timing the seven
+  calls of `fetchDashboardDataLegacy` after the SPA moved to one summary
+  endpoint.
+
+#### Result: every page under 3s on a cold stack
+
+| Page | Cold before | Cold after (p95) | Warm (p95) |
+| --- | --- | --- | --- |
+| Dashboard | 46.3s | 0.325s | 0.315s |
+| Indicator Board | timed out (>151.7s in one query) | 1.246s | 0.192s |
+| Stock Detail | inferred on missing rows | 0.268s | 0.401s |
+| Macro Context | not measured | 0.068s | 0.125s |
+| Models | not measured | 0.298s | 0.157s |
+| Backtest | not measured | 0.518s | 0.324s |
+| Alert Center | not measured | 0.061s | 0.073s |
+| Settings | not measured | 0.051s | 0.086s |
+
+Two caveats, both honest: the budget is browser time-to-data while these are API
+critical paths with `FRONTEND_OVERHEAD_SECONDS` charged as **0.000s** (the mark is
+wired up; reading it needs a browser, which this project has deliberately not
+added), and each cold figure is two iterations of a restarted stack. The tightest
+page therefore has 1.75s of headroom against the browser, not 3.0s. Full tables in
+`docs/reports/page-load-latency-cold-2026-10-22.md`.
+
 ### version 0.1.18
 
 #### Added:
