@@ -23,6 +23,7 @@ import {
   type TopNMetric,
 } from '../lib/dashboardCandidateFilters'
 import { cachedGet } from '../lib/queryCache'
+import { trackViewResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 type WeekdayLabel = (typeof WEEKDAY_LABELS)[number]
@@ -408,7 +409,10 @@ export function BacktestWorkbenchPage() {
 
   useEffect(() => {
     isMountedRef.current = true
-    void loadRuns({ resetPage: true, showLoading: true })
+    // The 10s poll re-asks for the same key, so only the first load is registered
+    // with the time-to-data view; without this the route has no measurement at all.
+    const release = trackViewResource('backtest/runs?limit=100')
+    void loadRuns({ resetPage: true, showLoading: true }).finally(release)
     const intervalId = window.setInterval(() => {
       // A hidden tab has no observer, and each tick refetches up to 100 runs.
       if (document.visibilityState !== 'visible') {

@@ -79,6 +79,13 @@ function trackResource(pathname: string, key: string): () => void {
   }
   if (view.pathname !== pathname) {
     view = { pathname, startedAt: performance.now(), pending: new Set(), stamped: false }
+  } else if (view.stamped) {
+    // A resource mounted after the page first went quiet reopens the view instead
+    // of being ignored. Pages chain fetches -- the stock page asks for its asset
+    // before it can ask for predictions keyed by that asset's id -- and latching
+    // the first quiet moment would report a time-to-data earlier than the one the
+    // user waits for, which biases the whole budget toward a pass.
+    view.stamped = false
   }
   view.pending.add(key)
   let released = false
@@ -88,6 +95,21 @@ function trackResource(pathname: string, key: string): () => void {
     view.pending.delete(key)
     stampView()
   }
+}
+
+/**
+ * Register one page-load resource with the time-to-data view, without the hook.
+ *
+ * StockDetailPage and BacktestWorkbenchPage compose their requests by hand --
+ * the first because its error copy depends on the HTTP status, the second
+ * because it polls a live progress feed -- and a hook neither of them uses meant
+ * those two routes had no time-to-data at all: the browser harness could only
+ * report "no measurement" for pages a user does wait on. Same contract as the
+ * hook: call this when the load starts, call the return when the value is
+ * committed. Idempotent release, so a cleanup and a response can both fire.
+ */
+export function trackViewResource(key: string): () => void {
+  return trackResource(typeof window === 'undefined' ? '' : window.location.pathname, key)
 }
 
 /**

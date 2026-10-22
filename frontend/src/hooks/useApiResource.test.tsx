@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetQueryCache } from '../lib/queryCache'
-import { useApiResource } from './useApiResource'
+import { trackViewResource, useApiResource } from './useApiResource'
 
 /**
  * Guards on the time-to-data instrument.
@@ -82,6 +82,29 @@ describe('useApiResource time-to-data instrument', () => {
     expect(throwing).toHaveBeenCalled()
   })
 
+  it('reopens the view for a resource mounted after the first quiet moment', async () => {
+    // Chained pages ask for the second thing only once the first has landed, so a
+    // stamp that latches at the first quiet moment reports data the user is still
+    // waiting for as already arrived. That biases the whole budget toward a pass.
+    window.history.pushState({}, '', '/chained')
+    const wait = () => new Promise((resolve) => setTimeout(() => resolve('late-value'), 80))
+
+    const rendered = render(<Resource name="first" load={async () => 'first-value'} />)
+    await waitFor(() => expect(document.body.dataset.ttiPath).toBe('/chained'))
+    const firstStamp = Number(document.body.dataset.tti)
+
+    rendered.rerender(
+      <>
+        <Resource name="first" load={async () => 'first-value'} />
+        <Resource name="late" load={wait} />
+      </>,
+    )
+
+    await waitFor(() => expect(Number(document.body.dataset.tti)).toBeGreaterThan(firstStamp))
+    expect(document.body.dataset.ttiPath).toBe('/chained')
+    await waitFor(() => expect(get('late')).toBe('late-value'))
+  })
+
   it('reports the open offset and the wait separately, which is what the budget needs', async () => {
     const measure = vi.fn()
     vi.stubGlobal('performance', Object.create(performance, {
@@ -108,6 +131,22 @@ describe('useApiResource time-to-data instrument', () => {
     // `data-tti`, so the attributes and the mark have to describe the same interval.
     expect(document.body.dataset.ttiOpen).toBe(Number(options.start).toFixed(0))
     expect(document.body.dataset.tti).toBe(Number(options.end).toFixed(0))
+  })
+
+  it('stamps a page that composes its requests without the hook', async () => {
+    // StockDetailPage and BacktestWorkbenchPage call cachedGet by hand -- status
+    // specific error copy and a live progress feed -- so they register through this
+    // primitive instead. If it stopped firing, the browser harness loses two of the
+    // eight routes and can only report "no measurement" for pages users wait on.
+    window.history.pushState({}, '', '/stock/600519')
+    const release = trackViewResource('stock/600519/detail')
+    expect(document.body.dataset.ttiPath).toBeUndefined()
+
+    release()
+    expect(document.body.dataset.ttiPath).toBe('/stock/600519')
+    expect(Number(document.body.dataset.tti)).toBeGreaterThanOrEqual(0)
+    // Both the response handler and the effect cleanup release the same key.
+    expect(() => release()).not.toThrow()
   })
 })
 

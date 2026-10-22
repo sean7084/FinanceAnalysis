@@ -14,6 +14,7 @@ import {
   type PredictionStockDto,
 } from '../lib/api'
 import { cachedGet } from '../lib/queryCache'
+import { trackViewResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
 
 export function StockDetailPage() {
@@ -54,8 +55,11 @@ export function StockDetailPage() {
   // error copy depends on the HTTP status. So it calls `cachedGet` directly
   // instead of `useApiResource`: the composed payload is cached and shared with
   // a remount, while the status-specific messaging below stays untouched.
+  // `trackViewResource` is the part of the hook it does need -- without it the
+  // route has no time-to-data, and the latency harness cannot price it.
   useEffect(() => {
     let alive = true
+    const release = trackViewResource(`stock/${symbol}/detail`)
     ;(async () => {
       try {
         setLoading(true)
@@ -143,11 +147,16 @@ export function StockDetailPage() {
         if (alive) {
           setLoading(false)
         }
+        // Every exit from this effect's try/catch lands here, including the
+        // unknown-symbol path that returns early. A key left pending would stall
+        // the stamp for the whole route.
+        release()
       }
     })()
 
     return () => {
       alive = false
+      release()
     }
   }, [symbol])
 
