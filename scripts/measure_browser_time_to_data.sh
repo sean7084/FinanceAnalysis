@@ -285,7 +285,7 @@ with open(f"{out_dir}/raw.csv", "w", newline="", encoding="utf-8") as fh:
 lines = [f"# Browser time-to-data ({label})", "",
          f"Budget: {budget} ms from navigationStart to the page's last first value,",
          "taken in the installed browser against the production build.", "",
-         "| route | browser total | how | open (bundle+chunk) | wait (data) | network span | browser term | verdict |",
+         "| route | browser total | how | open (bundle+chunk) | wait (data) | network span | browser term (max) | verdict |",
          "| --- | --- | --- | --- | --- | --- | --- | --- |"]
 worst = 0
 overheads = []
@@ -317,8 +317,14 @@ for route, samples in by_route.items():
     overheads += stamped_over
     worst = max(worst, total)
     verdict = "PASS" if total <= budget else "OVER BUDGET"
-    lines.append(f"| {route} | {total} ms | {method} | {s['openMs']} ms | {s['waitMs']} ms | "
-                 f"{s['apiWaitMs']} ms | {max(stamped_over) if stamped_over else '--'} ms | {verdict} |")
+    # `browser term (max)` is deliberately not the same sample as the total: it is
+    # the largest browser-only term over the route's stamped samples, which is the
+    # quantity the constant takes. The total, method, open and wait columns all come
+    # from the one worst sample above.
+    term = f"{max(stamped_over)} ms" if stamped_over else "--"
+    cells = [f"{s[k]} ms" if s[k] is not None else "--" for k in ("openMs", "waitMs", "apiWaitMs")]
+    lines.append(f"| {route} | {total} ms | {method} | {cells[0]} | {cells[1]} | "
+                 f"{cells[2]} | {term} | {verdict} |")
 
 lines += ["", f"Worst page: {worst} ms against a {budget} ms budget.", ""]
 if missing:
@@ -352,7 +358,9 @@ if overheads:
               "",
               "Browser totals already contain the API wait, so that column and the total",
               "are not additive; the browser term is what to add to a curl p95 when the",
-              "two are measured separately."]
+              "two are measured separately. The browser term column is the largest term",
+              "over that route's samples, so it is not always the term of the sample whose",
+              "total is on the same row -- the total, method, open and wait are."]
 open(f"{out_dir}/summary.md", "w", encoding="utf-8").write("\n".join(lines) + "\n")
 print("\n".join(lines))
 sys.exit(1 if missing else 0)
