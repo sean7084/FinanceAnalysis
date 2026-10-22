@@ -66,6 +66,12 @@
 - **`docs/reference/env.md` no longer documents a setting that does not exist**
   (`DASHBOARD_MATRIX_SIGNAL_SCOPE`, removed with the request-time candidate
   inference it opted into).
+- **`useApiResource` could lose the one number the browser budget is read from.**
+  It called `performance.measure` before writing `document.body.dataset`, so an
+  engine without UserTiming -- jsdom, which ships no `mark`/`measure` at all, or
+  any engine that throws on the options form -- took the record down with the
+  mark. The attributes are now written first and on their own, and
+  `frontend/src/hooks/useApiResource.test.tsx` pins both halves.
 
 #### Added:
 
@@ -79,9 +85,12 @@
   states rather than hides that at two iterations an interpolated p95 is the
   maximum.
 - **Browser-side timing hooks.** `lib/queryCache.ts` emits a
-  `performance.measure` per resolve source and `useApiResource` records
-  `page-data-ready` plus `document.body.dataset.tti`, so the API number can be
-  reconciled against what a browser actually paints.
+  `performance.measure` per resolve source, and `useApiResource` stamps
+  `data-tti-open` (navigationStart to the view opening: bundle, route chunk and
+  pre-fetch render), `data-tti` (that instant to the last first value, request
+  included) and `data-tti-path` on `<body>`, plus a `page-data-ready` measure.
+  Splitting the two intervals is what makes the browser term subtractable from an
+  API number instead of billing the same round trip twice.
 - **Three CI guards** (`.github/workflows/ci.yml`, "Page-load budget guards"):
   no request-time inference in `DashboardStocksCacheTests` /
   `PredictionEndpointInferenceGuardTests`, and

@@ -18,10 +18,20 @@ export interface ApiResource<T> {
  *
  * A view is one pathname plus the resource keys mounted under it. It opens when
  * the first resource mounts and is stamped once no key is still waiting for its
- * first value. `data-tti` on body is the signal FRONTEND_OVERHEAD_SECONDS in
- * scripts/measure_page_api_latency.sh is derived from; nothing renders from it,
- * so a browser without performance marks or a test without a document is simply
- * uninstrumented rather than broken.
+ * first value. Nothing renders from any of this, so it is all unobserved, which
+ * is why three attributes rather than one:
+ *
+ *   data-tti-open  milliseconds from navigationStart to the view opening, so the
+ *                  bundle, route chunk and pre-fetch render,
+ *   data-tti       milliseconds from the view opening to its last first value,
+ *                  which therefore *includes* the API wait,
+ *   data-tti-path  the route these describe.
+ *
+ * scripts/measure_page_api_latency.sh charges FRONTEND_OVERHEAD_SECONDS from
+ * `data-tti-open` plus the part of `data-tti` that is not the request itself;
+ * reading only `data-tti` would bill the same round trip twice. A test without a
+ * document, or an engine whose UserTiming throws, loses the mark but never the
+ * attributes.
  */
 interface TimingView {
   pathname: string
@@ -38,16 +48,27 @@ function stampView(): void {
   if (view.stamped || view.pending.size > 0) return
   view.stamped = true
   const duration = performance.now() - view.startedAt
+  // The attributes are the record and the mark is the convenience: write them
+  // first, in their own try, because an environment whose UserTiming is missing
+  // (jsdom) or rejects the options form must not take the numbers the latency
+  // harness reads down with it.
   try {
-    performance.measure('page-data-ready', {
-      start: view.startedAt,
-      end: duration,
-      detail: view.pathname,
-    })
+    document.body.dataset.ttiOpen = view.startedAt.toFixed(0)
     document.body.dataset.tti = duration.toFixed(0)
     document.body.dataset.ttiPath = view.pathname
   } catch {
-    // Diagnostic only; a missing mark is not worth failing a render over.
+    // Diagnostic only; a missing attribute is not worth failing a render over.
+  }
+  try {
+    if (typeof performance.measure === 'function') {
+      performance.measure('page-data-ready', {
+        start: view.startedAt,
+        end: duration,
+        detail: view.pathname,
+      })
+    }
+  } catch {
+    // Some engines throw on an unsupported measure form rather than ignoring it.
   }
 }
 
