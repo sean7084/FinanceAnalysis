@@ -103,12 +103,18 @@ ones reproducible on the reconciled tree:
 
 ## What these numbers do not say
 
-- **Browser overhead is not charged.** `FRONTEND_OVERHEAD_SECONDS` is 0.000s: the
-  `page-data-ready` measure and `document.body.dataset.tti` are wired up, but
-  nothing has read them in a browser, because this project deliberately has no
-  Playwright. So Indicator Board leaves 1.75s for chunk load and render, and every
-  other page more. Filling in that constant is the open item, and a real-browser
-  pass over the eight routes is the check that would justify adding Playwright.
+- **Browser overhead is not charged.** `FRONTEND_OVERHEAD_SECONDS` is 0.000s. The
+  instrument is in place and guarded by
+  `frontend/src/hooks/useApiResource.test.tsx`: a cold route load stamps
+  `data-tti-open`, `data-tti` and `data-tti-path` on `<body>`, and the constant is
+  `data-tti-open` plus the part of `data-tti` that is not the request (read
+  `responseEnd - requestStart` off the matching
+  `performance.getEntriesByType('resource')` entry, or the round trip is billed
+  twice). Nothing has read them yet because there is no browser to read them
+  with -- this project deliberately has no Playwright, and this WSL2 image has no
+  Chrome, Chromium or Firefox binary either. So Indicator Board leaves 1.75s for
+  chunk load and render, and every other page more. Filling in that constant, and
+  a real-browser pass over the eight routes with it, is the open item.
 - **Two cold iterations is a floor, not a percentile.** Cold means a full stack
   restart per iteration; more samples were not paid for.
 - **The universe is still only partly stored.** 120 of 500 assets have LightGBM

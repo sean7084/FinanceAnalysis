@@ -51,6 +51,19 @@ CURL_TIMEOUT="${CURL_TIMEOUT:-300}"
 #   - the browser's queryCache (lib/queryCache.ts) -> curl carries no state, so
 #     every iteration here is already a cold frontend read
 COLD="${COLD:-0}"
+# The budget is browser time-to-data; curl can only ever measure the API term of
+# it, so this constant is what turns an API floor into a page budget. It stays 0
+# until someone reads it off the production build in a browser, and the summary
+# says so out loud rather than letting a PASS mean more than it does.
+#
+# To fill it in, load the built SPA (`npm run preview`, or Django's staticfiles),
+# open a route cold, and read what hooks/useApiResource stamped on <body>:
+#   copy([document.body.dataset.ttiOpen, document.body.dataset.tti,
+#         document.body.dataset.ttiPath].join(' '))
+# FRONTEND_OVERHEAD_SECONDS for that route is ttiOpen plus the part of tti that is
+# not the request itself (subtract `responseEnd - requestStart` from the matching
+# performance.getEntriesByType('resource') entry). tti alone would bill the round
+# trip twice, because the view is stamped when its last fetch lands.
 FRONTEND_OVERHEAD_SECONDS="${FRONTEND_OVERHEAD_SECONDS:-0}"
 COLD_RESET_TIMEOUT="${COLD_RESET_TIMEOUT:-120}"
 
