@@ -56,14 +56,17 @@ COLD="${COLD:-0}"
 # until someone reads it off the production build in a browser, and the summary
 # says so out loud rather than letting a PASS mean more than it does.
 #
-# To fill it in, load the built SPA (`npm run preview`, or Django's staticfiles),
-# open a route cold, and read what hooks/useApiResource stamped on <body>:
+# scripts/measure_browser_time_to_data.sh produces it: the cold pass over all 8
+# routes prints the largest browser-only term as
+# `FRONTEND_OVERHEAD_SECONDS for measure_page_api_latency.sh is N.NNN`, and
+#   FRONTEND_OVERHEAD_SECONDS=0.625 COLD=1 bash scripts/measure_page_api_latency.sh
+# charges it here. The per-route number behind it is `data-tti-open` plus the part
+# of `data-tti` that is not the request itself -- `tti` alone would bill the round
+# trip twice, because the view is stamped when its last fetch lands. To read one
+# by hand instead, load the built SPA, open a route cold, and look at what
+# hooks/useApiResource stamped on <body>:
 #   copy([document.body.dataset.ttiOpen, document.body.dataset.tti,
 #         document.body.dataset.ttiPath].join(' '))
-# FRONTEND_OVERHEAD_SECONDS for that route is ttiOpen plus the part of tti that is
-# not the request itself (subtract `responseEnd - requestStart` from the matching
-# performance.getEntriesByType('resource') entry). tti alone would bill the round
-# trip twice, because the view is stamped when its last fetch lands.
 FRONTEND_OVERHEAD_SECONDS="${FRONTEND_OVERHEAD_SECONDS:-0}"
 COLD_RESET_TIMEOUT="${COLD_RESET_TIMEOUT:-120}"
 
