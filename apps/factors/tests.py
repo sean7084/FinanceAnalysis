@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import ExchangeTradingCalendar, Market, Asset, IndexMembership, OHLCV
+from apps.macro.services import apply_macro_context_to_weights
 from apps.prediction.models import ModelVersion, PredictionResult
 from .fundamental_materialization import materialize_fundamental_snapshot_rows
 from .models import (
@@ -274,6 +275,46 @@ class Phase11FactorTests(TestCase):
         self.assertEqual(response.data['results'][0]['asset_symbol'], '600111')
         self.assertEqual(response.data['results'][0]['suggested'], True)
         self.assertEqual(response.data['results'][0]['trade_score'], 1.8)
+
+    def test_bottom_candidates_macro_context_ranks_by_the_sql_weighted_sum(self):
+        """The context branch re-scores in SQL, and must agree with Decimal math.
+
+        This is the factors view's one whole-universe ranking, and it used to pull
+        every row into Python to sort it. The weighted sum is now one annotation, so
+        the order a user sees and the score printed next to it both come from the
+        database; the invariant worth holding is that they still equal the same sum
+        done in Python, and that top_n truncates before the serializer runs.
+        """
+        target_date = timezone.now().date()
+        self._seed_required_pit_membership(target_date)
+        calculate_factor_scores_for_date(target_date=str(target_date))
+        self.assertGreater(FactorScore.objects.filter(date=target_date).count(), 1)
+
+        response = self.client.get(
+            '/api/v1/screener/bottom-candidates/?top_n=1&macro_context=recovery'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        row = response.data['results'][0]
+
+        adjusted = apply_macro_context_to_weights(
+            financial_weight=0.4,
+            flow_weight=0.3,
+            technical_weight=0.3,
+            macro_context='recovery',
+        )
+        expected = (
+            Decimal(str(row['fundamental_score'])) * adjusted['financial_weight']
+            + Decimal(str(row['capital_flow_score'])) * adjusted['flow_weight']
+            + Decimal(str(row['technical_score'])) * adjusted['technical_weight']
+        )
+        self.assertEqual(
+            row['adjusted_bottom_probability_score'], round(float(expected), 6)
+        )
+        self.assertEqual(row['context_applied']['macro_context'], 'recovery')
+        self.assertEqual(
+            row['context_applied']['financial_weight'], float(adjusted['financial_weight'])
+        )
 
     def test_calculate_factor_scores_raises_when_required_pit_membership_is_missing(self):
         target_date = timezone.now().date()

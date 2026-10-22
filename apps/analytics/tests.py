@@ -12,6 +12,7 @@ from django.db.utils import OperationalError
 from django.http import QueryDict
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from kombu.exceptions import OperationalError as BrokerOperationalError
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -28,7 +29,9 @@ from .views import (
     DashboardStockViewSet,
     _build_dashboard_candidate_rows,
     _dashboard_stocks_cache_key,
+    _normalize_dashboard_candidate_config,
     _parse_dashboard_list_params,
+    _queue_candidate_reconciliation,
 )
 from .technical_staleness import asset_exchange_code
 from .management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand, DEFAULT_TECHNICAL_INDICATORS
@@ -447,6 +450,15 @@ class DashboardStockFixtures:
         )
 
 class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
+    def setUp(self):
+        super().setUp()
+        # Only `config.settings.test` swaps in locmem. Under the development
+        # settings these tests share the Redis payload cache with the running
+        # server, and a warm entry answers the request before the query under
+        # test is ever reached -- which reads as "the payload build stopped
+        # querying TechnicalIndicator at all" rather than as a stale cache.
+        cache.clear()
+
     def test_dashboard_stocks_returns_composite_rows(self):
         response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7')
 
@@ -493,48 +505,64 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
         self.assertEqual(result['candidate_rank'], 1)
         self.assertIsNotNone(result['candidate_rank_value'])
 
-    @patch('apps.backtest.tasks._predict_with_lstm')
-    def test_dashboard_stocks_overlays_runtime_lstm_candidate_payload(self, mock_predict_with_lstm):
-        # Signature must track apps/backtest/tasks.py, which calls
-        # _predict_with_lstm(asset_id=..., target_date=..., horizon_days=...,
-        # model_version=..., cache=...). model_version was added with the
-        # model-version-selection work; a stub that predates it raises TypeError
-        # on the keyword rather than failing an assertion, which reads like a
-        # view bug instead of a stale fixture.
-        def fake_lstm_prediction(asset_id, target_date, horizon_days, cache, model_version=None):
-            if asset_id == self.asset1.id:
-                return {
-                    'up_probability': Decimal('0.770000'),
-                    'flat_probability': Decimal('0.140000'),
-                    'down_probability': Decimal('0.090000'),
-                    'confidence': Decimal('0.770000'),
-                    'predicted_label': PredictionResult.Label.UP,
-                    'trade_decision': {
-                        'trade_score': Decimal('2.900000'),
-                        'target_price': Decimal('13.2000'),
-                        'stop_loss_price': Decimal('9.8000'),
-                        'risk_reward_ratio': Decimal('3.100000'),
-                        'suggested': True,
-                    },
-                    'model_version': self.lstm_version,
-                }
-            return {
-                'up_probability': Decimal('0.410000'),
-                'flat_probability': Decimal('0.330000'),
-                'down_probability': Decimal('0.260000'),
-                'confidence': Decimal('0.410000'),
-                'predicted_label': PredictionResult.Label.FLAT,
-                'trade_decision': {
-                    'trade_score': Decimal('0.800000'),
-                    'target_price': Decimal('21.0000'),
-                    'stop_loss_price': Decimal('19.5000'),
-                    'risk_reward_ratio': Decimal('1.000000'),
-                    'suggested': False,
-                },
-                'model_version': self.lstm_version,
-            }
+    def test_dashboard_indicator_lookup_is_windowed(self):
+        """The per-asset indicator lookup must stay inside its index.
 
-        mock_predict_with_lstm.side_effect = fake_lstm_prediction
+        ``timestamp__date__lte`` is a function-wrapped predicate, so Postgres could
+        not use the (asset, timestamp, indicator_type) index and had to sort every
+        historical indicator row for every asset on the page: 151.7s measured for a
+        500-asset universe, which is the whole cold Indicator Board timeout.
+        """
+        captured = []
+        original = TechnicalIndicator.objects.filter
+
+        def spy(*args, **kwargs):
+            captured.append(kwargs)
+            return original(*args, **kwargs)
+
+        with patch.object(TechnicalIndicator.objects, 'filter', side_effect=spy):
+            response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&page_size=120')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(captured, 'the payload build stopped querying TechnicalIndicator at all')
+        for kwargs in captured:
+            self.assertNotIn('timestamp__date__lte', kwargs)
+            self.assertIn('timestamp__gte', kwargs)
+            self.assertIn('timestamp__lte', kwargs)
+
+        rsi = response.data['results'][0]['rsi']
+        self.assertEqual(rsi, '62.50000000')
+
+    def test_dashboard_stocks_pages_the_universe_in_sql(self):
+        """The unfiltered board must assemble one page, not the whole universe.
+
+        Every per-asset lookup in the payload is a DISTINCT ON keyed on asset_id,
+        so its cost is the number of ids handed to it. Materializing the universe
+        before truncating made the Indicator Board's unfiltered request scan 500
+        assets to return 120 -- 2.5s cold, which leaves nothing for the browser.
+        """
+        captured = []
+        original = TechnicalIndicator.objects.filter
+
+        def spy(*args, **kwargs):
+            captured.append(list(kwargs.get('asset_id__in') or []))
+            return original(*args, **kwargs)
+
+        with patch.object(TechnicalIndicator.objects, 'filter', side_effect=spy):
+            first_page = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&page_size=1')
+            second_page = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&page_size=1&page=2')
+
+        self.assertEqual(first_page.data['count'], 2)
+        self.assertEqual(second_page.data['count'], 2)
+        self.assertEqual([row['asset_symbol'] for row in first_page.data['results']], ['600111'])
+        self.assertEqual([row['asset_symbol'] for row in second_page.data['results']], ['600222'])
+        self.assertEqual(len(captured), 2)
+        for asset_ids in captured:
+            self.assertEqual(len(asset_ids), 1, 'the page slice never reached the per-asset lookups')
+
+    @patch('apps.backtest.tasks._predict_with_lstm')
+    def test_dashboard_stocks_lstm_candidates_read_stored_rows_without_inferring(self, mock_predict_with_lstm):
+        mock_predict_with_lstm.side_effect = AssertionError('a dashboard request must not run model inference')
         response = self.client.get(
             '/api/v1/dashboard/stocks/'
             '?prediction_source=lstm&candidate_mode=top_n&top_n=1&top_n_metric=up_prob_7d'
@@ -546,11 +574,11 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
         result = response.data['results'][0]
         self.assertEqual(result['asset_symbol'], '600111')
         self.assertEqual(result['candidate_rank'], 1)
-        self.assertEqual(result['candidate_rank_value'], '0.77000000')
-        self.assertEqual(result['lstm_up_probability'], '0.770000')
-        self.assertEqual(result['lstm_trade_score'], '2.900000')
-        self.assertEqual(result['lstm_target_price'], '13.2000')
-        self.assertEqual(result['lstm_risk_reward_ratio'], '3.100000')
+        self.assertEqual(result['candidate_rank_value'], '0.69000000')
+        self.assertEqual(result['lstm_up_probability'], '0.690000')
+        self.assertEqual(result['lstm_trade_score'], '2.450000')
+        self.assertEqual(result['lstm_risk_reward_ratio'], '3.050000')
+        mock_predict_with_lstm.assert_not_called()
 
 
 class Phase8IndicatorTests(TestCase):
@@ -1513,17 +1541,126 @@ class DashboardStocksCacheTests(DashboardStockFixtures, TestCase):
         self.assertEqual(result['status'], 'skipped')
         self.assertEqual(result['reason'], 'no_composite_factor_score')
 
-    def test_candidate_build_opts_into_the_matrix_signal_cache(self):
-        with patch('apps.analytics.views._pick_candidates', return_value=[]) as pick:
-            _build_dashboard_candidate_rows(self.as_of, {'candidate_mode': 'top_n'})
+    @patch('apps.backtest.tasks._pick_candidates')
+    def test_candidate_build_never_reaches_the_inference_path(self, pick):
+        """The dashboard candidate list is a read, not a computation.
 
-        pseudo_run = pick.call_args.args[0]
-        self.assertEqual(
-            pseudo_run.parameters['matrix_signal_cache_key'],
-            settings.DASHBOARD_MATRIX_SIGNAL_SCOPE,
+        Ranking through ``_pick_candidates`` re-ran model inference across the
+        universe on the request thread whenever the process-local matrix-signal
+        cache was cold -- 45 seconds for a cold dashboard.
+        """
+        rows, coverage = _build_dashboard_candidate_rows(self.as_of, {
+            'prediction_source': 'lightgbm',
+            'horizon_days': 7,
+            'candidate_mode': 'top_n',
+            'top_n_metric': 'up_prob_7d',
+            'up_threshold': Decimal('0.45'),
+            'top_n': 8,
+            'trade_score_scope': 'independent',
+            'trade_score_threshold': Decimal('1.0'),
+            'max_positions': 5,
+            'use_macro_context': False,
+        })
+
+        pick.assert_not_called()
+        # asset1 stores 0.65 and asset2 stores 0.38, so only asset1 clears 0.45.
+        self.assertEqual([row['asset_id'] for row in rows], [self.asset1.id])
+        self.assertFalse(coverage['prediction_coverage_incomplete'])
+        self.assertEqual(coverage['missing'], 0)
+
+    def test_candidate_build_ranks_stored_rows_by_the_selected_metric(self):
+        LightGBMPrediction.objects.create(
+            asset=self.asset1,
+            date=self.as_of,
+            horizon_days=7,
+            up_probability=Decimal('0.500000'),
+            flat_probability=Decimal('0.300000'),
+            down_probability=Decimal('0.200000'),
+            confidence=Decimal('0.500000'),
+            predicted_label=LightGBMPrediction.Label.UP,
+            trade_score=Decimal('3.000000'),
+            suggested=True,
         )
-        # The original config must survive alongside the injected scope.
-        self.assertEqual(pseudo_run.parameters['candidate_mode'], 'top_n')
+        config = {
+            'prediction_source': 'lightgbm',
+            'horizon_days': 7,
+            'candidate_mode': 'top_n',
+            'top_n_metric': 'trade_score',
+            'up_threshold': Decimal('0.30'),
+            'top_n': 2,
+            'trade_score_scope': 'independent',
+            'trade_score_threshold': Decimal('1.0'),
+            'max_positions': 2,
+            'use_macro_context': False,
+        }
+
+        by_trade_score, _ = _build_dashboard_candidate_rows(self.as_of, config)
+        by_probability, _ = _build_dashboard_candidate_rows(self.as_of, {**config, 'top_n_metric': 'up_prob_7d'})
+
+        # The newest row per asset wins, so asset1 ranks 0.50 / 3.00 against asset2's 0.38 / 0.54.
+        self.assertEqual([row['asset_id'] for row in by_trade_score], [self.asset1.id, self.asset2.id])
+        self.assertEqual([row['asset_id'] for row in by_probability], [self.asset1.id, self.asset2.id])
+        self.assertEqual(by_trade_score[0]['candidate_rank_value'], Decimal('3.000000'))
+        self.assertEqual(by_probability[0]['candidate_rank_value'], Decimal('0.500000'))
+
+    def test_candidate_build_gates_on_thresholds_and_caps_positions(self):
+        rows, _ = _build_dashboard_candidate_rows(self.as_of, {
+            'prediction_source': 'lightgbm',
+            'horizon_days': 7,
+            'candidate_mode': 'trade_score',
+            'top_n_metric': 'up_prob_7d',
+            'up_threshold': Decimal('0.60'),
+            'top_n': 8,
+            'trade_score_scope': 'independent',
+            'trade_score_threshold': Decimal('2.00'),
+            'max_positions': 1,
+            'use_macro_context': False,
+        })
+
+        self.assertEqual([row['asset_id'] for row in rows], [self.asset1.id])
+        self.assertEqual(rows[0]['signal_payload']['trade_score_scope'], 'independent')
+
+    def test_combined_scope_averages_the_two_model_families(self):
+        rows, _ = _build_dashboard_candidate_rows(self.as_of, {
+            'prediction_source': 'lightgbm',
+            'horizon_days': 7,
+            'candidate_mode': 'trade_score',
+            'top_n_metric': 'up_prob_7d',
+            'up_threshold': Decimal('0.45'),
+            'top_n': 8,
+            'trade_score_scope': 'combined',
+            'trade_score_threshold': Decimal('1.00'),
+            'max_positions': 5,
+            'use_macro_context': False,
+        })
+
+        self.assertEqual(len(rows), 1)
+        # heuristic 1.85 and lightgbm 2.12 average to 1.985; asset2 averages 0.63 and misses the gate.
+        self.assertEqual(rows[0]['signal_payload']['combined_trade_score'], Decimal('1.985000'))
+        # A combined payload carries no single-source columns, so the row keeps the
+        # heuristic/lightgbm values the table itself read.
+        self.assertNotIn('up_probability', rows[0]['signal_payload'])
+
+    def test_gap_in_stored_predictions_queues_one_reconcile_pass(self):
+        LightGBMPrediction.objects.all().delete()
+        config = _normalize_dashboard_candidate_config(QueryDict('prediction_source=lightgbm'))
+
+        with patch('apps.analytics.views.reconcile_prediction_coverage') as reconcile:
+            self.assertTrue(_queue_candidate_reconciliation(_build_dashboard_candidate_rows(self.as_of, config)[1]))
+            # The lock makes a dashboard left open refresh without queueing a
+            # universe-sized job behind the one already running.
+            self.assertFalse(_queue_candidate_reconciliation(_build_dashboard_candidate_rows(self.as_of, config)[1]))
+
+        reconcile.delay.assert_called_once_with()
+
+    def test_broker_outage_does_not_fail_the_page(self):
+        LightGBMPrediction.objects.all().delete()
+        config = _normalize_dashboard_candidate_config(QueryDict('prediction_source=lightgbm'))
+        coverage = _build_dashboard_candidate_rows(self.as_of, config)[1]
+
+        with patch('apps.analytics.views.reconcile_prediction_coverage') as reconcile:
+            reconcile.delay.side_effect = BrokerOperationalError('broker unreachable')
+            self.assertFalse(_queue_candidate_reconciliation(coverage))
 
     def test_cache_key_is_stable_and_param_sensitive(self):
         def key_for(query):

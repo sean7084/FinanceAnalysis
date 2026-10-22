@@ -326,10 +326,13 @@ DASHBOARD_STOCKS_CACHE_SECONDS = env.int('DASHBOARD_STOCKS_CACHE_SECONDS', defau
 # Short TTL: /dashboard/summary/ folds seven SPA calls into one, and its signal
 # and alert events arrive throughout the session.
 DASHBOARD_SUMMARY_CACHE_SECONDS = env.int('DASHBOARD_SUMMARY_CACHE_SECONDS', default=60)
-# Scope string that opts the dashboard's pseudo-run into the process-level
-# matrix-signal inference cache in apps/backtest/tasks.py. Without it every
-# request re-runs model inference from scratch.
-DASHBOARD_MATRIX_SIGNAL_SCOPE = env('DASHBOARD_MATRIX_SIGNAL_SCOPE', default='dashboard')
+# How far back the dashboard looks for each asset's newest technical-indicator row.
+# The window exists to keep the lookup inside its index; the measurement behind the
+# default is that at 60 days no (asset, indicator_type) pair in the universe has a
+# newer row outside it, so the window is indistinguishable from unbounded while a
+# 14-day one drops 5 of 2000 pairs. Indicators are rewritten daily, so this only
+# has to outpace a backfill stall.
+DASHBOARD_INDICATOR_LOOKBACK_DAYS = env.int('DASHBOARD_INDICATOR_LOOKBACK_DAYS', default=60)
 # Prediction completeness reconciliation. Beat never replays a missed occurrence
 # with its original target date, and a universe sweep that runs out of its time
 # budget leaves a date with a few rows rather than none, so "the task ran" is not
@@ -340,7 +343,17 @@ DASHBOARD_MATRIX_SIGNAL_SCOPE = env('DASHBOARD_MATRIX_SIGNAL_SCOPE', default='da
 # shrink the window to nothing. Raise `max_assets_per_run` to heal a backlog
 # faster at the cost of a longer task; the worker cadence is what makes progress.
 PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS = env.int('PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS', default=5)
-PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN = env.int('PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN', default=20)
+# 20 assets per hourly run repairs 480 rows a day against an effective universe in
+# the thousands, so gaps persist for days and any page-load path that reads
+# stored predictions falls back to computing them. 250 per run covers the
+# universe inside a trading day, which is what makes "read stored rows" a
+# reliable contract rather than a cache-hit-rate gamble. Cost is a longer task,
+# bounded by the worker's own time limit, not a request the user waits on.
+PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN = env.int('PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN', default=250)
+# How long one queued single-asset generation pass suppresses duplicates. Sized to
+# roughly cover a pass: shorter and a polling SPA re-queues the same job, longer
+# and a pass that dies silently leaves the asset reading "generating" for minutes.
+PREDICTION_GENERATION_LOCK_SECONDS = env.int('PREDICTION_GENERATION_LOCK_SECONDS', default=120)
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
@@ -381,8 +394,13 @@ CELERY_BEAT_SCHEDULE = {
     'prewarm-dashboard-stocks-cache': {
         'task': 'apps.analytics.tasks.prewarm_dashboard_stocks_cache',
         # After both prediction jobs, so the warmed payload reflects the day's
-        # stored predictions. Without this the first dashboard request of the day
-        # runs model inference inline and takes minutes.
+        # stored predictions. `generate_lightgbm_predictions_for_date` also chains
+        # this task when it writes rows, which is what makes the payload correct
+        # the moment the sweep finishes; this clock entry is the fallback for a
+        # sweep that fails or writes nothing. Kept because the build is now a
+        # stored-row read -- measured at ~4s cold, so a redundant pass costs
+        # nothing, which is not true of the ~27-minute inference version this
+        # entry was originally sized for.
         'schedule': crontab(hour='19', minute='15'),
     },
     'reconcile-prediction-coverage-hourly': {

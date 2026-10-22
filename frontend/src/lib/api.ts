@@ -131,9 +131,23 @@ export interface OhlcvDto {
   close: string
 }
 
+/**
+ * Present only when the endpoint found no stored rows and queued a generation
+ * pass instead of running the model on the request. `unavailable` means the queue
+ * could not be reached, so the page should say the reading is absent rather than
+ * implying something is coming.
+ */
+export interface PredictionGenerationDto {
+  status: 'queued' | 'unavailable'
+  scope: string
+  already_queued?: boolean
+  reason?: string
+}
+
 export interface PredictionStockDto {
   stock_code: string
   date: string
+  generation?: PredictionGenerationDto
   results: Array<{
     horizon_days: number
     up: number
@@ -152,6 +166,7 @@ export interface PredictionStockDto {
 export interface LightGBMPredictionStockDto {
   stock_code: string
   date: string
+  generation?: PredictionGenerationDto
   results: Array<{
     horizon_days: number
     up: number

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { CandlestickChart } from '../components/charts/CandlestickChart'
 import { ProbabilityChart } from '../components/charts/ProbabilityChart'
@@ -13,8 +13,60 @@ import {
   type LightGBMPredictionStockDto,
   type PredictionStockDto,
 } from '../lib/api'
-import { cachedGet } from '../lib/queryCache'
+import { cachedGet, seed } from '../lib/queryCache'
+import { trackViewResource } from '../hooks/useApiResource'
 import { useI18n } from '../useI18n'
+
+/**
+ * The five requests this page is made of, as one cache entry.
+ *
+ * Kept at module scope so the generation poll can name the payload it is merging
+ * into, and so the effect below stays about rendering rather than about assembly.
+ */
+async function loadStockDetail(symbol: string) {
+  const asset = await fetchAssetBySymbol(symbol)
+  if (!asset) {
+    return null
+  }
+
+  // All four only need asset.id / asset.symbol, so none has to wait for
+  // another. OHLCV previously gated the rest behind up to three serial
+  // page round trips.
+  const [ohlcvResult, predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
+    fetchOhlcvByAsset(asset.id, 3000),
+    fetchPredictionBySymbol(asset.symbol),
+    fetchLightGBMPredictionBySymbol(asset.symbol),
+    fetchSentimentByAsset(asset.id),
+  ])
+
+  // allSettled would otherwise turn an OHLCV failure into a silently
+  // empty chart; rethrow so the catch below reports it, as the serial
+  // version did.
+  if (ohlcvResult.status === 'rejected') {
+    throw ohlcvResult.reason
+  }
+
+  return {
+    asset,
+    ohlcvRows: ohlcvResult.value,
+    prediction: predictionResult.status === 'fulfilled' ? predictionResult.value : null,
+    lightgbm: lightgbmResult.status === 'fulfilled' ? lightgbmResult.value : null,
+    sentimentRows: sentimentResult.status === 'fulfilled' ? sentimentResult.value : [],
+  }
+}
+
+type StockDetailPayload = Awaited<ReturnType<typeof loadStockDetail>>
+
+/**
+ * How long the page waits for a generation it queued itself.
+ *
+ * Five seconds is short enough that "will appear shortly" stays true and long
+ * enough that a page someone is glancing at is not hammering the API. Twelve
+ * ticks caps the wait at a minute: a sweep that outruns a minute should leave the
+ * notice up rather than leave a background loop on the page.
+ */
+export const GENERATION_POLL_MS = 5_000
+const GENERATION_POLL_MAX_TICKS = 12
 
 export function StockDetailPage() {
   const { t } = useI18n()
@@ -30,6 +82,8 @@ export function StockDetailPage() {
   const [sentimentLatest, setSentimentLatest] = useState<number | null>(null)
   const [assetOptions, setAssetOptions] = useState<Array<{ symbol: string; name: string }>>([])
   const [assetSearch, setAssetSearch] = useState('')
+  const detailRef = useRef<StockDetailPayload>(null)
+  const [reloadToken, setReloadToken] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -50,46 +104,32 @@ export function StockDetailPage() {
     }
   }, [])
 
+  // The one condition the poll needs, and the reason it is not derived inside the
+  // notice below: the effect has to see it in its dependency array.
+  const awaitingGeneration = useMemo(() => {
+    const payloads = [heuristicPrediction, lightgbmPrediction]
+    return payloads.some(
+      (payload) => payload?.generation?.status === 'queued' && (payload?.results.length ?? 0) === 0,
+    )
+  }, [heuristicPrediction, lightgbmPrediction])
+
   // This page composes five requests, one of them up to 3000 OHLCV rows, and its
   // error copy depends on the HTTP status. So it calls `cachedGet` directly
   // instead of `useApiResource`: the composed payload is cached and shared with
   // a remount, while the status-specific messaging below stays untouched.
+  // `trackViewResource` is the part of the hook it does need -- without it the
+  // route has no time-to-data, and the latency harness cannot price it.
+  //
+  // `reloadToken` is the second entry point: a queued generation seeds this same
+  // key and bumps the token, so the rows are derived here and nowhere else. The
+  // re-read is a cache hit, not another five requests.
   useEffect(() => {
     let alive = true
+    const release = trackViewResource(`stock/${symbol}/detail`)
     ;(async () => {
       try {
         setLoading(true)
-        const payload = await cachedGet(`stock/${symbol}/detail`, async () => {
-          const asset = await fetchAssetBySymbol(symbol)
-          if (!asset) {
-            return null
-          }
-
-          // All four only need asset.id / asset.symbol, so none has to wait for
-          // another. OHLCV previously gated the rest behind up to three serial
-          // page round trips.
-          const [ohlcvResult, predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
-            fetchOhlcvByAsset(asset.id, 3000),
-            fetchPredictionBySymbol(asset.symbol),
-            fetchLightGBMPredictionBySymbol(asset.symbol),
-            fetchSentimentByAsset(asset.id),
-          ])
-
-          // allSettled would otherwise turn an OHLCV failure into a silently
-          // empty chart; rethrow so the catch below reports it, as the serial
-          // version did.
-          if (ohlcvResult.status === 'rejected') {
-            throw ohlcvResult.reason
-          }
-
-          return {
-            asset,
-            ohlcvRows: ohlcvResult.value,
-            prediction: predictionResult.status === 'fulfilled' ? predictionResult.value : null,
-            lightgbm: lightgbmResult.status === 'fulfilled' ? lightgbmResult.value : null,
-            sentimentRows: sentimentResult.status === 'fulfilled' ? sentimentResult.value : [],
-          }
-        })
+        const payload = await cachedGet(`stock/${symbol}/detail`, () => loadStockDetail(symbol))
 
         if (!alive || !payload) {
           if (payload === null && alive) {
@@ -100,10 +140,12 @@ export function StockDetailPage() {
             setHeuristicPrediction(null)
             setLightgbmPrediction(null)
             setSentimentLatest(null)
+            detailRef.current = null
           }
           return
         }
 
+        detailRef.current = payload
         setStockName(payload.asset.name)
         const points = [...payload.ohlcvRows]
           .reverse()
@@ -143,13 +185,72 @@ export function StockDetailPage() {
         if (alive) {
           setLoading(false)
         }
+        // Every exit from this effect's try/catch lands here, including the
+        // unknown-symbol path that returns early. A key left pending would stall
+        // the stamp for the whole route.
+        release()
       }
     })()
 
     return () => {
       alive = false
+      release()
     }
-  }, [symbol])
+  }, [symbol, reloadToken])
+
+  // "Generation is queued and will appear shortly" is a promise this page has to
+  // keep: the reconcile task writes rows, it does not push them. While a queued
+  // payload still has nothing to show, re-read the two prediction endpoints and
+  // merge whatever landed back into the composed cache key, so the derivation
+  // above stays the only place rows become state -- and so a remount inside the
+  // TTL does not read the empty copy back.
+  //
+  // An 'unavailable' status is not polled: that means the broker is down, and
+  // asking again is not the fix.
+  useEffect(() => {
+    if (!awaitingGeneration) {
+      return undefined
+    }
+    let alive = true
+    let ticks = 0
+    const timer = window.setInterval(() => {
+      if (!alive) {
+        return
+      }
+      if (ticks >= GENERATION_POLL_MAX_TICKS) {
+        window.clearInterval(timer)
+        return
+      }
+      ticks += 1
+      void Promise.allSettled([
+        fetchPredictionBySymbol(symbol),
+        fetchLightGBMPredictionBySymbol(symbol),
+      ]).then(([heuristic, lightgbm]) => {
+        if (!alive) {
+          return
+        }
+        const hasRows = (result: PromiseSettledResult<PredictionStockDto | LightGBMPredictionStockDto | null>) =>
+          result.status === 'fulfilled' && (result.value?.results.length ?? 0) > 0
+        if (!hasRows(heuristic) && !hasRows(lightgbm)) {
+          return
+        }
+        const detail = detailRef.current
+        if (detail) {
+          seed(`stock/${symbol}/detail`, {
+            ...detail,
+            prediction: heuristic.status === 'fulfilled' ? heuristic.value : detail.prediction,
+            lightgbm: lightgbm.status === 'fulfilled' ? lightgbm.value : detail.lightgbm,
+          })
+        }
+        setReloadToken((token) => token + 1)
+      })
+    }, GENERATION_POLL_MS)
+
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [awaitingGeneration, symbol])
 
   const sentimentText = useMemo(() => {
     if (sentimentLatest === null) {
@@ -280,6 +381,20 @@ export function StockDetailPage() {
     })
   }, [assetOptions, assetSearch])
 
+  // Only shown when there is nothing stored to display; a model family that has
+  // its rows says nothing, because there is nothing the reader needs excusing for.
+  const generationNotice = useMemo(() => {
+    if (awaitingGeneration) {
+      return t('stock.generating')
+    }
+    if ([heuristicPrediction, lightgbmPrediction].some(
+      (payload) => payload?.generation?.status === 'unavailable' && (payload?.results.length ?? 0) === 0,
+    )) {
+      return t('stock.generationUnavailable')
+    }
+    return null
+  }, [awaitingGeneration, heuristicPrediction, lightgbmPrediction, t])
+
   return (
     <section>
       <header className="page-header">
@@ -315,6 +430,7 @@ export function StockDetailPage() {
         <span>{sentimentText}</span>
       </div>
       <CandlestickChart data={klineData} />
+      {generationNotice && <p className="status">{generationNotice}</p>}
       <ProbabilityChart title={t('stock.heuristicProbability')} data={predData} />
       <div className="card">
         <h3>{t('stock.tradeSignals')}</h3>

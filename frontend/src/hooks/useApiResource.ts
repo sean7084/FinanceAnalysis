@@ -14,6 +14,105 @@ export interface ApiResource<T> {
 }
 
 /**
+ * Time-to-data for the page currently on screen.
+ *
+ * A view is one pathname plus the resource keys mounted under it. It opens when
+ * the first resource mounts and is stamped once no key is still waiting for its
+ * first value. Nothing renders from any of this, so it is all unobserved, which
+ * is why three attributes rather than one:
+ *
+ *   data-tti-open  milliseconds from navigationStart to the view opening, so the
+ *                  bundle, route chunk and pre-fetch render,
+ *   data-tti       milliseconds from the view opening to its last first value,
+ *                  which therefore *includes* the API wait,
+ *   data-tti-path  the route these describe.
+ *
+ * scripts/measure_page_api_latency.sh charges FRONTEND_OVERHEAD_SECONDS from
+ * `data-tti-open` plus the part of `data-tti` that is not the request itself;
+ * reading only `data-tti` would bill the same round trip twice. A test without a
+ * document, or an engine whose UserTiming throws, loses the mark but never the
+ * attributes.
+ */
+interface TimingView {
+  pathname: string
+  startedAt: number
+  pending: Set<string>
+  stamped: boolean
+}
+
+const NO_VIEW: TimingView = { pathname: '', startedAt: 0, pending: new Set(), stamped: true }
+
+let view: TimingView = NO_VIEW
+
+function stampView(): void {
+  if (view.stamped || view.pending.size > 0) return
+  view.stamped = true
+  const duration = performance.now() - view.startedAt
+  // The attributes are the record and the mark is the convenience: write them
+  // first, in their own try, because an environment whose UserTiming is missing
+  // (jsdom) or rejects the options form must not take the numbers the latency
+  // harness reads down with it.
+  try {
+    document.body.dataset.ttiOpen = view.startedAt.toFixed(0)
+    document.body.dataset.tti = duration.toFixed(0)
+    document.body.dataset.ttiPath = view.pathname
+  } catch {
+    // Diagnostic only; a missing attribute is not worth failing a render over.
+  }
+  try {
+    if (typeof performance.measure === 'function') {
+      performance.measure('page-data-ready', {
+        start: view.startedAt,
+        end: duration,
+        detail: view.pathname,
+      })
+    }
+  } catch {
+    // Some engines throw on an unsupported measure form rather than ignoring it.
+  }
+}
+
+/** Register `key` as awaiting its first value, and return its release. */
+function trackResource(pathname: string, key: string): () => void {
+  if (typeof document === 'undefined' || typeof performance === 'undefined') {
+    return () => undefined
+  }
+  if (view.pathname !== pathname) {
+    view = { pathname, startedAt: performance.now(), pending: new Set(), stamped: false }
+  } else if (view.stamped) {
+    // A resource mounted after the page first went quiet reopens the view instead
+    // of being ignored. Pages chain fetches -- the stock page asks for its asset
+    // before it can ask for predictions keyed by that asset's id -- and latching
+    // the first quiet moment would report a time-to-data earlier than the one the
+    // user waits for, which biases the whole budget toward a pass.
+    view.stamped = false
+  }
+  view.pending.add(key)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    view.pending.delete(key)
+    stampView()
+  }
+}
+
+/**
+ * Register one page-load resource with the time-to-data view, without the hook.
+ *
+ * StockDetailPage and BacktestWorkbenchPage compose their requests by hand --
+ * the first because its error copy depends on the HTTP status, the second
+ * because it polls a live progress feed -- and a hook neither of them uses meant
+ * those two routes had no time-to-data at all: the browser harness could only
+ * report "no measurement" for pages a user does wait on. Same contract as the
+ * hook: call this when the load starts, call the return when the value is
+ * committed. Idempotent release, so a cleanup and a response can both fire.
+ */
+export function trackViewResource(key: string): () => void {
+  return trackResource(typeof window === 'undefined' ? '' : window.location.pathname, key)
+}
+
+/**
  * Fetch one API resource through the shared query cache.
  *
  * Replaces the per-page `let alive = true` / `setLoading` / `setError` block,
@@ -51,6 +150,10 @@ export function useApiResource<T>(
 
   useEffect(() => {
     let alive = true
+    const release = trackResource(
+      typeof window === 'undefined' ? '' : window.location.pathname,
+      key,
+    )
 
     const publish = () => {
       if (!alive) return
@@ -58,6 +161,7 @@ export function useApiResource<T>(
       if (snapshot.hasValue) {
         setData(snapshot.value)
         setLoading(false)
+        release()
       }
       setRevalidating(snapshot.revalidating)
       setError(snapshot.hasValue || !snapshot.error ? null : 'request failed')
@@ -71,9 +175,13 @@ export function useApiResource<T>(
         setData(value)
         setLoading(false)
         setError(null)
+        release()
       })
       .catch(() => {
         // Only reachable when the cache holds no value at all for this key.
+        // Release regardless: a page that failed to load data is not waiting for
+        // it, and leaving the key pending would stall the stamp forever.
+        release()
         if (alive && !cacheSnapshot<T>(key).hasValue) {
           setError('request failed')
         }
@@ -84,6 +192,7 @@ export function useApiResource<T>(
     return () => {
       alive = false
       unsubscribe()
+      release()
     }
   }, [key, depSignature])
 

@@ -28,6 +28,8 @@ export interface CachedGetOptions {
 }
 
 interface CacheEntry {
+  /** Kept on the entry so an async completion can name what it resolved. */
+  key: string
   value: unknown
   hasValue: boolean
   fetchedAt: number
@@ -40,6 +42,36 @@ interface CacheEntry {
 
 const store = new Map<string, CacheEntry>()
 
+/** Where a resolved resource came from. Distinguishing these is the whole point
+ * of the marks: a "page load" served from cache is not evidence about the
+ * server, and a cold navigation that hits the network is. */
+type ResolveSource = 'network' | 'cache' | 'deduped'
+
+/**
+ * Emit `performance` marks for one resolution.
+ *
+ * scripts/measure_page_api_latency.sh budgets the browser term of page load as
+ * `FRONTEND_OVERHEAD_SECONDS`, and that constant has to come from somewhere other
+ * than a guess. The marks say how long each resource took and whether it was
+ * served from memory, which is what separates "the app is slow" from "the API is
+ * slow". Marking is diagnostic only, so nothing here may throw into a render.
+ */
+function recordResolve(key: string, source: ResolveSource, startedAt: number): void {
+  try {
+    if (typeof performance === 'undefined' || typeof performance.mark !== 'function') return
+    performance.mark(`api:${key}:${source}`)
+    if (typeof performance.measure === 'function') {
+      performance.measure(`api-duration:${key}`, {
+        start: startedAt,
+        end: performance.now(),
+        detail: source,
+      })
+    }
+  } catch {
+    // Marking must never be the reason a page fails to load.
+  }
+}
+
 function ensureEntry(key: string, options: CachedGetOptions): CacheEntry {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
   const staleMs = Math.max(options.staleMs ?? DEFAULT_STALE_MS, ttlMs)
@@ -47,6 +79,7 @@ function ensureEntry(key: string, options: CachedGetOptions): CacheEntry {
   let entry = store.get(key)
   if (!entry) {
     entry = {
+      key,
       value: null,
       hasValue: false,
       fetchedAt: 0,
@@ -90,6 +123,7 @@ function runFetch<T>(entry: CacheEntry, loader: () => Promise<T>): Promise<T> {
     return entry.inflight as Promise<T>
   }
 
+  const startedAt = performance?.now?.() ?? 0
   const task = (async () => {
     try {
       const value = await loader()
@@ -98,6 +132,7 @@ function runFetch<T>(entry: CacheEntry, loader: () => Promise<T>): Promise<T> {
       entry.fetchedAt = Date.now()
       entry.error = null
       evictOldest()
+      recordResolve(entry.key, 'network', startedAt)
       return value
     } catch (error) {
       entry.error = error
@@ -132,19 +167,23 @@ export async function cachedGet<T>(
   loader: () => Promise<T>,
   options: CachedGetOptions = {},
 ): Promise<T> {
+  const startedAt = performance?.now?.() ?? 0
   const entry = ensureEntry(key, options)
 
   if (entry.inflight && !options.force) {
+    recordResolve(key, 'deduped', startedAt)
     return entry.inflight as Promise<T>
   }
 
   if (!options.force && entry.hasValue) {
     const age = Date.now() - entry.fetchedAt
     if (age < entry.ttlMs) {
+      recordResolve(key, 'cache', startedAt)
       return entry.value as T
     }
     if (age < entry.staleMs) {
       void runFetch(entry, loader).catch(() => undefined)
+      recordResolve(key, 'cache', startedAt)
       return entry.value as T
     }
   }

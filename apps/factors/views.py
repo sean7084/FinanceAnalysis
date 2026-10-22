@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 from datetime import date
 
+from django.db.models import DecimalField, ExpressionWrapper, F, Value
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -104,22 +105,34 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
             cw = adjusted['flow_weight']
             tw = adjusted['technical_weight']
 
-            rescored = []
-            for item in queryset:
-                adj_score = (
-                    Decimal(str(item.fundamental_score)) * fw +
-                    Decimal(str(item.capital_flow_score)) * cw +
-                    Decimal(str(item.technical_score)) * tw
+            # The three weights are scalars, so the re-score is one SQL expression and
+            # the ranking never needs the universe in Python. Ties break the way the
+            # previous stable Python sort did: by the un-adjusted score, then symbol.
+            # The two overlay sorts still materialize, for the reason in the else branch.
+            #
+            # The weights carry up to 28 significant digits (they come from a Decimal
+            # division), so both sides are given 16 decimal places: that is ~10 orders
+            # of magnitude finer than the 6 the response reports, and it keeps the SQL
+            # sum and the Python sum in the same order for any two distinct score rows.
+            weight_field = DecimalField(max_digits=20, decimal_places=16)
+            queryset = queryset.annotate(
+                adjusted_score=ExpressionWrapper(
+                    F('fundamental_score') * Value(fw, output_field=weight_field)
+                    + F('capital_flow_score') * Value(cw, output_field=weight_field)
+                    + F('technical_score') * Value(tw, output_field=weight_field),
+                    output_field=weight_field,
                 )
-                rescored.append((item, float(adj_score)))
-
-            rescored.sort(key=lambda x: x[1], reverse=True)
-            top_items = [x[0] for x in rescored]
-            serializer = self.get_serializer(top_items, many=True)
+            )
+            if sort_by not in {'trade_score', 'risk_reward_ratio'}:
+                queryset = queryset.order_by(
+                    '-adjusted_score', '-bottom_probability_score', 'asset__symbol'
+                )[:top_n]
+            queryset = list(queryset)
+            serializer = self.get_serializer(queryset, many=True)
             data = serializer.data
-            score_map = {obj.id: score for obj, score in rescored}
+            score_map = {obj.id: obj.adjusted_score for obj in queryset}
             for row in data:
-                row['adjusted_bottom_probability_score'] = round(score_map.get(row['id'], 0), 6)
+                row['adjusted_bottom_probability_score'] = round(float(score_map.get(row['id'], 0)), 6)
                 row['context_applied'] = {
                     'macro_context': adjusted['macro_context'],
                     'event_tag': adjusted['event_tag'],
@@ -128,6 +141,15 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
                     'technical_weight': float(tw),
                 }
         else:
+            # get_queryset already orders by -bottom_probability_score, asset__symbol,
+            # which is the order this branch returns: the two `sort_by` values that
+            # change the order (trade_score, risk_reward_ratio) are overlaid from
+            # predictions below and cannot be answered in SQL. So on every other
+            # sort the top_n rows are known before the serializer runs -- take them
+            # in SQL and pay the serializer plus the prediction lookup for top_n
+            # assets instead of the whole universe.
+            if sort_by not in {'trade_score', 'risk_reward_ratio'}:
+                queryset = queryset[:top_n]
             queryset = list(queryset)
             serializer = self.get_serializer(queryset, many=True)
             data = serializer.data
