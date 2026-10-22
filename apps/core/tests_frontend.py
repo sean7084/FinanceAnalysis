@@ -131,6 +131,9 @@ class PageLoadLatencyHarnessTests(SimpleTestCase):
 
     FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
     HARNESS = Path(__file__).resolve().parents[2] / "scripts" / "measure_page_api_latency.sh"
+    BROWSER_HARNESS = (
+        Path(__file__).resolve().parents[2] / "scripts" / "measure_browser_time_to_data.sh"
+    )
 
     # The eight routed pages, per the router in frontend/src/App.tsx.
     EXPECTED_GROUPS = {
@@ -278,4 +281,67 @@ class PageLoadLatencyHarnessTests(SimpleTestCase):
             harness,
             "the legacy seven-call Dashboard group was reintroduced; fetchDashboardData "
             "makes one summary request, so these endpoints are not on the load path",
+        )
+
+    def test_browser_harness_loads_every_routed_page(self):
+        """The browser pass is the only evidence behind the overhead term.
+
+        ``FRONTEND_OVERHEAD_SECONDS`` sat at 0.000s for a release because nothing
+        read the app's own stamps. scripts/measure_browser_time_to_data.sh reads
+        them; this keeps it from quietly covering fewer routes than the SPA has,
+        which is the same blind spot from the other side.
+        """
+        app_source = (self.FRONTEND / "App.tsx").read_text()
+        route_count = len(re.findall(r"withSuspense\(<\w+ />", app_source))
+        app_paths = set(re.findall(r"path: '([^']*)'", app_source))
+
+        declaration = re.search(
+            r"^ROUTES=\((.*)\)$", self.BROWSER_HARNESS.read_text(), re.MULTILINE
+        )
+        self.assertIsNotNone(
+            declaration,
+            "the browser harness lost its ROUTES array, so it no longer says which "
+            "pages it loads",
+        )
+        routes = re.findall(r'"([^"]+)"', declaration.group(1))
+        self.assertEqual(len(routes), route_count)
+        self.assertEqual(len(set(routes)), route_count, "a route is measured twice")
+
+        for path in app_paths:
+            # 'stock/:symbol' is measured against a symbol read from the API, so
+            # the harness holds a variable rather than the literal segment.
+            stripped = path.lstrip("/")
+            prefix = f"/{stripped.split(':')[0]}" if stripped else "/"
+            self.assertTrue(
+                any(route.startswith(prefix) for route in routes),
+                f"App.tsx routes '{path}' but the browser harness never loads {prefix}",
+            )
+
+    def test_every_page_that_reads_the_api_registers_with_the_instrument(self):
+        """A route the app cannot time is a route the 3s bar cannot verify.
+
+        ``data-tti`` is written by ``useApiResource``, or by ``trackViewResource``
+        for the two pages that compose their requests by hand. Stock Detail and
+        Backtest used neither, so the browser pass had no number for them and the
+        two heaviest routes were unpriceable -- the same class of hole as an
+        endpoint the curl harness skips, one layer up. A comment naming the hook
+        is not a call, so the match is on the call sites.
+        """
+        uninstrumented = []
+        for page in self._page_files():
+            source = page.read_text()
+            reads_api = "from '../lib/api'" in source or "cachedGet(" in source
+            registers = (
+                "useApiResource(" in source
+                or "useApiResource<" in source
+                or "trackViewResource(" in source
+            )
+            if reads_api and not registers:
+                uninstrumented.append(page.name)
+        self.assertEqual(
+            uninstrumented,
+            [],
+            f"{uninstrumented} load page data through the API but never register with "
+            "frontend/src/hooks/useApiResource.ts, so no time-to-data is recorded for "
+            "them and scripts/measure_browser_time_to_data.sh has nothing to price",
         )
