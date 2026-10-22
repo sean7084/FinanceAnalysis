@@ -41,6 +41,13 @@
   `prediction_coverage: {missing: n, prediction_coverage_incomplete: true}` and
   queues one `reconcile_prediction_coverage` pass, rather than spending 45
   seconds making the difference invisible.
+- **`staticfiles/` is build output, so it is no longer source-controlled.** The 170
+  tracked files were one past `collectstatic` run's admin and DRF statics, while the
+  SPA's own hashed bundle was never committed -- a fresh clone already had no
+  JavaScript to serve. The multi-stage Dockerfile builds `frontend/dist` in a node
+  stage and `entrypoint.sh` runs `collectstatic`, so nothing ever deployed from the
+  tracked copy. `/staticfiles/` is now gitignored and those files untracked, left on
+  disk; regenerate with `npm run build` then `python manage.py collectstatic`.
 
 #### Fixed:
 

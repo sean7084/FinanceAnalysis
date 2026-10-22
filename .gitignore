@@ -100,3 +100,12 @@ get-pip.py
 # Model artifacts live in the MinIO object store (docs/how-to/artifact-store.md);
 # the local models/ tree is a retrainable cache, not source-controlled (untracked 2026-10-10).
 models/
+
+# --- collectstatic output (STATIC_ROOT) -------------------------------------
+# The multi-stage Dockerfile builds frontend/dist in a node stage and entrypoint.sh
+# runs collectstatic, so a deployment never reads these from git
+# (docs/how-to/local-setup.md). What was tracked was one past run's admin/DRF
+# statics, while the SPA's own hashed bundle never was -- half-tracked build output
+# that can disagree with its source. Regenerate with `npm run build` in frontend/
+# then `python manage.py collectstatic`.
+/staticfiles/
