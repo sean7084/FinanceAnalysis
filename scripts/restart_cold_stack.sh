@@ -88,7 +88,11 @@ start_detached() {
 	local name="$1"
 	shift
 	local log="$STACK_LOG_DIR/$name.log"
-	setsid nohup "$@" >"$log" 2>&1 < /dev/null &
+	# Append, not truncate. A restart is the last thing that should erase the evidence
+	# about what went wrong before it: the 10-22 signal tick had to be reconstructed from
+	# PeriodicTask counters because the beat log that would have shown the dispatch was
+	# overwritten by the 10-21 restart that followed it.
+	setsid nohup "$@" >>"$log" 2>&1 < /dev/null &
 	disown
 	echo "  started $name -> $log"
 }

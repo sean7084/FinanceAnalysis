@@ -312,6 +312,32 @@ def win_rate(trade_returns: Any) -> float | None:
     return float(Decimal(str(int((values > 0).sum()))) / Decimal(str(len(values))))
 
 
+def payoff_ratio(trade_returns: Any) -> float | None:
+    """Average winning trade divided by the absolute average losing trade.
+
+    This is the ``b`` in ``f* = p - (1 - p) / b``, so :func:`win_rate` and this together
+    are the two inputs a sizing rule needs; neither alone says anything about whether a
+    40%-win-rate strategy is good.
+
+    ``None`` when the sample has no wins or no losses, which is the honest answer: a
+    streak of winners has an undefined payoff ratio, and reporting ``inf`` or ``0`` would
+    turn a missing measurement into a sizing decision. Break-even trades (exactly 0) are
+    dropped from both groups -- they are neither, and counting them as losses would
+    understate ``b`` while counting them as wins would overstate the win rate.
+    """
+    values = _finite_series(trade_returns)
+    if values.empty:
+        return None
+    wins = values[values > 0]
+    losses = values[values < 0]
+    if wins.empty or losses.empty:
+        return None
+    average_loss = abs(float(losses.mean()))
+    if average_loss <= 0.0:
+        return None
+    return float(Decimal(str(float(wins.mean()))) / Decimal(str(average_loss)))
+
+
 def summarize_performance(
     equity: Any,
     daily_traded_notional: Any = None,

@@ -114,6 +114,15 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     # API v1 endpoints
     path('api/v1/', include(router.urls)),
+    # The defensive-asset picker lives at ``etf/defensive_assets/`` rather than the
+    # ``etf/universe/defensive_assets/`` a router ``@action`` would produce, because it is a
+    # shortlist of alternatives to a request field and not a slice of the universe listing.
+    # Registered after the include so the router keeps precedence for anything it can match.
+    path(
+        'api/v1/etf/defensive_assets/',
+        ETFUniverseViewSet.as_view({'get': 'defensive_assets'}),
+        name='etf-defensive-assets',
+    ),
     # OpenAPI schema endpoints (drf-spectacular)
     path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/v1/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),

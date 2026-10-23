@@ -21,6 +21,23 @@ STACK_ALL_QUEUES="${STACK_ALL_QUEUES:-1}"
 # SERVICES is the resolved list actually started; populated by build_services.
 SERVICES=()
 
+# The train queue runs the LightGBM/LSTM retrains. Concurrency is pinned because a second
+# concurrent LSTM needs its own GPU memory: 12GB VRAM is the binding constraint, not how
+# often the card is free. Overridable for a CPU-only host.
+STACK_TRAIN_CONCURRENCY="${STACK_TRAIN_CONCURRENCY:-2}"
+# Set STACK_SKIP_BEAT=1 to start everything except the scheduler (used when a beat is already
+# running elsewhere and only the rest of the stack is needed).
+STACK_SKIP_BEAT="${STACK_SKIP_BEAT:-0}"
+
+# Beat is singular by construction: two schedulers each dispatch every entry in
+# CELERY_BEAT_SCHEDULE, so every scheduled job runs twice. That has happened by running this
+# script again while the first stack was still up. A pidfile check cannot catch it --
+# run_celery_beat.sh deletes the pidfile on start, so a newer beat clears the older one's entry
+# and both then look stopped. Match the live scheduler command line instead.
+live_beat_pids() {
+  pgrep -f '[-]A config\.celery beat' 2>/dev/null || true
+}
+
 frontend_available() {
   command -v "$NPM_BIN" >/dev/null 2>&1
 }
@@ -44,17 +61,23 @@ build_services() {
   if [[ "$STACK_ALL_QUEUES" == "1" ]]; then
     SERVICES+=(
       "celery-worker-backtest|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=backtest"
-      "celery-worker-train|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=train-lightgbm,train-lstm"
+      "celery-worker-train|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=train-lightgbm,train-lstm CELERY_WORKER_CONCURRENCY=$STACK_TRAIN_CONCURRENCY"
       "celery-worker-etf|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=etf-rotation"
     )
   fi
-  SERVICES+=("celery-beat|bash|$SCRIPT_DIR/run_celery_beat.sh|")
+  if [[ "$STACK_SKIP_BEAT" != "1" ]]; then
+    SERVICES+=("celery-beat|bash|$SCRIPT_DIR/run_celery_beat.sh|")
+  fi
   if frontend_available; then
     SERVICES+=("frontend|bash|$SCRIPT_DIR/run_frontend.sh|")
   fi
 }
 
+# check_stack takes the resolved SERVICES list and validates it. ``mode`` is "start" or
+# "check": a live beat only blocks a real start, because --check starts nothing and the
+# scheduler is expected to be up already on a host running the stack.
 check_stack() {
+  local mode="${1:-start}"
   local service command program envspec
 
   for service_def in "${SERVICES[@]}"; do
@@ -74,6 +97,23 @@ check_stack() {
     queues="ops, backtest, train-lightgbm, train-lstm, etf-rotation"
   fi
   echo "[stack] celery queues covered: $queues"
+  echo "[stack] train worker concurrency: $STACK_TRAIN_CONCURRENCY"
+  if [[ "$STACK_SKIP_BEAT" == "1" ]]; then
+    echo "[stack] celery-beat skipped (STACK_SKIP_BEAT=1): no new scheduled jobs will fire."
+  else
+    local existing
+    existing="$(live_beat_pids | paste -sd' ' -)"
+    if [[ -n "$existing" ]]; then
+      if [[ "$mode" == "check" ]]; then
+        echo "[stack] note: scheduler(s) already live: pid $existing -- a real start would refuse."
+      else
+        echo "[stack] refusing to start celery-beat: scheduler(s) already live: pid $existing." >&2
+        echo "[stack] two beats double-dispatch every scheduled job. Stop that process first," >&2
+        echo "[stack] or set STACK_SKIP_BEAT=1 to start the rest of the stack without one." >&2
+        exit 1
+      fi
+    fi
+  fi
 
   if frontend_available; then
     echo "[stack] launchers and runtimes available; frontend will start (npm found)."
@@ -85,12 +125,12 @@ check_stack() {
 
 if [[ "${1:-}" == "--check" ]]; then
   build_services
-  check_stack
+  check_stack check
   exit 0
 fi
 
 build_services
-check_stack
+check_stack start
 
 pids=()
 names=()
@@ -117,8 +157,8 @@ start_service() {
   local envspec="$4"
 
   (
-    # envspec is a single KEY=VALUE token (queue lists use commas, never spaces),
-    # so unquoted expansion is safe and lets `env` apply it to the launcher.
+    # envspec is one or more KEY=VALUE tokens separated by spaces (queue lists use commas,
+    # never spaces), so unquoted expansion is safe and lets `env` apply each one.
     if [[ -n "$envspec" ]]; then
       env $envspec "$command" "$program" 2>&1 | prefix_stream "$name"
     else

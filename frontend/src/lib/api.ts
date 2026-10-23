@@ -812,3 +812,395 @@ export async function fetchEnsembleWeights(limit = 30): Promise<EnsembleWeightSn
   const payload = await apiGet<Paginated<EnsembleWeightSnapshotDto>>(`/ensemble-weights/?page_size=${limit}`)
   return payload.results
 }
+
+export interface EtfUniverseDto {
+  id: number
+  ts_code: string
+  symbol: string
+  name: string
+  fund_type: string
+  invest_type: string
+  benchmark: string
+  management: string
+  custodian: string
+  list_date: string | null
+  delist_date: string | null
+  first_trade_date: string | null
+  effective_list_date: string | null
+  status: string
+  is_active: boolean
+  is_rankable: boolean
+  category: string
+  sub_category: string
+  m_fee: number | string | null
+  c_fee: number | string | null
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface EtfDailyDto {
+  id: number
+  etf: number
+  etf_ts_code: string
+  etf_name: string
+  date: string
+  open: number | string | null
+  high: number | string | null
+  low: number | string | null
+  close: number | string | null
+  adj_close: number | string | null
+  volume: number | string | null
+  amount: number | string | null
+  adj_factor: number | string | null
+}
+
+export interface EtfRankingDto {
+  ts_code: string
+  name: string
+  score: number
+  rank: number
+  category: string
+}
+
+export interface EtfSelectedEtfDto {
+  ts_code: string
+  name: string
+  weight: number
+  reason: string
+}
+
+export interface EtfSignalDto {
+  id: number
+  date: string
+  signal_type: string
+  model_type: string
+  rankings?: EtfRankingDto[]
+  selected_etfs: EtfSelectedEtfDto[]
+  defensive_allocation: number | string | null
+  defensive_asset: string | null
+  // A free-form tag (`rule-v1:mom60-score`) once the model registry has a version to
+  // stamp, `null` for a RULE signal built before that, and a number for anything that
+  // still carries the old numeric pk -- the page renders it verbatim rather than
+  // arithmetic, so the union is honest about all three shapes.
+  model_version: string | number | null
+  benchmark_return_20d: number | string | null
+  max_positions: number
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+// `signal_date` is the data as-of date, i.e. the cut of the feature snapshot the signal
+// was built from -- not the wall-clock moment the row was written, which is what
+// `created_at` on the signal itself carries. The freshness endpoint is the only place
+// that says how many sessions that as-of date trails the newest eligible snapshot, so
+// it is the only place that can tell an operator whether the card is still actionable.
+export interface EtfSignalFreshnessDto {
+  signal_date: string | null
+  latest_snapshot_date: string | null
+  latest_bar_date: string | null
+  lag_sessions: number | null
+  is_stale: boolean
+  model_version: string | null
+}
+
+// One rankable money-market ETF, i.e. a candidate defensive asset. `avg_amount_20d` is
+// the 20-day notional turnover in yuan that the workbench shows next to the code, so the
+// operator can see for themselves why a 0.01亿/day fund is a poor place to park the
+// defensive sleeve; `eligible` is whether it clears the server's liquidity floor.
+export interface EtfDefensiveAssetDto {
+  ts_code: string
+  name: string
+  avg_amount_20d: number | string | null
+  eligible: boolean
+  min_avg_amount_yuan: number | string | null
+}
+
+export interface EtfPositionDto {
+  id: number
+  signal: number | null
+  signal_date: string | null
+  etf: number
+  etf_ts_code: string
+  etf_name: string
+  entry_date: string
+  exit_date: string | null
+  entry_price: number | string | null
+  exit_price: number | string | null
+  weight: number | string | null
+  shares: number | null
+  pnl: number | string | null
+  return_pct: number | string | null
+  status: string
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface EtfBacktestDto {
+  id: number
+  name: string
+  status: string
+  // The two fields that tell the workbench a RUNNING row is advancing rather than
+  // winding down: the intent the engine reads at a chunk boundary, and whether the
+  // row's own Celery task is still alive. `task_state` is '' for any non-RUNNING row.
+  pending_control_action: string
+  task_state: string
+  has_stale_task_owner: boolean
+  start_date: string
+  end_date: string
+  rebalance_frequency: string
+  max_positions: number
+  momentum_lookback: number
+  defensive_asset: string
+  absolute_momentum_filter: boolean
+  weighting: string
+  initial_capital: number
+  commission_rate: number | string
+  min_commission: number | string
+  slippage: number | string
+  liquidity_floor_multiple: number | string
+  model_type: string
+  walk_forward_steps: number
+  benchmark_code: string
+  total_return: number | string | null
+  annualized_return: number | string | null
+  max_drawdown: number | string | null
+  sharpe_ratio: number | string | null
+  calmar_ratio: number | string | null
+  win_rate: number | string | null
+  turnover_annual: number | string | null
+  alpha_vs_benchmark: number | string | null
+  beta_vs_benchmark: number | string | null
+  information_ratio: number | string | null
+  benchmark_return: number | string | null
+  total_fees: number | string | null
+  equity_curve?: Array<Record<string, unknown>>
+  trade_log?: Array<Record<string, unknown>>
+  parameters: Record<string, unknown>
+  report?: Record<string, unknown>
+  error_message: string
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface EtfComparisonRunDto {
+  id: number
+  name: string
+  status: string
+  start_date: string
+  end_date: string
+  initial_capital: number
+  model_type: string
+  benchmark_code: string
+}
+
+export interface EtfComparisonPayloadDto {
+  run: EtfComparisonRunDto
+  series: BacktestComparisonSeriesDto[]
+  compare_target: BacktestComparisonTargetDto | null
+  available_series_keys: string[]
+  message: string | null
+}
+
+export interface EtfUniverseQuery {
+  page?: number
+  pageSize?: number
+  search?: string
+  category?: string
+  isRankable?: boolean
+}
+
+// The five keys `/etf/backtests/` will actually re-order by; anything else the
+// server silently falls back to `-created_at`, so the union keeps a typo from
+// looking like a working sort.
+export type EtfBacktestSort = 'alpha' | 'sharpe' | 'return' | 'drawdown' | 'created'
+
+export interface EtfBacktestQuery {
+  limit?: number
+  page?: number
+  sort?: EtfBacktestSort
+  status?: string
+  modelType?: string
+  frequency?: string
+  weighting?: string
+  name?: string
+}
+
+// Mirrors the writable subset of `ETFRotationBacktestSerializer`. The fee knobs,
+// `walk_forward_steps` and `benchmark_code` are read-only server-side, so they are
+// deliberately absent -- sending one would 400 or be dropped, never honoured.
+export interface EtfBacktestCreatePayload {
+  name: string
+  start_date: string
+  end_date: string
+  rebalance_frequency: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY' | 'TRIGGER'
+  max_positions: number
+  momentum_lookback: number
+  absolute_momentum_filter: boolean
+  weighting: 'equal' | 'score'
+  // Omitted rather than blanked: the column defaults on the server are the tuned
+  // numbers, and restating them here would silently unfollow a settings change.
+  defensive_asset?: string
+  initial_capital?: number
+  model_type?: 'RULE'
+}
+
+// The ETF metrics are stored as fractions, so every percentage a page shows goes
+// through here; a Dto field must never be pre-multiplied.
+export function fmtPct(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === '') {
+    return '—'
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return '—'
+  }
+  return `${(parsed * 100).toFixed(2)}%`
+}
+
+export async function fetchEtfUniverse(query: EtfUniverseQuery = {}): Promise<Paginated<EtfUniverseDto>> {
+  const params = new URLSearchParams({ page_size: String(query.pageSize ?? 20) })
+  if (query.page) {
+    params.set('page', String(query.page))
+  }
+  if (query.search) {
+    params.set('search', query.search)
+  }
+  if (query.category) {
+    params.set('category', query.category)
+  }
+  if (query.isRankable !== undefined) {
+    params.set('is_rankable', query.isRankable ? 'true' : 'false')
+  }
+  return await apiGet<Paginated<EtfUniverseDto>>(`/etf/universe/?${params.toString()}`)
+}
+
+export async function fetchEtfDailyByTsCode(tsCode: string, limit = 120): Promise<EtfDailyDto[]> {
+  const pageSize = Math.min(Math.max(limit, 1), 1000)
+  const baseUrl = `/etf/daily/?ts_code=${encodeURIComponent(tsCode)}&page_size=${pageSize}`
+  const rows: EtfDailyDto[] = []
+  let page = 1
+  while (rows.length < limit) {
+    const payload = await apiGet<Paginated<EtfDailyDto>>(`${baseUrl}&page=${page}`)
+    rows.push(...payload.results)
+    if (!payload.next || !payload.results.length) {
+      break
+    }
+    page += 1
+  }
+  return rows.slice(0, limit)
+}
+
+export async function fetchEtfLatestSignal(modelType?: string): Promise<EtfSignalDto | null> {
+  const query = modelType ? `?model_type=${encodeURIComponent(modelType)}` : ''
+  try {
+    return await apiGet<EtfSignalDto>(`/etf/signals/latest/${query}`)
+  } catch {
+    return null
+  }
+}
+
+// Mirrors `fetchEtfLatestSignal`'s swallow-to-null: with no signal row there is no
+// as-of date to compare against, so "unknown freshness" is the honest answer and the
+// card must not turn a 404 into a load error.
+export async function fetchEtfSignalFreshness(): Promise<EtfSignalFreshnessDto | null> {
+  try {
+    return await apiGet<EtfSignalFreshnessDto>('/etf/signals/freshness/')
+  } catch {
+    return null
+  }
+}
+
+// Not every signal has a rankable money-market ETF on board, and the endpoint answers a
+// bare `results` list rather than a full DRF page, so a missing key is an empty menu --
+// the workbench keeps its free-text escape hatch for exactly that case.
+export async function fetchEtfDefensiveAssets(): Promise<EtfDefensiveAssetDto[]> {
+  const payload = await apiGet<{ results?: EtfDefensiveAssetDto[] }>('/etf/defensive_assets/')
+  return payload.results ?? []
+}
+
+export async function fetchEtfSignals(limit = 10): Promise<EtfSignalDto[]> {
+  const payload = await apiGet<Paginated<EtfSignalDto>>(`/etf/signals/?page_size=${limit}`)
+  return payload.results
+}
+
+export async function fetchEtfOpenPositions(limit = 50): Promise<EtfPositionDto[]> {
+  const payload = await apiGet<Paginated<EtfPositionDto>>(
+    `/etf/positions/?status=OPEN&ordering=-entry_date&page_size=${limit}`,
+  )
+  return payload.results
+}
+
+export async function fetchEtfBacktests(query: EtfBacktestQuery = {}): Promise<Paginated<EtfBacktestDto>> {
+  const params = new URLSearchParams({ page_size: String(query.limit ?? 20) })
+  if (query.page) {
+    params.set('page', String(query.page))
+  }
+  if (query.sort) {
+    params.set('sort', query.sort)
+  }
+  if (query.status) {
+    params.set('status', query.status)
+  }
+  if (query.modelType) {
+    params.set('model_type', query.modelType)
+  }
+  if (query.frequency) {
+    params.set('rebalance_frequency', query.frequency)
+  }
+  if (query.weighting) {
+    params.set('weighting', query.weighting)
+  }
+  if (query.name) {
+    params.set('name', query.name)
+  }
+  return await apiGet<Paginated<EtfBacktestDto>>(`/etf/backtests/?${params.toString()}`)
+}
+
+export async function fetchEtfBacktest(runId: number): Promise<EtfBacktestDto> {
+  return await apiGet<EtfBacktestDto>(`/etf/backtests/${runId}/`)
+}
+
+// A new run answers 202 with the *list* serializer, so the body carries no `report`
+// and therefore no cursor -- progress arrives on the next detail poll. A duplicate
+// in-flight fingerprint answers 200 with the existing row instead of a second copy.
+export async function createEtfBacktest(payload: EtfBacktestCreatePayload): Promise<EtfBacktestDto> {
+  return await apiPost<EtfBacktestDto>('/etf/backtests/', payload)
+}
+
+// The lifecycle actions answer `{'message', 'id'}`, not serializer output, so the
+// message is the client's only notice that pause/restart/delete is an *intent* that
+// lands at the next chunk boundary rather than an accomplished fact.
+export async function pauseEtfBacktest(runId: number): Promise<BacktestRunActionResponseDto> {
+  return await apiPost<BacktestRunActionResponseDto>(`/etf/backtests/${runId}/pause/`, {})
+}
+
+export async function resumeEtfBacktest(runId: number): Promise<BacktestRunActionResponseDto> {
+  return await apiPost<BacktestRunActionResponseDto>(`/etf/backtests/${runId}/resume/`, {})
+}
+
+// The server registers `/rerun/` and `/restart/` on the same handler, so the client has one
+// restart action rather than two buttons that cannot be told apart.
+export async function restartEtfBacktest(runId: number): Promise<BacktestRunActionResponseDto> {
+  return await apiPost<BacktestRunActionResponseDto>(`/etf/backtests/${runId}/restart/`, {})
+}
+
+export async function deleteEtfBacktest(runId: number): Promise<BacktestRunActionResponseDto | null> {
+  return await apiDelete<BacktestRunActionResponseDto>(`/etf/backtests/${runId}/`)
+}
+
+export async function fetchEtfComparisonCurve(
+  runId: number,
+  extraIds: number[] = [],
+): Promise<EtfComparisonPayloadDto> {
+  const params = new URLSearchParams()
+  const clean = [...new Set(extraIds)].filter((id) => Number.isInteger(id) && id > 0)
+  if (clean.length) {
+    params.set('extra_ids', clean.join(','))
+  }
+  const query = params.toString()
+  return await apiGet<EtfComparisonPayloadDto>(`/etf/backtests/${runId}/comparison_curve/${query ? `?${query}` : ''}`)
+}

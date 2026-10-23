@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-10-22T03:01:42Z_
+_Generated: 2026-10-23T11:53:53Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -47,11 +47,13 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `run-daily-sentiment-pipeline` | `apps.sentiment.tasks.run_daily_sentiment_pipeline` | `0 17 * * *` | &mdash; |
 | `run-hourly-historical-news-backfill` | `apps.sentiment.tasks.run_hourly_historical_news_backfill` | `12 * * * *` | &mdash; |
 | `sync-a-shares-daily-from-tushare` | `apps.markets.tasks.sync_daily_a_shares` | `10 16 * * *` | &mdash; |
+| `sync-etf-benchmark-index-daily` | `apps.etf_rotation.tasks.sync_etf_benchmark_index` | `5 17 * * *` | &mdash; |
 | `sync-etf-daily-bars-daily` | `apps.etf_rotation.tasks.sync_etf_daily_recent` | `45 16 * * *` | &mdash; |
+| `sync-etf-fund-shares-weekly` | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `10 18 6 * *` | &mdash; |
 | `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 2 * 1 *` | &mdash; |
 | `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 0 * 2-8 *` | &mdash; |
 
-**54** registered project tasks, **14** beat entries, **40** reachable only through management commands, API actions, or other tasks.
+**56** registered project tasks, **16** beat entries, **40** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -83,8 +85,10 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.etf_rotation.tasks.generate_etf_rotation_signal_daily` | `etf-rotation` | explicit | **900** | **1000** | `generate-etf-rotation-signal-daily` |
 | `apps.etf_rotation.tasks.refresh_etf_first_trade_dates` | `etf-rotation` | explicit | **900** | **1000** | &mdash; |
 | `apps.etf_rotation.tasks.run_etf_rotation_backtest` | `etf-rotation` | explicit | **3600** | **3900** | &mdash; |
+| `apps.etf_rotation.tasks.sync_etf_benchmark_index` | `ops` | explicit | **300** | **360** | `sync-etf-benchmark-index-daily` |
 | `apps.etf_rotation.tasks.sync_etf_daily_by_date` | `etf-rotation` | explicit | **300** | **360** | &mdash; |
 | `apps.etf_rotation.tasks.sync_etf_daily_recent` | `etf-rotation` | explicit | **600** | **660** | `sync-etf-daily-bars-daily` |
+| `apps.etf_rotation.tasks.sync_etf_fund_shares` | `ops` | explicit | **600** | **700** | `sync-etf-fund-shares-weekly` |
 | `apps.etf_rotation.tasks.sync_etf_universe` | `etf-rotation` | explicit | **900** | **1000** | &mdash; |
 | `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` | `train-lightgbm` | explicit | **3600** | **3900** | &mdash; |
 | `apps.factors.tasks.calculate_factor_scores_for_date` | `ops` | default | global | global | &mdash; |
@@ -123,8 +127,10 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.etf_rotation.tasks.generate_etf_rotation_signal_daily` | **900** | **1000** |
 | `apps.etf_rotation.tasks.refresh_etf_first_trade_dates` | **900** | **1000** |
 | `apps.etf_rotation.tasks.run_etf_rotation_backtest` | **3600** | **3900** |
+| `apps.etf_rotation.tasks.sync_etf_benchmark_index` | **300** | **360** |
 | `apps.etf_rotation.tasks.sync_etf_daily_by_date` | **300** | **360** |
 | `apps.etf_rotation.tasks.sync_etf_daily_recent` | **600** | **660** |
+| `apps.etf_rotation.tasks.sync_etf_fund_shares` | **600** | **700** |
 | `apps.etf_rotation.tasks.sync_etf_universe` | **900** | **1000** |
 | `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` | **3600** | **3900** |
 | `apps.markets.tasks.run_post_sync_universal_refresh` | **1800** | **2100** |

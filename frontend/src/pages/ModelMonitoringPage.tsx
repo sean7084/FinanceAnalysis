@@ -20,11 +20,43 @@ interface ModelMonitoringData {
   featureTrends: FeatureImportanceTrendGroupDto[]
 }
 
+// Module scope so the "no rows yet" value keeps one identity, and so the label map
+// is one object rather than a literal rebuilt per render.
 const EMPTY_MONITORING: ModelMonitoringData = {
   modelVersions: [],
   lightgbmModels: [],
   ensembleWeights: [],
   featureTrends: [],
+}
+
+// `model_type` is a Django enum, so the page would otherwise show `ETF_LIGHTGBM`
+// to a user who has never seen that string anywhere else in the app.
+const MODEL_TYPE_LABELS: Record<string, string> = {
+  HEURISTIC: 'Heuristic',
+  LIGHTGBM: 'LightGBM',
+  LSTM: 'LSTM',
+  ENSEMBLE: 'Ensemble',
+  ETF_RULE: 'ETF Rule Engine',
+  ETF_LIGHTGBM: 'ETF LightGBM',
+  ETF_LSTM: 'ETF LSTM',
+  ETF_ENSEMBLE: 'ETF Ensemble',
+}
+
+const ETF_MODEL_TYPES = new Set(['ETF_RULE', 'ETF_LIGHTGBM', 'ETF_LSTM', 'ETF_ENSEMBLE'])
+
+function modelTypeLabel(value: string): string {
+  return MODEL_TYPE_LABELS[value] ?? value
+}
+
+function isEtfModelType(value: string): boolean {
+  return ETF_MODEL_TYPES.has(value)
+}
+
+// `deployment_note` lives in the JSON `metadata` column, so its type is whatever
+// the writer put there; anything that is not a string is not a note.
+function deploymentNoteOf(row: ModelVersionDto): string {
+  const note = row.metadata['deployment_note']
+  return typeof note === 'string' ? note : ''
 }
 
 function topFeatureSummary(featureImportance: Record<string, number>) {
@@ -61,6 +93,10 @@ export function ModelMonitoringPage() {
 
   const { modelVersions, lightgbmModels, ensembleWeights, featureTrends } = resource.data ?? EMPTY_MONITORING
 
+  // The ETF rows are already in this response -- ModelVersion is one table for both
+  // products -- so the card below is a filter, not a second request.
+  const etfVersions = modelVersions.filter((row) => isEtfModelType(row.model_type))
+
   const featureTrendRows = useMemo(() => {
     return featureTrends.flatMap((group) => {
       return group.feature_trends.map((trend) => {
@@ -93,6 +129,62 @@ export function ModelMonitoringPage() {
       )}
 
       <div className="card">
+        <h3>{t('models.etfRankers')}</h3>
+        <p className="subtitle">{t('models.etfRankersDesc')}</p>
+        {etfVersions.map((row) => {
+          const note = deploymentNoteOf(row)
+          return (
+            <article className="runner-card" key={row.id}>
+              <h3>
+                {modelTypeLabel(row.model_type)} · {row.version}
+                {' · '}
+                <span className={row.is_active ? 'status connected' : 'status disconnected'}>
+                  {row.is_active ? t('models.active') : t('models.inactive')}
+                </span>
+              </h3>
+              {/* The note is the whole reason this card exists: it is the honest
+                  record of why a READY ranker is not the one producing signals. */}
+              {note && <p className="status disconnected">{note}</p>}
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>{t('models.status')}</th>
+                      <th>{t('models.window')}</th>
+                      <th>{t('models.metric')}</th>
+                      <th>{t('models.metricValue')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(row.metrics).map(([metric, value], index) => (
+                      <tr key={metric}>
+                        <td>{index === 0 ? row.status : ''}</td>
+                        <td>
+                          {index === 0
+                            ? `${row.training_window_start ?? '--'} → ${row.training_window_end ?? '--'}`
+                            : ''}
+                        </td>
+                        <td>{metric}</td>
+                        <td>{String(value)}</td>
+                      </tr>
+                    ))}
+                    {Object.keys(row.metrics).length === 0 && (
+                      <tr>
+                        <td colSpan={4}>{t('common.noData')}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          )
+        })}
+        {etfVersions.length === 0 && !resource.loading && (
+          <p className="subtitle">{t('models.etfRankersEmpty')}</p>
+        )}
+      </div>
+
+      <div className="card">
         <h3>{t('models.versions')}</h3>
         <table className="data-table">
           <thead>
@@ -107,7 +199,7 @@ export function ModelMonitoringPage() {
           <tbody>
             {modelVersions.map((row) => (
               <tr key={`${row.model_type}-${row.version}`}>
-                <td>{row.model_type}</td>
+                <td>{modelTypeLabel(row.model_type)}</td>
                 <td>{row.version}{row.is_active ? ` · ${t('models.active')}` : ''}</td>
                 <td>{row.status}</td>
                 <td>{row.training_window_start ?? '--'} → {row.training_window_end ?? '--'}</td>

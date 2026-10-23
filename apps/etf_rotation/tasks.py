@@ -21,16 +21,23 @@ from decimal import Decimal
 
 import pandas as pd
 import tushare as ts
-from celery import shared_task
+from celery import current_app, shared_task
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Max, Min
 from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import ExchangeTradingCalendar
 
-from .etf_universe import classify_etf, is_excluded_vehicle
-from .models import ETFDaily, ETFUniverse
+from .etf_universe import (
+    SHARE_UNIT_TO_SHARES,
+    classify_etf,
+    is_excluded_vehicle,
+    normalize_track_index,
+    shares_to_aum_yuan,
+)
+from .models import ETFDaily, ETFRotationBacktest, ETFUniverse
 
 
 logger = logging.getLogger(__name__)
@@ -187,6 +194,7 @@ def sync_etf_universe(self):
                 is_rankable=not excluded,
                 category=category,
                 sub_category=_bounded(sub_category, 'sub_category'),
+                track_index_key=_bounded(normalize_track_index(name=name, benchmark=benchmark), 'track_index_key'),
                 m_fee=_safe_decimal(record.get('m_fee')),
                 c_fee=_safe_decimal(record.get('c_fee')),
                 metadata={
@@ -205,7 +213,8 @@ def sync_etf_universe(self):
     update_fields = [
         'symbol', 'name', 'fund_type', 'invest_type', 'benchmark', 'management',
         'custodian', 'list_date', 'delist_date', 'status', 'is_active', 'is_rankable',
-        'category', 'sub_category', 'm_fee', 'c_fee', 'metadata', 'updated_at',
+        'category', 'sub_category', 'track_index_key', 'm_fee', 'c_fee', 'metadata',
+        'updated_at',
     ]
     ETFUniverse.objects.bulk_create(
         rows,
@@ -272,6 +281,141 @@ def refresh_etf_first_trade_dates(self):
         to_update, ['first_trade_date', 'list_date', 'updated_at'], batch_size=2000,
     )
     return len(to_update)
+
+
+@shared_task(bind=True, name='apps.etf_rotation.tasks.sync_etf_fund_shares',
+             soft_time_limit=600, time_limit=700)
+def sync_etf_fund_shares(self, trade_date=None):
+    """Refresh ``shares_outstanding`` from ``pro.fund_share`` for one stamp date.
+
+    Two units conventions meet in this task and only one of them is visible in the DB:
+    TuShare publishes ``fd_share`` in 万份 (ten-thousand shares) while the column stores
+    plain shares, so every value goes through ``SHARE_UNIT_TO_SHARES``. Getting that factor
+    wrong is a silent 10,000x error in the dedup tie-break, which is the only place the
+    number is load-bearing.
+
+    ``pro.fund_share`` is published per exchange rather than per fund, so one call covers
+    the market; that is why this is a scheduled tick and not a loop over the universe.
+
+    The AUM estimate (shares x the last close at or before the stamp) goes into ``metadata``
+    and not a column: it is derived, it goes stale the moment either input moves, and a
+    stored number that looks like reported data invites someone to filter on it.
+    """
+    stamp = (
+        trade_date if isinstance(trade_date, date)
+        else date.fromisoformat(str(trade_date)) if trade_date
+        else ETFDaily.objects.order_by('-date').values_list('date', flat=True).first()
+    )
+    if stamp is None:
+        return {'rows_written': 0, 'skipped': 'no_bar_history'}
+
+    token = stamp.strftime('%Y%m%d')
+    frame = _call_tushare_with_retry(
+        lambda: _tushare_pro().fund_share(trade_date=token), f'fund_share(trade_date={token})',
+    )
+    if frame is None or frame.empty:
+        return {'trade_date': token, 'rows_written': 0, 'skipped': 'empty'}
+
+    shares_by_code = {}
+    for _, record in frame.iterrows():
+        code = _normalize_text(record.get('ts_code'))
+        shares = _safe_decimal(record.get('fd_share'))
+        if not code or shares is None or shares <= 0:
+            continue
+        shares_by_code[code] = shares * SHARE_UNIT_TO_SHARES
+    if not shares_by_code:
+        return {'trade_date': token, 'rows_written': 0, 'skipped': 'no_parseable_rows'}
+
+    rows = list(
+        ETFUniverse.objects.filter(ts_code__in=sorted(shares_by_code)).values(
+            'id', 'ts_code', 'metadata',
+        ),
+    )
+    if not rows:
+        return {'trade_date': token, 'rows_written': 0, 'skipped': 'universe_miss'}
+
+    # Close within a fortnight of the stamp, newest wins: the share count and the price must
+    # describe the same fund state, and a two-week back-off on a halted fund is still closer
+    # than a year-old price.
+    close_by_id = {}
+    for record in ETFDaily.objects.filter(
+        etf_id__in=[row['id'] for row in rows],
+        date__lte=stamp,
+        date__gte=stamp - timedelta(days=14),
+    ).order_by('etf_id', 'date').values('etf_id', 'close'):
+        close_by_id[record['etf_id']] = record['close']
+
+    to_update = []
+    written_at = timezone.now()
+    for row in rows:
+        shares = shares_by_code.get(row['ts_code'])
+        if shares is None:
+            continue
+        close = close_by_id.get(row['id'])
+        aum = shares_to_aum_yuan(shares, float(close) if close is not None else None)
+        metadata = dict(row['metadata'] or {})
+        metadata['share_source'] = 'pro.fund_share'
+        metadata['share_stamp'] = token
+        if aum is None:
+            metadata.pop('aum_estimate_yuan', None)
+            metadata['no_close_for_aum'] = token
+        else:
+            metadata['aum_estimate_yuan'] = float(aum)
+            metadata.pop('no_close_for_aum', None)
+        # ``updated_at`` is assigned rather than left to ``auto_now``: bulk_update skips
+        # pre_save, so the field keeps whatever the in-memory instance holds -- and these
+        # instances are built from ``.values()`` rows, not loaded from the table, so it
+        # holds None. A NULL in a NOT NULL column is the loud failure; the quiet version
+        # is a row whose 份额 stamp says today and whose updated_at still says last week.
+        to_update.append(
+            ETFUniverse(
+                id=row['id'], shares_outstanding=shares, share_date=stamp,
+                metadata=metadata, updated_at=written_at,
+            )
+        )
+
+    if not to_update:
+        return {'trade_date': token, 'rows_written': 0, 'skipped': 'nothing_to_write'}
+    ETFUniverse.objects.bulk_update(
+        to_update, ['shares_outstanding', 'share_date', 'metadata', 'updated_at'], batch_size=2000,
+    )
+    return {'trade_date': token, 'rows_written': len(to_update), 'reported': len(shares_by_code)}
+
+
+@shared_task(bind=True, name='apps.etf_rotation.tasks.sync_etf_benchmark_index',
+             soft_time_limit=300, time_limit=360)
+def sync_etf_benchmark_index(self, end_date=None, lookback_days=30):
+    """Refresh the index closes the ETF feature layer computes relative strength from.
+
+    ``rs_vs_benchmark_20d`` and ``corr_with_benchmark_60d`` are read off
+    ``markets.BenchmarkIndexDaily`` for the alpha benchmark, so a session missing there is a
+    session where every eligible fund has a null scoring input -- which the RULE scorer
+    answers by excluding the whole cross-section. That is not a thin book, it is a blind one,
+    and on 2026-10-22 it was the reason the rotation plan wanted 100% in the money fund.
+
+    The daily A-share dispatcher does refresh these codes, but it runs on the stock pipeline's
+    clock and its 30-day window is sized for stocks; the ETF chain at 16:45/17:20/19:45 has no
+    dependency on it and was silently assuming the benchmark was current. This task is that
+    dependency made explicit, one TuShare call, timed to land before the feature job.
+    """
+    from apps.markets.tasks import sync_benchmark_index_history
+
+    end_day = (
+        end_date if isinstance(end_date, date)
+        else date.fromisoformat(str(end_date)) if end_date
+        else timezone.localdate()
+    )
+    codes = [str(settings.ETF_BENCHMARK_CODE)] + [
+        code for code in (settings.ETF_SECONDARY_BENCHMARK_CODES or [])
+        if code and code != settings.ETF_BENCHMARK_CODE
+    ]
+    summary = sync_benchmark_index_history(
+        index_codes=codes,
+        start_date=(end_day - timedelta(days=int(lookback_days))).isoformat(),
+        end_date=end_day.isoformat(),
+    )
+    logger.info('ETF benchmark index refresh for %s: %s', end_day.isoformat(), summary)
+    return summary
 
 
 def _ensure_universe_rows(ts_codes, trade_day):
@@ -500,6 +644,67 @@ def generate_etf_rotation_signal_daily(self, signal_type='MONTHLY', model_type='
     )
 
 
+def revoke_etf_rotation_task(run, *, terminate=False):
+    """Ask the broker to drop the task owning ``run``. Returns False when it has none.
+
+    Only useful for a task that has *not* started yet. A running ETF task is not stopped
+    by this -- with ``terminate=False`` the worker lets it finish -- which is exactly why
+    the pause path for a RUNNING row does not call it: the engine's chunk-boundary check
+    is the mechanism that honours the request, and revoking would only mark the id
+    ``REVOKED`` so ``apps.core.task_health`` reads a winding-down row as orphaned.
+    """
+    task_id = (run.current_task_id or '').strip()
+    if not task_id:
+        return False
+
+    current_app.control.revoke(task_id, terminate=terminate)
+    return True
+
+
+def queue_etf_rotation_run(run):
+    """Enqueue ``run`` on the ``etf-rotation`` queue and record its task id.
+
+    The id is persisted so ``apps.core.task_health`` can later tell a genuinely executing
+    run from one whose worker disappeared, and so the task itself can recognise its own
+    ownership. ``pending_control_action`` is cleared here because a freshly queued row must
+    not inherit a control request that belongs to the task it is replacing.
+    """
+    result = run_etf_rotation_backtest.delay(run.id)
+    next_task_id = getattr(result, 'id', '') or ''
+    run.current_task_id = str(next_task_id) if next_task_id else ''
+    run.pending_control_action = ETFRotationBacktest.ControlAction.NONE
+    run.save(update_fields=['current_task_id', 'pending_control_action', 'updated_at'])
+    return result
+
+
+def reset_etf_rotation_run_for_restart(run):
+    """Return ``run`` to a never-executed state, keeping its configuration.
+
+    ``report`` is emptied rather than trimmed, which is the whole point: the resumable
+    ``runtime_state`` lives inside it, so discarding the report is what makes a restart
+    start from session zero instead of resuming the cursor. ``parameters`` is left alone
+    because adoption rewrites it from the config on the next run.
+    """
+    from apps.etf_rotation.backtest_engine import _METRIC_COLUMNS
+
+    with transaction.atomic():
+        for column in _METRIC_COLUMNS:
+            setattr(run, column, None)
+        run.status = ETFRotationBacktest.Status.PENDING
+        run.equity_curve = []
+        run.trade_log = []
+        run.report = {}
+        run.error_message = ''
+        run.current_task_id = ''
+        run.pending_control_action = ETFRotationBacktest.ControlAction.NONE
+        run.started_at = None
+        run.completed_at = None
+        run.save(update_fields=[
+            *_METRIC_COLUMNS, 'status', 'equity_curve', 'trade_log', 'report', 'error_message',
+            'current_task_id', 'pending_control_action', 'started_at', 'completed_at', 'updated_at',
+        ])
+
+
 @shared_task(bind=True, name='apps.etf_rotation.tasks.run_etf_rotation_backtest',
              soft_time_limit=3600, time_limit=3900)
 def run_etf_rotation_backtest(self, backtest_id):
@@ -508,12 +713,61 @@ def run_etf_rotation_backtest(self, backtest_id):
     The row's own columns are the configuration: they are read out and fed back in as
     explicit overrides, so a run scheduled through the API cannot silently inherit a
     different cost model than the one the caller persisted.
+
+    Unlike the stock ``run_backtest``, this task owns the **whole** chunk loop -- the
+    engine iterates every ``chunk_trading_days`` window internally -- so lifecycle
+    requests are consumed here rather than by re-queueing a continuation. Two
+    consequences worth stating plainly:
+
+    * Ownership is claimed by stamping ``current_task_id`` with this task's own id and
+      skipping any task whose id no longer matches the row. That is what lets
+      ``apps.core.task_health`` tell a genuinely running row from an orphan.
+    * ``RESTART`` is executed by this wrapper, not inside the engine: wiping the
+      persisted result columns and re-queuing is task-layer work, and the engine has no
+      business knowing that a restart means "start over from session zero".
+
+    A soft timeout leaves the row ``FAILED`` with ``report['runtime_state']`` intact, so
+    a restart resumes from the last completed chunk instead of the beginning.
     """
     from apps.etf_rotation.backtest_engine import run_rotation_backtest
     from apps.etf_rotation.models import ETFRotationBacktest
 
-    run = ETFRotationBacktest.objects.get(pk=backtest_id)
-    return run_rotation_backtest(
+    run = ETFRotationBacktest.objects.filter(pk=backtest_id).first()
+    if run is None:
+        return f'ETF backtest run not found: {backtest_id}'
+
+    task_id = getattr(getattr(self, 'request', None), 'id', '') or ''
+    if task_id and run.current_task_id and run.current_task_id != task_id:
+        return f'Skipped stale ETF backtest task for run_id={run.id}: {task_id}'
+
+    early_update_fields = []
+    if task_id and run.current_task_id != task_id:
+        run.current_task_id = task_id
+        early_update_fields.append('current_task_id')
+
+    if run.pending_control_action == ETFRotationBacktest.ControlAction.DELETE:
+        run_id = run.id
+        run.delete()
+        return f'ETF backtest deleted for run_id={run_id}'
+
+    if run.status == ETFRotationBacktest.Status.PAUSED and run.pending_control_action in {
+        ETFRotationBacktest.ControlAction.NONE,
+        ETFRotationBacktest.ControlAction.PAUSE,
+    }:
+        run.current_task_id = ''
+        run.pending_control_action = ETFRotationBacktest.ControlAction.NONE
+        run.save(update_fields=['current_task_id', 'pending_control_action', 'updated_at'])
+        return f'ETF backtest remains paused for run_id={run.id}'
+
+    if run.pending_control_action == ETFRotationBacktest.ControlAction.RESTART:
+        reset_etf_rotation_run_for_restart(run)
+        queue_etf_rotation_run(run)
+        return f'ETF backtest restart queued for run_id={run.id}'
+
+    if early_update_fields:
+        run.save(update_fields=[*early_update_fields, 'updated_at'])
+
+    result = run_rotation_backtest(
         start_date=run.start_date,
         end_date=run.end_date,
         model_type=run.model_type,
@@ -528,6 +782,28 @@ def run_etf_rotation_backtest(self, backtest_id):
         slippage=run.slippage,
         liquidity_floor_multiple=run.liquidity_floor_multiple,
         benchmark_code=run.benchmark_code,
-        config_overrides={'walk_forward_steps': run.walk_forward_steps},
+        # ``weighting`` is a column now, so the row -- not the caller's default -- decides
+        # how the plan is scaled. Reading it here is what makes the promotion observable.
+        # The two selection columns travel the same way: an API row created with
+        # ``dedup_track_index=false`` or ``max_per_category=0`` that ran with the
+        # ``BacktestConfig`` defaults would report a configuration it was never asked for.
+        config_overrides={
+            'walk_forward_steps': run.walk_forward_steps, 'weighting': run.weighting,
+            'dedup_track_index': run.dedup_track_index, 'max_per_category': run.max_per_category,
+        },
         persist_to=run,
     )
+
+    control = (result or {}).get('control')
+    if control == 'DELETED':
+        return f'ETF backtest deleted for run_id={result.get("run_id")} at a chunk boundary'
+    if control == 'RESTART':
+        reset_etf_rotation_run_for_restart(run)
+        queue_etf_rotation_run(run)
+        return f'ETF backtest restart queued for run_id={run.id}'
+    if control == 'PAUSED':
+        return (
+            f'ETF backtest paused for run_id={run.id}: '
+            f'{result.get("cursor")}/{result.get("total_sessions")} trading sessions processed'
+        )
+    return result

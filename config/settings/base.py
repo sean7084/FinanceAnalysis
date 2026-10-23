@@ -230,6 +230,20 @@ CELERY_TASK_ROUTES = {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
     },
+    # These two ETF ticks are on `ops` rather than `etf-rotation` on purpose. They are
+    # second-scale scheduled refreshes whose only job is to be current before the 17:20
+    # feature run; on the ETF queue they would sit behind a backtest that is allowed to run
+    # for an hour, and a benchmark close that arrives after the features were computed is
+    # worse than no tick at all -- the whole cross-section loses its relative-strength
+    # columns and the scorer goes blind.
+    "apps.etf_rotation.tasks.sync_etf_fund_shares": {
+        "queue": "ops",
+        "routing_key": "ops",
+    },
+    "apps.etf_rotation.tasks.sync_etf_benchmark_index": {
+        "queue": "ops",
+        "routing_key": "ops",
+    },
     "apps.etf_rotation.tasks.generate_etf_rotation_signal_daily": {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
@@ -284,10 +298,25 @@ ETF_MIN_AVG_AMOUNT_YUAN = env.int('ETF_MIN_AVG_AMOUNT_YUAN', default=50_000_000)
 ETF_LIQUIDITY_FLOOR_MULTIPLE = env.float('ETF_LIQUIDITY_FLOOR_MULTIPLE', default=10.0)
 # Book weight not held in the ranked positions sits in the defensive asset.
 ETF_MAX_POSITIONS = env.int('ETF_MAX_POSITIONS', default=5)
+# How the risk-on budget is split across the selected legs: 'equal' | 'score' | 'invvol'.
+# This is the one place the default lives; the engine dataclass, the model column and the
+# workbench form all read it, because they used to disagree (dataclass said 'equal', the
+# column said 'score') and an omitted API field silently changed a run's sizing.
+ETF_WEIGHTING = env('ETF_WEIGHTING', default='score')
+# Hold at most one fund per tracked index (see etf_universe.normalize_track_index).
+ETF_DEDUP_TRACK_INDEX = env.bool('ETF_DEDUP_TRACK_INDEX', default=True)
+# Cap on how many names one category may contribute; 0 disables the cap. The 2026-10-20
+# book put 80% of the money in four bank ETFs, which is one sector bet sized four times.
+ETF_MAX_PER_CATEGORY = env.int('ETF_MAX_PER_CATEGORY', default=2)
 # Cash-substitute ETF the strategy rotates into when momentum is risk-off.
 ETF_DEFENSIVE_ASSET = env('ETF_DEFENSIVE_ASSET', default='511880.SH')
 # Index the rotation signal and backtest are scored against.
 ETF_BENCHMARK_CODE = env('ETF_BENCHMARK_CODE', default='H00905.CSI')
+# Price-index comparables shown next to the alpha benchmark. These are also refreshed by
+# ``sync_etf_benchmark_index``: the feature layer reads ``BenchmarkIndexDaily`` for the
+# relative-strength columns, so every code a curve or a feature depends on has to be on the
+# same daily tick rather than on the stock pipeline's dispatcher.
+ETF_SECONDARY_BENCHMARK_CODES = env.list('ETF_SECONDARY_BENCHMARK_CODES', default=['000905.SH'])
 # Forward-return window the label builder and the models both predict.
 ETF_LABEL_HORIZON_DAYS = env.int('ETF_LABEL_HORIZON_DAYS', default=20)
 # Per-side transaction costs charged to the backtest's simulated fills.
@@ -296,6 +325,12 @@ ETF_COMMISSION_RATE = env.float('ETF_COMMISSION_RATE', default=0.0003)
 ETF_MIN_COMMISSION = env.int('ETF_MIN_COMMISSION', default=5)
 # Per-side adverse-price haircut applied on top of the commission.
 ETF_SLIPPAGE = env.float('ETF_SLIPPAGE', default=0.001)
+# Cap on in-flight (PENDING or RUNNING) ETF backtest rows. ``POST /etf/backtests/`` is
+# public -- auth was removed repo-wide and DRF throttling went with it -- so this is the
+# only bound on a runaway loop of legitimate requests. 2 matches the etf-rotation worker's
+# concurrency: a third run would only queue. PAUSED rows are excluded because a paused run
+# holds a cursor in ``report``, not a worker slot.
+ETF_MAX_CONCURRENT_BACKTESTS = env.int('ETF_MAX_CONCURRENT_BACKTESTS', default=2)
 
 # Model artifact store -- see apps/prediction/artifact_store.py.
 # `local` (default) keeps artifacts on the filesystem under BASE_DIR (the historical
@@ -312,7 +347,7 @@ ARTIFACT_S3_SECRET_ACCESS_KEY = env('ARTIFACT_S3_SECRET_ACCESS_KEY', default='')
 ARTIFACT_S3_REGION = env('ARTIFACT_S3_REGION', default='us-east-1')
 ARTIFACT_S3_ADDRESSING_STYLE = env('ARTIFACT_S3_ADDRESSING_STYLE', default='path')
 # Backtest task health: how long a RUNNING backtest run can sit with no progress
-# before it is considered orphaned. See apps/backtest/task_health.py.
+# before it is considered orphaned. See apps/core/task_health.py.
 BACKTEST_STALE_TASK_MAX_AGE_SECONDS = env.int('BACKTEST_STALE_TASK_MAX_AGE_SECONDS', default=2400)
 # TTL for cached backtest `trades` / `comparison_curve` payloads. Both are
 # immutable once a run reaches a terminal status, and the key includes the run's
@@ -419,13 +454,29 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.etf_rotation.tasks.sync_etf_daily_recent',
         'schedule': crontab(hour='16', minute='45'),
     },
+    # The relative-strength features the ranker scores on are read from the alpha benchmark's
+    # closes, so the benchmark has to be current *before* the 17:20 feature run -- not on the
+    # stock pipeline's 16:10 clock, which was the only thing refreshing it and which the ETF
+    # chain had no dependency on. On 2026-10-22 the total-return index was a session behind,
+    # every eligible fund lost ``rs_vs_benchmark_60d``, and the scorer excluded the whole pool.
+    'sync-etf-benchmark-index-daily': {
+        'task': 'apps.etf_rotation.tasks.sync_etf_benchmark_index',
+        'schedule': crontab(hour='17', minute='5'),
+    },
     'compute-etf-features-daily': {
         'task': 'apps.etf_rotation.tasks.compute_etf_features_daily',
         'schedule': crontab(hour='17', minute='20'),
-    },
-    'generate-etf-rotation-signal-daily': {
+    },    'generate-etf-rotation-signal-daily': {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
         'schedule': crontab(hour='19', minute='45'),
+    },
+    # Fund 份额 is a period stamp, not a live quote, and the rotation engine only uses it to
+    # pick which wrapper represents an index cluster -- a ranking that moves over months, not
+    # days. Weekly, after the 16:45 bar tick (so the AUM estimate has a close to multiply) and
+    # before the 19:45 signal, keeps the tie-break honest for one TuShare call.
+    'sync-etf-fund-shares-weekly': {
+        'task': 'apps.etf_rotation.tasks.sync_etf_fund_shares',
+        'schedule': crontab(hour='18', minute='10', day_of_week='6'),
     },
 }
 

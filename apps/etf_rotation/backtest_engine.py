@@ -68,6 +68,10 @@ logger = logging.getLogger(__name__)
 TRADING_DAYS_PER_YEAR = finance_metrics.TRADING_DAYS_PER_YEAR
 
 MODEL_TYPES = ('RULE', 'LIGHTGBM', 'LSTM', 'ENSEMBLE')
+# Mirrors ``rotation_engine.WEIGHTING_MODES``. Repeated rather than imported on purpose:
+# this module reaches the engine through an injected ``module`` seam so a backtest can run
+# against a stub, and a module-level import of rotation_engine would break that.
+WEIGHTING_MODES = ('equal', 'score', 'invvol')
 REBALANCE_FREQUENCIES = ('WEEKLY', 'BIWEEKLY', 'MONTHLY', 'TRIGGER')
 
 #: Sessions of turnover history behind the signal date used for the liquidity screen.
@@ -203,10 +207,26 @@ class BacktestConfig:
 
     # Selection parameters the rotation engine owns; forwarded verbatim into
     # ``RotationConfig`` so a backtest and a live run of the same date agree.
-    weighting: str = 'equal'
+    # ``score`` matches the ``ETFRotationBacktest.weighting`` column default and the
+    # production reference run; the dataclass used to say ``equal``, which meant an
+    # engine-default run and an API run of the same name sized their legs differently.
+    weighting: str = 'score'
     rank_change_threshold: int = 2
     max_swaps: int = 2
     min_positions_for_risk_on: int = 3
+    dedup_track_index: bool = True
+    max_per_category: int = 2
+
+    # Yield credited to cash that the liquidity floor forced out of the defensive sleeve.
+    # Default 0.0 keeps every run before this knob byte-for-byte reproducible.
+    cash_yield_annual: float = 0.0
+
+    # Fractional-Kelly exposure governor. ``kelly_fraction = 0`` disables it entirely, so
+    # the ~200 existing ETF backtest rows keep reproducing while the knob exists to test.
+    kelly_fraction: float = 0.0
+    kelly_cap: float = 1.0
+    kelly_floor: float = 0.0
+    kelly_lookback_trades: int = 60
 
     lot_size: int = DEFAULT_LOT_SIZE
     liquidity_lookback_sessions: int = LIQUIDITY_LOOKBACK_SESSIONS
@@ -257,6 +277,26 @@ class BacktestConfig:
             raise BacktestConfigError('momentum_lookback must be at least 1.')
         if self.chunk_trading_days < 1:
             raise BacktestConfigError('chunk_trading_days must be at least 1.')
+        if self.max_per_category < 0:
+            raise BacktestConfigError('max_per_category cannot be negative; use 0 for no cap.')
+        if self.weighting not in WEIGHTING_MODES:
+            raise BacktestConfigError(
+                f'Unsupported weighting {self.weighting!r}; expected one of {WEIGHTING_MODES}.'
+            )
+        if not 0.0 <= float(self.kelly_fraction) <= 1.0:
+            raise BacktestConfigError('kelly_fraction must sit between 0 and 1.')
+        if not 0.0 <= float(self.kelly_floor) <= float(self.kelly_cap) <= 1.0:
+            raise BacktestConfigError('kelly_floor <= kelly_cap, both between 0 and 1.')
+        if int(self.kelly_lookback_trades) < 1:
+            raise BacktestConfigError('kelly_lookback_trades must be at least 1.')
+        if float(self.cash_yield_annual) < 0:
+            raise BacktestConfigError('cash_yield_annual cannot be negative.')
+        # Whether the sleeve resolves to a fund that actually trades is NOT checked here on
+        # purpose: ``validate()`` is parameter hygiene and runs inside SimpleTestCase unit
+        # tests and against injected fake data sources, where ETFUniverse is empty by
+        # construction. The two boundaries that can start a run against real data -- the API
+        # serializer and the management command -- call ``defensive_asset_problem()`` with the
+        # run's own window, which is where the answer exists.
 
     def to_parameters(self) -> dict[str, Any]:
         """JSON-safe parameter record persisted on ``ETFRotationBacktest.parameters``."""
@@ -389,6 +429,8 @@ class DatabaseDataSource:
                 'etf__ts_code',
                 'etf__name',
                 'etf__category',
+                'etf__track_index_key',
+                'etf__shares_outstanding',
                 'is_eligible',
                 *PIT_SNAPSHOT_FEATURE_COLUMNS,
             )
@@ -400,6 +442,13 @@ class DatabaseDataSource:
                     'ts_code': row['etf__ts_code'],
                     'name': row['etf__name'],
                     'category': row['etf__category'],
+                    # Selection attributes, not factors: they decide *which* of several
+                    # funds tracking one index the pool may hold, and they must never reach
+                    # a predictor's feature list -- hence their absence from
+                    # ``features.FEATURE_COLUMNS`` and their presence in
+                    # ``rotation_engine.NON_FEATURE_COLUMNS``.
+                    'track_index_key': row['etf__track_index_key'],
+                    'shares_outstanding': _to_float(row.get('etf__shares_outstanding')),
                     'is_eligible': row['is_eligible'],
                     **{column: _to_float(row.get(column)) for column in PIT_SNAPSHOT_FEATURE_COLUMNS},
                 }
@@ -740,6 +789,14 @@ class EngineState:
     total_slippage: float = 0.0
     total_dividend_cash: float = 0.0
     rejected_fills: int = 0
+    # Sessions where the plan asked for the defensive sleeve and the liquidity floor took it
+    # away, the notional that was sitting idle, and the interest it earned. These three make
+    # "the model chose safety" distinguishable from "the model chose safety and could not
+    # buy it" on the equity curve.
+    defensive_sleeve_uninvested: int = 0
+    uninvested_defensive_notional_yuan: float = 0.0
+    total_cash_yield_yuan: float = 0.0
+    kelly_history: list[dict[str, Any]] = field(default_factory=list)
     stale_marks: int = 0
     skipped_fills: int = 0
     sub_minimum_deltas: int = 0
@@ -895,6 +952,11 @@ def _apply_liquidity_floor(ctx: _Context, weights: dict[str, float], session: da
                 )
             )
             ctx.state.rejected_fills += 1
+            # The sleeve is now idle cash. Counting it and remembering the notional is what
+            # lets the report say "this run spent N sessions uninvested because 511670
+            # trades 0.01亿 a day" instead of showing a flat curve and calling it caution.
+            ctx.state.defensive_sleeve_uninvested += 1
+            ctx.state.uninvested_defensive_notional_yuan = defensive_weight * equity
             kept.pop(defensive, None)
 
     return kept, rejected
@@ -911,6 +973,117 @@ def _rejection_record(code, weight, notional, required, average_amount, session,
         'rejected_reason': 'liquidity_floor',
         'liquidity_floor_multiple': float(floor_multiple),
         'redistributed_to': redistributed_to,
+    }
+
+
+MIN_KELLY_TRADES = 20
+
+
+def defensive_asset_problem(defensive_asset, *, start_date=None, end_date=None) -> str:
+    """Why ``defensive_asset`` cannot carry the cash sleeve, or ``''`` when it can.
+
+    A typo in this field used to be invisible: the engine only ever *buys* the defensive
+    asset when a rebalance asks for it, and a code with no bars simply never fills, so a
+    run with ``999999.SH`` completed successfully while its risk-off months sat in 0%-yielding
+    phantom cash. The whole book is then measured against a hedge that was never held.
+    """
+    from django.db.models import Max, Min
+
+    from apps.etf_rotation.models import ETFDaily, ETFUniverse
+
+    code = str(defensive_asset or '').strip().upper()
+    if not code:
+        return 'defensive_asset is required.'
+    if not ETFUniverse.objects.filter(ts_code=code).exists():
+        return (
+            f'defensive_asset {code} is not in ETFUniverse, so the cash sleeve has no instrument. '
+            'Pick a listed money-market ETF (see GET /api/v1/etf/defensive_assets/).'
+        )
+    if start_date and end_date:
+        bounds = ETFDaily.objects.filter(etf__ts_code=code).aggregate(
+            first=Min('date'), last=Max('date'),
+        )
+        first, last = bounds['first'], bounds['last']
+        if first is None:
+            return f'defensive_asset {code} has no ETFDaily bars at all, so the sleeve could never be filled.'
+        if last is not None and last < start_date:
+            return (
+                f'defensive_asset {code} stopped trading on {last.isoformat()}, before this run starts '
+                f'on {start_date.isoformat()}.'
+            )
+        if first > end_date:
+            return (
+                f'defensive_asset {code} first traded on {first.isoformat()}, after this run ends '
+                f'on {end_date.isoformat()}, so the sleeve could never be filled in this window.'
+            )
+    return ''
+
+
+def _closed_returns_before(state, session: date) -> list[float]:
+    """Realised per-trade returns on lots closed at or before ``session``.
+
+    Walk-forward by construction: it reads ``EngineState.closed_trades``, which only ever
+    gains an entry at the moment a lot is fully exited, so a plan built on ``session``
+    cannot see a trade that closes later. A record with no recoverable date is dropped
+    rather than assumed to be in the past -- including it would silently widen the sample
+    with a trade that may not have happened yet, which is the one error this function exists
+    to prevent.
+    """
+    returns: list[float] = []
+    for trade in getattr(state, 'closed_trades', []) or []:
+        value = trade.get('return_pct')
+        if value is None:
+            continue
+        closed_on = _as_date(trade.get('exit_date') or trade.get('date'))
+        if closed_on is None or closed_on > session:
+            continue
+        try:
+            returns.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return returns
+
+
+def kelly_exposure_scale(config: BacktestConfig, closed_returns: list[float]) -> dict[str, Any]:
+    """Fractional-Kelly cap on risk-on exposure from realised trades only.
+
+    ``f* = p - (1 - p) / b`` with ``p`` the win rate and ``b`` the payoff ratio of the
+    trailing ``kelly_lookback_trades`` closed positions, then ``scale = clamp(f* *
+    kelly_fraction, kelly_floor, kelly_cap)``. Estimated once for the *portfolio*, never
+    per leg: the legs of a rotation book are correlated sector bets, and Kelly's edge
+    formula assumes independent trials, so five per-leg ``f*`` would be five correlated
+    bets sized as if they were unrelated.
+
+    Returns a dict (``scale`` always, plus the inputs when measurable) and degrades to
+    ``scale = 1.0`` -- no governor -- rather than guessing when the sample is short, since
+    a 6-trade win rate is noise and sizing the book off it is worse than not sizing.
+    """
+    fraction = float(config.kelly_fraction)
+    if fraction <= 0.0:
+        return {'scale': 1.0, 'enabled': False}
+
+    window = list(closed_returns or [])[-int(config.kelly_lookback_trades):]
+    if len(window) < MIN_KELLY_TRADES:
+        return {
+            'scale': 1.0, 'enabled': True, 'reason': 'insufficient_closed_trades',
+            'observations': len(window), 'required': MIN_KELLY_TRADES,
+        }
+    win = finance_metrics.win_rate(window)
+    payoff = finance_metrics.payoff_ratio(window)
+    if win is None or payoff is None or payoff <= 0.0:
+        return {
+            'scale': 1.0, 'enabled': True, 'reason': 'payoff_not_measurable',
+            'observations': len(window), 'win_rate': win,
+        }
+    edge = win - (1.0 - win) / payoff
+    raw = edge * fraction
+    scale = max(float(config.kelly_floor), min(float(config.kelly_cap), raw))
+    return {
+        'scale': round(float(scale), 6), 'enabled': True,
+        'win_rate': round(win, 6), 'payoff_ratio': round(payoff, 6),
+        'kelly_full': round(edge, 6), 'kelly_fraction': fraction,
+        'raw_scale': round(raw, 6), 'observations': len(window),
+        'clamped': raw > scale or raw < scale,
     }
 
 
@@ -941,12 +1114,18 @@ def _build_plan(ctx: _Context, session: date, execute_session: date) -> None:
         # invested (with 2 slots and a floor of 3 nothing could ever be risk-on) instead of
         # silently swallowing a config error.
         min_positions_for_risk_on=min(int(config.min_positions_for_risk_on), int(config.max_positions)),
+        dedup_track_index=bool(config.dedup_track_index),
+        max_per_category=int(config.max_per_category),
     )
+    governor = kelly_exposure_scale(config, _closed_returns_before(ctx.state, session))
+    if governor.get('enabled'):
+        ctx.state.kelly_history.append({'signal_date': session.isoformat(), **governor})
     plan = ctx.module.build_rotation_plan(
         scored,
         snapshots,
         rotation_config,
         current_weights=_current_weights(ctx),
+        exposure_scale=float(governor.get('scale', 1.0)),
     )
     weights, diagnostics = _plan_to_target_weights(ctx.module, plan, config)
     weights, rejected = _apply_liquidity_floor(ctx, weights, session)
@@ -1337,8 +1516,28 @@ def _accrue_dividends(ctx: _Context, session: date) -> float:
     return credited
 
 
+def _accrue_cash_yield(ctx: _Context, session: date) -> float:
+    """Credit the annualised risk-free rate to cash the liquidity floor left idle.
+
+    Default rate 0.0, so this is a no-op on every run that predates the knob. The principal
+    is the sleeve notional as of the rebalance that lost it and does not compound within the
+    holding period -- an approximation, stated here rather than hidden in the arithmetic,
+    and small compared with what it fixes (previously that money earned literally nothing
+    while the defensive asset it was meant to be earned on sat unused).
+    """
+    rate = float(ctx.config.cash_yield_annual)
+    principal = float(ctx.state.uninvested_defensive_notional_yuan)
+    if rate <= 0.0 or principal <= 0.0:
+        return 0.0
+    interest = principal * rate / float(finance_metrics.TRADING_DAYS_PER_YEAR)
+    ctx.state.cash += interest
+    ctx.state.total_cash_yield_yuan += interest
+    return interest
+
+
 def _mark_equity(ctx: _Context, session: date) -> dict[str, Any]:
     """Cash plus holdings marked at this session's raw close; a stale bar reuses the last close."""
+    _accrue_cash_yield(ctx, session)
     holdings = 0.0
     for code, lot in ctx.state.positions.items():
         price = ctx.book.raw_close(code, session)
@@ -1621,6 +1820,9 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
             'sub_minimum_deltas': int(state.sub_minimum_deltas),
             'closed_trades': int(len(state.closed_trades)),
             'dividend_cash_yuan': float(state.total_dividend_cash),
+            'defensive_sleeve_uninvested': int(state.defensive_sleeve_uninvested),
+            'cash_yield_yuan': float(state.total_cash_yield_yuan),
+            'exposure_governor': _exposure_governor_summary(state.kelly_history),
             'traded_notional_yuan': float(traded.sum()),
             'price_book_loads': int(ctx.book.load_calls),
             'price_book_rows': int(ctx.book.loaded_rows),
@@ -1646,13 +1848,30 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
 # ---------------------------------------------------------------------------
 
 #: ``ETFRotationBacktest`` columns stamped when a run is adopted, so a FAILED row is
-#: still self-describing.
+#: still self-describing. ``weighting`` is here because it is now a column: leaving it
+#: out would let a CLI or grid row advertise the column default while being run with
+#: something else.
 _RUN_PARAMETER_FIELDS = (
     'start_date', 'end_date', 'rebalance_frequency', 'max_positions', 'momentum_lookback',
     'defensive_asset', 'initial_capital', 'commission_rate', 'min_commission', 'slippage',
     'liquidity_floor_multiple', 'model_type', 'benchmark_code', 'walk_forward_steps',
-    'absolute_momentum_filter',
+    'absolute_momentum_filter', 'weighting', 'dedup_track_index', 'max_per_category',
 )
+
+#: The result columns a restart zeroes, so the list is defined once and cannot drift
+#: between "finish" and "start over".
+_METRIC_COLUMNS = (
+    'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio', 'calmar_ratio',
+    'win_rate', 'turnover_annual', 'alpha_vs_benchmark', 'beta_vs_benchmark',
+    'information_ratio', 'benchmark_return', 'total_fees',
+)
+
+#: Every column ``_adopt_backtest_row`` is allowed to write. Deliberately excludes
+#: ``current_task_id`` and ``pending_control_action``, which belong to the task wrapper and
+#: the lifecycle views: adoption runs *after* the queue helper has stamped the task id, so
+#: an unbounded save here would rewrite the values read a moment earlier and silently drop
+#: a control request made in that window.
+_ADOPTED_FIELDS = (*_RUN_PARAMETER_FIELDS, 'parameters', 'status', 'error_message', 'name')
 
 
 def _adopt_backtest_row(persist_to: Any, name: str | None, config: BacktestConfig) -> Any:
@@ -1685,7 +1904,15 @@ def _adopt_backtest_row(persist_to: Any, name: str | None, config: BacktestConfi
     run.parameters = config.to_parameters()
     run.status = ETFRotationBacktest.Status.PENDING
     run.error_message = ''
-    run.save()
+    if run._state.adding:
+        run.save()
+    else:
+        # Bounded to the columns adoption owns. An unbounded ``save()`` would write back
+        # the ``current_task_id`` and ``pending_control_action`` this instance read a
+        # moment ago, and a pause requested between the queue helper's write and this
+        # line would be lost without trace. ``create`` is the exception: Django narrows
+        # the INSERT columns by ``update_fields``, which would drop every model default.
+        run.save(update_fields=[*_ADOPTED_FIELDS, 'updated_at'])
     run.status = ETFRotationBacktest.Status.RUNNING
     run.started_at = _now()
     run.save(update_fields=['status', 'started_at', 'updated_at'])
@@ -1714,6 +1941,26 @@ def _plan_payload(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     return payload
 
 
+def _exposure_governor_summary(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the Kelly governor did over the run, or ``{'enabled': False}``.
+
+    Reported because the honest answer for a first pass is expected to be "barely anything":
+    without this in the report, a disabled governor and an enabled-but-ineffective one look
+    identical.
+    """
+    if not history:
+        return {'enabled': bool(history) or False, 'sessions': 0, 'scaled_sessions': 0, 'mean_scale': 1.0}
+    scales = [float(item.get('scale', 1.0)) for item in history]
+    return {
+        'enabled': any(item.get('enabled') for item in history),
+        'sessions': len(history),
+        'scaled_sessions': int(sum(1 for value in scales if value < 1.0)),
+        'mean_scale': round(sum(scales) / len(scales), 6),
+        'min_scale': round(min(scales), 6),
+        'last': history[-1],
+    }
+
+
 def _runtime_payload(ctx: _Context, cursor: int) -> dict[str, Any]:
     state = ctx.state
     return {
@@ -1724,6 +1971,10 @@ def _runtime_payload(ctx: _Context, cursor: int) -> dict[str, Any]:
         'total_slippage': float(state.total_slippage),
         'total_dividend_cash': float(state.total_dividend_cash),
         'rejected_fills': int(state.rejected_fills),
+        'defensive_sleeve_uninvested': int(state.defensive_sleeve_uninvested),
+        'uninvested_defensive_notional_yuan': float(state.uninvested_defensive_notional_yuan),
+        'total_cash_yield_yuan': float(state.total_cash_yield_yuan),
+        'kelly_history': list(state.kelly_history),
         'skipped_fills': int(state.skipped_fills),
         'stale_marks': int(state.stale_marks),
         'sub_minimum_deltas': int(state.sub_minimum_deltas),
@@ -1765,7 +2016,53 @@ def _persist_progress(run: Any, ctx: _Context, cursor: int, total_sessions: int)
     # only. Slippage is a market-impact cost, not a fee, and is reported separately.
     run.total_fees = float(ctx.state.total_commission)
     run.status = ETFRotationBacktest.Status.RUNNING
-    run.save()
+    run.save(update_fields=[
+        'report', 'equity_curve', 'trade_log', 'total_fees', 'status', 'updated_at',
+    ])
+
+
+def _chunk_boundary_control(run: Any, cursor: int, total_sessions: int) -> str | None:
+    """Honour an out-of-band lifecycle request between chunks. Returns a halt marker.
+
+    The engine cannot act mid-chunk: ``report['runtime_state']`` is only durable at a
+    boundary, so a control written during a chunk is read here, after the progress save
+    that made ``cursor`` resumable. ``RESTART`` is deliberately *not* applied in place --
+    wiping the row and re-queuing is task-layer work, so the engine stops and hands the
+    marker back rather than half-restarting. Mirrors ``apps.backtest.tasks.run_backtest``'s
+    boundary check.
+
+    Returns ``'PAUSED'``, ``'DELETED'``, ``'RESTART'``, or ``None`` to keep running.
+    """
+    from apps.etf_rotation.models import ETFRotationBacktest
+
+    fresh = ETFRotationBacktest.objects.filter(pk=run.pk).only(
+        'pending_control_action',
+    ).first()
+    if fresh is None:
+        return 'DELETED'
+
+    action = fresh.pending_control_action
+    if action == ETFRotationBacktest.ControlAction.NONE:
+        return None
+    if action == ETFRotationBacktest.ControlAction.DELETE:
+        run.delete()
+        return 'DELETED'
+    if action == ETFRotationBacktest.ControlAction.RESTART:
+        return 'RESTART'
+
+    report = dict(run.report or {})
+    report['status_note'] = (
+        f'paused by request at {cursor}/{total_sessions} sessions; resume continues from the cursor.'
+    )
+    run.report = report
+    run.status = ETFRotationBacktest.Status.PAUSED
+    run.pending_control_action = ETFRotationBacktest.ControlAction.NONE
+    run.current_task_id = ''
+    run.completed_at = None
+    run.save(update_fields=[
+        'report', 'status', 'pending_control_action', 'current_task_id', 'completed_at', 'updated_at',
+    ])
+    return 'PAUSED'
 
 
 def _restore_state(run: Any, ctx: _Context) -> int:
@@ -1804,6 +2101,10 @@ def _restore_state(run: Any, ctx: _Context) -> int:
     state.total_slippage = float(raw.get('total_slippage', 0.0))
     state.total_dividend_cash = float(raw.get('total_dividend_cash', 0.0))
     state.rejected_fills = int(raw.get('rejected_fills', 0))
+    state.defensive_sleeve_uninvested = int(raw.get('defensive_sleeve_uninvested', 0))
+    state.uninvested_defensive_notional_yuan = float(raw.get('uninvested_defensive_notional_yuan', 0.0))
+    state.total_cash_yield_yuan = float(raw.get('total_cash_yield_yuan', 0.0))
+    state.kelly_history = list(raw.get('kelly_history') or [])
     state.skipped_fills = int(raw.get('skipped_fills', 0))
     state.stale_marks = int(raw.get('stale_marks', 0))
     state.sub_minimum_deltas = int(raw.get('sub_minimum_deltas', 0))
@@ -1845,11 +2146,7 @@ def _persist_completion(run: Any, ctx: _Context, result: dict[str, Any]) -> None
     if run is None:
         return
     metrics = result['metrics']
-    for column in (
-        'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio', 'calmar_ratio',
-        'win_rate', 'turnover_annual', 'alpha_vs_benchmark', 'beta_vs_benchmark',
-        'information_ratio', 'benchmark_return', 'total_fees',
-    ):
+    for column in _METRIC_COLUMNS:
         setattr(run, column, metrics.get(column))
     run.equity_curve = result['equity_curve']
     run.trade_log = result['trade_log']
@@ -1858,7 +2155,10 @@ def _persist_completion(run: Any, ctx: _Context, result: dict[str, Any]) -> None
     run.status = ETFRotationBacktest.Status.COMPLETED
     run.completed_at = _now()
     run.error_message = ''
-    run.save()
+    run.save(update_fields=[
+        *_METRIC_COLUMNS, 'equity_curve', 'trade_log', 'parameters', 'report',
+        'status', 'completed_at', 'error_message', 'updated_at',
+    ])
 
 
 def _persist_failure(run: Any, error: Exception) -> None:
@@ -1872,7 +2172,27 @@ def _persist_failure(run: Any, error: Exception) -> None:
     run.status = ETFRotationBacktest.Status.FAILED
     run.error_message = f'{type(error).__name__}: {error}'[:4000]
     run.completed_at = _now()
-    run.save()
+    # ``runtime_state`` stays in the report: a FAILED row is resumable by request, which is
+    # what makes "restart" and "rerun from where it died" both possible without a re-ingest.
+    run.save(update_fields=[
+        'report', 'status', 'error_message', 'completed_at', 'updated_at',
+    ])
+
+
+def _halted_result(run: Any, control: str, cursor: int, total_sessions: int, config: BacktestConfig) -> dict[str, Any]:
+    """The value returned when a control request stopped the loop before the metrics.
+
+    Deliberately has no ``metrics``/``equity_curve`` keys: a halted run has no finalized
+    numbers, and a consumer that indexes them without checking ``control`` first is a bug
+    worth surfacing. ``control`` is the only signal callers need to branch on.
+    """
+    return {
+        'control': control,
+        'run_id': None if run is None else run.pk,
+        'cursor': int(cursor),
+        'total_sessions': int(total_sessions),
+        'parameters': config.to_parameters(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1919,7 +2239,9 @@ def run_rotation_backtest(
     Persistence happens only when ``persist_to`` (an ``ETFRotationBacktest`` row or pk) or
     ``name`` (creates the row) is given: PENDING -> RUNNING -> COMPLETED/FAILED, with the
     metric columns, the JSON columns, and a resumable ``report.runtime_state`` written
-    between chunks.
+    between chunks. At each chunk boundary the row's ``pending_control_action`` is read, so
+    an operator pause/delete/restart request is honoured without killing the worker; the
+    loop then returns early with a ``control`` key and no metrics.
     """
     config = BacktestConfig(start_date=start_date, end_date=end_date)
     explicit = {
@@ -1985,7 +2307,8 @@ def run_rotation_backtest(
             ctx.errors.append(short_history_note)
 
         cursor = _restore_state(run, ctx)
-        for chunk_start in range(cursor, len(run_sessions), config.chunk_trading_days):
+        chunk_start = cursor
+        while chunk_start < len(run_sessions):
             chunk_end = min(chunk_start + config.chunk_trading_days, len(run_sessions))
             # Load everything this chunk can touch in one query: the held legs (marked
             # every session), the queued plan, and the defensive sleeve. Codes first
@@ -2001,6 +2324,10 @@ def run_rotation_backtest(
             ctx.state.cursor = chunk_end
             if run is not None:
                 _persist_progress(run, ctx, chunk_end, len(run_sessions))
+                control = _chunk_boundary_control(run, chunk_end, len(run_sessions))
+                if control is not None:
+                    return _halted_result(run, control, chunk_end, len(run_sessions), config)
+            chunk_start = chunk_end
 
         finalized = _finalize_metrics(ctx, config, source, run_sessions)
         positions = [

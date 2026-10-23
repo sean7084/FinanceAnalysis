@@ -12,6 +12,8 @@ const IndicatorBoardPage = lazy(() => import('./pages/IndicatorBoardPage').then(
 const AlertCenterPage = lazy(() => import('./pages/AlertCenterPage').then((m) => ({ default: m.AlertCenterPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const ModelMonitoringPage = lazy(() => import('./pages/ModelMonitoringPage').then((m) => ({ default: m.ModelMonitoringPage })))
+const EtfRotationPage = lazy(() => import('./pages/EtfRotationPage').then((m) => ({ default: m.EtfRotationPage })))
+const EtfBacktestWorkbenchPage = lazy(() => import('./pages/EtfBacktestWorkbenchPage').then((m) => ({ default: m.EtfBacktestWorkbenchPage })))
 
 function withSuspense(element: ReactElement) {
   return <Suspense fallback={<RouteLoadingFallback />}>{element}</Suspense>
@@ -38,6 +40,8 @@ const router = createBrowserRouter([
       { path: 'macro', element: withSuspense(<MacroContextPage />) },
       { path: 'models', element: withSuspense(<ModelMonitoringPage />) },
       { path: 'backtest', element: withSuspense(<BacktestWorkbenchPage />) },
+      { path: 'etf', element: withSuspense(<EtfRotationPage />) },
+      { path: 'etf/backtest', element: withSuspense(<EtfBacktestWorkbenchPage />) },
       { path: 'alerts', element: withSuspense(<AlertCenterPage />) },
       { path: 'settings', element: withSuspense(<SettingsPage />) },
     ],

@@ -10,6 +10,14 @@ CELERY_WORKER_CONCURRENCY="${CELERY_WORKER_CONCURRENCY:-}"
 CELERY_WORKER_NODE_SUFFIX="${CELERY_WORKER_NODE_SUFFIX:-${CELERY_WORKER_QUEUES//,/__}}"
 CELERY_WORKER_HOSTNAME="${CELERY_WORKER_HOSTNAME:-${CELERY_WORKER_NODE_SUFFIX}@%h}"
 
+# An unset concurrency means nproc. For the train queues that is wrong by an order
+# of magnitude: a second concurrent LSTM needs its own 12 GB of VRAM, so the extra
+# slots are OOMs rather than throughput. Pin it here, not in run_local_stack.sh
+# alone, because scripts/restart_cold_stack.sh starts workers directly.
+if [[ -z "$CELERY_WORKER_CONCURRENCY" && "$CELERY_WORKER_QUEUES" == *train* ]]; then
+	CELERY_WORKER_CONCURRENCY="${CELERY_TRAIN_WORKER_CONCURRENCY:-2}"
+fi
+
 celery_arguments=(
 	-A config.celery
 	worker

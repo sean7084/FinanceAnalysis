@@ -30,11 +30,41 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+def _setting(name, fallback):
+    """Read one ``ETF_*`` setting, so the config defaults resolve per construction.
+
+    Resolved inside a ``default_factory`` rather than at import: the module is imported by
+    migrations and by ``manage.py`` commands that may run with a different settings value
+    than the worker, and a module-level read would freeze whichever one came first.
+    """
+    return getattr(settings, name, fallback)
+
+
 MODEL_TYPES = ('RULE', 'LIGHTGBM', 'LSTM', 'ENSEMBLE')
-WEIGHTING_MODES = ('equal', 'score')
+WEIGHTING_MODES = ('equal', 'score', 'invvol')
 
 DEFAULT_MAX_POSITIONS = 5
+# One value, read at construction time by every layer that needs a cash substitute: the
+# rotation config, the backtest config, the ``ETFRotationBacktest`` column default and the
+# workbench form. Each used to hardcode ``'511880.SH'`` independently, so a deployer that
+# overrode the setting got a live signal in the new asset and a backtest in the old one.
 DEFAULT_DEFENSIVE_ASSET = '511880.SH'
+
+
+def default_defensive_asset():
+    return str(_setting('ETF_DEFENSIVE_ASSET', DEFAULT_DEFENSIVE_ASSET))
+
+
+# Selection constraints, both new in the 2026-10 follow-on plan. Four of the five legs of
+# the 2026-10-20 signal were bank ETFs and two of them had byte-identical scores, because
+# nothing stopped the pool from buying the same index three times under three wrappers.
+DEFAULT_MAX_PER_CATEGORY = 2
+# Inverse-volatility weights are clamped to this band around equal weight. Without the
+# upper bound a 0.10-vol low-volatility ETF takes 1.4x its equal weight while a 0.35-vol
+# name starves; the band is the whole point of the mode, not a guard rail.
+INVOL_MIN_VOL = 0.01
+INVOL_CLAMP_LO = 0.5
+INVOL_CLAMP_HI = 1.5
 
 # RULE composite weights. Momentum dominates because it is the thing the module claims to
 # harvest; volatility and relative strength are adjustments rather than co-equal legs, so
@@ -44,6 +74,12 @@ RELATIVE_STRENGTH_WEIGHT = 0.2
 VOLATILITY_PENALTY_WEIGHT = 0.2
 
 VOLATILITY_COLUMN = 'vol_20d'
+# The 20-session average turnover already on the snapshot table; it is the within-cluster
+# arbiter when two funds tracking one index have no ``fund_share`` row.
+TURNOVER_COLUMN = 'avg_amount_20d'
+# Cross-section columns the selection constraints read. They are attributes of the fund,
+# not factors, so they deliberately stay out of ``features.FEATURE_COLUMNS``.
+CONSTRAINT_COLUMNS = ('track_index_key', 'shares_outstanding', TURNOVER_COLUMN, VOLATILITY_COLUMN)
 MOMENTUM_PREFIX = 'mom'
 RELATIVE_STRENGTH_PREFIX = 'rs_vs_benchmark'
 # The RS horizon is chosen to match the momentum horizon: a 20d rotation is judged on 20d
@@ -75,6 +111,7 @@ PREDICTOR_LOADERS = {
 # plus the look-ahead label block, which must never reach a predictor.
 NON_FEATURE_COLUMNS = frozenset({
     'ts_code', 'etf_id', 'name', 'category', 'sub_category', 'date', 'is_eligible',
+    'track_index_key', 'shares_outstanding', 'share_date',
     'label_horizon_days', 'fwd_return', 'label_rank_pct', 'label_top_bucket', 'metadata',
 })
 FEATURE_PREFIXES = (
@@ -101,18 +138,28 @@ class RotationConfig:
     max_positions: int = 5
     momentum_lookback: int = 60
     absolute_momentum_filter: bool = True
-    defensive_asset: str = DEFAULT_DEFENSIVE_ASSET
-    weighting: str = 'equal'          # 'equal' | 'score'
+    defensive_asset: str = field(default_factory=default_defensive_asset)
+    # ``score`` is the default because that is what the production RULE reference run is
+    # weighted with and what the ``ETFRotationBacktest.weighting`` column defaults to; the
+    # dataclass used to say ``equal``, which meant an API-created run and an engine-default
+    # run of the same name disagreed unless the caller remembered to pass it explicitly.
+    weighting: str = 'score'        # 'equal' | 'score' | 'invvol'
     rank_change_threshold: int = 2     # rebalance only if a candidate moved >= this many ranks
     max_swaps: int = 2                 # at most this many names changed in one rebalance
     min_positions_for_risk_on: int = 3 # fewer qualifiers than this -> remainder goes defensive
     all_negative_to_defensive: bool = True
+    dedup_track_index: bool = True     # at most one fund per tracked index
+    # Caps how many names one ``category`` may contribute. The index dedup alone cannot
+    # collapse the bank book: ``中证银行`` and ``中证800银行`` are genuinely different indices.
+    max_per_category: int = DEFAULT_MAX_PER_CATEGORY
 
     def __post_init__(self):
         # frozen dataclass, so normalisation has to go through object.__setattr__.
         for name in ('max_positions', 'momentum_lookback', 'rank_change_threshold',
-                     'max_swaps', 'min_positions_for_risk_on'):
+                     'max_swaps', 'min_positions_for_risk_on', 'max_per_category'):
             object.__setattr__(self, name, int(getattr(self, name)))
+        for name in ('absolute_momentum_filter', 'all_negative_to_defensive', 'dedup_track_index'):
+            object.__setattr__(self, name, bool(getattr(self, name)))
         object.__setattr__(self, 'weighting', str(self.weighting).strip().lower())
         if self.max_positions < 1:
             raise RotationEngineError('max_positions must be at least 1.')
@@ -124,6 +171,8 @@ class RotationConfig:
             raise RotationEngineError('rank_change_threshold must be at least 1.')
         if self.max_swaps < 0:
             raise RotationEngineError('max_swaps cannot be negative.')
+        if self.max_per_category < 0:
+            raise RotationEngineError('max_per_category cannot be negative; use 0 for no cap.')
         if not 1 <= self.min_positions_for_risk_on <= self.max_positions:
             raise RotationEngineError(
                 f'min_positions_for_risk_on must sit between 1 and max_positions '
@@ -145,7 +194,7 @@ class RotationLeg:
 class RotationPlan:
     legs: list[RotationLeg] = field(default_factory=list)
     defensive_allocation: float = 0.0
-    defensive_asset: str = DEFAULT_DEFENSIVE_ASSET
+    defensive_asset: str = field(default_factory=default_defensive_asset)
     rankings: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
 
@@ -216,6 +265,18 @@ def _text_map(snapshots, column, default=''):
         code: (default if _is_missing(value) else str(value))
         for code, value in zip(snapshots['ts_code'], snapshots[column])
     }
+
+
+def _value_map(snapshots, column):
+    """``{ts_code: raw numeric}`` for a column that may be absent from the frame.
+
+    Absent rather than zero: a cross-section produced by an older feature run has no
+    ``track_index_key`` column at all, and the constraints must then be no-ops instead of
+    collapsing every fund into one keyless cluster.
+    """
+    if column not in snapshots.columns or snapshots.empty:
+        return {}
+    return dict(zip(snapshots['ts_code'], snapshots[column]))
 
 
 def _is_missing(value):
@@ -631,15 +692,29 @@ def _ensemble_scores(snapshots, momentum_lookback, lgb_predictor, lstm_predictor
 
 
 def _ordered_by_score(frame):
-    """Descending score with ``ts_code`` as the tie-break.
+    """Descending score, with 份额 then ``ts_code`` as the tie-break.
 
     The returned frame's row order *is* the ranking, so a consumer reading ``iloc[0]``
     gets the best candidate rather than whichever row the queryset happened to return
     first, and two runs on the same data agree.
+
+    ``shares_outstanding`` sits between score and code because two funds tracking the same
+    index score within a few ten-millionths of each other on the RULE composite -- on
+    2026-10-20 ranks 2 and 3 were byte-identical at 0.71024590 -- and a ``ts_code``
+    tie-break decides that coin flip arbitrarily. Fund size is the economically meaningful
+    arbiter: it is what the position can actually be exited into. Missing shares sort last
+    within an equal score, and the code stays as the final deterministic key.
     """
     if frame.empty:
         return frame
-    return frame.sort_values(['score', 'ts_code'], ascending=[False, True], kind='mergesort').reset_index(drop=True)
+    columns = ['score']
+    ascending = [False]
+    if 'shares_outstanding' in frame.columns:
+        columns.append('shares_outstanding')
+        ascending.append(False)
+    columns.append('ts_code')
+    ascending.append(True)
+    return frame.sort_values(columns, ascending=ascending, kind='mergesort').reset_index(drop=True)
 
 
 def score_snapshots(snapshots: pd.DataFrame, *, model_type: str, momentum_lookback: int,
@@ -830,6 +905,124 @@ def _empty_turnover(mode, config, entries=None):
     }
 
 
+def _constraint_sort_value(value):
+    """Numeric for descending comparison; missing or non-finite is always the smallest.
+
+    A fund with no ``fund_share`` row must lose the cluster tie rather than win it by
+    accident -- ``None`` compared as ``-inf`` is the only reading that does that.
+    """
+    if value is None:
+        return float('-inf')
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float('-inf')
+    return number if math.isfinite(number) else float('-inf')
+
+
+def apply_selection_constraints(ordered_codes, *, score_by_code, category_by_code=None,
+                                key_by_code=None, shares_by_code=None, amount_by_code=None,
+                                dedup_track_index=True, max_per_category=0):
+    """Collapse duplicate index wrappers, then cap how many names one category contributes.
+
+    Two layers, because they solve two different problems and neither subsumes the other.
+    Layer 1 is ``track_index_key``: the 2026-10-20 bank book contained 南方中证银行 and
+    汇添富中证银行, which track the *same* index and therefore are one bet in two wrappers --
+    buying both is 40% of the book on one number. Layer 2 is ``category``: 富国中证800银行
+    tracks a genuinely different index, so dedup leaves it standing, and only a per-category
+    cap takes the book from four bank funds to two.
+
+    Inside a cluster the winner is chosen ``份额 -> 日均成交额 -> score``, not by score alone.
+    The three bank wrappers' scores differ in the eighth decimal, so score cannot arbitrate;
+    size and turnover can, and they are the properties that decide whether a position can
+    actually be exited. Once a cluster has a representative, the survivors are ordered by
+    ``score`` because that is what the rank-tilted weighting is about.
+
+    Pure and DB-free, so the constraint can be exercised without a snapshot table.
+    """
+    codes = [str(code) for code in ordered_codes]
+    info = {
+        'dedup_track_index': bool(dedup_track_index),
+        'max_per_category': int(max_per_category),
+        'input_count': len(codes),
+        'dedup_dropped': [],
+        'category_cap_dropped': [],
+    }
+    if not codes:
+        info['output_count'] = 0
+        info['category_counts'] = {}
+        return [], info
+
+    def cluster_key(code):
+        return (
+            -_constraint_sort_value((shares_by_code or {}).get(code)),
+            -_constraint_sort_value((amount_by_code or {}).get(code)),
+            -_constraint_sort_value(score_by_code.get(code)),
+            code,
+        )
+
+    def book_order(code):
+        return (
+            -_constraint_sort_value(score_by_code.get(code)),
+            -_constraint_sort_value((shares_by_code or {}).get(code)),
+            -_constraint_sort_value((amount_by_code or {}).get(code)),
+            code,
+        )
+
+    survivors = codes
+    if dedup_track_index:
+        clusters: dict[str, list[str]] = {}
+        for code in codes:
+            # A blank key means the normaliser had nothing to work with, and "unknown" must
+            # not become a cluster that collapses every unclassified fund into one leg.
+            key = str((key_by_code or {}).get(code) or '').strip() or code
+            clusters.setdefault(key, []).append(code)
+        winners = []
+        for key, members in clusters.items():
+            best = sorted(members, key=cluster_key)[0]
+            for code in members:
+                if code != best:
+                    info['dedup_dropped'].append({
+                        'ts_code': code,
+                        'track_index_key': key,
+                        'selected_instead': best,
+                        'score': _json_number(score_by_code.get(code)),
+                        'reason': 'same_tracked_index',
+                    })
+            winners.append(best)
+        survivors = sorted(winners, key=book_order)
+        info['cluster_count'] = len(clusters)
+
+    cap = int(max_per_category)
+    if cap > 0:
+        counts: dict[str, int] = {}
+        capped = []
+        for code in survivors:
+            category = str((category_by_code or {}).get(code) or 'other')
+            if counts.get(category, 0) >= cap:
+                info['category_cap_dropped'].append({
+                    'ts_code': code,
+                    'category': category,
+                    'cap': cap,
+                    'score': _json_number(score_by_code.get(code)),
+                    'reason': 'max_per_category',
+                })
+                continue
+            counts[category] = counts.get(category, 0) + 1
+            capped.append(code)
+        survivors = capped
+
+    info['output_count'] = len(survivors)
+    final_counts: dict[str, int] = {}
+    for code in survivors:
+        category = str((category_by_code or {}).get(code) or 'other')
+        final_counts[category] = final_counts.get(category, 0) + 1
+    info['category_counts'] = final_counts
+    info['dedup_dropped_count'] = len(info['dedup_dropped'])
+    info['category_cap_dropped_count'] = len(info['category_cap_dropped'])
+    return survivors, info
+
+
 def _defensive_allocation(target_count, selected_count, all_momentum_negative, config):
     """``(risk_budget, defensive_allocation, reason)`` for one date's book.
 
@@ -865,32 +1058,74 @@ def _defensive_allocation(target_count, selected_count, all_momentum_negative, c
     return risk_budget, defensive, reason
 
 
-def allocate_weights(ranks, *, weighting, risk_budget):
+def allocate_weights(ranks, *, weighting, risk_budget, vols=None):
     """Split ``risk_budget`` across the selected names; returns ``(weights, method)``.
 
     ``ranks`` are 1-based against the full ordered candidate list, which is what score
     weighting tilts on: three names holding ranks 1, 2 and 7 do not deserve the same
     capital, and the linear-decay form keeps the tilt monotone without letting rank 1 take
     more than ``SCORE_WEIGHT_SCORE_SHARE`` of the book.
+
+    ``vols`` is read only by ``invvol`` and must be in the same order as ``ranks``.
     """
     count = len(ranks)
     if count == 0:
         return [], 'none'
     budget = max(float(risk_budget), 0.0)
+    equal = 1.0 / count
     if weighting == 'score':
         # The tilt is on rank rather than raw score because the RULE composite can be
         # negative after the volatility penalty, and proportional-to-a-negative-number
         # weights are meaningless.
         raw = [max(0.0, count + 1 - float(rank)) + SCORE_WEIGHT_FLOOR for rank in ranks]
         total = sum(raw)
-        equal = 1.0 / count
         tilt = [
             SCORE_WEIGHT_SCORE_SHARE * (value / total) + (1.0 - SCORE_WEIGHT_SCORE_SHARE) * equal
             for value in raw
         ]
         method = 'score_rank_linear'
+    elif weighting == 'invvol':
+        # ``w_i propto 1/vol_i`` is the inverse-variance weighting of a portfolio whose
+        # legs are treated as independent bets. They are not independent -- they are
+        # sector ETFs -- so this is a sizing heuristic, not an optimiser, and the clamp is
+        # what stops the flattest fund in the pool from dominating it.
+        available = list(vols or [])
+        usable = (
+            len(available) == count
+            and all(not _is_missing(value) and float(value) > 0 for value in available)
+        )
+        if not usable:
+            # Same policy as the RULE composite's missing values: degrade visibly. A
+            # missing vol treated as 0 would hand that leg the entire book.
+            tilt = [equal] * count
+            method = 'invvol_unavailable_equal'
+        else:
+            raw = [1.0 / max(float(value), INVOL_MIN_VOL) for value in available]
+            total = sum(raw)
+            lo = INVOL_CLAMP_LO * equal
+            hi = INVOL_CLAMP_HI * equal
+            tilt = [value / total for value in raw]
+            # Clamp, then hand the money the clamp released to the legs that still have room,
+            # and repeat. A single renormalise-after-clamping pass would push the leg it was
+            # meant to cap back over ``hi`` -- on three legs 0.50 became 0.525 -- so the cap
+            # would be a suggestion. The loop terminates because every pass either lands on
+            # sum == 1 or fills the last unit of room.
+            for _ in range(count):
+                tilt = [min(hi, max(lo, value)) for value in tilt]
+                gap = 1.0 - sum(tilt)
+                if abs(gap) <= 1e-12:
+                    break
+                room = [(hi - value) if gap > 0 else (value - lo) for value in tilt]
+                total_room = sum(value for value in room if value > 0.0)
+                if total_room <= 0.0:
+                    break
+                tilt = [
+                    value + (gap * share / total_room if share > 0.0 else 0.0)
+                    for value, share in zip(tilt, room)
+                ]
+            method = 'invvol_clamped_0.5x_1.5x'
     else:
-        tilt = [1.0 / count] * count
+        tilt = [equal] * count
         method = 'equal'
 
     weights = [round(value * budget, WEIGHT_DECIMALS) for value in tilt]
@@ -905,7 +1140,8 @@ def allocate_weights(ranks, *, weighting, risk_budget):
 
 def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
                         config: RotationConfig,
-                        current_weights: dict[str, float] | None = None):
+                        current_weights: dict[str, float] | None = None,
+                        exposure_scale: float = 1.0):
     """Build the target book for one date from its scores and feature cross-section.
 
     ``scored`` is :func:`score_snapshots` output; ``snapshots`` is the same cross-section,
@@ -913,6 +1149,12 @@ def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
     ``current_weights=None`` yields the unconstrained top-N (what the strategy would buy
     from scratch, and what the backtest grid needs); pass the live book to enforce the
     turnover constraint.
+
+    ``exposure_scale`` shrinks the risk-on budget and hands the remainder to the defensive
+    asset. It exists for the fractional-Kelly governor in the backtest, which has to act on
+    the *portfolio*, not per leg: the legs of a rotation book are correlated sector bets, so
+    a per-leg ``f*`` would size five copies of one bet. ``1.0`` leaves every number
+    bit-identical to a run of the same date before the knob existed.
 
     Invariant, asserted at the end: ``sum(leg.weight) + defensive_allocation == 1.0`` to
     within ``WEIGHT_TOLERANCE``. A plan that quietly left 8% in cash would show up in a
@@ -1013,10 +1255,40 @@ def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
             all_negative_momentum=all_negative,
         )
 
-    working = working.sort_values(['score', 'ts_code'], ascending=[False, True], kind='mergesort')
-    ranked_codes = working['ts_code'].tolist()
+    working = _ordered_by_score(
+        working.merge(
+            cross_section.drop_duplicates(subset=['ts_code'], keep='first')[
+                ['ts_code', *[
+                    column for column in CONSTRAINT_COLUMNS
+                    if column in cross_section.columns
+                ]]
+            ],
+            on='ts_code',
+            how='left',
+        )
+    )
+    pre_constraint_codes = working['ts_code'].tolist()
     score_by_code = dict(zip(working['ts_code'], working['score']))
     momentum_by_code = dict(zip(working['ts_code'], working[momentum_column]))
+    shares_by_code = _value_map(working, 'shares_outstanding')
+    amount_by_code = _value_map(working, TURNOVER_COLUMN)
+    vol_by_code = _value_map(working, VOLATILITY_COLUMN)
+    key_by_code = {
+        code: str(value or '') for code, value in _value_map(working, 'track_index_key').items()
+    }
+    # Same index in two wrappers is one bet, and one sector is one factor: both constraints
+    # run before ranking so the ranks, the score tilt and the turnover machinery all see
+    # the book the strategy is actually allowed to hold.
+    ranked_codes, constraint_info = apply_selection_constraints(
+        pre_constraint_codes,
+        score_by_code=score_by_code,
+        category_by_code=categories,
+        key_by_code=key_by_code,
+        shares_by_code=shares_by_code,
+        amount_by_code=amount_by_code,
+        dedup_track_index=config.dedup_track_index,
+        max_per_category=config.max_per_category,
+    )
     rank_of = {code: index + 1 for index, code in enumerate(ranked_codes)}
     # The book the ranking wants, before any trading constraint is applied. Defensive sizing
     # works off this so a swap cap cannot masquerade as a breadth signal.
@@ -1042,9 +1314,18 @@ def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
     risk_budget, defensive_allocation, defensive_reason = _defensive_allocation(
         target_count, len(selected), all_negative, config,
     )
+    scale = max(0.0, min(float(exposure_scale), 1.0))
+    if scale != 1.0:
+        # The governor only moves money between the risk legs and the defensive sleeve, so
+        # the full-book invariant below still holds exactly.
+        risk_budget = round(risk_budget * scale, WEIGHT_DECIMALS)
+        defensive_allocation = round(1.0 - risk_budget, WEIGHT_DECIMALS)
+        defensive_reason = f'{defensive_reason}+exposure_scaled'
+        metadata['exposure_scale'] = scale
     legs = []
     weights, weight_method = allocate_weights(
         [rank_of[code] for code in selected], weighting=config.weighting, risk_budget=risk_budget,
+        vols=[vol_by_code.get(code) for code in selected],
     )
     entry_reasons = {item['ts_code']: item['reason'] for item in turnover['entries']}
     for code, weight in zip(selected, weights):
@@ -1071,7 +1352,14 @@ def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
 
     metadata.update({
         'weight_method': weight_method,
-        'qualified_count': len(ranked_codes),
+        # Count of names that survived the absolute-momentum screen, before the selection
+        # constraints collapsed duplicates -- the number an operator reads as "how many
+        # funds looked good", which is not the same as how many we are allowed to buy.
+        'qualified_count': len(pre_constraint_codes),
+        'candidate_count': len(ranked_codes),
+        'selection_constraints': constraint_info,
+        'dedup_track_index': config.dedup_track_index,
+        'max_per_category': config.max_per_category,
         'target_count': target_count,
         'selected_count': len(selected),
         'risk_budget': risk_budget,
@@ -1126,6 +1414,9 @@ def rotation_config_from_settings(**overrides) -> RotationConfig:
     values = {
         'max_positions': getattr(settings, 'ETF_MAX_POSITIONS', DEFAULT_MAX_POSITIONS),
         'defensive_asset': getattr(settings, 'ETF_DEFENSIVE_ASSET', DEFAULT_DEFENSIVE_ASSET),
+        'weighting': getattr(settings, 'ETF_WEIGHTING', 'score'),
+        'dedup_track_index': getattr(settings, 'ETF_DEDUP_TRACK_INDEX', True),
+        'max_per_category': getattr(settings, 'ETF_MAX_PER_CATEGORY', DEFAULT_MAX_PER_CATEGORY),
     }
     values.update({key: value for key, value in overrides.items() if value is not None})
     return RotationConfig(**values)

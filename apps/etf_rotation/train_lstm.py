@@ -1076,11 +1076,18 @@ def _registry_fold_report(report):
 
 
 def _register_model_version(*, version, config, artifact_relative_path, fold_reports, headline,
-                            aggregate, panel, scaler_stats, training_start, training_end, metadata):
-    """Register ONE active ETF_LSTM row per run, flipping prior rows of this type inactive."""
-    ModelVersion.objects.filter(
-        model_type=config['model_type_label'], is_active=True,
-    ).exclude(version=version).update(is_active=False)
+                            aggregate, panel, scaler_stats, training_start, training_end, metadata,
+                            activate=True):
+    """Register one ETF_LSTM row per run, flipping prior rows of this type inactive.
+
+    ``activate=False`` writes the row inactive and leaves every existing active row alone. A
+    sweep needs this: without it, the last trial to finish becomes the one
+    ``rotation_engine.load_active_predictor`` serves, whatever its rank IC said.
+    """
+    if activate:
+        ModelVersion.objects.filter(
+            model_type=config['model_type_label'], is_active=True,
+        ).exclude(version=version).update(is_active=False)
 
     return ModelVersion.objects.update_or_create(
         model_type=config['model_type_label'],
@@ -1093,7 +1100,7 @@ def _register_model_version(*, version, config, artifact_relative_path, fold_rep
             'training_window_start': training_start,
             'training_window_end': training_end,
             'trained_at': timezone.now(),
-            'is_active': True,
+            'is_active': bool(activate),
             'metadata': {
                 **metadata,
                 'framework': 'expanding_window_walk_forward_lstm',
@@ -1244,7 +1251,8 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
                        n_folds=6, horizon_days=20, sequence_length=20, hidden_size=64,
                        num_layers=2, dropout=0.2, epochs=50, batch_size=256, learning_rate=1e-3,
                        patience=5, device=None, params=None, objective=None,
-                       num_boost_round=None, min_train_days=None, version_tag=''):
+                       num_boost_round=None, min_train_days=None, version_tag='', activate=True,
+                       sweep=None):
     """Expanding-window walk-forward LSTM training for the ETF rotation pool.
 
     Returns the same envelope shape as ``apps.etf_rotation.train_lightgbm.train_walk_forward``
@@ -1252,7 +1260,11 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
     (``'success'`` / ``'insufficient_data'`` / ``'no_data'``), ``model_version``,
     ``model_version_id``, ``artifact_path``, ``metrics`` (pooled holdout headline),
     ``aggregate``, ``pooled_holdout``, ``folds`` and ``n_folds``. Registers exactly one
-    active ``ModelVersion(model_type='ETF_LSTM', status=READY)`` per successful run.
+    ``ModelVersion(model_type='ETF_LSTM', status=READY)`` per successful run.
+
+    ``activate=False`` registers that row inactive and leaves the currently active row
+    untouched. A hyperparameter sweep must pass this, or whichever trial happens to finish
+    last becomes what ``load_active_predictor`` serves.
 
     ``params`` carries the knobs that are not in the published signature:
     ``min_train_days`` (fold plan), ``min_train_sequences``, ``min_scaler_rows``,
@@ -1266,6 +1278,16 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
     would be meaningless for an LSTM. They are recorded in the registry metadata and logged,
     never silently dropped; ``params['loss']`` is the only thing that chooses the objective
     here.
+
+    ``sweep`` is the tuning-campaign provenance dict written to
+    ``metadata['sweep']``. Supplying it (as ``manage.py sweep_etf_rotation_lstm`` does) also
+    **omits** ``metadata['pooled_holdout']``: that key is what
+    ``train_lightgbm.register_ensemble_version`` reads to weight an ensemble member, so a
+    row that carries it looks like out-of-sample evidence even when it was selected by a
+    search over the same folds. A sweep row must not be readable that way, and the omission
+    is tied to ``sweep`` rather than to ``activate`` because activating a tuned candidate
+    after Phase D's gate is a legitimate later step that must not silently start exporting
+    pooled holdout numbers.
     """
     config = _build_config(
         model_type_label=model_type_label, start_date=start_date, end_date=end_date, n_folds=n_folds,
@@ -1445,18 +1467,25 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
         'train_max_target_date': serving['guards']['train_max_date'].isoformat(),
         'fitted_rows': int(serving['fitted_rows']),
     }
+    run_metadata = {
+        **base,
+        'total_purged_train_dates': aggregate['total_purged_train_dates'],
+        'training_window': [panel_dates[0].isoformat(), panel_dates[-1].isoformat()],
+    }
+    if sweep is None:
+        # ``pooled_holdout`` is the key train_lightgbm.register_ensemble_version reads to weight
+        # this member, so a plain run carries it under the same name the LightGBM rows use.
+        run_metadata['pooled_holdout'] = pooled_metrics
+    else:
+        run_metadata['sweep'] = sweep
     row = _register_model_version(
         version=version, config=config, artifact_relative_path=artifact_relative_path,
         fold_reports=fold_reports, headline=headline, aggregate=aggregate, panel=panel,
         scaler_stats=scaler_stats, training_start=panel_dates[0], training_end=panel_dates[-1],
-        # `pooled_holdout` in metadata is the key train_lightgbm.register_ensemble_version
-        # reads to weight this member, so the LSTM must carry it under the same name.
-        metadata={**base, 'pooled_holdout': pooled_metrics,
-                  'total_purged_train_dates': aggregate['total_purged_train_dates'],
-                  'training_window': [panel_dates[0].isoformat(), panel_dates[-1].isoformat()]},
+        metadata=run_metadata, activate=activate,
     )
-    logger.info('ETF LSTM walk-forward %s: folds=%s pooled rank_ic=%s icir=%s',
-                version, aggregate['folds_trained'], headline['rank_ic'], headline['icir'])
+    logger.info('ETF LSTM walk-forward %s: folds=%s pooled rank_ic=%s icir=%s activate=%s',
+                version, aggregate['folds_trained'], headline['rank_ic'], headline['icir'], activate)
 
     return {
         **base,

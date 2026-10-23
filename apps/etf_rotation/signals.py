@@ -135,7 +135,24 @@ def _active_version(registry_label: str):
     )
 
 
-def resolve_model_version(model_type: str) -> tuple[str, dict[str, str]]:
+def rule_model_version(config) -> str:
+    """A stable, config-derived identity for the RULE model.
+
+    RULE has no artifact, so ``model_version`` used to be the empty string and the /etf
+    page had nothing to show as "the current model" -- which read like a broken row rather
+    than like a hand-written scoring rule. The tag is derived from the knobs that actually
+    change the book, so two signals with the same tag are reproducible from the tag alone.
+    """
+    if config is None:
+        return 'rule-v1'
+    return (
+        f'rule-v1:mom{int(config.momentum_lookback)}-{config.weighting}'
+        f'{":dedup" if config.dedup_track_index else ":nodedup"}'
+        f':cap{int(config.max_per_category)}'
+    )[:50]
+
+
+def resolve_model_version(model_type: str, config=None) -> tuple[str, dict[str, str]]:
     """``(model_version for the row, every registry version resolved)``.
 
     Reading the version is also the availability gate. ``rotation_engine`` resolves
@@ -145,7 +162,7 @@ def resolve_model_version(model_type: str) -> tuple[str, dict[str, str]]:
     but is not is worse than a failed run.
     """
     if model_type == 'RULE':
-        return '', {}
+        return rule_model_version(config), {}
 
     members = {
         label: row
@@ -303,6 +320,49 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
     }
 
 
+def _whole_pool_unscorable(snapshots, scored, model_type: str, day) -> str:
+    """Return a refusal message when the scorer excluded every row for missing inputs.
+
+    ``_rule_scores`` drops a fund whose scoring inputs are null, which is right for the three
+    names that listed last month: excluding a row that cannot be judged is what keeps the
+    percentile grid honest. Read across the whole cross-section the same signal means
+    something else -- the column is gone, not the funds. On 2026-10-22 that was exactly what
+    happened: ``rs_vs_benchmark_60d`` was null for all 488 eligible rows because CSI
+    publishes its total-return index after the ETF bars for the day have landed.
+
+    Left alone, the engine answers ``no_scored_candidates`` and puts 100% of the book in the
+    money fund -- a risk-off decision the model never made, written as a signal row the page
+    presents as current. Refusing leaves the last signal that could actually see the market in
+    place, and the freshness endpoint reports it as lagging by a session, which is the truth.
+    """
+    pool_size = int(len(snapshots))
+    if pool_size == 0 or int(len(scored)) > 0:
+        return ''
+    rotation = dict(getattr(scored, 'attrs', {}).get('rotation') or {})
+    if rotation.get('empty_cross_section') or str(rotation.get('model_type') or model_type) != 'RULE':
+        return ''
+    if int(rotation.get('excluded_missing_features') or 0) < pool_size:
+        return ''
+    required = (
+        str(rotation.get('momentum_column') or ''),
+        engine.VOLATILITY_COLUMN,
+        str(rotation.get('relative_strength_column') or ''),
+    )
+    gone = [
+        column for column in required
+        if column in snapshots.columns and snapshots[column].isna().all()
+    ]
+    if not gone:
+        return ''
+    return (
+        f'no candidate in the {day.isoformat()} pool could be scored: {", ".join(sorted(gone))} '
+        f'is null for all {pool_size} eligible rows, which is a feed gap rather than a market '
+        'signal. The RULE scorer needs the benchmark cross-section, so this run is refused '
+        'instead of writing an all-defensive book. Check that the benchmark index sync reached '
+        'this session before compute_etf_features ran.'
+    )
+
+
 def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 'RULE',
                              trade_date=None, max_positions=None, momentum_lookback=None,
                              dry_run: bool = False) -> dict:
@@ -327,13 +387,16 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     day = resolve_trade_date(trade_date, source=source)
     snapshots = load_snapshots(day, source=source)
     config = build_config(max_positions=max_positions, momentum_lookback=momentum_lookback)
-    model_version, model_versions = resolve_model_version(model_type)
+    model_version, model_versions = resolve_model_version(model_type, config)
     current_weights = previous_book(signal_type, day)
 
     try:
         scored = engine.score_snapshots(
             snapshots, model_type=model_type, momentum_lookback=config.momentum_lookback,
         )
+        blind_reason = _whole_pool_unscorable(snapshots, scored, model_type, day)
+        if blind_reason:
+            raise SignalGenerationError(blind_reason)
         plan = engine.build_rotation_plan(scored, snapshots, config, current_weights=current_weights)
     except engine.RotationEngineError as exc:
         raise SignalGenerationError(f'rotation engine failed for {day}: {exc}') from exc

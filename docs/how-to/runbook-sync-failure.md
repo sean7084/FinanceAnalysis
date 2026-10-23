@@ -46,6 +46,7 @@ did not advance is the failing stage; everything after it is a consequence.
 | Indicators advanced, factor scores did not | factor scoring | §3 |
 | Scores advanced, predictions did not | prediction task, or no active artifact | §5 |
 | Predictions advanced, news/sentiment did not | news ingest | [`runbook-provider-blackout.md`](runbook-provider-blackout.md) |
+| ETF signal refuses to write, or the book is 100% defensive | benchmark index feed a session behind | §5.1 |
 | Nothing advanced | broker, worker, or beat down | §2.1 |
 
 ### 2.1 Is the worker fleet actually up?
@@ -78,6 +79,28 @@ CELERY_WORKER_QUEUES=ops ./scripts/run_celery_worker.sh 2>&1 | tee -a reports/op
 ```
 
 `reports/` is gitignored, so this is safe.
+
+### 2.3 "Did beat actually fire it?"
+
+Beat's own output is the only evidence that a scheduled task was *published*, as
+opposed to published and then lost. `scripts/run_celery_beat.sh` runs with
+`PYTHONUNBUFFERED=1` and prints a startup banner naming its pid and the pidfile,
+because a beat log that stops updating has two very different readings — the
+scheduler is dead, or that file is not the one the live scheduler writes to —
+and the banner tells you which.
+
+The one thing that must not be done is start a second scheduler. `restart_cold_stack.sh`
+appends to the service logs rather than truncating them (`>>`), since a restart is
+the last thing that should erase the evidence about what went wrong before it.
+
+```bash
+pgrep -af '[-]A config\.celery beat'          # exactly one, with its start time
+grep -c 'Scheduler: Sending due task' tmp/cold_stack/beat.log
+```
+
+`restart_cold_stack.sh` writes each service to `tmp/cold_stack/<name>.log`
+(`beat.log`, `worker-ops.log`, `runserver.log`), which is where to look for a
+tick you believe was skipped.
 
 ---
 
@@ -165,12 +188,47 @@ Also check that the upstream feature tables actually advanced (§2). Predictions
 computed against stale indicators succeed silently and produce neutral-heavy
 output rather than erroring.
 
+### 5.1 The ETF rotation signal came back all-defensive
+
+RULE scoring needs three non-null columns per candidate: the momentum column,
+`vol_20d`, and the relative-strength column measured against the total-return
+benchmark. `_rule_scores` drops a row that is missing any of them and never
+imputes, so a feed gap does not error -- it silently shrinks the candidate pool,
+and when it shrinks to nothing the plan is "100% defensive". That is a *market
+call*, and the page would have shown it as one.
+
+On 2026-10-22 `BenchmarkIndexDaily` for `H00905.CSI` was one session behind while
+`000905.SH` had the day, so `rs_vs_benchmark_*` was null for all 488 eligible rows.
+
+`generate_rotation_signal` now refuses instead of writing that book: if the pool
+is non-empty, nothing scored, and a required column is null for every row, it
+raises `SignalGenerationError` naming the column. Recovery:
+
+```bash
+# 1. Close the gap (the daily 17:05Z tick is sync_etf_benchmark_index).
+DJANGO_READ_DOT_ENV_FILE=True python manage.py shell -c "
+from apps.markets.tasks import sync_benchmark_index_history
+print(sync_benchmark_index_history(index_codes=['000905.SH','H00905.CSI'],
+      start_date='2026-10-15', end_date='2026-10-22'))"
+
+# 2. Recompute the features that read it, then regenerate the signal.
+DJANGO_READ_DOT_ENV_FILE=True python manage.py compute_etf_features \
+    --start 2026-10-22 --end 2026-10-22
+DJANGO_READ_DOT_ENV_FILE=True python manage.py generate_etf_rotation_signal --date 2026-10-22
+```
+
+Beat ordering is the guard that keeps this from recurring: the index tick runs at
+17:05Z and the feature job at 17:20Z, and both tasks are routed to `ops` rather
+than `etf-rotation` so a two-second refresh never queues behind an hour-long
+backtest. If the signal still refuses, `ETF_SECONDARY_BENCHMARK_CODES` lists what
+is synced -- the total-return series is the one that is easy to forget.
+
 ---
 
 ## 6. Stuck backtest runs
 
 A run left in `RUNNING` after its worker died will not self-heal. The system
-detects this through `apps/backtest/task_health.py`:
+detects this through `apps/core/task_health.py`:
 
 | Condition | Verdict |
 | --- | --- |
@@ -190,7 +248,7 @@ Recovery:
 # Inspect the stuck runs
 python manage.py shell -c "
 from apps.backtest.models import BacktestRun
-from apps.backtest.task_health import get_backtest_run_task_owner_state
+from apps.core.task_health import get_backtest_run_task_owner_state
 for run in BacktestRun.objects.filter(status='RUNNING'):
     print(run.id, run.name, get_backtest_run_task_owner_state(run))
 "

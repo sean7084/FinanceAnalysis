@@ -2207,7 +2207,7 @@ def revoke_backtest_task(run, *, terminate=False):
 def queue_backtest_run(run):
     """Enqueue ``run`` on the ``backtest`` queue and record its task id.
 
-    The task id is persisted on the run so ``apps.backtest.task_health`` can later
+    The task id is persisted on the run so ``apps.core.task_health`` can later
     tell a genuinely executing run from one whose worker disappeared.
     """
     result = run_backtest.delay(run.id)
