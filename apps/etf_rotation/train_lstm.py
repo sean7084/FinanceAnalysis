@@ -1642,6 +1642,12 @@ def load_active_predictor(model_type_label=MODEL_TYPE_LABEL, device=None):
             'score': [by_target.get((code, day), np.nan) for code, day in zip(codes, row_dates)],
         })
 
+    # Same contract as the LightGBM loader: the report reads the version off the callable.
+    score.model_version = {
+        'id': int(version_row.pk),
+        'version': str(version_row.version),
+        'model_type': str(version_row.model_type),
+    }
     return score
 
 

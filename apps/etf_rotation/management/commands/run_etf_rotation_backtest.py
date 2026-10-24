@@ -90,8 +90,8 @@ _QUEUE_KNOB_FIELDS = (
     'start_date', 'end_date', 'model_type', 'rebalance_frequency', 'max_positions',
     'momentum_lookback', 'absolute_momentum_filter', 'defensive_asset', 'initial_capital',
     'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
-    'benchmark_code', 'walk_forward_steps', 'weighting', 'dedup_track_index',
-    'max_per_category',
+    'min_trade_notional_fraction', 'benchmark_code', 'walk_forward_steps', 'weighting',
+    'dedup_track_index', 'max_per_category',
 )
 
 #: Bounds the cross-run snapshot memo. One session's eligible cross-section is a few
@@ -287,6 +287,17 @@ class Command(BaseCommand):
         parser.add_argument('--initial-capital', type=float, default=None,
                             help='Starting equity in yuan. Default: settings.ETF_INITIAL_CAPITAL. '
                                  'A small value is how the min-commission floor gets exercised.')
+        parser.add_argument('--commission-rate', type=float, default=None,
+                            help='Two-way broker commission rate. Default: settings.ETF_COMMISSION_RATE (0.0003).')
+        parser.add_argument('--min-commission', type=float, default=None,
+                            help='Yuan floor on one fill. Default: settings.ETF_MIN_COMMISSION (5).')
+        parser.add_argument('--slippage', type=float, default=None,
+                            help='Fraction applied to the execution price. Default: settings.ETF_SLIPPAGE (0.001).')
+        parser.add_argument('--liquidity-floor-multiple', type=float, default=None,
+                            help='Required trailing daily turnover as a multiple of the leg notional; '
+                                 '0 disables the screen. Default: settings.ETF_LIQUIDITY_FLOOR_MULTIPLE (10).')
+        parser.add_argument('--min-trade-notional-fraction', type=float, default=None,
+                            help='Skip rebalance deltas below this share of equity (default 0.005).')
         parser.add_argument('--name', default='', help='Name of the persisted row.')
         parser.add_argument('--persist', dest='persist', action='store_true', default=True,
                             help='Persist an ETFRotationBacktest row (the default).')
@@ -345,6 +356,11 @@ class Command(BaseCommand):
             'absolute_momentum_filter': options['absolute_momentum_filter'],
             'defensive_asset': options['defensive_asset'],
             'initial_capital': options['initial_capital'],
+            'commission_rate': options['commission_rate'],
+            'min_commission': options['min_commission'],
+            'slippage': options['slippage'],
+            'liquidity_floor_multiple': options['liquidity_floor_multiple'],
+            'min_trade_notional_fraction': options['min_trade_notional_fraction'],
         }
         overrides = {
             key: options[key]
@@ -416,6 +432,9 @@ class Command(BaseCommand):
             ('--max-positions', 'max_positions'), ('--momentum-lookback', 'momentum_lookback'),
             ('--weighting', 'weighting'), ('--defensive-asset', 'defensive_asset'),
             ('--initial-capital', 'initial_capital'),
+            ('--commission-rate', 'commission_rate'), ('--min-commission', 'min_commission'),
+            ('--slippage', 'slippage'), ('--liquidity-floor-multiple', 'liquidity_floor_multiple'),
+            ('--min-trade-notional-fraction', 'min_trade_notional_fraction'),
             ('--no-absolute-momentum-filter', 'absolute_momentum_filter'),
         ) if options[key] not in (None, '')]
         if mixed:
@@ -444,6 +463,7 @@ class Command(BaseCommand):
             'defensive_asset': row.defensive_asset, 'initial_capital': float(row.initial_capital),
             'commission_rate': row.commission_rate, 'min_commission': float(row.min_commission),
             'slippage': row.slippage, 'liquidity_floor_multiple': row.liquidity_floor_multiple,
+            'min_trade_notional_fraction': float(row.min_trade_notional_fraction),
             'benchmark_code': row.benchmark_code,
             'config_overrides': {
                 'walk_forward_steps': row.walk_forward_steps, 'weighting': row.weighting,
@@ -625,10 +645,20 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             f"sessions={counters['sessions']} signals={counters['signals_generated']} "
+            f"rebalances={counters.get('rebalances', 0)} "
             f"trades={counters['trades']} filled={counters['filled_trades']} "
             f"liquidity_rejected={counters['rejected_liquidity_fills']} "
             f"skipped_no_price={counters['skipped_no_price_fills']} "
+            f"min_commission_bound={counters.get('min_commission_bound_fills', 0)} "
             f"dividends={_yuan(counters['dividend_cash_yuan'])}"
+        )
+        turnover = report.get('turnover') or {}
+        share = turnover.get('share') or {}
+        self.stdout.write(
+            f"turnover_split=drift {_pct(share.get('drift_share'))} / "
+            f"discretionary {_pct(share.get('discretionary_share'))} / "
+            f"other {_pct(share.get('other_share'))} "
+            f"model_versions={report.get('model_versions')}"
         )
         for note in report.get('errors') or []:
             self.stdout.write(self.style.WARNING(f'engine note: {note}'))
@@ -705,6 +735,18 @@ class Command(BaseCommand):
             raise CommandError('--grid builds one row per configuration; it cannot take --backtest-id.')
         if not options['start'] or not options['end']:
             raise CommandError('--grid requires --start and --end.')
+        cost_flags = [
+            flag for flag in (
+                'commission_rate', 'min_commission', 'slippage',
+                'liquidity_floor_multiple', 'min_trade_notional_fraction',
+            ) if options.get(flag) is not None
+        ]
+        if cost_flags:
+            raise CommandError(
+                '--grid runs every configuration under one cost model; drop '
+                + ', '.join('--' + flag.replace('_', '-') for flag in cost_flags)
+                + ' or run the configuration once without --grid.'
+            )
         prefix = str(options['grid_prefix'] or 'grid').strip() or 'grid'
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')

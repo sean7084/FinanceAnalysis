@@ -136,7 +136,15 @@ jobs:
       # that an asset-less feed-stale rule dispatches, respects cooldown, and
       # serialises asset_symbol to null, and 3 freshness tests that report the
       # last attempt separately from a defect on the newest bar.
-      MIN_TEST_COUNT: "629"
+      # 629 -> 636: Phase 2 instrumentation. Seven tests over one synthetic
+      # reference run and small seeded contexts: one rebalance record per built
+      # plan, drift vs discretionary turnover reconciled to the headline number, a
+      # closed leg paying its own slippage while pnl stays price-embedded, the
+      # default minimum-trade fraction matching the hardcode it replaces, three
+      # sub-windows that partition sessions without gap or overlap, the resolved
+      # model version recorded (None for RULE, skipped sources included), and the
+      # reference configuration's curve/trade log staying byte-identical.
+      MIN_TEST_COUNT: "636"
 
     steps:
       - uses: actions/checkout@v4

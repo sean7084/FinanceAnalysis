@@ -795,6 +795,7 @@ def run_etf_rotation_backtest(self, backtest_id):
         min_commission=float(run.min_commission),
         slippage=run.slippage,
         liquidity_floor_multiple=run.liquidity_floor_multiple,
+        min_trade_notional_fraction=float(run.min_trade_notional_fraction),
         benchmark_code=run.benchmark_code,
         # ``weighting`` is a column now, so the row -- not the caller's default -- decides
         # how the plan is scaled. Reading it here is what makes the promotion observable.

@@ -179,7 +179,7 @@ def _backtest_config_for(run):
     """Rebuild the engine's config from a row's own columns, saved or not.
 
     Mirrors exactly what ``apps.etf_rotation.tasks.run_etf_rotation_backtest`` feeds the
-    engine -- the twelve explicit knobs plus ``weighting``, ``dedup_track_index``,
+    engine -- the explicit cost/identity knobs plus ``weighting``, ``dedup_track_index``,
     ``max_per_category`` and ``walk_forward_steps`` as overrides -- which is what makes the
     digest computed here the digest the worker will use. Two details are load bearing: the
     selection knobs must be passed explicitly because the row's column default and the
@@ -208,6 +208,7 @@ def _backtest_config_for(run):
         min_commission=float(run.min_commission),
         slippage=float(run.slippage),
         liquidity_floor_multiple=float(run.liquidity_floor_multiple),
+        min_trade_notional_fraction=float(run.min_trade_notional_fraction),
         benchmark_code=run.benchmark_code,
         weighting=run.weighting,
         dedup_track_index=run.dedup_track_index,

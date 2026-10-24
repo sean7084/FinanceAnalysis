@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-24T07:22:07Z_
+_Generated: 2026-10-24T07:45:38Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -254,6 +254,11 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--cash-yield-annual` | value | &mdash; |  | Annualised rate credited to cash the liquidity floor left idle (default 0.0, which reproduces every pre-existing run). |
 | `--defensive-asset` | value | &mdash; |  | TS code of the risk-off sleeve. Default: settings.ETF_DEFENSIVE_ASSET. |
 | `--initial-capital` | value | &mdash; |  | Starting equity in yuan. Default: settings.ETF_INITIAL_CAPITAL. A small value is how the min-commission floor gets exercised. |
+| `--commission-rate` | value | &mdash; |  | Two-way broker commission rate. Default: settings.ETF_COMMISSION_RATE (0.0003). |
+| `--min-commission` | value | &mdash; |  | Yuan floor on one fill. Default: settings.ETF_MIN_COMMISSION (5). |
+| `--slippage` | value | &mdash; |  | Fraction applied to the execution price. Default: settings.ETF_SLIPPAGE (0.001). |
+| `--liquidity-floor-multiple` | value | &mdash; |  | Required trailing daily turnover as a multiple of the leg notional; 0 disables the screen. Default: settings.ETF_LIQUIDITY_FLOOR_MULTIPLE (10). |
+| `--min-trade-notional-fraction` | value | &mdash; |  | Skip rebalance deltas below this share of equity (default 0.005). |
 | `--name` | value | `""` |  | Name of the persisted row. |
 | `--persist` | flag | `True` |  | Persist an ETFRotationBacktest row (the default). |
 | `--no-persist` | flag | `True` |  | Run without writing anything; metrics go to stdout only. |

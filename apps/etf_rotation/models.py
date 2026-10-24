@@ -463,6 +463,10 @@ class ETFRotationBacktest(models.Model):
     slippage = models.FloatField(_('Slippage'), default=0.001)
     liquidity_floor_multiple = models.FloatField(_('Liquidity Floor Multiple'), default=10.0,
                                                  help_text=_('Required daily turnover multiple of the trade notional.'))
+    min_trade_notional_fraction = models.FloatField(
+        _('Min Trade Notional Fraction'), default=0.005,
+        help_text=_('Rebalance deltas below this share of equity are skipped rather than paying the commission floor.'),
+    )
 
     model_type = models.CharField(_('Model Type'), max_length=10, choices=ModelType.choices,
                                   default=ModelType.RULE, db_index=True)

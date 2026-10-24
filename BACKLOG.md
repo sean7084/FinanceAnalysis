@@ -184,6 +184,23 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Open — correctness
 
+### `position_fees_paid` changed meaning; pre-0.1.23 rows keep the old one
+
+Phase 2 made a closed leg's `position_fees_paid` include the slippage its fills
+embedded, not just commission. The reference row's 233 closed trades sum to
+168,901.10 on a rerun (39,243.23 commission + 129,657.86 closed-leg slippage),
+while the persisted row still sums to 39,243.23. Nothing is corrupted — `pnl`
+already carried slippage inside the execution price and is bit-identical — but a
+query that averages `position_fees_paid` across rows must either filter by
+`created_at` or use the `total_fees` / `total_slippage_cost` metric columns. No
+backfill is planned: the old field never stored the commission/slippage split, so
+inventing one would be worse than the documented break.
+
+The other Phase 2 report blocks (`turnover`, `sub_windows`, `rebalances`,
+`model_versions`) are computed at finalization and are absent from rows completed
+earlier. Readers must treat them as optional; the §7.10 evidence comes from an
+ephemeral rerun of the reference configuration, not from the stored row.
+
 ### The Kelly governor is a kill switch at its own default floor
 
 `kelly_fraction=0` (off) is bit-identical to the pre-change engine, which is the

@@ -1,5 +1,66 @@
 # Changelog
 
+### version 0.1.23
+
+#### Added:
+
+- **The backtest report explains its own turnover.** `report['turnover']` splits
+  filled BUY+SELL notional by fill reason — `rebalance_up/down` is drift,
+  `rotated_out` is a discretionary swap — and annualises each bucket exactly like
+  `turnover_annual`. On the reference row it is 11.60x drift / 11.25x
+  discretionary (22.85x total), so roughly half of the headline turnover is the
+  book drifting rather than the selection layer trading.
+- **One rebalance record per built plan.** `report['rebalances']` carries the
+  selection layer's own `mode`, `swaps_used`, entries, exits, refills and
+  displacements for every plan, including plans that filled nothing (213 on the
+  reference row). This is the only place a "kept the book" decision is visible.
+- **Sub-window facets.** `report['sub_windows']` cuts the persisted equity curve
+  into three equal, non-overlapping blocks, each with return, max drawdown,
+  Sharpe and turnover, so a full-window Sharpe cannot hide a dead regime. The
+  reference run's third block (2021-05-14..2023-12-29) is -4.99% with 34.33%
+  drawdown and 29.19x turnover; block 2 supplies almost all of the +99.69%.
+- **The report names the model that scored the run.**
+  `report['model_versions']` is `{'RULE': None}` for a rule run. ML loaders attach
+  their `ModelVersion` id, version and type to the predictor callable; the scoring
+  metadata carries that into the report, so it names the version that actually
+  ranked the run instead of re-querying "whichever row is active now". ENSEMBLE
+  records every source, and a skipped source is an explicit `None`.
+- **Counters for the commission floor and the future no-trade band.**
+  `min_commission_bound_fills` (113 on the reference run) and
+  `band_suppressed_deltas` (0 until Phase 3) are in `report['counters']`.
+- **The cost model is a CLI surface.** `--commission-rate`, `--min-commission`,
+  `--slippage`, `--liquidity-floor-multiple` and
+  `--min-trade-notional-fraction` run one configuration under an explicit cost
+  model. `--grid` refuses them because every grid row must share the same model,
+  and `--backtest-id` refuses an explicit value that disagrees with the row.
+- **`min_trade_notional_fraction` is a column.** The 0.5% delta threshold was
+  hardcoded in `_execute_plan`; it is now a `BacktestConfig` field, an
+  `ETFRotationBacktest` column (migration `0006`, default 0.005) and a CLI flag.
+  The default reproduces the old behaviour bit-for-bit; changing it changes the
+  resume fingerprint, so a paused legacy row restarts from scratch.
+
+#### Changed:
+
+- **A closed leg's `position_fees_paid` now includes slippage.** It used to sum
+  commissions only while `pnl` already carried the slipped execution price. On
+  the reference row the 233 closed legs now report 168,901.10 (39,243.23
+  commission + 129,657.86 slippage) instead of 39,243.23. `pnl`, cash and the
+  equity curve are bit-identical; only the fee line moved. Rows written before
+  this version keep the old field and are **not backfilled** — the old value never
+  stored the split, so use the `total_fees` and `total_slippage_cost` metric
+  columns for cross-version comparisons.
+
+#### Verified:
+
+- The reference configuration (row 256) reruns bit-identically: 1926 equity
+  points and 597 fills with the same SHA-256 digests, 213 rebalances, 113
+  floor-bound fills, commission 39,524.03 and slippage 130,592.93. The only
+  changed stored field is the closed-leg fee line described above.
+- Fee sensitivity on the same configuration: 万三/免五 versus 万一/不免五 is
+  39,524.03 versus 13,805.52 commission, 113 versus 128 floor-bound fills,
+  Sharpe 0.5357 versus 0.5547, total return +99.69% versus +105.88%. A
+  single-window observation, not a reason to change a default.
+
 ### version 0.1.22
 
 #### Added:

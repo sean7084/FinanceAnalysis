@@ -1086,6 +1086,378 @@ class BacktestConfigValidationTests(SimpleTestCase):
         self.assertEqual(payload['start_date'], '2024-01-01')
 
 
+class BacktestReportInstrumentationTests(SimpleTestCase):
+    """Phase 2: the report explains a run without moving it.
+
+    Every observation is derived from state that already existed (``trade_log``, the
+    persisted curve) or is copied from the selection layer's own turnover metadata, so the
+    equity curve, fills and realised P&L stay a pure function of prices, commission and
+    slippage. The reference rerun's byte-identity against production row 256 is checked
+    out of band; the ledger identities below are the CI-sized version of that gate.
+    """
+
+    DAYS = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)]
+
+    def config(self, **overrides):
+        values = {
+            'start_date': self.DAYS[0], 'end_date': self.DAYS[-1],
+            'initial_capital': 100_000.0,
+            'commission_rate': 0.0003, 'min_commission': 5.0, 'slippage': 0.001,
+            'liquidity_floor_multiple': 0.0,
+            'secondary_benchmark_codes': (), 'compute_proxy_benchmark': False,
+        }
+        values.update(overrides)
+        return backtest_engine.BacktestConfig(**values)
+
+    def context(self, prices, *, snapshots=None, module=None, **overrides):
+        """A context whose price cache is pre-populated, so no data source is consulted."""
+        config = self.config(**overrides)
+        source = SimpleNamespace(
+            benchmark_close=lambda *args, **kwargs: pd.Series(dtype='float64'),
+            snapshots=(lambda session: snapshots) if snapshots is not None else None,
+        )
+        book = backtest_engine.PriceBook(source, self.DAYS[0], self.DAYS[-1], self.DAYS)
+        index = pd.Index(self.DAYS)
+        for code, closes in prices.items():
+            book._cache[code] = {
+                'close': pd.Series(closes, index=index, dtype='float64'),
+                'adj_close': pd.Series(closes, index=index, dtype='float64'),
+                'amount': pd.Series([1e9] * len(self.DAYS), index=index, dtype='float64'),
+                'volume': pd.Series([1e7] * len(self.DAYS), index=index, dtype='float64'),
+                'adj_factor': pd.Series([1.0] * len(self.DAYS), index=index, dtype='float64'),
+            }
+        return backtest_engine._Context(
+            config, module=module, book=book, source=source, predictors={},
+        )
+
+    class _StubRotation:
+        """The narrow slice of ``rotation_engine`` that ``_build_plan`` calls."""
+
+        class RotationConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        def __init__(self, turnovers):
+            self.turnovers = list(turnovers)
+            self.built = 0
+
+        def score_snapshots(self, snapshots, **kwargs):
+            return pd.DataFrame({
+                'ts_code': snapshots['ts_code'].tolist(),
+                'score': [0.5] * len(snapshots),
+            })
+
+        def build_rotation_plan(self, scored, snapshots, config, **kwargs):
+            turnover = self.turnovers[min(self.built, len(self.turnovers) - 1)]
+            self.built += 1
+            return SimpleNamespace(
+                legs=[SimpleNamespace(ts_code='512760.SH', weight=0.1)],
+                defensive_asset='511010.SH',
+                defensive_allocation=0.0,
+                rankings=[{'ts_code': '512760.SH', 'score': 0.5}],
+                metadata={'turnover': turnover},
+            )
+
+    def _seeded_context(self, *, min_trade_notional_fraction=0.005):
+        ctx = self.context(
+            {'512760.SH': [1.0] * len(self.DAYS)},
+            initial_capital=100_000.0,
+            min_trade_notional_fraction=min_trade_notional_fraction,
+        )
+        ctx.state.cash = 90_000.0
+        ctx.state.positions['512760.SH'] = backtest_engine.PositionLot(
+            ts_code='512760.SH', name='半导体ETF', shares=10_000, avg_cost=1.0,
+            cost_notional=10_000.0, entry_date=self.DAYS[0],
+            last_close=1.0, last_close_date=self.DAYS[0], last_adj_factor=1.0,
+        )
+        ctx.state.pending_plan = {
+            'signal_date': self.DAYS[0],
+            'target_weights': {'512760.SH': 0.101},
+            'leg_meta': {},
+        }
+        return ctx
+
+    def test_the_report_carries_one_entry_per_rebalance(self):
+        turnovers = [
+            {
+                'mode': 'full', 'swaps_used': 1,
+                'entries': [{'ts_code': '512760.SH', 'rank': 1, 'reason': 'vacant_slot'}],
+                'exits': [{'ts_code': '515980.SH', 'reason': 'ineligible'}],
+                'refills': 1,
+                'displacements': [{'ts_code': '515980.SH', 'rank': 4, 'replaced_by': '512760.SH'}],
+            },
+            {
+                'mode': 'kept', 'swaps_used': 0, 'entries': [],
+                'exits': [], 'refills': 0, 'displacements': [],
+            },
+        ]
+        module = self._StubRotation(turnovers)
+        snapshots = pd.DataFrame({
+            'ts_code': ['512760.SH', '515980.SH'],
+            'name': ['半导体ETF', '芯片ETF'],
+            'category': ['SECTOR_TECH', 'SECTOR_TECH'],
+            'mom_60d': [0.3, 0.1],
+        })
+        ctx = self.context({}, snapshots=snapshots, module=module)
+        ctx.state.equity_curve = [
+            {'date': day.isoformat(), 'equity': 100_000.0, 'cash': 100_000.0,
+             'holdings': 0.0, 'positions': 0, 'drawdown': 0.0}
+            for day in self.DAYS[:2]
+        ]
+
+        backtest_engine._build_plan(ctx, self.DAYS[0], self.DAYS[1])
+        backtest_engine._build_plan(ctx, self.DAYS[1], self.DAYS[2])
+        report = backtest_engine._finalize_metrics(
+            ctx, ctx.config, ctx.source, self.DAYS[:2],
+        )['report']
+
+        self.assertEqual(report['counters']['rebalances'], 2)
+        self.assertEqual(report['counters']['signals_generated'], 2)
+        self.assertEqual(
+            set(report['rebalances'][0]),
+            {'signal_date', 'execute_date', 'mode', 'swaps_used', 'entries', 'exits',
+             'refills', 'displacements'},
+        )
+        self.assertEqual(
+            [(item['signal_date'], item['execute_date']) for item in report['rebalances']],
+            [('2024-01-02', '2024-01-03'), ('2024-01-03', '2024-01-04')],
+        )
+        self.assertEqual(report['rebalances'][0]['mode'], 'full')
+        self.assertEqual(report['rebalances'][0]['swaps_used'], 1)
+        self.assertEqual(
+            report['rebalances'][0]['entries'],
+            [{'ts_code': '512760.SH', 'rank': 1, 'reason': 'vacant_slot'}],
+        )
+        self.assertEqual(
+            report['rebalances'][0]['displacements'],
+            [{'ts_code': '515980.SH', 'rank': 4, 'replaced_by': '512760.SH'}],
+        )
+        self.assertEqual(report['rebalances'][0]['refills'], 1)
+        # A plan that changed nothing still leaves a record: no fill row could tell this story.
+        self.assertEqual(report['rebalances'][1]['mode'], 'kept')
+        self.assertEqual(report['rebalances'][1]['swaps_used'], 0)
+
+    def test_drift_and_discretionary_turnover_are_split_by_fill_reason(self):
+        days = self.DAYS
+        equity = pd.Series(
+            [100.0, 101.0, 102.0, 103.0], index=pd.Index(days), dtype='float64',
+        )
+        trade_log = [
+            {'date': days[0].isoformat(), 'status': 'FILLED', 'reason': 'rebalance_up', 'notional': 10.0},
+            {'date': days[1].isoformat(), 'status': 'FILLED', 'reason': 'rebalance_down', 'notional': 20.0},
+            {'date': days[2].isoformat(), 'status': 'FILLED', 'reason': 'rotated_out', 'notional': 30.0},
+            {'date': days[3].isoformat(), 'status': 'SKIPPED_NO_PRICE', 'reason': 'rotated_out', 'notional': 0.0},
+            {'date': days[3].isoformat(), 'status': 'REJECTED_LIQUIDITY', 'reason': 'rotated_out', 'notional': 0.0},
+        ]
+
+        facets = backtest_engine._turnover_facets(days, equity, trade_log)
+
+        self.assertEqual(facets['buckets']['rebalance_up'], 'drift')
+        self.assertEqual(facets['buckets']['rebalance_down'], 'drift')
+        self.assertEqual(facets['buckets']['rotated_out'], 'discretionary')
+        self.assertEqual(
+            facets['notional'],
+            {'drift_yuan': 30.0, 'discretionary_yuan': 30.0, 'other_yuan': 0.0, 'total_yuan': 60.0},
+        )
+        self.assertEqual(
+            facets['by_reason_yuan'],
+            {'rebalance_down': 20.0, 'rebalance_up': 10.0, 'rotated_out': 30.0},
+        )
+        self.assertAlmostEqual(facets['share']['drift_share'], 0.5)
+        self.assertAlmostEqual(facets['share']['discretionary_share'], 0.5)
+        self.assertAlmostEqual(facets['share']['other_share'], 0.0)
+        # The two buckets plus ``other`` must reconcile with the headline column exactly.
+        traded = pd.Series([10.0, 20.0, 30.0, 0.0], index=pd.Index(days), dtype='float64')
+        self.assertAlmostEqual(
+            facets['annualized']['total'],
+            finance_metrics.annualized_turnover(traded, equity),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            facets['annualized']['drift'],
+            finance_metrics.annualized_turnover(
+                pd.Series([10.0, 20.0, 0.0, 0.0], index=pd.Index(days), dtype='float64'), equity,
+            ),
+            places=12,
+        )
+
+    def test_a_closed_trade_pays_its_own_slippage(self):
+        ctx = self.context({'512760.SH': [10.0, 11.0, 11.0, 11.0]})
+
+        self.assertTrue(backtest_engine._buy(
+            ctx, '512760.SH', 1_000, self.DAYS[0], weight=0.1,
+            reason='rebalance_up', signal_date=None,
+        ))
+        self.assertTrue(backtest_engine._sell(
+            ctx, '512760.SH', 1_000, self.DAYS[1], weight=0.0,
+            reason='rotated_out', signal_date=None,
+        ))
+
+        closed = ctx.state.closed_trades[0]
+        # 1000 shares, 10 -> 11 raw, 10 bps slippage each way, two 5 yuan floors.
+        self.assertAlmostEqual(ctx.state.total_commission, 10.0, places=9)
+        self.assertAlmostEqual(ctx.state.total_slippage, 21.0, places=9)
+        self.assertAlmostEqual(closed['position_fees_paid'], 31.0, places=9)
+        self.assertAlmostEqual(closed['pnl'], 969.0, places=9)
+        self.assertAlmostEqual(ctx.state.cash, 100_969.0, places=6)
+        self.assertEqual(ctx.state.min_commission_bound_fills, 2)
+        # ``pnl`` is untouched by the fee-line change: the gross price move is fully
+        # explained by realised P&L plus every cost the leg actually paid.
+        self.assertAlmostEqual(closed['pnl'] + closed['position_fees_paid'], 1_000.0, places=9)
+
+    def test_the_default_min_trade_fraction_is_the_hardcode_it_replaces(self):
+        default = backtest_engine.BacktestConfig(
+            start_date=self.DAYS[0], end_date=self.DAYS[-1],
+        )
+        self.assertEqual(default.min_trade_notional_fraction, 0.005)
+        self.assertEqual(
+            ETFRotationBacktest._meta.get_field('min_trade_notional_fraction').default,
+            0.005,
+        )
+
+        # One board lot (100 yuan) against a 100,000 yuan book: suppressed at 0.5%, filled
+        # at 0.05%. The default is the 0.5% that used to be written into ``_execute_plan``.
+        suppressed = self._seeded_context()
+        backtest_engine._execute_plan(suppressed, self.DAYS[1])
+        self.assertEqual(suppressed.state.sub_minimum_deltas, 1)
+        self.assertEqual(suppressed.state.trade_log, [])
+
+        executed = self._seeded_context(min_trade_notional_fraction=0.0005)
+        backtest_engine._execute_plan(executed, self.DAYS[1])
+        self.assertEqual(executed.state.sub_minimum_deltas, 0)
+        self.assertEqual([item['status'] for item in executed.state.trade_log], ['FILLED'])
+        self.assertEqual(executed.state.trade_log[0]['shares'], 100)
+        self.assertAlmostEqual(executed.state.trade_log[0]['weight'], 0.101)
+
+    def test_sub_window_facets_cover_the_window_without_overlap_or_gap(self):
+        days = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(9)]
+        equity = pd.Series(
+            [100.0, 102.0, 101.0, 104.0, 103.0, 106.0, 105.0, 108.0, 107.0],
+            index=pd.Index(days), dtype='float64',
+        )
+        traded = pd.Series(
+            [0.0, 10.0, 0.0, 20.0, 0.0, 30.0, 0.0, 40.0, 0.0],
+            index=pd.Index(days), dtype='float64',
+        )
+
+        facets = backtest_engine._sub_window_facets(equity, traded)
+
+        self.assertEqual([facet['block'] for facet in facets], [1, 2, 3])
+        self.assertEqual(facets[0]['base_date'], days[0].isoformat())
+        for previous, current in zip(facets, facets[1:]):
+            self.assertEqual(current['base_date'], previous['end_date'])
+            self.assertEqual(
+                days.index(date.fromisoformat(current['start_date'])),
+                days.index(date.fromisoformat(previous['end_date'])) + 1,
+            )
+        self.assertEqual(sum(facet['sessions'] for facet in facets), len(days) - 1)
+        self.assertAlmostEqual(
+            math.prod(1.0 + facet['total_return'] for facet in facets),
+            float(equity.iloc[-1]) / float(equity.iloc[0]),
+            places=12,
+        )
+        for facet in facets:
+            self.assertEqual(set(facet), {
+                'block', 'start_date', 'end_date', 'base_date', 'sessions',
+                'total_return', 'max_drawdown', 'sharpe_ratio', 'turnover_annual',
+                'traded_notional_yuan',
+            })
+
+    def test_the_resolved_model_version_is_recorded_and_null_for_rule(self):
+        rule = pd.DataFrame({'ts_code': ['512760.SH'], 'score': [1.0]})
+        rule.attrs['rotation'] = {'model_type': 'RULE'}
+        self.assertEqual(
+            backtest_engine._model_version_summary(rule, 'RULE'), {'RULE': None},
+        )
+
+        ml = pd.DataFrame({'ts_code': ['512760.SH'], 'score': [1.0]})
+        ml.attrs['rotation'] = {
+            'model_version': {'id': 7, 'version': '20261024', 'model_type': 'LIGHTGBM'},
+        }
+        self.assertEqual(
+            backtest_engine._model_version_summary(ml, 'LIGHTGBM'),
+            {'LIGHTGBM': {'id': 7, 'version': '20261024', 'model_type': 'LIGHTGBM'}},
+        )
+
+        ensemble = pd.DataFrame({'ts_code': ['512760.SH'], 'score': [1.0]})
+        ensemble.attrs['rotation'] = {
+            'source_metadata': {
+                'RULE': {'model_type': 'RULE'},
+                'LIGHTGBM': {'model_version': {'id': 7}},
+            },
+            'ensemble': {'skipped_sources': ['LSTM']},
+        }
+        self.assertEqual(
+            backtest_engine._model_version_summary(ensemble, 'ENSEMBLE'),
+            {'RULE': None, 'LIGHTGBM': {'id': 7}, 'LSTM': None},
+        )
+
+        # The identity travels from the loader-attached callable, not a second "active
+        # model" query, so the report names the version that actually ranked the run.
+        def predictor(frame):
+            return pd.DataFrame({
+                'ts_code': frame['ts_code'].tolist(),
+                'score': [1.0] * len(frame),
+            })
+
+        predictor.model_version = {
+            'id': 7, 'version': 'v1', 'model_type': 'LIGHTGBM', 'artifact_path': '/tmp/x',
+        }
+        scored = rotation_engine.score_snapshots(
+            pd.DataFrame({'ts_code': ['A', 'B'], 'mom_60d': [0.1, 0.2]}),
+            model_type='LIGHTGBM',
+            momentum_lookback=60,
+            lgb_predictor=predictor,
+        )
+        self.assertEqual(
+            scored.attrs['rotation']['model_version'],
+            {'id': 7, 'version': 'v1', 'model_type': 'LIGHTGBM'},
+        )
+
+    def test_the_reference_configuration_is_byte_identical_after_instrumentation(self):
+        """The ledger identity the reference row's rerun checks at production scale.
+
+        Row 256 is rerun out of band (equity curve digest and all 597 fills); this pins the
+        same arithmetic in CI. Instrumentation adds counters and a report-only fee line, but
+        cash, marks and realised P&L must remain a pure function of price, commission and
+        slippage, and the fee line must reconcile with the gross move.
+        """
+        ctx = self.context({'512760.SH': [10.0, 10.0, 11.0, 11.0]}, initial_capital=480_000.0)
+
+        backtest_engine._mark_equity(ctx, self.DAYS[0])
+        self.assertTrue(backtest_engine._buy(
+            ctx, '512760.SH', 1_000, self.DAYS[1], weight=0.02,
+            reason='rebalance_up', signal_date=self.DAYS[0],
+        ))
+        backtest_engine._mark_equity(ctx, self.DAYS[1])
+        self.assertTrue(backtest_engine._sell(
+            ctx, '512760.SH', 1_000, self.DAYS[2], weight=0.0,
+            reason='rotated_out', signal_date=self.DAYS[1],
+        ))
+        backtest_engine._mark_equity(ctx, self.DAYS[2])
+
+        self.assertEqual(
+            [point['equity'] for point in ctx.state.equity_curve],
+            [480_000.0, 479_985.0, 480_969.0],
+        )
+        self.assertEqual(
+            [point['cash'] for point in ctx.state.equity_curve],
+            [480_000.0, 469_985.0, 480_969.0],
+        )
+        closed = ctx.state.closed_trades[0]
+        self.assertAlmostEqual(closed['pnl'], 969.0, places=9)
+        self.assertAlmostEqual(closed['position_fees_paid'], 31.0, places=9)
+        self.assertAlmostEqual(ctx.state.total_commission + ctx.state.total_slippage, 31.0, places=9)
+        summary = finance_metrics.summarize_performance(
+            pd.Series(
+                [point['equity'] for point in ctx.state.equity_curve],
+                index=pd.Index([date.fromisoformat(point['date']) for point in ctx.state.equity_curve]),
+                dtype='float64',
+            ),
+        )
+        self.assertAlmostEqual(summary['total_return'], 480_969.0 / 480_000.0 - 1.0, places=12)
+
+
 class FeatureWhitelistTests(SimpleTestCase):
     """``FEATURE_COLUMNS`` is the declared feature/label split; nothing may infer it from the model."""
 
@@ -2031,7 +2403,8 @@ class EtfBacktestCreateGuardrailTests(_EtfBacktestLifecycleMixin, TestCase):
         """
         response, _ = self._post_and_commit(
             commission_rate=0.0, min_commission=0, slippage=0.0,
-            liquidity_floor_multiple=0, benchmark_code='000300.SH', walk_forward_steps=6,
+            liquidity_floor_multiple=0, min_trade_notional_fraction=0.0,
+            benchmark_code='000300.SH', walk_forward_steps=6,
         )
 
         self.assertEqual(response.status_code, 202)
@@ -2040,6 +2413,7 @@ class EtfBacktestCreateGuardrailTests(_EtfBacktestLifecycleMixin, TestCase):
         self.assertEqual(float(run.min_commission), 5.0)
         self.assertEqual(run.slippage, 0.001)
         self.assertEqual(run.liquidity_floor_multiple, 10.0)
+        self.assertEqual(run.min_trade_notional_fraction, 0.005)
         self.assertEqual(run.benchmark_code, 'H00905.CSI')
         self.assertEqual(run.walk_forward_steps, 0)
 

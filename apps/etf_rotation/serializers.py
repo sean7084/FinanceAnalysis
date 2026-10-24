@@ -180,7 +180,8 @@ class ETFRotationBacktestSerializer(serializers.ModelSerializer):
             'max_positions', 'momentum_lookback', 'defensive_asset',
             'absolute_momentum_filter', 'weighting', 'dedup_track_index', 'max_per_category',
             'initial_capital', 'commission_rate',
-            'min_commission', 'slippage', 'liquidity_floor_multiple', 'model_type',
+            'min_commission', 'slippage', 'liquidity_floor_multiple',
+            'min_trade_notional_fraction', 'model_type',
             'walk_forward_steps', 'benchmark_code',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',
             'calmar_ratio', 'win_rate', 'turnover_annual', 'alpha_vs_benchmark',
@@ -195,7 +196,7 @@ class ETFRotationBacktestSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'status', 'pending_control_action', 'task_state', 'has_stale_task_owner',
             'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
-            'walk_forward_steps', 'benchmark_code',
+            'min_trade_notional_fraction', 'walk_forward_steps', 'benchmark_code',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',
             'calmar_ratio', 'win_rate', 'turnover_annual', 'alpha_vs_benchmark',
             'beta_vs_benchmark', 'information_ratio', 'benchmark_return', 'total_fees',

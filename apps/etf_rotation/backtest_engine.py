@@ -232,7 +232,7 @@ class BacktestConfig:
     liquidity_lookback_sessions: int = LIQUIDITY_LOOKBACK_SESSIONS
     # Rebalance deltas smaller than this share of equity are skipped: paying a 5 yuan
     # minimum commission to move 0.1% of the portfolio is noise that only makes the
-    # result look worse than it is.
+    # result look worse than it is. Promoted to a column and a CLI flag, default unchanged.
     min_trade_notional_fraction: float = 0.005
     chunk_trading_days: int = field(
         default_factory=lambda: int(_setting('ETF_ROTATION_BACKTEST_CHUNK_TRADING_DAYS', 120)),
@@ -277,6 +277,8 @@ class BacktestConfig:
             raise BacktestConfigError('momentum_lookback must be at least 1.')
         if self.chunk_trading_days < 1:
             raise BacktestConfigError('chunk_trading_days must be at least 1.')
+        if not 0.0 <= float(self.min_trade_notional_fraction) <= 1.0:
+            raise BacktestConfigError('min_trade_notional_fraction must sit between 0 and 1.')
         if self.max_per_category < 0:
             raise BacktestConfigError('max_per_category cannot be negative; use 0 for no cap.')
         if self.weighting not in WEIGHTING_MODES:
@@ -347,6 +349,11 @@ def etf_commission(notional: float, config: BacktestConfig) -> float:
     if notional <= 0:
         return 0.0
     return max(notional * float(config.commission_rate), float(config.min_commission))
+
+
+def commission_is_minimum_bound(notional: float, config: BacktestConfig) -> bool:
+    """Whether the yuan floor, not the rate, decided this fill's commission."""
+    return notional > 0 and notional * float(config.commission_rate) < float(config.min_commission)
 
 
 def etf_fee_breakdown(notional: float, config: BacktestConfig, *, side: str) -> dict[str, float]:
@@ -709,6 +716,10 @@ def _plan_to_target_weights(module: Any, plan: Any, config: BacktestConfig) -> t
         'defensive_asset': defensive_asset,
         'defensive_allocation': defensive_allocation,
         'legs': len(list(legs)),
+        # Carried through rather than re-derived: the turnover constraint is the only
+        # place that knows why a held name left the book, and the report needs that
+        # reason to tell forced drift from a discretionary swap.
+        'turnover': dict(getattr(plan, 'metadata', {}).get('turnover') or {}),
     }
     return weights, diagnostics
 
@@ -784,6 +795,11 @@ class EngineState:
     equity_curve: list[dict[str, Any]] = field(default_factory=list)
     trade_log: list[dict[str, Any]] = field(default_factory=list)
     closed_trades: list[dict[str, Any]] = field(default_factory=list)
+    # One record per built plan, carrying the turnover constraint's own reasons. Kept
+    # separate from ``trade_log`` because a plan that changes nothing still has a
+    # ``swaps_used``/``keeps`` story that no fill row can tell.
+    rebalances: list[dict[str, Any]] = field(default_factory=list)
+    model_versions: dict[str, Any] = field(default_factory=dict)
     pending_plan: dict[str, Any] | None = None
     total_commission: float = 0.0
     total_slippage: float = 0.0
@@ -800,6 +816,11 @@ class EngineState:
     stale_marks: int = 0
     skipped_fills: int = 0
     sub_minimum_deltas: int = 0
+    # Fills whose commission was decided by the 5 yuan floor rather than the rate.
+    min_commission_bound_fills: int = 0
+    # Deltas dropped by the no-trade band (Phase 3); wired here so the counter's report
+    # shape is stable before the knob that writes it exists.
+    band_suppressed_deltas: int = 0
     cursor: int = 0
     signals_generated: int = 0
     peak_equity: float | None = None
@@ -1148,6 +1169,10 @@ def _build_plan(ctx: _Context, session: date, execute_session: date) -> None:
             category = str(row['category']) if isinstance(row, pd.Series) else ''
         leg_meta[code] = {'name': name, 'category': category}
 
+    turnover = diagnostics.get('turnover') or {}
+    ctx.state.rebalances.append(_rebalance_record(session, execute_session, turnover))
+    ctx.state.model_versions = _model_version_summary(scored, config.model_type)
+
     ctx.state.pending_plan = {
         'signal_date': session,
         'execute_date': execute_session,
@@ -1180,6 +1205,48 @@ def _build_plan(ctx: _Context, session: date, execute_session: date) -> None:
             }
         )
     ctx.state.signals_generated += 1
+
+
+def _rebalance_record(session: date, execute_session: date, turnover: dict[str, Any]) -> dict[str, Any]:
+    """One plan's turnover-constraint outcome, in the words the constraint itself used.
+
+    ``entries``/``exits``/``displacements`` are copied rather than recomputed from the
+    trade ledger: a held name that was exited at the same weight it had would leave no
+    visible delta in the ledger, yet the selection layer still made a decision worth
+    recording. The count of these records is exactly ``signals_generated``.
+    """
+    return {
+        'signal_date': session.isoformat(),
+        'execute_date': execute_session.isoformat(),
+        'mode': str(turnover.get('mode') or 'unknown'),
+        'swaps_used': int(turnover.get('swaps_used') or 0),
+        'entries': list(turnover.get('entries') or []),
+        'exits': list(turnover.get('exits') or []),
+        'refills': int(turnover.get('refills') or 0),
+        'displacements': list(turnover.get('displacements') or []),
+    }
+
+
+def _model_version_summary(scored: Any, model_type: str) -> dict[str, Any]:
+    """Which registered ``ModelVersion`` scored each source, or ``None`` for RULE.
+
+    The predictor callables carry their registry identity as an attribute
+    (``train_lightgbm``/``train_lstm`` attach it), so this reads back what was actually
+    loaded rather than querying for "the active model" a second time -- a re-query could
+    name a newer version than the one the ranking used. RULE has no registry row, and
+    that absence is reported as an explicit ``None`` rather than an omitted key.
+    """
+    attrs = getattr(scored, 'attrs', None) or {}
+    metadata = dict(attrs.get('rotation') or {}) if hasattr(attrs, 'get') else {}
+    normalised = str(model_type or '').upper()
+    if normalised != 'ENSEMBLE':
+        return {normalised: metadata.get('model_version')}
+    versions: dict[str, Any] = {'RULE': None}
+    for name, payload in (metadata.get('source_metadata') or {}).items():
+        versions[str(name)] = (payload or {}).get('model_version')
+    for name in (metadata.get('ensemble') or {}).get('skipped_sources') or []:
+        versions.setdefault(str(name), None)
+    return versions
 
 
 def _serialize_rankings(rankings: Any, scored: pd.DataFrame) -> list[dict[str, Any]]:
@@ -1283,13 +1350,18 @@ def _sell(ctx: _Context, code: str, shares: int, session: date, *, weight: float
     notional = shares * exec_price
     commission = etf_commission(notional, ctx.config)
     slippage_cost = shares * raw_price * float(ctx.config.slippage)
+    if commission_is_minimum_bound(notional, ctx.config):
+        ctx.state.min_commission_bound_fills += 1
 
     proceeds = notional - commission
     ctx.state.cash += proceeds
     ctx.state.total_commission += commission
     ctx.state.total_slippage += slippage_cost
     lot.shares -= shares
-    lot.fees_paid += commission
+    # ``position_fees_paid`` is "what this leg cost to hold", so it includes the market
+    # impact the slipped price embedded as well as the commission. Report-only change:
+    # ``pnl`` already carried the slippage inside ``exec_price`` and is untouched.
+    lot.fees_paid += commission + slippage_cost
 
     cost_basis = lot.avg_cost * shares
     realized = proceeds - cost_basis
@@ -1372,9 +1444,12 @@ def _buy(ctx: _Context, code: str, shares: int, session: date, *, weight: float,
         ctx.state.skipped_fills += 1
         return False
 
+    slippage_cost = shares * raw_price * float(ctx.config.slippage)
+    if commission_is_minimum_bound(notional, ctx.config):
+        ctx.state.min_commission_bound_fills += 1
     ctx.state.cash -= notional + commission
     ctx.state.total_commission += commission
-    ctx.state.total_slippage += shares * raw_price * float(ctx.config.slippage)
+    ctx.state.total_slippage += slippage_cost
     ctx.state.turnover_by_session[session] = ctx.state.turnover_by_session.get(session, 0.0) + notional
 
     if lot is None:
@@ -1385,7 +1460,7 @@ def _buy(ctx: _Context, code: str, shares: int, session: date, *, weight: float,
             shares=int(shares),
             avg_cost=(notional + commission) / shares,
             cost_notional=notional,
-            fees_paid=commission,
+            fees_paid=commission + slippage_cost,
             entry_date=session,
             entry_price=exec_price,
             signal_date=signal_date,
@@ -1400,7 +1475,7 @@ def _buy(ctx: _Context, code: str, shares: int, session: date, *, weight: float,
         lot.shares = int(total_shares)
         lot.avg_cost = total_cost / total_shares
         lot.cost_notional += notional
-        lot.fees_paid += commission
+        lot.fees_paid += commission + slippage_cost
         lot.target_weight = weight
         if not lot.name:
             lot.name = name
@@ -1737,6 +1812,108 @@ def _comparison_bundle(
     return bundle
 
 
+#: Fill reason -> the kind of turnover it represents. ``rotated_out`` is the selection
+#: layer removing a held name (a discretionary swap); the two ``rebalance_*`` reasons
+#: exist only because a target weight moved against the marked book (drift).
+TURNOVER_BUCKETS = {
+    'rebalance_up': 'drift',
+    'rebalance_down': 'drift',
+    'rotated_out': 'discretionary',
+}
+SUB_WINDOW_BLOCKS = 3
+
+
+def _turnover_facets(dates: list[date], equity: pd.Series, trade_log: list[dict[str, Any]]) -> dict[str, Any]:
+    """Split realised turnover into drift and discretionary, by this module's fill reason.
+
+    The headline ``turnover_annual`` is unchanged; this only attributes it. Both BUY and
+    SELL notional count, matching :func:`finance_metrics.annualized_turnover`, or the two
+    numbers could not be reconciled.
+    """
+    index = pd.Index(dates)
+    series = {
+        name: pd.Series(0.0, index=index, dtype='float64')
+        for name in ('drift', 'discretionary', 'other')
+    }
+    by_reason: dict[str, float] = {}
+    for item in trade_log or []:
+        if item.get('status') != 'FILLED':
+            continue
+        notional = _to_float(item.get('notional'), 0.0) or 0.0
+        if notional <= 0:
+            continue
+        reason = str(item.get('reason') or 'unknown')
+        bucket = TURNOVER_BUCKETS.get(reason, 'other')
+        by_reason[reason] = by_reason.get(reason, 0.0) + notional
+        day = _as_date(item.get('date'))
+        if day in series[bucket].index:
+            series[bucket].loc[day] += notional
+
+    total_notional = float(sum(series[name].sum() for name in series))
+    annualized = {
+        name: finance_metrics.annualized_turnover(values, equity)
+        for name, values in series.items()
+    }
+    annualized['total'] = finance_metrics.annualized_turnover(
+        sum(series.values(), pd.Series(0.0, index=index, dtype='float64')), equity,
+    )
+    notional = {f'{name}_yuan': float(values.sum()) for name, values in series.items()}
+    notional['total_yuan'] = total_notional
+    share = {
+        f'{name}_share': (None if total_notional <= 0 else float(values.sum()) / total_notional)
+        for name, values in series.items()
+    }
+    return {
+        'definition': (
+            'one-way filled notional of both BUY and SELL legs, annualised by mean equity '
+            'and (sessions - 1), exactly like turnover_annual'
+        ),
+        'buckets': {reason: bucket for reason, bucket in TURNOVER_BUCKETS.items()},
+        'by_reason_yuan': dict(sorted(by_reason.items())),
+        'annualized': annualized,
+        'notional': notional,
+        'share': share,
+    }
+
+
+def _sub_window_facets(equity: pd.Series, traded: pd.Series, blocks: int = SUB_WINDOW_BLOCKS) -> list[dict[str, Any]]:
+    """Equal, non-overlapping slices of the run, each measured from its own entry mark.
+
+    The curve points are partitioned without sharing a point; a block after the first
+    measures its return from the previous block's closing equity (its ``base_date``) so
+    no session return is dropped or counted twice. Sharpe and turnover use only the
+    block's own return/trade observations, which is why the facets can disagree with the
+    full-window column rather than being a rescaling of it.
+    """
+    count = len(equity)
+    block_count = min(int(blocks), count // 2) if blocks else 0
+    if count < 4 or block_count < 1:
+        return []
+    facets: list[dict[str, Any]] = []
+    for order, chunk in enumerate(np.array_split(np.arange(count), block_count), start=1):
+        first, last = int(chunk[0]), int(chunk[-1])
+        base = 0 if order == 1 else first - 1
+        if last <= base:
+            continue
+        window_equity = equity.iloc[base:last + 1]
+        window_traded = traded.iloc[first:last + 1]
+        start = equity.index[0] if order == 1 else equity.index[first]
+        entry_equity = float(equity.iloc[base])
+        facets.append({
+            'block': order,
+            'start_date': _iso(start),
+            'end_date': _iso(equity.index[last]),
+            'base_date': _iso(equity.index[base]),
+            'sessions': int(last - base),
+            'total_return': None if entry_equity <= 0 else float(equity.iloc[last]) / entry_equity - 1.0,
+            'max_drawdown': finance_metrics.max_drawdown(window_equity),
+            'sharpe_ratio': finance_metrics.sharpe_ratio(finance_metrics.returns_from_equity(window_equity)),
+            'turnover_annual': finance_metrics.annualized_turnover(window_traded, window_equity),
+            'traded_notional_yuan': float(window_traded.sum()),
+        })
+    return facets
+
+
 def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_sessions: list[date]) -> dict[str, Any]:
     """Everything that needs the completed curve: strategy metrics, comparisons, report."""
     state = ctx.state
@@ -1812,12 +1989,15 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
         'counters': {
             'sessions': int(len(state.equity_curve)),
             'signals_generated': int(state.signals_generated),
+            'rebalances': int(len(state.rebalances)),
             'trades': int(len(state.trade_log)),
             'filled_trades': int(sum(1 for item in state.trade_log if item.get('status') == 'FILLED')),
             'rejected_liquidity_fills': int(state.rejected_fills),
             'skipped_no_price_fills': int(state.skipped_fills),
             'stale_marks': int(state.stale_marks),
             'sub_minimum_deltas': int(state.sub_minimum_deltas),
+            'min_commission_bound_fills': int(state.min_commission_bound_fills),
+            'band_suppressed_deltas': int(state.band_suppressed_deltas),
             'closed_trades': int(len(state.closed_trades)),
             'dividend_cash_yuan': float(state.total_dividend_cash),
             'defensive_sleeve_uninvested': int(state.defensive_sleeve_uninvested),
@@ -1827,6 +2007,10 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
             'price_book_loads': int(ctx.book.load_calls),
             'price_book_rows': int(ctx.book.loaded_rows),
         },
+        'turnover': _turnover_facets(dates, equity, state.trade_log),
+        'sub_windows': _sub_window_facets(equity, traded),
+        'rebalances': list(state.rebalances),
+        'model_versions': dict(state.model_versions) or {config.model_type: None},
         'metrics_detail': {
             key: summary[key]
             for key in (
@@ -1854,8 +2038,9 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
 _RUN_PARAMETER_FIELDS = (
     'start_date', 'end_date', 'rebalance_frequency', 'max_positions', 'momentum_lookback',
     'defensive_asset', 'initial_capital', 'commission_rate', 'min_commission', 'slippage',
-    'liquidity_floor_multiple', 'model_type', 'benchmark_code', 'walk_forward_steps',
-    'absolute_momentum_filter', 'weighting', 'dedup_track_index', 'max_per_category',
+    'liquidity_floor_multiple', 'min_trade_notional_fraction', 'model_type', 'benchmark_code',
+    'walk_forward_steps', 'absolute_momentum_filter', 'weighting', 'dedup_track_index',
+    'max_per_category',
 )
 
 #: The result columns a restart zeroes, so the list is defined once and cannot drift
@@ -1896,7 +2081,9 @@ def _adopt_backtest_row(persist_to: Any, name: str | None, config: BacktestConfi
         value = getattr(config, field_name)
         if field_name == 'initial_capital':
             value = Decimal(str(value)).quantize(Decimal('0.01'))
-        elif field_name in ('commission_rate', 'slippage', 'liquidity_floor_multiple'):
+        elif field_name in (
+            'commission_rate', 'slippage', 'liquidity_floor_multiple', 'min_trade_notional_fraction',
+        ):
             value = float(value)
         elif field_name == 'min_commission':
             value = Decimal(str(value)).quantize(Decimal('0.01'))
@@ -1978,6 +2165,9 @@ def _runtime_payload(ctx: _Context, cursor: int) -> dict[str, Any]:
         'skipped_fills': int(state.skipped_fills),
         'stale_marks': int(state.stale_marks),
         'sub_minimum_deltas': int(state.sub_minimum_deltas),
+        'min_commission_bound_fills': int(state.min_commission_bound_fills),
+        'band_suppressed_deltas': int(state.band_suppressed_deltas),
+        'model_versions': dict(state.model_versions),
         'signals_generated': int(state.signals_generated),
         'turnover_by_session': {day.isoformat(): float(value) for day, value in state.turnover_by_session.items()},
         'positions': {code: _position_payload(lot) for code, lot in state.positions.items()},
@@ -1989,15 +2179,17 @@ def _runtime_payload(ctx: _Context, cursor: int) -> dict[str, Any]:
         'equity_points': int(len(state.equity_curve)),
         'trade_rows': int(len(state.trade_log)),
         'closed_trade_rows': int(len(state.closed_trades)),
+        'rebalance_rows': int(len(state.rebalances)),
     }
 
 
 def _persist_progress(run: Any, ctx: _Context, cursor: int, total_sessions: int) -> None:
     """Durably stage a chunk's output so a worker restart resumes instead of restarting.
 
-    The curve, the ledger and the closed-trade list live in their own columns;
-    ``runtime_state`` holds only what cannot be re-derived from them (cash, lots, the
-    queued plan, the accumulators). Mirrors ``apps.backtest.tasks``' resumable design.
+    The curve, the ledger, the closed-trade list and the per-rebalance records live in
+    their own columns; ``runtime_state`` holds only what cannot be re-derived from them
+    (cash, lots, the queued plan, the accumulators). Mirrors ``apps.backtest.tasks``'
+    resumable design.
 
     The JSON columns are stored as *snapshots* (copies), never as aliases of the live
     lists: an alias would keep growing inside the row after the cursor was written, and a
@@ -2008,6 +2200,7 @@ def _persist_progress(run: Any, ctx: _Context, cursor: int, total_sessions: int)
     report = dict(run.report or {})
     report['runtime_state'] = _runtime_payload(ctx, cursor)
     report['closed_trades'] = [dict(item) for item in ctx.state.closed_trades]
+    report['rebalances'] = [dict(item) for item in ctx.state.rebalances]
     report['status_note'] = f'chunked run in progress: {cursor}/{total_sessions} sessions'
     run.report = report
     run.equity_curve = [dict(point) for point in ctx.state.equity_curve]
@@ -2083,16 +2276,20 @@ def _restore_state(run: Any, ctx: _Context) -> int:
     curve = list(run.equity_curve or [])
     trade_log = list(run.trade_log or [])
     closed_trades = list((run.report or {}).get('closed_trades') or [])
+    rebalances = list((run.report or {}).get('rebalances') or [])
     trade_rows = int(raw.get('trade_rows', -1))
     closed_rows = int(raw.get('closed_trade_rows', len(closed_trades)))
+    rebalance_rows = int(raw.get('rebalance_rows', len(rebalances)))
     # The cursor says how many sessions are finished; the persisted columns may carry a
     # little more (a chunk that was cut off mid-way), so extra rows are dropped rather
     # than trusted -- and a shortfall means the scratch state cannot be trusted at all.
-    if cursor < 0 or cursor > len(curve) or trade_rows < 0 or trade_rows > len(trade_log):
+    if (cursor < 0 or cursor > len(curve) or trade_rows < 0 or trade_rows > len(trade_log)
+            or rebalance_rows < 0 or rebalance_rows > len(rebalances)):
         ctx.errors.append(
             f'stored runtime_state (cursor={raw.get("cursor")}, equity_points={raw.get("equity_points")}, '
-            f'trade_rows={raw.get("trade_rows")}) is ahead of the persisted columns '
-            f'({len(curve)} curve points, {len(trade_log)} trades); restarting from scratch.'
+            f'trade_rows={raw.get("trade_rows")}, rebalance_rows={raw.get("rebalance_rows")}) is ahead '
+            f'of the persisted columns ({len(curve)} curve points, {len(trade_log)} trades, '
+            f'{len(rebalances)} rebalances); restarting from scratch.'
         )
         return 0
     state.cursor = cursor
@@ -2108,6 +2305,9 @@ def _restore_state(run: Any, ctx: _Context) -> int:
     state.skipped_fills = int(raw.get('skipped_fills', 0))
     state.stale_marks = int(raw.get('stale_marks', 0))
     state.sub_minimum_deltas = int(raw.get('sub_minimum_deltas', 0))
+    state.min_commission_bound_fills = int(raw.get('min_commission_bound_fills', 0))
+    state.band_suppressed_deltas = int(raw.get('band_suppressed_deltas', 0))
+    state.model_versions = dict(raw.get('model_versions') or {})
     state.signals_generated = int(raw.get('signals_generated', 0))
     state.turnover_by_session = {
         _as_date(key): float(value) for key, value in (raw.get('turnover_by_session') or {}).items() if _as_date(key)
@@ -2115,6 +2315,7 @@ def _restore_state(run: Any, ctx: _Context) -> int:
     state.equity_curve = curve[:cursor]
     state.trade_log = trade_log[:trade_rows]
     state.closed_trades = closed_trades[:closed_rows]
+    state.rebalances = rebalances[:rebalance_rows]
     state.peak_equity = max((point['equity'] for point in state.equity_curve), default=None)
     for code, payload in (raw.get('positions') or {}).items():
         lot = PositionLot(**{**payload, 'ts_code': code})
@@ -2215,6 +2416,7 @@ def run_rotation_backtest(
     min_commission: float | None = None,
     slippage: float | None = None,
     liquidity_floor_multiple: float | None = None,
+    min_trade_notional_fraction: float | None = None,
     benchmark_code: str | None = None,
     lgb_predictor: Any = None,
     lstm_predictor: Any = None,
@@ -2256,6 +2458,7 @@ def run_rotation_backtest(
         'min_commission': min_commission,
         'slippage': slippage,
         'liquidity_floor_multiple': liquidity_floor_multiple,
+        'min_trade_notional_fraction': min_trade_notional_fraction,
         'benchmark_code': benchmark_code,
     }
     for key, override in explicit.items():
