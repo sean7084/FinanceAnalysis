@@ -62,7 +62,16 @@ WEIGHT_SUM_TOLERANCE = 1e-6
 
 
 class SignalGenerationError(RuntimeError):
-    """The date, the pool or the model registry cannot produce a usable signal."""
+    """The date, the pool or the model registry cannot produce a usable signal.
+
+    ``reason_code`` lets the caller persist a machine-readable verdict without parsing the
+    message; the message stays the operator-facing explanation.
+    """
+
+    def __init__(self, message, *, reason_code='signal_error', diagnostics=None):
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.diagnostics = dict(diagnostics or {})
 
 
 def build_config(max_positions=None, momentum_lookback=None) -> engine.RotationConfig:
@@ -88,7 +97,10 @@ def resolve_trade_date(trade_date=None, *, source=None) -> date:
     if trade_date not in (None, ''):
         day = _as_date(trade_date)
         if day is None:
-            raise SignalGenerationError(f'trade_date {trade_date!r} is neither a date nor YYYY-MM-DD.')
+            raise SignalGenerationError(
+                f'trade_date {trade_date!r} is neither a date nor YYYY-MM-DD.',
+                reason_code='bad_arguments',
+            )
         return day
 
     reader = source or DatabaseDataSource()
@@ -102,7 +114,8 @@ def resolve_trade_date(trade_date=None, *, source=None) -> date:
     raise SignalGenerationError(
         'ETFFeatureSnapshot has no eligible row with a rankable cross-section'
         f'{f" in its newest {len(candidates)} session(s)" if candidates else " at all"}; '
-        'run compute_etf_features for the window, or pass --date for a covered session.'
+        'run compute_etf_features for the window, or pass --date for a covered session.',
+        reason_code='no_eligible_rows',
     )
 
 
@@ -113,7 +126,8 @@ def load_snapshots(trade_date, *, source=None) -> pd.DataFrame:
         raise SignalGenerationError(
             f'No eligible ETFFeatureSnapshot rows on {trade_date} -- the point-in-time feature '
             'job has not produced a pool for this date, so there is nothing to rank. Run '
-            'compute_etf_features for the window before generating a signal.'
+            'compute_etf_features for the window before generating a signal.',
+            reason_code='no_eligible_rows',
         )
     return frame
 
@@ -174,7 +188,8 @@ def resolve_model_version(model_type: str, config=None) -> tuple[str, dict[str, 
         wanted = required or '/'.join(REGISTRY_LABELS.values())
         raise SignalGenerationError(
             f'no READY {wanted} ModelVersion is registered, so {model_type} cannot be scored; '
-            'train one with manage.py train_etf_rotation_model before requesting this model type.'
+            'train one with manage.py train_etf_rotation_model before requesting this model type.',
+            reason_code='model_registry_missing',
         )
 
     versions = {label: str(row.version) for label, row in members.items()}
@@ -226,7 +241,8 @@ def verify_book(plan, selected: list[dict]) -> float:
     if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
         raise SignalGenerationError(
             f'selected_etfs weights plus the {plan.defensive_asset} sleeve sum to {total:.9f}, '
-            f'not 1.0 (defensive {plan.defensive_allocation:.6f}).'
+            f'not 1.0 (defensive {plan.defensive_allocation:.6f}).',
+            reason_code='weight_sum_invalid',
         )
     return round(total, 6)
 
@@ -378,10 +394,14 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     model_type = str(model_type or '').strip().upper()
     if signal_type not in ETFRotationSignal.SignalType.values:
         raise SignalGenerationError(
-            f'signal_type must be one of {ETFRotationSignal.SignalType.values}, got {signal_type!r}.'
+            f'signal_type must be one of {ETFRotationSignal.SignalType.values}, got {signal_type!r}.',
+            reason_code='bad_arguments',
         )
     if model_type not in engine.MODEL_TYPES:
-        raise SignalGenerationError(f'model_type must be one of {engine.MODEL_TYPES}, got {model_type!r}.')
+        raise SignalGenerationError(
+            f'model_type must be one of {engine.MODEL_TYPES}, got {model_type!r}.',
+            reason_code='bad_arguments',
+        )
 
     source = DatabaseDataSource()
     day = resolve_trade_date(trade_date, source=source)
@@ -396,10 +416,12 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         )
         blind_reason = _whole_pool_unscorable(snapshots, scored, model_type, day)
         if blind_reason:
-            raise SignalGenerationError(blind_reason)
+            raise SignalGenerationError(blind_reason, reason_code='blind_cross_section')
         plan = engine.build_rotation_plan(scored, snapshots, config, current_weights=current_weights)
     except engine.RotationEngineError as exc:
-        raise SignalGenerationError(f'rotation engine failed for {day}: {exc}') from exc
+        raise SignalGenerationError(
+            f'rotation engine failed for {day}: {exc}', reason_code='rotation_engine_error',
+        ) from exc
 
     selected = plan.selected_etfs()
     weights_total = verify_book(plan, selected)

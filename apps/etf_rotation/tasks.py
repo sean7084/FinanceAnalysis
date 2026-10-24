@@ -644,6 +644,20 @@ def generate_etf_rotation_signal_daily(self, signal_type='MONTHLY', model_type='
     )
 
 
+@shared_task(bind=True, name='apps.etf_rotation.tasks.check_etf_rotation_feed_health',
+             soft_time_limit=120, time_limit=180)
+def check_etf_rotation_feed_health(self):
+    """Beat entry point: prove the benchmark and feature feed are current.
+
+    Runs after the benchmark sync and the feature job but before the signal job, so a lag
+    is recorded and dispatched while there is still time to see it, rather than being
+    discovered as a silent refusal at 19:45.
+    """
+    from apps.etf_rotation.signal_runs import feed_health
+
+    return feed_health()
+
+
 def revoke_etf_rotation_task(run, *, terminate=False):
     """Ask the broker to drop the task owning ``run``. Returns False when it has none.
 

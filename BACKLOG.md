@@ -171,24 +171,18 @@ Items here have no commitment attached. When something is done, move it to
   looked in `scripts/`, so `CELERY_WORKER_QUEUES` — read by a container on every boot —
   would have been reported as "no consumer found — inert". The generated sheet is only
   trustworthy if its detection covers every place a key can be consumed.
+- **The `weighting` default was decided by a pre-registered holdout.** `equal` won the
+  2016–2023 tuning window (+99.69% / Sharpe 0.5357 vs `score`'s +71.73% / 0.4437) but
+  lost the 2024-01-01..2026-10-20 holdout on every criterion: −7.15% / 28.80% maxDD /
+  Sharpe 0.0913, versus `score` +1.70% / 26.02% / 0.1987 and `invvol` −7.78% / 26.30% /
+  0.0782. The default stays `score` in all three places that carry it; the
+  contradiction is the evidence that the tuning-window ranking was overfit, recorded in
+  `docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.7. That window is spent:
+  no later phase may query it again.
 
 ---
 
 ## Open — correctness
-
-### The `weighting` default is arguable and currently unmeasured on the holdout
-
-`score` is the default in all three places that carry it (`ETFRotationBacktest`
-column `models.py:398`, `BacktestConfig` `backtest_engine.py:213`,
-`settings.ETF_WEIGHTING` `base.py:305`), but measured at the new reference config
-on 2016-01-29..2023-12-31 the ordering is **equal +99.69% / Sharpe 0.5357 /
-22.85x** ≥ invvol +81.86% / 35.24% maxDD / 0.4961 ≥ score +71.73% / 44.53% /
-0.4437. `equal` wins the tuning window on return, Sharpe and turnover at once.
-The reason it is still not the default is that the default was chosen for a
-different question and the holdout has never seen `equal` under the 2026-10
-selection constraints -- flipping the default on a tuning-window ranking is
-exactly how the module ended up with a reference row that was 80% banks. Decide
-with a holdout run, or leave `score` and let the workbench pass `equal`.
 
 ### The Kelly governor is a kill switch at its own default floor
 

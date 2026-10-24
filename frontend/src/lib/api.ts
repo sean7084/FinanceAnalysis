@@ -42,6 +42,11 @@ export interface SignalEventDto {
 export interface AlertEventDto {
   id: number
   status: string
+  alert_name?: string
+  asset_symbol?: string | null
+  message?: string
+  metadata?: { condition_type?: string; reason_code?: string; [key: string]: unknown }
+  created_at?: string
 }
 
 export interface CandidateDto {
@@ -903,6 +908,24 @@ export interface EtfSignalFreshnessDto {
   lag_sessions: number | null
   is_stale: boolean
   model_version: string | null
+  // The newest attempt, whatever it concluded. A REFUSED/FAILED row here is the evidence
+  // that the job ran and could not answer, which `signal_date` alone cannot show.
+  last_attempt: {
+    date: string | null
+    signal_type: string
+    outcome: string
+    reason_code: string
+    message: string
+    created_at: string
+  } | null
+  // A feed defect (benchmark or feature lag) that is still true for the newest bar. It is
+  // separate from `is_stale`, which compares the signal to the newest snapshot.
+  feed_stale: {
+    date: string
+    reason_code: string
+    message: string
+    created_at: string
+  } | null
 }
 
 // One rankable money-market ETF, i.e. a candidate defensive asset. `avg_amount_20d` is

@@ -159,11 +159,31 @@ function SignalCard({ signal, freshness }: SignalCardProps) {
         `${t('etf.dash.latestSnapshot')} ${freshness.latest_snapshot_date ?? '--'}`,
       ].join(' · ')
     : null
+  const feedStale = freshness?.feed_stale ?? null
+  const feedMessage = feedStale
+    ? [
+        t('etf.dash.feedStaleWarning'),
+        feedStale.reason_code,
+        fmtDateTime(feedStale.created_at),
+      ].join(' · ')
+    : null
+  const attempt = freshness?.last_attempt ?? null
+  const attemptFailed = attempt !== null && attempt.outcome !== 'OK'
+  const attemptMessage = attemptFailed
+    ? [
+        t('etf.dash.attemptWarning'),
+        attempt.outcome,
+        attempt.reason_code,
+        fmtDateTime(attempt.created_at),
+      ].filter(Boolean).join(' · ')
+    : null
 
   return (
     <div className="card">
       <h3>{t('etf.dash.signalTitle')}</h3>
       {staleMessage ? <p className="status disconnected">{staleMessage}</p> : null}
+      {feedMessage ? <p className="status disconnected">{feedMessage}</p> : null}
+      {attemptMessage ? <p className="status disconnected">{attemptMessage}</p> : null}
       <div className="metric-grid">
         <article className="metric-card">
           {/* The as-of date is the data cut, not a generation time: a signal built from a

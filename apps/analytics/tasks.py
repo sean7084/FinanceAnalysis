@@ -1194,6 +1194,11 @@ def _evaluate_alert_rule(rule):
     should_trigger = False
     label = ''
 
+    if rule.asset_id is None:
+        # FEED_STALE is evaluated by its own branch; an asset condition without an asset
+        # cannot be judged and must not crash the whole rule loop.
+        return False, None, ''
+
     if rule.condition_type == AlertRule.ConditionType.PRICE_ABOVE:
         current_value = _latest_price(rule.asset_id)
         should_trigger = current_value is not None and current_value > threshold
@@ -1255,7 +1260,7 @@ def send_alert_notifications(event_id):
         sms_ok = _send_sms_via_webhook(
             {
                 'alert_rule_id': rule.id,
-                'asset': event.asset.symbol,
+                'asset': event.asset.symbol if event.asset_id else None,
                 'alert_name': rule.name,
                 'message': event.message,
             }
@@ -1271,7 +1276,7 @@ def send_alert_notifications(event_id):
                 {
                     'type': 'alert.message',
                     'event_id': event.id,
-                    'asset_symbol': event.asset.symbol,
+                    'asset_symbol': event.asset.symbol if event.asset_id else None,
                     'alert_name': rule.name,
                     'message': event.message,
                     'created_at': event.created_at.isoformat(),
@@ -1285,8 +1290,42 @@ def send_alert_notifications(event_id):
     event.save(update_fields=['dispatched_channels', 'notified_at', 'status'])
 
 
+def _feed_alert_channels():
+    """Channels available for a feed alert, derived from what this deployment configured."""
+    channels = ['websocket']
+    if getattr(settings, 'ALERT_NOTIFY_EMAILS', []):
+        channels.insert(0, 'email')
+    if getattr(settings, 'ALERTS_ENABLE_SMS', False) and getattr(settings, 'SMS_WEBHOOK_URL', ''):
+        channels.append('sms')
+    return channels
+
+
+def _ensure_feed_stale_rule():
+    """Seed the asset-less health rule once; the alert centre owns it afterwards."""
+    if AlertRule.objects.filter(
+        condition_type=AlertRule.ConditionType.FEED_STALE,
+    ).exists():
+        return
+    AlertRule.objects.create(
+        asset=None,
+        name='ETF data feed health',
+        condition_type=AlertRule.ConditionType.FEED_STALE,
+        threshold=Decimal('0'),
+        channels=_feed_alert_channels(),
+        cooldown_minutes=60,
+        is_active=True,
+    )
+
+
+def _latest_stale_feed_run():
+    from apps.etf_rotation.signal_runs import latest_feed_stale
+
+    return latest_feed_stale()
+
+
 @shared_task
 def check_alert_rules():
+    _ensure_feed_stale_rule()
     rules = AlertRule.objects.filter(is_active=True).select_related('asset')
     triggered_count = 0
 
@@ -1294,25 +1333,43 @@ def check_alert_rules():
         if not _is_cooldown_passed(rule):
             continue
 
-        should_trigger, current_value, current_label = _evaluate_alert_rule(rule)
-        if not should_trigger:
-            continue
+        if rule.condition_type == AlertRule.ConditionType.FEED_STALE:
+            stale = _latest_stale_feed_run()
+            if stale is None:
+                continue
+            message = f"{rule.name}: {stale.message}"
+            event = AlertEvent.objects.create(
+                alert_rule=rule,
+                asset=None,
+                trigger_value=None,
+                message=message,
+                metadata={
+                    'condition_type': rule.condition_type,
+                    'signal_run_id': stale.pk,
+                    'reason_code': stale.reason_code,
+                    'diagnostics': stale.diagnostics,
+                },
+            )
+        else:
+            should_trigger, current_value, current_label = _evaluate_alert_rule(rule)
+            if not should_trigger:
+                continue
+            message = (
+                f"{rule.name}: {rule.asset.symbol} {current_label} {current_value} "
+                f"met condition {rule.condition_type} with threshold {rule.threshold}."
+            )
+            event = AlertEvent.objects.create(
+                alert_rule=rule,
+                asset=rule.asset,
+                trigger_value=current_value,
+                message=message,
+                metadata={
+                    'condition_type': rule.condition_type,
+                    'indicator_type': rule.indicator_type,
+                    'threshold': str(rule.threshold),
+                },
+            )
 
-        message = (
-            f"{rule.name}: {rule.asset.symbol} {current_label} {current_value} "
-            f"met condition {rule.condition_type} with threshold {rule.threshold}."
-        )
-        event = AlertEvent.objects.create(
-            alert_rule=rule,
-            asset=rule.asset,
-            trigger_value=current_value,
-            message=message,
-            metadata={
-                'condition_type': rule.condition_type,
-                'indicator_type': rule.indicator_type,
-                'threshold': str(rule.threshold),
-            },
-        )
         rule.last_triggered_at = timezone.now()
         rule.save(update_fields=['last_triggered_at'])
         send_alert_notifications.delay(event.id)

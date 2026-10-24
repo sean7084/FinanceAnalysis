@@ -298,6 +298,54 @@ class ETFRotationSignal(models.Model):
         return f"{self.get_signal_type_display()} {self.date}"
 
 
+class ETFRotationSignalRun(models.Model):
+    """One attempt to produce a signal, or to prove the feed is healthy.
+
+    ``ETFRotationSignal`` records what the strategy said; this records that the job *ran*.
+    Without it a refused signal left no row anywhere -- ``tasks.py`` swallowed the error into
+    a worker log -- so "the market told us to hold" and "nothing ran for two days" looked
+    identical on the page. Rows are append-only on purpose: a refused attempt followed by a
+    successful retry is two observations, not one row to overwrite.
+    """
+    class SignalType(models.TextChoices):
+        WEEKLY = 'WEEKLY', _('Weekly')
+        BIWEEKLY = 'BIWEEKLY', _('Bi-Weekly')
+        MONTHLY = 'MONTHLY', _('Monthly')
+        TRIGGER = 'TRIGGER', _('Trigger')
+        HEALTH = 'HEALTH', _('Feed Health')
+
+    class Outcome(models.TextChoices):
+        OK = 'OK', _('Ok')
+        REFUSED = 'REFUSED', _('Refused')
+        FAILED = 'FAILED', _('Failed')
+        FEED_STALE = 'FEED_STALE', _('Feed Stale')
+
+    date = models.DateField(_('Date'), db_index=True,
+                            help_text=_('As-of trading date the attempt was about.'))
+    signal_type = models.CharField(_('Signal Type'), max_length=10,
+                                   choices=SignalType.choices, db_index=True)
+    outcome = models.CharField(_('Outcome'), max_length=12, choices=Outcome.choices,
+                               db_index=True)
+    reason_code = models.CharField(_('Reason Code'), max_length=40, blank=True)
+    message = models.TextField(_('Message'), blank=True)
+    diagnostics = models.JSONField(_('Diagnostics'), default=dict, blank=True)
+    task_id = models.CharField(_('Task ID'), max_length=64, blank=True)
+    duration_ms = models.PositiveIntegerField(_('Duration (ms)'), null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('ETF Rotation Signal Run')
+        verbose_name_plural = _('ETF Rotation Signal Runs')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['date', 'signal_type']),
+            models.Index(fields=['-created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.date} {self.signal_type} {self.outcome}'
+
+
 class ETFRotationPosition(models.Model):
     """One holding leg, open or closed, attributable to the signal that created it."""
     class Status(models.TextChoices):

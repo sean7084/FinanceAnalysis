@@ -466,7 +466,15 @@ CELERY_BEAT_SCHEDULE = {
     'compute-etf-features-daily': {
         'task': 'apps.etf_rotation.tasks.compute_etf_features_daily',
         'schedule': crontab(hour='17', minute='20'),
-    },    'generate-etf-rotation-signal-daily': {
+    },
+    # After the benchmark (17:05) and feature (17:20) jobs, with 2 hours before the signal:
+    # a lag is written as a FEED_STALE row and dispatched while it is still actionable,
+    # instead of surfacing as a silent 19:45 refusal.
+    'check-etf-rotation-feed-health-daily': {
+        'task': 'apps.etf_rotation.tasks.check_etf_rotation_feed_health',
+        'schedule': crontab(hour='17', minute='45'),
+    },
+    'generate-etf-rotation-signal-daily': {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
         'schedule': crontab(hour='19', minute='45'),
     },

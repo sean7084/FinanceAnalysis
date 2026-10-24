@@ -80,6 +80,7 @@ from apps.etf_rotation.models import (
     ETFUniverse,
     ETFRotationBacktest,
     ETFRotationSignal,
+    ETFRotationSignalRun,
 )
 from apps.etf_rotation.tasks import (
     TUSHARE_AMOUNT_QIAN_YUAN_TO_YUAN,
@@ -4099,6 +4100,134 @@ class BlindCrossSectionGuardTests(_PanelSeedMixin, TestCase):
         self.assertGreater(summary['scored_size'], 0)
 
 
+class SignalRunLedgerTests(_PanelSeedMixin, TestCase):
+    """Every attempt leaves a row, and a refusal still fails the task.
+
+    Before this table existed a refused signal was only a worker log line: the page could not
+    distinguish "the model said hold" from "the job never produced an answer". The row is
+    written by the command so manual runs and beat runs are equally visible.
+    """
+
+    def _refuse_through_the_task(self):
+        self.seed()
+        self.compute_at_pool_date()
+        ETFFeatureSnapshot.objects.filter(date=self.pool_date).update(rs_vs_benchmark_60d=None)
+        # One session of benchmark history is missing, the 2026-10-22 shape.
+        BenchmarkIndexDaily.objects.filter(trade_date=self.days[-1]).delete()
+        with self.assertRaises(CommandError):
+            etf_tasks.generate_etf_rotation_signal_daily.run()
+        return ETFRotationSignalRun.objects.get()
+
+    def test_a_refused_signal_writes_one_run_row_and_still_fails_the_task(self):
+        run = self._refuse_through_the_task()
+        self.assertEqual(run.outcome, ETFRotationSignalRun.Outcome.REFUSED)
+        self.assertEqual(run.reason_code, 'blind_cross_section')
+        self.assertEqual(run.signal_type, ETFRotationSignalRun.SignalType.MONTHLY)
+        self.assertEqual(run.date, self.pool_date)
+        self.assertEqual(ETFRotationSignal.objects.filter(date=self.pool_date).count(), 0)
+
+    def test_the_run_row_diagnostics_name_the_null_column_and_the_lagging_benchmark(self):
+        run = self._refuse_through_the_task()
+        eligible = ETFFeatureSnapshot.objects.filter(
+            date=self.pool_date, is_eligible=True,
+        ).count()
+        self.assertEqual(run.diagnostics['null_counts']['rs_vs_benchmark_60d'], eligible)
+        self.assertEqual(run.diagnostics['benchmark_code'], 'H00905.CSI')
+        self.assertEqual(run.diagnostics['benchmark_lag_sessions'], 1)
+        self.assertEqual(str(run.diagnostics['latest_benchmark_date']), str(self.days[-2]))
+
+    def test_a_successful_signal_writes_an_ok_run_row(self):
+        self.seed()
+        self.compute_at_pool_date()
+        call_command(
+            'generate_etf_rotation_signal',
+            date=self.pool_date.isoformat(),
+            verbosity=0,
+        )
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.outcome, ETFRotationSignalRun.Outcome.OK)
+        self.assertEqual(run.reason_code, '')
+        self.assertIsNotNone(run.duration_ms)
+        self.assertTrue(str(run.diagnostics['model_version']).startswith('rule-v1'))
+        self.assertTrue(ETFRotationSignal.objects.filter(date=self.pool_date).exists())
+
+    def test_a_dry_run_still_writes_nothing(self):
+        self.seed()
+        self.compute_at_pool_date()
+        call_command(
+            'generate_etf_rotation_signal',
+            date=self.pool_date.isoformat(),
+            dry_run=True,
+            verbosity=0,
+        )
+        self.assertEqual(ETFRotationSignalRun.objects.count(), 0)
+
+
+class FeedHealthTests(TestCase):
+    """A lagging benchmark or feature run becomes a FEED_STALE row within one beat cycle."""
+
+    def setUp(self):
+        self.days = _session_grid(5, last=POOL_DATE)
+        self.fund = _seed_etf('512760.SH', name='半导体ETF')
+        _seed_bars(self.fund, self.days, [10.0] * len(self.days))
+        _seed_benchmark(self.days[:-1])
+
+    def test_a_benchmark_lag_produces_a_feed_stale_row_within_one_beat_cycle(self):
+        ETFFeatureSnapshot.objects.create(
+            etf=self.fund, date=self.days[-1], is_eligible=True,
+        )
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'FEED_STALE')
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.date, self.days[-1])
+        self.assertEqual(run.signal_type, ETFRotationSignalRun.SignalType.HEALTH)
+        self.assertEqual(run.outcome, ETFRotationSignalRun.Outcome.FEED_STALE)
+        self.assertEqual(run.reason_code, 'benchmark_lag')
+        self.assertIn('H00905.CSI', run.message)
+        self.assertEqual(run.diagnostics['benchmark_lag_sessions'], 1)
+
+        # The same beat on the same day must not append a second identical row.
+        again = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertFalse(again['created'])
+        self.assertEqual(ETFRotationSignalRun.objects.count(), 1)
+
+    def test_a_feature_lag_is_named_when_the_benchmark_is_current(self):
+        _seed_benchmark([self.days[-1]])
+        ETFFeatureSnapshot.objects.create(
+            etf=self.fund, date=self.days[-2], is_eligible=True,
+        )
+        etf_tasks.check_etf_rotation_feed_health.run()
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.reason_code, 'feature_lag')
+        self.assertEqual(run.diagnostics['feature_lag_sessions'], 1)
+
+    def test_a_current_feed_writes_nothing(self):
+        _seed_benchmark([self.days[-1]])
+        ETFFeatureSnapshot.objects.create(
+            etf=self.fund, date=self.days[-1], is_eligible=True,
+        )
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'OK')
+        self.assertEqual(ETFRotationSignalRun.objects.count(), 0)
+
+    def test_an_absent_benchmark_is_stale_not_ok(self):
+        # No rows is not lag zero: a feed that never synced must not pass the check.
+        BenchmarkIndexDaily.objects.all().delete()
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'FEED_STALE')
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.reason_code, 'benchmark_missing')
+        self.assertTrue(run.diagnostics['benchmark_missing'])
+
+    def test_an_absent_feature_snapshot_is_stale_not_ok(self):
+        _seed_benchmark([self.days[-1]])
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'FEED_STALE')
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.reason_code, 'feature_missing')
+        self.assertTrue(run.diagnostics['feature_missing'])
+
+
 # ---------------------------------------------------------------------------
 # Defensive sleeve and signal transparency: API surface
 # ---------------------------------------------------------------------------
@@ -4269,7 +4398,7 @@ class SignalFreshnessEndpointTests(TestCase):
         self.assertEqual(
             set(response.data),
             {'signal_date', 'latest_snapshot_date', 'latest_bar_date', 'lag_sessions',
-             'is_stale', 'model_version'},
+             'is_stale', 'model_version', 'last_attempt', 'feed_stale'},
         )
         return response.data
 
@@ -4295,5 +4424,48 @@ class SignalFreshnessEndpointTests(TestCase):
         data = self._get()
         self.assertIsNone(data['signal_date'])
         self.assertFalse(data['is_stale'])
+        self.assertIsNone(data['last_attempt'])
+        self.assertIsNone(data['feed_stale'])
+
+    def test_the_last_attempt_is_reported_even_when_it_refused(self):
+        self._signal(self.days[-1])
+        ETFRotationSignalRun.objects.create(
+            date=self.days[-1],
+            signal_type=ETFRotationSignalRun.SignalType.MONTHLY,
+            outcome=ETFRotationSignalRun.Outcome.REFUSED,
+            reason_code='blind_cross_section',
+            message='nothing could be scored',
+        )
+        data = self._get()
+        self.assertEqual(data['last_attempt']['outcome'], 'REFUSED')
+        self.assertEqual(data['last_attempt']['reason_code'], 'blind_cross_section')
+        self.assertEqual(str(data['last_attempt']['date']), str(self.days[-1]))
+
+    def test_a_feed_defect_on_the_newest_bar_is_reported_separately_from_signal_lag(self):
+        self._signal(self.days[-1])
+        ETFRotationSignalRun.objects.create(
+            date=self.days[-1],
+            signal_type=ETFRotationSignalRun.SignalType.HEALTH,
+            outcome=ETFRotationSignalRun.Outcome.FEED_STALE,
+            reason_code='benchmark_lag',
+            message='benchmark is one session behind',
+        )
+        data = self._get()
+        self.assertEqual(data['lag_sessions'], 0)
+        self.assertFalse(data['is_stale'])
+        self.assertEqual(data['feed_stale']['reason_code'], 'benchmark_lag')
+        # The watchdog is not a signal attempt, so it never becomes ``last_attempt``.
+        self.assertIsNone(data['last_attempt'])
+
+    def test_a_stale_row_for_an_older_bar_clears_once_bars_advance(self):
+        self._signal(self.days[-1])
+        ETFRotationSignalRun.objects.create(
+            date=self.days[-2],
+            signal_type=ETFRotationSignalRun.SignalType.HEALTH,
+            outcome=ETFRotationSignalRun.Outcome.FEED_STALE,
+            reason_code='benchmark_lag',
+            message='yesterday was stale',
+        )
+        self.assertIsNone(self._get()['feed_stale'])
 
 

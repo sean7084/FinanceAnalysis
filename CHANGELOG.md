@@ -1,5 +1,48 @@
 # Changelog
 
+### version 0.1.22
+
+#### Added:
+
+- **Every signal attempt leaves a row.** `ETFRotationSignalRun` (migration
+  `0005`) is append-only evidence with `outcome ∈ OK|REFUSED|FAILED|FEED_STALE`,
+  `reason_code`, a JSON `diagnostics` block, `task_id` and `duration_ms`. The
+  command writes exactly one row per attempt; a refusal is persisted **and then
+  re-raised**, so Celery still reports the task as FAILED while the next operator
+  can see *which* input was empty. `diagnostics` names the newest snapshot, bar
+  and benchmark dates, the benchmark/feature lag in sessions, the eligible row
+  count and the null count of every feature the scorers need, so
+  `no_eligible_rows` is no longer a sentence without a cause. `--dry-run` writes
+  nothing, and a ledger failure is logged rather than allowed to mask the signal
+  error.
+- **A feed-health watchdog.** `check_etf_rotation_feed_health` runs at 17:45Z
+  (before the 19:45Z signal) and compares the benchmark and the newest eligible
+  feature snapshot against the newest `ETFDaily` bar. A lag writes one
+  `HEALTH/FEED_STALE` row naming the lagging feed; a current feed writes nothing.
+  A completely absent benchmark or feature snapshot is also stale rather than
+  "lag zero", so a feed that never synced cannot pass the check. The row is
+  self-clearing in the API: it is only reported while its date equals the newest
+  bar, so yesterday's defect does not alarm forever.
+- **Feed alerts reuse the alert plumbing.** `AlertRule.asset` and
+  `AlertEvent.asset` are nullable, `condition_type` gains `FEED_STALE`, and
+  `check_alert_rules` seeds an asset-less `ETF data feed health` rule whose
+  channels come from settings. Dispatch, cooldown and the serializers'
+  `asset_symbol`/`asset_name` are null-safe; the alert center names such events
+  "data feed health" instead of rendering a null asset.
+- **The freshness endpoint reports the attempt, not only the row.**
+  `/etf/signals/freshness/` now returns `last_attempt` and `feed_stale`
+  alongside `is_stale`. The `/etf` card warns on any non-`OK` attempt — a refused
+  job that wrote no signal is visible — and separately on a defect at the newest
+  bar. The defensive-asset dropdown blanks its 20-day turnover once the
+  underlying snapshot is more than five sessions behind the newest bar.
+
+#### Fixed:
+
+- **The beat schedule's entry formatting.** The ETF block in
+  `config/settings/base.py` carried malformed indentation around the new
+  watchdog entry; it is rewritten so both ETF jobs are plain `crontab(...)`
+  dictionaries and `manage.py check` can read the schedule.
+
 ### version 0.1.21
 
 #### Added:

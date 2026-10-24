@@ -146,6 +146,8 @@ const freshPayload = {
   lag_sessions: 0,
   is_stale: false,
   model_version: 'rule-v1:mom60-score',
+  last_attempt: null,
+  feed_stale: null,
 }
 
 const stalePayload = {
@@ -321,6 +323,65 @@ describe('EtfRotationPage', () => {
     expect(warning).toHaveClass('status', 'disconnected')
     expect(warning.textContent).toContain('Data as-of 2026-10-20')
     expect(warning.textContent).toContain('newest snapshot 2026-10-22')
+  })
+
+  it('warns separately when the feed is stale even though the signal date is current', async () => {
+    apiMocks.fetchEtfSignalFreshness.mockResolvedValue({
+      ...freshPayload,
+      feed_stale: {
+        date: '2026-10-20',
+        reason_code: 'benchmark_lag',
+        message: 'The benchmark H00905.CSI is 1 session behind the newest ETF bar.',
+        created_at: '2026-10-22T09:45:00Z',
+      },
+    })
+    renderEtfPage()
+
+    const signalCard = await cardByTitle('Signal of the Day')
+    const warning = await within(signalCard).findByText(/Data feed alert: benchmark or feature history is lagging/)
+    expect(warning).toHaveClass('status', 'disconnected')
+    expect(warning.textContent).toContain('benchmark_lag')
+    // is_stale is false in this payload: the two conditions are independent.
+    expect(within(signalCard).queryByText(/it trails the newest eligible feature snapshot/)).not.toBeInTheDocument()
+  })
+
+  it('shows the latest attempt when the signal job refused', async () => {
+    apiMocks.fetchEtfSignalFreshness.mockResolvedValue({
+      ...freshPayload,
+      last_attempt: {
+        date: '2026-10-20',
+        signal_type: 'MONTHLY',
+        outcome: 'REFUSED',
+        reason_code: 'blind_cross_section',
+        message: 'no candidate could be scored',
+        created_at: '2026-10-22T11:45:00Z',
+      },
+    })
+    renderEtfPage()
+
+    const signalCard = await cardByTitle('Signal of the Day')
+    const warning = await within(signalCard).findByText(/The latest signal job did not succeed/)
+    expect(warning).toHaveClass('status', 'disconnected')
+    expect(warning.textContent).toContain('REFUSED')
+    expect(warning.textContent).toContain('blind_cross_section')
+  })
+
+  it('says nothing about an attempt that succeeded', async () => {
+    apiMocks.fetchEtfSignalFreshness.mockResolvedValue({
+      ...freshPayload,
+      last_attempt: {
+        date: '2026-10-20',
+        signal_type: 'MONTHLY',
+        outcome: 'OK',
+        reason_code: '',
+        message: '',
+        created_at: '2026-10-22T11:45:00Z',
+      },
+    })
+    renderEtfPage()
+
+    const signalCard = await cardByTitle('Signal of the Day')
+    expect(within(signalCard).queryByText(/The latest signal job did not succeed/)).not.toBeInTheDocument()
   })
 
   it('renders every knob in metadata.config, including one the frontend has never heard of', async () => {

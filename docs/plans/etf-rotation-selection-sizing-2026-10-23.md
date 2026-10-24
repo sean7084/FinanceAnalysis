@@ -742,3 +742,47 @@ holdout 自此关闭；本计划后续各期不再查询该窗口，Phase 5 有�
 - 防御资产下拉显示 `avg_amount_20d`（`EtfBacktestWorkbenchPage.tsx:76,535`），
   fixture 覆盖了大小两种成交额。
 **限制：本环境没有可用浏览器，未做人工点击，只做了接口返回 + 前端测试 + 静态审查。**
+
+### 7.9 Phase 1：信号留痕与数据源健康告警（2026-10-24）
+
+**留痕。** 新表 `ETFRotationSignalRun`（migration `0005`）只追加：任务的每次尝试写
+一行 `OK / REFUSED / FAILED`，`check_etf_rotation_feed_health` 在基准或特征落后于
+最新 `ETFDaily` 时写一行 `HEALTH / FEED_STALE`；基准或特征完全没有行时也判 stale
+（`benchmark_missing` / `feature_missing`），否则“从未同步”会以 lag 0 混过检查。
+`REFUSED` 写完继续抛
+`CommandError`，所以 Celery 仍是 FAILED；`--dry-run` 一行都不写。`diagnostics`
+记录快照日、最新快照/bar/基准日、基准与特征的滞后 session 数、可排名行数以及
+`FEATURE_COLUMNS` 每一列的 null 数；日期统一存 ISO 文本（JSONField 无日期编码器，
+首轮测试就是在这里炸的）。`task_id` 在 worker 内取 Celery request id，手工命令为空。
+借用的诊断逻辑来自 `validate_data_quality` 的基准连续性规则，没有复制实现。
+
+**告警。** `AlertRule.asset` / `AlertEvent.asset` 改为可空，`condition_type` 增加
+`FEED_STALE`，并把 email/websocket 派发链路全部改成 null-safe（`tasks.py` 四处、
+两个 serializer 的 `asset_symbol`/`asset_name`）。`check_alert_rules` 在每次运行
+开头 `get_or_create` 一条 `asset=NULL` 的 `ETF data feed health` 规则，channels
+取自 `ALERT_NOTIFY_EMAILS` 与 websocket 开关，沿用 `cooldown_minutes=60` 和
+`dispatched_channels`。事件 `metadata` 带 `signal_run_id / reason_code / diagnostics`
+的裁剪版。自愈条件：只读取日期等于最新 bar 的 `FEED_STALE` 行，bar 前进而缺陷未
+重复时告警自动消失，不会把昨天的坏数据永久重播。
+
+**接口与页面。** `/etf/signals/freshness/` 增加 `last_attempt`（最近一次尝试，含
+outcome/reason/时间）与 `feed_stale`（仅最新 bar 上的缺陷），两者都与 `is_stale`
+（信号行自身的 as-of 滞后）独立。`/etf` 信号卡对非 OK 尝试和 feed 缺陷分别渲染
+告警；告警中心对 `asset=null` 的 `FEED_STALE` 事件显示“数据源健康”而非 null。
+防御资产下拉在快照落后最新 bar 超过 5 个 session 时清空 20 日成交额，避免把旧
+成交额当成今天的容量证据。
+
+**验证（无浏览器）：**
+- 手工执行 `generate_etf_rotation_signal --date 1900-01-01` → 恰好一条
+  `REFUSED / no_eligible_rows` 行，`eligible_rows=0`、`snapshot_date=1900-01-01`、
+  基准与特征滞后均为 0，命令退出码 1；随后删除这条验证用行，表恢复为空。
+- `check_etf_rotation_feed_health.run()` 在当前数据上返回 `OK / created=false`：
+  bar 与快照同为 2026-10-22，基准已到 2026-10-23，未写健康行。
+- 定向测试 20 条通过（4 留痕、5 健康、6 freshness、3 无资产告警派发、2 既有
+  Phase 9 告警回归）；全量后端 **629**（614 → 629），前端 **76**（72 → 76），
+  `makemigrations --check` 干净，`tsc --noEmit`、lint/build 静态基线通过，
+  `export_documentation_facts --check` 通过。
+- 股票价格告警的既有测试一条未改地通过，改动面没有超出计划列出的四处。
+- **限制：** 依旧没有可用浏览器，未做人工点击；告警派发的真实验证在单元测试中
+  用 locmem email 与 fake channel layer 完成。新 beat 条目需要重启 beat/worker
+  才会被调度，部署时按 runbook 重启。

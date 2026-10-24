@@ -128,7 +128,15 @@ jobs:
       # class of bug -- and 6 refusing to persist a signal whose cross-section was
       # blind); API surface (4 defensive-sleeve validation, 2 the tradable-sleeve
       # list, 2 the config-derived RULE tag, 3 the freshness endpoint).
-      MIN_TEST_COUNT: "614"
+      # 614 -> 629: the signal-run ledger and feed health. Fifteen tests: 4 that
+      # every attempt persists exactly one OK/REFUSED/FAILED row with the null
+      # column and lagging benchmark named (and dry-run still writes nothing), 5
+      # that a benchmark lag, a feature lag, an absent benchmark or an absent
+      # feature feed writes one FEED_STALE row and a current feed writes none, 3
+      # that an asset-less feed-stale rule dispatches, respects cooldown, and
+      # serialises asset_symbol to null, and 3 freshness tests that report the
+      # last attempt separately from a defect on the newest bar.
+      MIN_TEST_COUNT: "629"
 
     steps:
       - uses: actions/checkout@v4
@@ -271,8 +279,11 @@ jobs:
       # the newest snapshot is ahead of the signal, and a config panel that renders
       # a knob the frontend has never heard of -- and two on the workbench, listing
       # each money-market sleeve with its 20-day turnover and staying typeable
-      # when that list cannot be loaded).
-      MIN_TEST_COUNT: "72"
+      # when that list cannot be loaded). 72 -> 76: the signal card reports a
+      # stale feed independently of snapshot lag and the last attempt even when it
+      # refused (and stays silent on an OK attempt); the alert center names an
+      # asset-less FEED_STALE event instead of rendering a null asset.
+      MIN_TEST_COUNT: "76"
 
     steps:
       - uses: actions/checkout@v4

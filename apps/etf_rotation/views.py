@@ -57,6 +57,7 @@ from .models import (
     ETFRotationBacktest,
     ETFRotationPosition,
     ETFRotationSignal,
+    ETFRotationSignalRun,
     ETFUniverse,
 )
 from .serializers import (
@@ -69,6 +70,12 @@ from .serializers import (
     ETFRotationSignalSerializer,
     ETFUniverseSerializer,
 )
+
+
+#: Sessions a feature snapshot may trail the newest bar before the defensive-asset dropdown
+#: stops quoting its turnover. The feature job runs daily; five sessions covers a long
+#: holiday as well, and beyond that the number is not evidence about today's liquidity.
+DEFENSIVE_SNAPSHOT_MAX_LAG_SESSIONS = 5
 
 
 def _date_param(query_params, name):
@@ -322,8 +329,22 @@ class ETFUniverseViewSet(viewsets.ReadOnlyModelViewSet):
             ETFFeatureSnapshot.objects.filter(is_eligible=True)
             .order_by('-date').values_list('date', flat=True).first()
         )
+        # The feature job writes the snapshot; it does not have to be current for this list
+        # to answer, but it does have to be recent enough that quoting its turnover is not
+        # misleading. Past this lag the figure is reported as unknown rather than trusted.
+        newest_bar_date = (
+            ETFDaily.objects.order_by('-date').values_list('date', flat=True).first()
+        )
+        snapshot_lag_sessions = 0
+        if newest_snapshot_date is not None and newest_bar_date is not None:
+            snapshot_lag_sessions = (
+                ETFDaily.objects.filter(
+                    date__gt=newest_snapshot_date, date__lte=newest_bar_date,
+                ).values('date').distinct().count()
+            )
         turnover_by_code = {}
-        if newest_snapshot_date is not None:
+        if (newest_snapshot_date is not None
+                and snapshot_lag_sessions <= DEFENSIVE_SNAPSHOT_MAX_LAG_SESSIONS):
             rows = (
                 ETFFeatureSnapshot.objects.filter(
                     date=newest_snapshot_date, is_eligible=True,
@@ -473,7 +494,7 @@ class ETFRotationSignalViewSet(viewsets.ReadOnlyModelViewSet):
         newest eligible snapshot, i.e. sessions the strategy could have been re-planned on.
         Zero means the signal is current, whatever the calendar says.
         """
-        from apps.etf_rotation.models import ETFDaily, ETFFeatureSnapshot
+        from apps.etf_rotation.signal_runs import latest_feed_stale
 
         signal = self.get_queryset().order_by('-date', '-created_at').first()
         newest_snapshot = (
@@ -492,6 +513,16 @@ class ETFRotationSignalViewSet(viewsets.ReadOnlyModelViewSet):
                     ).values_list('date', flat=True)
                 )
             )
+        # The last time the *signal job* ran, whatever it concluded. ``signal_date`` says
+        # what the strategy saw; this says whether anything has tried since. Health rows are
+        # excluded: a feed watchdog is not a signal attempt and must not make the page say
+        # the last signal job failed.
+        latest_run = (
+            ETFRotationSignalRun.objects
+            .exclude(signal_type=ETFRotationSignalRun.SignalType.HEALTH)
+            .order_by('-created_at').first()
+        )
+        feed_stale = latest_feed_stale(newest_bar)
         return Response({
             'signal_date': signal.date if signal is not None else None,
             'latest_snapshot_date': newest_snapshot,
@@ -499,6 +530,24 @@ class ETFRotationSignalViewSet(viewsets.ReadOnlyModelViewSet):
             'lag_sessions': int(lag_sessions),
             'is_stale': bool(lag_sessions >= 1),
             'model_version': signal.model_version if signal is not None else None,
+            # The last time the job *ran*, whatever it concluded. ``signal_date`` says what
+            # the strategy saw; this says whether anything has tried since.
+            'last_attempt': None if latest_run is None else {
+                'date': latest_run.date,
+                'signal_type': latest_run.signal_type,
+                'outcome': latest_run.outcome,
+                'reason_code': latest_run.reason_code,
+                'message': latest_run.message,
+                'created_at': latest_run.created_at,
+            },
+            # A feed defect is not a signal lag: the signal can be built on the newest
+            # snapshot and still be blind if the benchmark behind it is a session behind.
+            'feed_stale': None if feed_stale is None else {
+                'date': feed_stale.date,
+                'reason_code': feed_stale.reason_code,
+                'message': feed_stale.message,
+                'created_at': feed_stale.created_at,
+            },
         })
 
 

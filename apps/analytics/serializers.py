@@ -86,8 +86,16 @@ class ScreenerTemplateSerializer(serializers.ModelSerializer):
 
 
 class AlertRuleSerializer(serializers.ModelSerializer):
-    asset_symbol = serializers.CharField(source='asset.symbol', read_only=True)
-    asset_name = serializers.CharField(source='asset.name', read_only=True)
+    # ``asset`` is nullable for feed-level rules; ``source='asset.symbol'`` traverses the
+    # relation and raises on None, so the fields are resolved by hand.
+    asset_symbol = serializers.SerializerMethodField()
+    asset_name = serializers.SerializerMethodField()
+
+    def get_asset_symbol(self, obj):
+        return obj.asset.symbol if obj.asset_id else None
+
+    def get_asset_name(self, obj):
+        return obj.asset.name if obj.asset_id else None
 
     class Meta:
         model = AlertRule
@@ -121,7 +129,10 @@ class AlertRuleSerializer(serializers.ModelSerializer):
 
 class AlertEventSerializer(serializers.ModelSerializer):
     alert_name = serializers.CharField(source='alert_rule.name', read_only=True)
-    asset_symbol = serializers.CharField(source='asset.symbol', read_only=True)
+    asset_symbol = serializers.SerializerMethodField()
+
+    def get_asset_symbol(self, obj):
+        return obj.asset.symbol if obj.asset_id else None
 
     class Meta:
         model = AlertEvent

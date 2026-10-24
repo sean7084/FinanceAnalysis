@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-10-23T11:53:53Z_
+_Generated: 2026-10-24T07:22:07Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -14,8 +14,8 @@ _Generated: 2026-10-23T11:53:53Z_
 
 | Variable | Type | Default | In `.env.example` | Read at |
 | --- | --- | --- | --- | --- |
-| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:592 |
-| `ALERT_NOTIFY_EMAILS` | `list` | `[]` | yes | base.py:596 |
+| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:600 |
+| `ALERT_NOTIFY_EMAILS` | `list` | `[]` | yes | base.py:604 |
 | `ARTIFACT_LOCAL_CACHE_ROOT` | `str` | `str(BASE_DIR)` | **no** | base.py:342 |
 | `ARTIFACT_S3_ACCESS_KEY_ID` | `str` | `''` | yes | base.py:345 |
 | `ARTIFACT_S3_ADDRESSING_STYLE` | `str` | `'path'` | yes | base.py:348 |
@@ -32,21 +32,21 @@ _Generated: 2026-10-23T11:53:53Z_
 | `DASHBOARD_STOCKS_CACHE_SECONDS` | `int` | `86400` | yes | base.py:360 |
 | `DASHBOARD_SUMMARY_CACHE_SECONDS` | `int` | `60` | yes | base.py:363 |
 | `DATABASE_URL` | `db` | _required_ | yes | base.py:129 |
-| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:538 |
+| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:546 |
 | `DJANGO_ALLOWED_HOSTS` | `list` | `['localhost', '0.0.0.0', '127.0.0.1', '192.168.31.30']` | yes | local.py:9 |
 | `DJANGO_DEBUG` | `bool` | `False` | yes | base.py:37 |
 | `DJANGO_EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | local.py:17 |
 | `DJANGO_READ_DOT_ENV_FILE` | `bool` | `False` | yes | base.py:25 |
 | `DJANGO_SECRET_KEY` | `str` | `'django-insecure-local-secret-key'` | yes | local.py:7 |
-| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:575 |
-| `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:579 |
-| `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:580 |
-| `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:534 |
-| `EMAIL_HOST` | `str` | `'localhost'` | yes | base.py:559 |
-| `EMAIL_HOST_PASSWORD` | `str` | `''` | yes | base.py:563 |
-| `EMAIL_HOST_USER` | `str` | `''` | yes | base.py:562 |
-| `EMAIL_PORT` | `str` | `587` | yes | base.py:560 |
-| `EMAIL_USE_TLS` | `bool` | `True` | yes | base.py:561 |
+| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:583 |
+| `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:587 |
+| `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:588 |
+| `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:542 |
+| `EMAIL_HOST` | `str` | `'localhost'` | yes | base.py:567 |
+| `EMAIL_HOST_PASSWORD` | `str` | `''` | yes | base.py:571 |
+| `EMAIL_HOST_USER` | `str` | `''` | yes | base.py:570 |
+| `EMAIL_PORT` | `str` | `587` | yes | base.py:568 |
+| `EMAIL_USE_TLS` | `bool` | `True` | yes | base.py:569 |
 | `ETF_BENCHMARK_CODE` | `str` | `'H00905.CSI'` | **no** | base.py:314 |
 | `ETF_COMMISSION_RATE` | `float` | `0.0003` | **no** | base.py:323 |
 | `ETF_DEDUP_TRACK_INDEX` | `bool` | `True` | **no** | base.py:307 |
@@ -81,8 +81,8 @@ _Generated: 2026-10-23T11:53:53Z_
 | `PREDICTION_GENERATION_LOCK_SECONDS` | `int` | `120` | yes | base.py:391 |
 | `PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS` | `int` | `5` | yes | base.py:380 |
 | `PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN` | `int` | `250` | yes | base.py:387 |
-| `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:519, base.py:527 |
-| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:593 |
+| `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:527, base.py:535 |
+| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:601 |
 | `TUSHARE_TOKEN` | `str` | `None` | yes | base.py:30 |
 
 **19** variables are env-overridable but absent from `.env.example`: `ARTIFACT_LOCAL_CACHE_ROOT`, `ETF_BENCHMARK_CODE`, `ETF_COMMISSION_RATE`, `ETF_DEDUP_TRACK_INDEX`, `ETF_DEFENSIVE_ASSET`, `ETF_LABEL_HORIZON_DAYS`, `ETF_LIQUIDITY_FLOOR_MULTIPLE`, `ETF_MAX_CONCURRENT_BACKTESTS`, `ETF_MAX_PER_CATEGORY`, `ETF_MAX_POSITIONS`, `ETF_MIN_AVG_AMOUNT_YUAN`, `ETF_MIN_COMMISSION`, `ETF_MIN_LISTING_AGE_DAYS`, `ETF_SECONDARY_BENCHMARK_CODES`, `ETF_SLIPPAGE`, `ETF_SYNC_MAX_RETRIES`, `ETF_SYNC_REQUEST_SLEEP_SECONDS`, `ETF_SYNC_RETRY_SLEEP_SECONDS`, `ETF_WEIGHTING`. They all have defaults, so nothing breaks -- but they cannot be discovered from the example file.

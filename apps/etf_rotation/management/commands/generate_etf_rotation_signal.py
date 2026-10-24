@@ -23,11 +23,17 @@ Examples::
 
 from __future__ import annotations
 
-from django.core.management.base import BaseCommand, CommandError, OutputWrapper
+import logging
+import time
 
-from apps.etf_rotation import signals
-from apps.etf_rotation.models import ETFRotationSignal
+from django.core.management.base import BaseCommand, CommandError, OutputWrapper
+from django.utils import timezone
+
+from apps.etf_rotation import signal_runs, signals
+from apps.etf_rotation.models import ETFRotationSignal, ETFRotationSignalRun
 from apps.etf_rotation.rotation_engine import MODEL_TYPES
+
+logger = logging.getLogger(__name__)
 
 
 class SummaryOutput(OutputWrapper):
@@ -74,6 +80,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options) -> dict:
+        started = time.monotonic()
         try:
             summary = signals.generate_rotation_signal(
                 signal_type=options['signal_type'],
@@ -84,14 +91,62 @@ class Command(BaseCommand):
                 dry_run=options['dry_run'],
             )
         except signals.SignalGenerationError as error:
+            self._record(options, ETFRotationSignalRun.Outcome.REFUSED, started, error=error)
             raise CommandError(str(error)) from error
+        except Exception as error:
+            self._record(options, ETFRotationSignalRun.Outcome.FAILED, started, error=error)
+            raise
 
+        self._record(options, ETFRotationSignalRun.Outcome.OK, started, summary=summary)
         if options['verbosity']:
             self._render(summary)
         # The framework's write of the return value goes through a wrapper that tolerates a
         # dict; see ``SummaryOutput``.
         self.stdout = SummaryOutput(self.stdout)
         return summary
+
+    def _record(self, options, outcome, started, *, error=None, summary=None) -> None:
+        """Persist this attempt. ``--dry-run`` keeps its promise of writing nothing.
+
+        A ledger failure must not mask the signal failure that is being reported, so the
+        record is best-effort: the message already says what went wrong and the command's
+        exit status is unchanged.
+        """
+        if options['dry_run']:
+            return
+        day = signals._as_date(options.get('date')) or signal_runs.latest_snapshot_date() \
+            or timezone.localdate()
+        try:
+            diagnostics = signal_runs.build_diagnostics(day)
+        except Exception:
+            diagnostics = {}
+        reason_code = ''
+        message = ''
+        if error is not None:
+            reason_code = str(getattr(error, 'reason_code', '') or 'unexpected_error')
+            message = str(error)
+            diagnostics.update(getattr(error, 'diagnostics', {}) or {})
+        elif summary is not None:
+            diagnostics.update({
+                'model_version': summary.get('model_version') or '',
+                'pool_size': summary.get('pool_size'),
+                'scored_size': summary.get('scored_size'),
+                'ranked_size': summary.get('ranked_size'),
+                'positions_written': summary.get('positions_written'),
+                'legs_without_price': summary.get('legs_without_price') or [],
+            })
+        try:
+            signal_runs.record_attempt(
+                day=day,
+                signal_type=options['signal_type'],
+                outcome=outcome,
+                reason_code=reason_code,
+                message=message,
+                diagnostics=diagnostics,
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+        except Exception:
+            logger.exception('Could not persist the ETF signal run for %s (%s).', day, outcome)
 
     def _render(self, summary: dict) -> None:
         self.stdout.write('')

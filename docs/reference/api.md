@@ -207,11 +207,16 @@ On acceptance the consumer joins the global `alerts` group. Server-pushed frames
 
 Clients send nothing; this is a receive-only stream. Alert events are produced
 by `apps.analytics.tasks.check_alert_rules`, scheduled every 5 minutes, and are
-also persisted for history at `/api/v1/alert-events/`.
+also persisted for history at `/api/v1/alert-events/`. `asset_symbol` is `null`
+for feed-level alerts (`condition_type=FEED_STALE`), which carry no tradable
+asset; the frame's `message` names the lagging benchmark or feature feed.
 
 > **Current state:** the alert-rule tables are empty in the reference database,
 > so the stream connects and stays silent. Create rules via `/api/v1/alerts/`
-> before expecting frames. Row counts are in [`metrics.md`](metrics.md).
+> before expecting frames, or leave the seeded `ETF data feed health` rule in
+> place — it is created on the first `check_alert_rules` pass and dispatches to
+> whatever channels `ALERT_NOTIFY_EMAILS` and the websocket group enable. Row
+> counts are in [`metrics.md`](metrics.md).
 
 ---
 
@@ -341,13 +346,24 @@ agree. The endpoint compares it against the newest `ETFFeatureSnapshot` with
 sessions the strategy *could* have been re-planned on — so `lag_sessions=0` means
 current whatever the calendar says, and a long weekend is not three sessions of
 staleness. Payload: `{signal_date, latest_snapshot_date, latest_bar_date,
-lag_sessions, is_stale, model_version}`; `is_stale` is `lag_sessions >= 1`. With
-no signal row the answer is `signal_date=null, lag_sessions=0, is_stale=false`,
-which the page renders as "unknown freshness" rather than as a confident date.
-For a RULE signal `model_version` is the row's own derived tag from the knobs that
-change the book — `rule-v1:mom60-score:dedup:cap2` — because RULE has no
-`ModelVersion` row to point at; it degrades to bare `rule-v1` when the
-configuration is unavailable.
+lag_sessions, is_stale, model_version, last_attempt, feed_stale}`; `is_stale` is
+`lag_sessions >= 1`. With no signal row the answer is `signal_date=null,
+lag_sessions=0, is_stale=false`, which the page renders as "unknown freshness"
+rather than as a confident date. For a RULE signal `model_version` is the row's
+own derived tag from the knobs that change the book —
+`rule-v1:mom60-score:dedup:cap2` — because RULE has no `ModelVersion` row to
+point at; it degrades to bare `rule-v1` when the configuration is unavailable.
+
+`last_attempt` is the newest non-health `ETFRotationSignalRun` (`date`,
+`signal_type`, `outcome`, `reason_code`, `message`, `created_at`) or `null` when
+no attempt has ever been recorded; the page warns whenever `outcome` is not `OK`,
+so a refusal that wrote no signal row is still visible. Feed-health watchdog rows
+are excluded, because a stale feed is reported by `feed_stale` and must not make
+the page claim the last signal job failed. `feed_stale` is the newest
+`FEED_STALE` health row **for the newest `ETFDaily` date only** — once bars
+advance without a new defect the block clears itself rather than repeating
+yesterday's alert. Both blocks are independent of `is_stale`, which describes
+the signal row's own as-of lag.
 
 `/etf/signals/latest/` returns the newest signal matching the same filters as
 the list route, and answers `404` rather than an empty page when none exists.
