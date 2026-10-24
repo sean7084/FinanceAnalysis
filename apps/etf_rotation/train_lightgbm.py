@@ -647,16 +647,21 @@ def _model_type(label: str):
 
 
 def _register_model_version(*, model_type_label: str, version: str, training_start, training_end,
-                            metrics: dict, feature_columns, metadata: dict, artifact_path: str):
+                            metrics: dict, feature_columns, metadata: dict, artifact_path: str,
+                            activate: bool = True):
     """Insert/refresh the registry row and flip prior actives, per ``_register_lightgbm_model_version``.
 
     The flip is scoped to the same ``model_type`` and excludes this version, so re-running
     the same version tag refreshes it instead of deactivating itself.
+
+    ``activate=False`` writes the row inactive and touches no other row. A sweep must pass
+    it, otherwise the trial that finishes last is the one ``load_active_predictor`` serves.
     """
     model_type = _model_type(model_type_label)
-    ModelVersion.objects.filter(model_type=model_type, is_active=True).exclude(
-        version=version,
-    ).update(is_active=False)
+    if activate:
+        ModelVersion.objects.filter(model_type=model_type, is_active=True).exclude(
+            version=version,
+        ).update(is_active=False)
     row, _created = ModelVersion.objects.update_or_create(
         model_type=model_type,
         version=version,
@@ -668,7 +673,7 @@ def _register_model_version(*, model_type_label: str, version: str, training_sta
             'training_window_start': training_start,
             'training_window_end': training_end,
             'trained_at': timezone.now(),
-            'is_active': True,
+            'is_active': bool(activate),
             'metadata': _json_safe(metadata),
         },
     )
@@ -863,7 +868,7 @@ def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horiz
 def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=None, end_date=None,
                        n_folds: int = 6, horizon_days=None, objective: str = DEFAULT_OBJECTIVE,
                        num_boost_round: int = None, params: dict = None,
-                       min_train_days: int = None, version_tag: str = '') -> dict:
+                       min_train_days: int = None, version_tag: str = '', activate: bool = True) -> dict:
     """Expanding-window walk-forward fit with per-fold holdout metrics, then one registry row.
 
     Each fold trains on its purged window and is scored on the block that follows it. The
@@ -875,6 +880,9 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
     use all the history it has. The registered metrics therefore describe a same-specification
     model, not the exact pickle on disk -- stated here because a metric field that silently
     refers to a different model is how a pipeline stops being believed.
+
+    ``activate=False`` registers the row inactive and leaves the active one alone, which is
+    what a hyperparameter sweep needs: see :func:`_register_model_version`.
     """
     if lgb is None:
         raise RuntimeError('lightgbm is not installed; ETF walk-forward training cannot run.')
@@ -1055,6 +1063,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
         feature_columns=feature_columns,
         metadata=metadata,
         artifact_path=artifact_relative_path(version),
+        activate=activate,
     )
     return {
         'status': 'success',

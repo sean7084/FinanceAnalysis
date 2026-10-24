@@ -7,7 +7,8 @@ set -euo pipefail
 # therefore only ever report a server-side floor: its FRONTEND_OVERHEAD_SECONDS
 # sat at 0 because nothing had read the app's own time-to-data stamps. This takes
 # that reading, in a real browser, the way the plan's Verification step 7
-# describes it -- each of the 8 routes in a fresh profile against the production
+# describes it -- every routed page in frontend/src/App.tsx, one fresh profile
+# each, against the production
 # build -- without adding a devDependency or a 170MB Chromium download, by using
 # the browser already installed on the Windows host through WSL interop.
 #
@@ -200,7 +201,7 @@ if [[ -z "$STOCK_SYMBOL" ]]; then
 	exit 1
 fi
 
-ROUTES=("/" "/indicator-board" "/stock/$STOCK_SYMBOL" "/macro" "/models" "/backtest" "/alerts" "/settings")
+ROUTES=("/" "/indicator-board" "/stock/$STOCK_SYMBOL" "/macro" "/models" "/backtest" "/etf" "/etf/backtest" "/alerts" "/settings")
 RAW="$OUT_DIR/raw.jsonl"
 : >"$RAW"
 ITERATIONS="${ITERATIONS:-$([[ "$COLD" == "1" ]] && echo 1 || echo 3)}"
@@ -331,7 +332,7 @@ if missing:
     lines.append(
         "Routes with no measurement at all: " + ", ".join(missing) + ". A route that "
         "produced no number is not a pass, so this run exits non-zero rather than "
-        "reporting seven pages and calling it the eight."
+        "reporting the routes that did produce numbers and calling it the whole run."
     )
 if incomplete:
     lines.append(

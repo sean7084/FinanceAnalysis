@@ -9,6 +9,7 @@ the classification has to be assembled from three places in priority order:
 ``invest_type``, so the name/benchmark tiers are load-bearing rather than optional.
 """
 
+import re
 from datetime import timedelta
 
 from django.db.models import Q
@@ -40,7 +41,12 @@ EXCLUDED_CODE_PREFIXES = {
 
 INDEX_INVEST_TYPES = frozenset({'被动指数型', '增强指数型'})
 
+# ``现金`` on its own matched 33 equity index funds -- every one of them a 自由现金流
+# (free cash flow) ETF, which is a dividend-style equity screen, not a cash vehicle. The
+# keyword stays because the real money funds need it (添富现金ETF, 现金宝), and the collision
+# is cut at the compound instead: ``现金流`` disqualifies a name from the money tier.
 MONEY_KEYWORDS = ('货币', '现金', '理财金', '快线')
+MONEY_EXCLUDE_KEYWORDS = ('现金流',)
 # ``有色`` and ``石化`` are deliberately absent: they name equity sectors (有色金属ETF,
 # 石化ETF) whose benchmarks also contain them. Only physical-commodity vehicles belong.
 COMMODITY_KEYWORDS = (
@@ -116,6 +122,72 @@ def _short(value):
     return _text(value)[:SUB_CATEGORY_MAX_LENGTH]
 
 
+# ``pro.fund_share`` reports ``fd_share`` in 万份, which is how TuShare's own documentation
+# states it and how the live probe came back (515020.SH -> 44084.53). Everything downstream
+# compares against 元-denominated turnover, so shares are converted to 份 on ingest.
+SHARE_UNIT_TO_SHARES = 10000
+
+TRACK_INDEX_MAX_LENGTH = ETFUniverse._meta.get_field('track_index_key').max_length
+
+# TuShare writes the tracked index as free text, and one index appears in several
+# decorations. Measured over the 1882 rankable rows (763 distinct benchmarks): all of them
+# use ``×`` and none uses ``*``; exactly one blends two legs with ``+``; 10 carry
+# ``(人民币)``. The decorations that repeat are the quote convention and the return clause,
+# so ``中证银行指数收益率×100%`` and ``中证银行指数×100%`` have to normalise to one key while
+# ``中证800银行指数收益率×100%`` stays separate -- it really is a different index.
+_TRACK_INDEX_PARENTHETICAL = re.compile(r'[（(][^（）()]*[）)]')
+_TRACK_INDEX_WEIGHT = re.compile(r'[×*]\s*\d+(?:\.\d+)?\s*%')
+_TRACK_INDEX_TAIL_TOKENS = ('指数收益率', '收益率', '指数')
+
+
+def normalize_track_index(name, benchmark=''):
+    """Return the cluster key for the index a fund tracks.
+
+    Two ETFs with the same key are the same bet in different wrappers, which is what makes
+    this the dedup axis for the rotation pool: ``category`` is too coarse (19 bank ETFs are
+    one category, and ``中证银行`` / ``中证800银行`` / ``沪深300非银行金融`` sit inside it) while
+    raw ``benchmark`` is too fine (the same index is written 12 different ways in it).
+
+    The key is a normalisation, not a claim about identity: funds whose benchmark is blank
+    fall back to their name, so they cluster with nothing but themselves.
+    """
+    raw = _text(benchmark) or _text(name)
+    if not raw:
+        return ''
+    key = _TRACK_INDEX_PARENTHETICAL.sub('', raw)
+    key = _TRACK_INDEX_WEIGHT.sub('', key)
+    key = re.sub(r'\s+', '', key)
+    key = ''.join(key.split()).lower()
+    changed = True
+    while changed and len(key) > 1:
+        changed = False
+        for token in _TRACK_INDEX_TAIL_TOKENS:
+            if key.endswith(token) and len(key) > len(token):
+                key = key[: -len(token)]
+                changed = True
+                break
+    return key[:TRACK_INDEX_MAX_LENGTH]
+
+
+def shares_to_aum_yuan(shares_outstanding, close):
+    """Estimated fund size in 元, or ``None`` when either input is missing.
+
+    ``shares_outstanding`` is a period stamp, not a live figure: ``fund_share`` is published
+    irregularly, so a stale count multiplied by today's price is an estimate and is treated
+    as one (it ranks candidates within a cluster, it never sizes a position).
+    """
+    if shares_outstanding is None or close is None:
+        return None
+    try:
+        shares = float(shares_outstanding)
+        price = float(close)
+    except (TypeError, ValueError):
+        return None
+    if shares <= 0 or price <= 0:
+        return None
+    return shares * price
+
+
 def is_excluded_code(ts_code):
     """True when the exchange code names a LOF or a 分级 share rather than an ETF.
 
@@ -160,7 +232,10 @@ def classify_etf(name, invest_type='', benchmark='', fund_type=''):
     label = f'{_text(name)} {_text(benchmark)}'
     invest = _text(invest_type)
 
-    if invest == '货币型' or _matched_category(label, MONEY_KEYWORDS, None):
+    if invest == '货币型' or (
+        _matched_category(label, MONEY_KEYWORDS, None)
+        and not _matched_category(label, MONEY_EXCLUDE_KEYWORDS, None)
+    ):
         return ETFCategory.MONEY, _short(name)
     if invest == '黄金现货合约' or _matched_category(label, COMMODITY_KEYWORDS, None):
         return ETFCategory.COMMODITY, _short(benchmark) or _short(name)

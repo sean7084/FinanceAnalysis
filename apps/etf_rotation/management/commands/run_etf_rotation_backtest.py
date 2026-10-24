@@ -16,12 +16,16 @@ folds is roughly 29 machine-hours, which is not a search anyone can run, so the 
 finds the parameter region and the ML runs are then evaluated *inside* it. The
 ``weighting`` dimension is the fifth because it is the one the engine already exposes on
 ``BacktestConfig`` (forwarded verbatim into ``RotationConfig``) and it lands the product
-on exactly 144; there is no ``weighting`` column, so it travels in the row's ``name`` and
-in ``parameters``.
+on exactly 144; it is both a column and part of the row's ``name``, so a grid row can be
+filtered on it without reading JSON.
 
 Every grid row is persisted (C24: ``momentum_lookback`` exists as a column precisely so a
 swept horizon is recoverable), keyed by name so an interrupted grid resumes rather than
-duplicates.
+duplicates. That same key is why ``--grid-prefix`` exists: re-running a window under the
+default stem *skips* all 144 combinations, and ``--grid-force`` would overwrite the first
+generation with the second. After a change to the selection rules -- index-cluster dedup,
+the category cap, anything else that lands in the ranking -- sweep under a fresh stem so
+both generations survive to be compared.
 
 Examples::
 
@@ -29,6 +33,7 @@ Examples::
     python manage.py run_etf_rotation_backtest --backtest-id 12
     python manage.py run_etf_rotation_backtest --start 2019-01-01 --end 2024-12-31 --grid --grid-top 15
     python manage.py run_etf_rotation_backtest --start 2019-01-01 --end 2024-12-31 --grid --grid-plan
+    python manage.py run_etf_rotation_backtest --start 2016-01-29 --end 2023-12-31 --grid --grid-prefix grid-dedup
 """
 
 from __future__ import annotations
@@ -53,10 +58,11 @@ from apps.etf_rotation.backtest_engine import (
     DatabaseDataSource,
     PricePanel,
     RotationEngineUnavailable,
+    defensive_asset_problem,
     run_rotation_backtest,
 )
 from apps.etf_rotation.models import ETFRotationBacktest
-from apps.etf_rotation.rotation_engine import WEIGHTING_MODES
+from apps.etf_rotation.rotation_engine import WEIGHTING_MODES, default_defensive_asset
 
 # ``CELERY_TASK_ROUTES`` puts ``apps.etf_rotation.tasks.run_etf_rotation_backtest`` on this
 # queue; the name is only printed, never used to route, so keep the two in step.
@@ -68,7 +74,13 @@ GRID_FREQUENCIES = ('WEEKLY', 'BIWEEKLY', 'MONTHLY', 'TRIGGER')
 GRID_MAX_POSITIONS = (3, 5, 8)
 GRID_ABSOLUTE_FILTERS = (True, False)
 GRID_MOMENTUM_LOOKBACKS = (20, 60, 120)
-GRID_WEIGHTINGS = tuple(WEIGHTING_MODES)
+# Pinned to the two modes the reference grid was built on, NOT widened onto
+# ``WEIGHTING_MODES`` with ``invvol`` added: that would make the sweep 216 combinations
+# for a 50% longer run to answer a question the grid was never asked. Inverse-volatility
+# weighting is compared head-to-head against equal and score at the reference
+# configuration, which is a three-run job. Widening this tuple means re-checking
+# GRID_EXPECTED_COMBOS.
+GRID_WEIGHTINGS = ('equal', 'score')
 GRID_EXPECTED_COMBOS = 144
 
 #: Row columns the queued task reads back as its configuration. Same set as
@@ -78,7 +90,8 @@ _QUEUE_KNOB_FIELDS = (
     'start_date', 'end_date', 'model_type', 'rebalance_frequency', 'max_positions',
     'momentum_lookback', 'absolute_momentum_filter', 'defensive_asset', 'initial_capital',
     'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
-    'benchmark_code', 'walk_forward_steps',
+    'benchmark_code', 'walk_forward_steps', 'weighting', 'dedup_track_index',
+    'max_per_category',
 )
 
 #: Bounds the cross-run snapshot memo. One session's eligible cross-section is a few
@@ -107,13 +120,26 @@ def grid_combinations() -> list[dict[str, Any]]:
     return combos
 
 
-def grid_name(combo: dict[str, Any]) -> str:
-    """Name encoding the whole configuration; ``weighting`` has no column, so it is here."""
+def grid_stem(combo: dict[str, Any]) -> str:
+    """The configuration spelled out, without the leading name prefix."""
     return (
-        f"grid-rule-{combo['rebalance_frequency'].lower()}-p{combo['max_positions']}"
+        f"rule-{combo['rebalance_frequency'].lower()}-p{combo['max_positions']}"
         f"-mom{combo['momentum_lookback']}-{'abs' if combo['absolute_momentum_filter'] else 'noabs'}"
         f"-{combo['weighting']}"
     )
+
+
+def grid_name(combo: dict[str, Any], prefix: str = 'grid') -> str:
+    """Name spelling out the whole configuration, including the two knobs a table row cannot show.
+
+    ``prefix`` exists because the row's name is the grid's resume key: re-running the same
+    window with the same prefix finds the rows that are already COMPLETED and skips them.
+    That is right for an interrupted sweep and wrong for a re-run after the *selection rules*
+    change -- the old rows would be skipped, or overwritten with ``--grid-force``, and the
+    before/after comparison the re-run exists to produce would be gone. A second prefix keeps
+    both generations side by side.
+    """
+    return f'{str(prefix or "").strip() or "grid"}-{grid_stem(combo)}'
 
 
 def parse_iso_date(value: str, label: str) -> date:
@@ -121,6 +147,26 @@ def parse_iso_date(value: str, label: str) -> date:
         return date.fromisoformat(str(value).strip())
     except ValueError as exc:
         raise CommandError(f'{label} must be YYYY-MM-DD, got {value!r}.') from exc
+
+
+def control_halt_message(result: dict[str, Any]) -> str:
+    """Describe a run the engine stopped early because the row asked it to.
+
+    A halted result carries no ``metrics``, so every caller must branch on ``control`` before
+    reporting; the CLI is the only consumer that can turn it into plain text rather than a
+    task-layer hand-off. ``RESTART`` is left pending on the row -- wiping it and re-queuing is
+    ``tasks.run_etf_rotation_backtest``'s job, not something an inline run should do.
+    """
+    processed = f"{result.get('cursor')}/{result.get('total_sessions')} trading sessions"
+    control = str(result.get('control') or '')
+    if control == 'PAUSED':
+        return f'row paused by request after {processed}; resume it to continue from the cursor'
+    if control == 'RESTART':
+        return (
+            f'restart requested after {processed}; the inline run stopped and left the request '
+            'for the next worker pickup'
+        )
+    return f'row deleted by request after {processed}'
 
 
 class CachedDataSource:
@@ -216,7 +262,26 @@ class Command(BaseCommand):
                             action='store_false', default=None,
                             help='Drop the risk-on/risk-off absolute momentum gate (default: on).')
         parser.add_argument('--weighting', default=None, choices=list(WEIGHTING_MODES),
-                            help='Position sizing across the selected legs. Default: equal.')
+                            help='Position sizing across the selected legs. Default: settings.ETF_WEIGHTING.')
+        parser.add_argument('--no-dedup-track-index', dest='dedup_track_index', action='store_false',
+                            default=None,
+                            help='Let several funds tracking the same index into one book. '
+                                 'Default: on (one fund per tracked index).')
+        parser.add_argument('--max-per-category', type=int, default=None,
+                            help='Cap on names one category may contribute; 0 disables the cap. '
+                                 'Default: settings.ETF_MAX_PER_CATEGORY (2).')
+        parser.add_argument('--kelly-fraction', type=float, default=None,
+                            help='Fraction of the Kelly-optimal exposure to use as a portfolio-level '
+                                 'cap on the risk budget. 0 (default) disables the governor entirely.')
+        parser.add_argument('--kelly-cap', type=float, default=None,
+                            help='Upper bound on the Kelly exposure scale (default 1.0, i.e. never lever).')
+        parser.add_argument('--kelly-floor', type=float, default=None,
+                            help='Lower bound on the Kelly exposure scale (default 0.0).')
+        parser.add_argument('--kelly-lookback-trades', type=int, default=None,
+                            help='Closed trades the win/payoff estimate is taken over (default 60).')
+        parser.add_argument('--cash-yield-annual', type=float, default=None,
+                            help='Annualised rate credited to cash the liquidity floor left idle '
+                                 '(default 0.0, which reproduces every pre-existing run).')
         parser.add_argument('--defensive-asset', default=None,
                             help='TS code of the risk-off sleeve. Default: settings.ETF_DEFENSIVE_ASSET.')
         parser.add_argument('--initial-capital', type=float, default=None,
@@ -242,6 +307,10 @@ class Command(BaseCommand):
                             help='Run only the first N combinations (0 = all). Cheap smoke of a long sweep.')
         parser.add_argument('--grid-plan', action='store_true',
                             help='Print the combinations the grid would run and execute nothing.')
+        parser.add_argument('--grid-prefix', default='grid', metavar='NAME',
+                            help='Name stem for the persisted grid rows (default: grid). The row name is the '
+                                 'resume key, so a re-run after a selection-rule change needs a fresh stem to '
+                                 'keep both generations side by side.')
         parser.add_argument('--grid-force', action='store_true',
                             help='Re-run grid rows that already COMPLETED under the same name (default: skip them).')
 
@@ -277,9 +346,40 @@ class Command(BaseCommand):
             'defensive_asset': options['defensive_asset'],
             'initial_capital': options['initial_capital'],
         }
-        overrides = {'weighting': options['weighting']} if options['weighting'] else {}
+        overrides = {
+            key: options[key]
+            for key in ('weighting', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+                         'kelly_lookback_trades', 'cash_yield_annual')
+            if options.get(key) is not None
+        }
+        # ``dedup_track_index`` and ``max_per_category`` are rotation-layer knobs and reach
+        # the engine through ``config_overrides`` like the rest of them: ``run_rotation_backtest``
+        # takes an argument per *cost/identity* knob and reads the rest off
+        # ``BacktestConfig``. Passing them as top-level arguments was a TypeError on the first
+        # `--no-dedup-track-index` invocation, and the grid never noticed because it has always
+        # routed ``weighting`` through ``config_overrides``.
+        #
+        # Both flags are tri-state: ``default=None`` means "not asked for", and the override must
+        # stay absent so ``BacktestConfig`` decides. ``bool(options[...])`` looked equivalent and
+        # was not -- ``bool(None)`` is False, so every plain CLI run silently selected the
+        # dedup-off, cap-unset book instead of the production one, and a CLI number was not
+        # comparable to a grid number of the same configuration.
+        if options['dedup_track_index'] is not None:
+            overrides['dedup_track_index'] = bool(options['dedup_track_index'])
+        if options['max_per_category'] is not None:
+            overrides['max_per_category'] = int(options['max_per_category'])
         model_type = knobs['model_type']
         name = options['name'] or self._default_name(knobs, options)
+
+        # Resolve the sleeve to the code that will actually be used and prove it can carry
+        # the cash leg over THIS window before any of the work starts. Passing the resolved
+        # value back into ``knobs`` also means the row, the digest and the engine all see the
+        # same string instead of three different readings of an empty flag.
+        sleeve = str(knobs['defensive_asset'] or default_defensive_asset()).strip().upper()
+        sleeve_problem = defensive_asset_problem(sleeve, start_date=start, end_date=end)
+        if sleeve_problem:
+            raise CommandError(sleeve_problem)
+        knobs['defensive_asset'] = sleeve
 
         predictors = self._active_predictors(model_type)
         self.stdout.write(
@@ -287,7 +387,9 @@ class Command(BaseCommand):
             f'positions={options["max_positions"] or "5(default)"} '
             f'lookback={options["momentum_lookback"] or "60(default)"} '
             f'absolute_filter={"off" if options["absolute_momentum_filter"] is False else "on(default)"} '
-            f'weighting={options["weighting"] or "equal(default)"} '
+            f'weighting={options["weighting"] or "score(default)"} '
+            f'dedup={"off" if overrides.get("dedup_track_index") is False else "on(default)"} '
+            f'cap={overrides.get("max_per_category", "config-default")} '
             f'window={start}..{end} name={name if options["persist"] else "(not persisted)"}'
         )
 
@@ -325,7 +427,7 @@ class Command(BaseCommand):
             raise CommandError(f'ETFRotationBacktest {options["backtest_id"]} does not exist.')
 
         if options['queue']:
-            task = tasks.run_etf_rotation_backtest.delay(row.pk)
+            task = tasks.queue_etf_rotation_run(row)
             self.stdout.write(self.style.SUCCESS(
                 f'Queued run_etf_rotation_backtest(backtest_id={row.pk}) task={task.id} '
                 f'queue={ETF_ROTATION_QUEUE}.'
@@ -343,7 +445,10 @@ class Command(BaseCommand):
             'commission_rate': row.commission_rate, 'min_commission': float(row.min_commission),
             'slippage': row.slippage, 'liquidity_floor_multiple': row.liquidity_floor_multiple,
             'benchmark_code': row.benchmark_code,
-            'config_overrides': {'walk_forward_steps': row.walk_forward_steps},
+            'config_overrides': {
+                'walk_forward_steps': row.walk_forward_steps, 'weighting': row.weighting,
+                'dedup_track_index': row.dedup_track_index, 'max_per_category': row.max_per_category,
+            },
             'persist_to': row,
         }, predictors=predictors)
         self._report(result, title=f'{row.name} (id={row.pk})',
@@ -352,15 +457,18 @@ class Command(BaseCommand):
     def _enqueue(self, start, end, knobs, overrides, name):
         """Create the row from the requested knobs, then hand it to the 3600s task.
 
-        The task reads only row columns, so anything not expressible as a column has to be
-        checked here rather than silently re-defaulted in the worker.
+        Every knob has to be expressible as a column: the task rebuilds its config from the row,
+        so a knob that lives only in ``overrides`` would re-default in the worker. ``weighting``
+        joined ``_QUEUE_KNOB_FIELDS`` for exactly that reason.
         """
-        if overrides and overrides.get('weighting') != 'equal':
-            self.stdout.write(self.style.WARNING(
-                f'--weighting {overrides["weighting"]} is not an ETFRotationBacktest column, and '
-                'tasks.run_etf_rotation_backtest builds its config from columns only: the queued '
-                "run will use the BacktestConfig default 'equal'. Run inline to keep the sweep."
-            ))
+        unqueueable = sorted(set(overrides) - set(_QUEUE_KNOB_FIELDS))
+        if unqueueable:
+            raise CommandError(
+                f'--queue cannot carry {", ".join(unqueueable)}: ETFRotationBacktest has no '
+                'column for them, so the worker would read back its own default and run a '
+                'different configuration than the one this command was asked to queue. Run '
+                'inline (drop --queue) to use them.'
+            )
         try:
             config = BacktestConfig(start_date=start, end_date=end, **{
                 key: value for key, value in knobs.items() if value is not None
@@ -375,7 +483,7 @@ class Command(BaseCommand):
         values['model_type'] = config.model_type
         row = ETFRotationBacktest(name=name, parameters=config.to_parameters(), **values)
         row.save()
-        task = tasks.run_etf_rotation_backtest.delay(row.pk)
+        task = tasks.queue_etf_rotation_run(row)
         self.stdout.write(self.style.SUCCESS(
             f'Created ETFRotationBacktest {row.pk} "{name}" (status={row.status}) and queued '
             f'tasks.run_etf_rotation_backtest({row.pk}) task={task.id} queue={ETF_ROTATION_QUEUE}.'
@@ -482,6 +590,8 @@ class Command(BaseCommand):
         except (BacktestConfigError, BacktestDataUnavailable, RotationEngineUnavailable) as exc:
             raise CommandError(f'{type(exc).__name__}: {exc}') from exc
         elapsed = time.monotonic() - started
+        if (result or {}).get('control'):
+            raise CommandError(control_halt_message(result))
         result['_elapsed_seconds'] = elapsed
         return result
 
@@ -595,6 +705,7 @@ class Command(BaseCommand):
             raise CommandError('--grid builds one row per configuration; it cannot take --backtest-id.')
         if not options['start'] or not options['end']:
             raise CommandError('--grid requires --start and --end.')
+        prefix = str(options['grid_prefix'] or 'grid').strip() or 'grid'
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')
         if end < start:
@@ -615,7 +726,7 @@ class Command(BaseCommand):
 
         if options['grid_plan']:
             for index, combo in enumerate(combos, start=1):
-                self.stdout.write(f'[{index:>3}/{len(combos)}] {grid_name(combo)} {combo}')
+                self.stdout.write(f'[{index:>3}/{len(combos)}] {grid_name(combo, prefix)} {combo}')
             self.stdout.write(self.style.SUCCESS(f'--grid-plan: {len(combos)} combinations listed, none executed.'))
             return
 
@@ -625,7 +736,7 @@ class Command(BaseCommand):
         skipped = 0
         started = time.monotonic()
         for index, combo in enumerate(combos, start=1):
-            name = grid_name(combo)
+            name = grid_name(combo, prefix)
             row, created = ETFRotationBacktest.objects.get_or_create(
                 name=name, defaults={'start_date': start, 'end_date': end},
             )
@@ -649,6 +760,14 @@ class Command(BaseCommand):
                 # 143; the engine has already marked the row FAILED with the message.
                 failures.append(f'{name}: {type(exc).__name__}: {exc}')
                 self.stdout.write(self.style.ERROR(f'[{index}/{len(combos)}] {name} FAILED: {exc}'))
+                continue
+            if result.get('control'):
+                # The grid itself never requests a halt, but an operator can post one to a row
+                # this command is running. There are no metrics to rank, so it is a failed
+                # combination -- and indexing result['metrics'] here would be a KeyError.
+                halt = control_halt_message(result)
+                failures.append(f'{name}: {halt}')
+                self.stdout.write(self.style.ERROR(f'[{index}/{len(combos)}] {name} HALTED: {halt}'))
                 continue
             metrics = result['metrics']
             rows.append({**combo, 'name': name, 'id': row.pk, 'metrics': metrics,
@@ -744,7 +863,7 @@ def _command_line(combo: dict[str, Any], start: date, end: date) -> str:
     return (
         'DJANGO_READ_DOT_ENV_FILE=True python manage.py run_etf_rotation_backtest '
         f'--start {start.isoformat()} --end {end.isoformat()} {flags} '
-        f'--model RULE --name "ml-{grid_name(combo)[5:]}"'
+        f'--model RULE --name "ml-{grid_stem(combo)}"'
     )
 
 

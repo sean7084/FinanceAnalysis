@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-22T03:01:42Z_
+_Generated: 2026-10-23T11:53:53Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**40** project commands across **9** apps.
+**41** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -244,7 +244,14 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--max-positions` | value | &mdash; |  | Holding count. Default: BacktestConfig (5). |
 | `--momentum-lookback` | value | &mdash; |  | Ranking horizon in sessions. Default: BacktestConfig (60). |
 | `--no-absolute-momentum-filter` | flag | &mdash; |  | Drop the risk-on/risk-off absolute momentum gate (default: on). |
-| `--weighting` | value | &mdash; |  | Position sizing across the selected legs. Default: equal. |
+| `--weighting` | value | &mdash; |  | Position sizing across the selected legs. Default: settings.ETF_WEIGHTING. |
+| `--no-dedup-track-index` | flag | &mdash; |  | Let several funds tracking the same index into one book. Default: on (one fund per tracked index). |
+| `--max-per-category` | value | &mdash; |  | Cap on names one category may contribute; 0 disables the cap. Default: settings.ETF_MAX_PER_CATEGORY (2). |
+| `--kelly-fraction` | value | &mdash; |  | Fraction of the Kelly-optimal exposure to use as a portfolio-level cap on the risk budget. 0 (default) disables the governor entirely. |
+| `--kelly-cap` | value | &mdash; |  | Upper bound on the Kelly exposure scale (default 1.0, i.e. never lever). |
+| `--kelly-floor` | value | &mdash; |  | Lower bound on the Kelly exposure scale (default 0.0). |
+| `--kelly-lookback-trades` | value | &mdash; |  | Closed trades the win/payoff estimate is taken over (default 60). |
+| `--cash-yield-annual` | value | &mdash; |  | Annualised rate credited to cash the liquidity floor left idle (default 0.0, which reproduces every pre-existing run). |
 | `--defensive-asset` | value | &mdash; |  | TS code of the risk-off sleeve. Default: settings.ETF_DEFENSIVE_ASSET. |
 | `--initial-capital` | value | &mdash; |  | Starting equity in yuan. Default: settings.ETF_INITIAL_CAPITAL. A small value is how the min-commission floor gets exercised. |
 | `--name` | value | `""` |  | Name of the persisted row. |
@@ -257,7 +264,28 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--grid-top` | value | `10` |  | Rows of the ranked grid table (default 10). |
 | `--grid-limit` | value | `0` |  | Run only the first N combinations (0 = all). Cheap smoke of a long sweep. |
 | `--grid-plan` | flag | `False` |  | Print the combinations the grid would run and execute nothing. |
+| `--grid-prefix` | value | `grid` |  | Name stem for the persisted grid rows (default: grid). The row name is the resume key, so a re-run after a selection-rule change needs a fresh stem to keep both generations side by side. |
 | `--grid-force` | flag | `False` |  | Re-run grid rows that already COMPLETED under the same name (default: skip them). |
+
+
+### `sweep_etf_rotation_lstm`
+
+Bounded, resumable LSTM hyperparameter sweep over the ETF tuning window.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | &mdash; |  | Tuning window start (ISO). Default: earliest eligible snapshot date. |
+| `--end` | value | &mdash; |  | Tuning window end (ISO). Default: 2023-12-31. |
+| `--folds` | value | `6` |  | Walk-forward steps per trial (default 6). Part of the fingerprint. |
+| `--horizon` | value | &mdash; |  | Label horizon in sessions. Default: settings.ETF_LABEL_HORIZON_DAYS. |
+| `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS. |
+| `--sequence-length` | value | `20` |  | Bars per sequence (default 20). Part of the fingerprint. |
+| `--limit` | value | &mdash; |  | Run only the first N configurations, for a smoke test. |
+| `--top` | value | `10` |  | Rows in the ranked table (default 10). |
+| `--force` | flag | `False` |  | Re-run configurations whose row is already COMPLETED. |
+| `--plan` | flag | `False` |  | Print every configuration, name and fingerprint; write nothing. |
+| `--dry-run` | flag | `False` |  | Resolve the window, report the ledger state, train nothing, write nothing. |
+| `--allow-holdout-overlap` | flag | `False` |  | Let --end reach past 2024-01-01 (it is refused otherwise). |
 
 
 ### `sync_etf_daily`

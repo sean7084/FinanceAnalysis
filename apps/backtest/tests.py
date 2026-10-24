@@ -35,7 +35,7 @@ from . import tasks as backtest_tasks
 from .comparison import _run_trading_dates
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer
-from .task_health import get_backtest_run_task_owner_state
+from apps.core.task_health import get_backtest_run_task_owner_state
 from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backtest
 
 
@@ -427,7 +427,7 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(data['task_state'], 'PENDING')
         self.assertTrue(data['has_stale_task_owner'])
 
-    @patch('apps.backtest.task_health.AsyncResult')
+    @patch('apps.core.task_health.AsyncResult')
     def test_task_owner_state_does_not_mark_pending_continuation_chunk_as_stale(self, mock_async_result):
         mock_async_result.return_value.state = 'PENDING'
         run = self._create_run(
@@ -444,7 +444,7 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(state['task_state'], 'PENDING')
         self.assertFalse(state['has_stale_task_owner'])
 
-    @patch('apps.backtest.task_health.AsyncResult')
+    @patch('apps.core.task_health.AsyncResult')
     def test_task_owner_state_marks_old_pending_run_without_progress_as_stale(self, mock_async_result):
         mock_async_result.return_value.state = 'PENDING'
         run = self._create_run(

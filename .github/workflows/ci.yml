@@ -84,8 +84,51 @@ jobs:
       # that left Stock Detail and Backtest unmeasurable) -- plus the factors
       # macro-context re-score test, which pins that the SQL annotation still equals
       # the same weighted sum done in Decimal.
-      # Discovery is verified at 450, so nothing is silently missing.
-      MIN_TEST_COUNT: "450"
+      # 450 -> 465: the ETF rotation follow-on. Six tests either side of the new
+      # `activate: bool` seam in both trainers -- a suppressed trial must not flip
+      # the incumbent of its own type or of another, the default must still take
+      # over, `train_walk_forward` must actually thread the flag, and the sweep
+      # provenance metadata must persist. Nine more for the ETF comparison payload:
+      # rescaling onto opening equity, filling a benchmark-feed hole so both curves
+      # share one session grid, secondary codes and their labels, the two
+      # short-circuit messages, overlay parsing, and that an overlay request is
+      # never served the cached body of a bare one.
+      # Discovery is verified at 465, so nothing is silently missing.
+      # 465 -> 514: the ETF backtest write API. Forty-nine tests, and the four
+      # classes add up exactly: 18 create guardrails (RULE-only is enforced
+      # server-side, date sanity, fingerprint dedupe against an in-flight row, the
+      # ETF_MAX_CONCURRENT_BACKTESTS cap answering 429), 15 lifecycle transitions
+      # (pause on PENDING is immediate while pause on RUNNING only sets
+      # pending_control_action, resume rejects a row that is not PAUSED with the
+      # server's own sentence, restart discards runtime_state), 7 chunk-boundary
+      # controls proving the engine acts on a request rather than ignoring it, and
+      # 9 task-lifecycle tests that the queue is reached through
+      # transaction.on_commit and that a stale task owner is recognised now that
+      # current_task_id exists. Discovery is verified at 514.
+      # 514 -> 549: the LSTM sweep. Thirty-five tests in two classes: 10 over the
+      # grid and its fingerprint (the 32-combination product, the loss axis really
+      # being train_lstm's own constants, exact trial names, and a digest that
+      # changes with the window or any protocol knob so a resumed sweep can never
+      # reuse an incomparable row), and 25 that drive the command against a
+      # torch-free stub trainer -- every trial registers with activate=False and
+      # carries tuning metadata but never pooled_holdout, the incumbent survives
+      # both a clean and a mid-sweep-failed run, one failed trial does not cost
+      # the rest, --force and a stale fingerprint re-run while a fresh COMPLETED
+      # row is skipped, the holdout is refused unless explicitly overridden, and
+      # --plan/--dry-run touch neither torch nor the database.
+      # 549 -> 614: selection, sizing and signal transparency. Sixty-five tests in
+      # seventeen classes, and the groups add up exactly: selection (5 over the
+      # seven tracked-index spellings, 2 fund-size estimates, 2 money-tier
+      # classifications, 7 dedup + max-per-category constraints, 2 the
+      # score -> shares -> ticker tie-break, 4 grid resume keys); sizing (6
+      # inverse-volatility incl. the "every mode spends exactly its budget"
+      # invariant, 8 the walk-forward Kelly governor, 3 payoff_ratio, 4 cash-yield
+      # accrual, 2 that all four weighting choice lists agree); plumbing (3 that
+      # every CLI knob reaches the engine in a form it accepts -- the TypeError
+      # class of bug -- and 6 refusing to persist a signal whose cross-section was
+      # blind); API surface (4 defensive-sleeve validation, 2 the tradable-sleeve
+      # list, 2 the config-derived RULE tag, 3 the freshness endpoint).
+      MIN_TEST_COUNT: "614"
 
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +249,30 @@ jobs:
       # not polled (retrying a down broker is not the fix), and that the wait is
       # capped at twelve ticks rather than running forever. Measured by `npm test`:
       # 54 across 8 files.
-      MIN_TEST_COUNT: "54"
+      # 54 -> 58: the ETF rotation dashboard, in a new
+      # src/pages/EtfRotationPage.test.tsx. Every ETF metric crosses the wire as a
+      # fraction, so the four tests are that percentages are built from those
+      # fractions and not pre-multiplied, that the alpha-leading run is plotted
+      # against its benchmark without a click, that a 404 from
+      # /etf/signals/latest/ becomes an empty state rather than an error, and that
+      # the universe tab asks the server for rankable rows only. Measured by
+      # `npm test`: 58 across 9 files.
+      # 58 -> 66: the ETF backtest workbench, in a new
+      # src/pages/EtfBacktestWorkbenchPage.test.tsx. Eight tests, and each one is
+      # the client refusing to be more optimistic than the server: a create that
+      # answers 202 says "queued" rather than "done", a 429 or a 400 surfaces the
+      # server's own sentence instead of "request failed", progress comes from the
+      # detail retrieve because the list projection has no report at all, the 5s
+      # poll stops on a terminal status and its timer is cleared on unmount, and
+      # pause/resume/restart/delete are enabled only in the states that allow them.
+      # Measured by `npm test`: 72 across 10 files (66 -> 72: four on the signal
+      # card -- the as-of date kept apart from the generated/updated timestamps, a
+      # dash instead of a guess when a row has no write timestamps, the banner when
+      # the newest snapshot is ahead of the signal, and a config panel that renders
+      # a knob the frontend has never heard of -- and two on the workbench, listing
+      # each money-market sleeve with its 20-day turnover and staying typeable
+      # when that list cannot be loaded).
+      MIN_TEST_COUNT: "72"
 
     steps:
       - uses: actions/checkout@v4

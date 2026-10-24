@@ -2,6 +2,20 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 
+def default_defensive_asset():
+    """The cash-substitute ETF, resolved from settings at row-creation time.
+
+    A plain module constant would freeze whatever ``ETF_DEFENSIVE_ASSET`` was when the
+    process imported this module, and a migration-time import of models.py is a real
+    context in which settings may not be what the deployer configured. ``rotation_engine``
+    and ``backtest_engine`` read the same setting; this is the fourth copy of the default
+    collapsed onto it.
+    """
+    from django.conf import settings
+
+    return str(getattr(settings, 'ETF_DEFENSIVE_ASSET', '511880.SH'))
+
+
 class ETFCategory(models.TextChoices):
     """Classification buckets used to keep the rotation pool diverse.
 
@@ -77,6 +91,23 @@ class ETFUniverse(models.Model):
         _('Category'), max_length=30, choices=ETFCategory.choices, default=ETFCategory.OTHER, db_index=True,
     )
     sub_category = models.CharField(_('Sub Category'), max_length=50, blank=True)
+    track_index_key = models.CharField(
+        _('Track Index Key'), max_length=100, blank=True, db_index=True,
+        help_text=_(
+            'Normalised tracked-index string derived from ``benchmark`` by '
+            '``etf_universe.normalize_track_index``. Two funds sharing a key track the same '
+            'index, so this is the axis the rotation pool deduplicates on -- ``category`` is '
+            'too coarse and raw ``benchmark`` is too finely decorated to be one.'
+        ),
+    )
+    shares_outstanding = models.DecimalField(
+        _('Shares Outstanding'), max_digits=20, decimal_places=4, null=True, blank=True,
+        help_text=_('Total fund shares in 份, from TuShare ``fund_share.fd_share`` (万份 x 10000).'),
+    )
+    share_date = models.DateField(
+        _('Share Date'), null=True, blank=True,
+        help_text=_('The ``trade_date`` ``shares_outstanding`` was read at. It is a period stamp.'),
+    )
     m_fee = models.DecimalField(_('Management Fee'), max_digits=8, decimal_places=4, null=True, blank=True)
     c_fee = models.DecimalField(_('Custody Fee'), max_digits=8, decimal_places=4, null=True, blank=True)
     metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
@@ -310,14 +341,35 @@ class ETFRotationBacktest(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', _('Pending')
         RUNNING = 'RUNNING', _('Running')
+        # A paused row keeps its ``report['runtime_state']`` and resumes from the
+        # cursor, so it needs a status distinct from PENDING to tell the operator
+        # there is progress on the row worth continuing rather than starting over.
+        PAUSED = 'PAUSED', _('Paused')
         COMPLETED = 'COMPLETED', _('Completed')
         FAILED = 'FAILED', _('Failed')
+
+    class ControlAction(models.TextChoices):
+        """An out-of-band request the engine honours at the next chunk boundary.
+
+        Pause cannot be honoured mid-chunk: the engine only persists resumable
+        state between chunks, so a control written during a chunk takes minutes
+        to land. That is the same trade-off the stock backtest makes.
+        """
+        NONE = 'NONE', _('None')
+        PAUSE = 'PAUSE', _('Pause')
+        RESTART = 'RESTART', _('Restart')
+        DELETE = 'DELETE', _('Delete')
 
     class ModelType(models.TextChoices):
         RULE = 'RULE', _('Rule')
         LIGHTGBM = 'LIGHTGBM', _('LightGBM')
         LSTM = 'LSTM', _('LSTM')
         ENSEMBLE = 'ENSEMBLE', _('Ensemble')
+
+    class Weighting(models.TextChoices):
+        EQUAL = 'equal', _('Equal Weight')
+        SCORE = 'score', _('Score Weight')
+        INV_VOL = 'invvol', _('Inverse Volatility Weight')
 
     class RebalanceFrequency(models.TextChoices):
         WEEKLY = 'WEEKLY', _('Weekly')
@@ -336,8 +388,26 @@ class ETFRotationBacktest(models.Model):
     # The grid sweeps lookback as well; without this column a run's ranking
     # horizon is unrecoverable and grid results cannot be attributed.
     momentum_lookback = models.PositiveIntegerField(_('Momentum Lookback'), default=60)
-    defensive_asset = models.CharField(_('Defensive Asset'), max_length=20, default='511880.SH')
+    defensive_asset = models.CharField(_('Defensive Asset'), max_length=20, default=default_defensive_asset)
     absolute_momentum_filter = models.BooleanField(_('Absolute Momentum Filter'), default=True)
+    # Promoted out of ``parameters['weighting']`` for the same reason
+    # ``momentum_lookback`` was: a grid dimension that only exists in a JSON blob
+    # cannot be filtered or attributed in SQL. ``score`` is the default because
+    # that is what the production RULE winner (row 82) is weighted with.
+    weighting = models.CharField(_('Weighting'), max_length=10, choices=Weighting.choices,
+                                 default=Weighting.SCORE)
+    # The two selection-constraint knobs. They are columns rather than ``parameters`` JSON
+    # keys for the same reason ``weighting`` is: a run created through the API is rebuilt
+    # from its own columns by ``views._backtest_config_for``, so a knob that lives only in
+    # the blob cannot round-trip and the duplicate-run digest silently disagrees.
+    dedup_track_index = models.BooleanField(
+        _('Dedup Track Index'), default=True,
+        help_text=_('Hold at most one fund per tracked index (``ETFUniverse.track_index_key``).'),
+    )
+    max_per_category = models.PositiveIntegerField(
+        _('Max Per Category'), default=2,
+        help_text=_('Cap on how many names one ``category`` may contribute; 0 means no cap.'),
+    )
     initial_capital = models.DecimalField(_('Initial Capital'), max_digits=18, decimal_places=2, default=480000)
     commission_rate = models.FloatField(_('Commission Rate'), default=0.0003,
                                         help_text=_('Two-way broker commission. ETF trades carry no stamp duty.'))
@@ -369,6 +439,14 @@ class ETFRotationBacktest(models.Model):
     parameters = models.JSONField(_('Parameters'), default=dict, blank=True)
     report = models.JSONField(_('Report'), default=dict, blank=True)
     error_message = models.TextField(_('Error Message'), blank=True)
+
+    # The id of the Celery task currently owning this row. Both the stale-owner
+    # check and revoke need it, and ``apps/core/task_health`` reads it.
+    current_task_id = models.CharField(_('Current Task ID'), max_length=64, blank=True)
+    pending_control_action = models.CharField(
+        _('Pending Control Action'), max_length=20, choices=ControlAction.choices,
+        default=ControlAction.NONE, db_index=True,
+    )
 
     started_at = models.DateTimeField(_('Started At'), null=True, blank=True)
     completed_at = models.DateTimeField(_('Completed At'), null=True, blank=True)

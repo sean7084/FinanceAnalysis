@@ -12,8 +12,13 @@ import {
 import { useI18n } from '../../useI18n'
 import type { BacktestComparisonPayloadDto, BacktestComparisonSeriesDto } from '../../lib/api'
 
+// The chart only ever reads the three fields below, so an ETF comparison payload
+// (whose `run` block carries `model_type` instead of `prediction_source`) can be
+// handed to it without inventing stock-only fields on the ETF side.
+type ComparisonChartPayload = Pick<BacktestComparisonPayloadDto, 'series' | 'compare_target' | 'message'>
+
 interface BacktestComparisonChartProps {
-  payload: BacktestComparisonPayloadDto | null
+  payload: ComparisonChartPayload | null
   loading: boolean
   error: string | null
   unavailableMessage?: string | null
@@ -23,6 +28,8 @@ const SERIES_COLORS: Record<string, string> = {
   selected_run: '#35c96b',
   compare_run: '#f3b54a',
   csi500: '#59a8ff',
+  h00905_csi: '#59a8ff',
+  '000905_sh': '#8f9bff',
 }
 
 const EXTRA_SERIES_COLORS = ['#6fd3c1', '#f28b6d', '#8f9bff', '#d8b962', '#f07cb2', '#68c4ff']

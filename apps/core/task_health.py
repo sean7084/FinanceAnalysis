@@ -1,5 +1,11 @@
 """Detection of backtest runs whose worker has gone away.
 
+Shared by ``apps.backtest`` and ``apps.etf_rotation``. Both row types carry the same
+five attributes -- ``report``, ``updated_at``, ``started_at``, ``current_task_id`` and a
+``status`` whose running member is the string ``'RUNNING'`` -- and the comparison below is
+written against that string rather than ``BacktestRun.Status.RUNNING`` precisely so ETF
+correctness does not depend on an enum imported from a sibling app's models module.
+
 A chunked run re-queues its own continuation, so ``RUNNING`` is a normal state that
 can persist for a long time. That makes "is this run actually progressing?" a real
 question, and the answer cannot come from ``status`` alone.
@@ -25,9 +31,8 @@ from django.utils import timezone
 
 from config.celery import app as celery_app
 
-from .models import BacktestRun
 
-
+RUNNING_STATUS = 'RUNNING'
 DEFAULT_STALE_TASK_MAX_AGE_SECONDS = 2400
 TERMINAL_TASK_STATES = {'FAILURE', 'REVOKED', 'SUCCESS'}
 
@@ -52,7 +57,7 @@ def get_backtest_run_task_owner_state(run):
     if reference_dt is not None:
         age_seconds = max(0, int((timezone.now() - reference_dt).total_seconds()))
 
-    if run.status != BacktestRun.Status.RUNNING:
+    if str(run.status) != RUNNING_STATUS:
         return {
             'task_state': '',
             'task_age_seconds': age_seconds,

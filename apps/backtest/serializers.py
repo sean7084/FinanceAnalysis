@@ -16,7 +16,7 @@ whose worker disappeared, without polling Celery directly.
 from rest_framework import serializers
 
 from .models import BacktestRun, BacktestTrade
-from .task_health import get_backtest_run_task_owner_state
+from apps.core.task_health import get_backtest_run_task_owner_state
 
 
 VALID_ENTRY_WEEKDAYS = {'MON', 'TUE', 'WED', 'THU', 'FRI'}

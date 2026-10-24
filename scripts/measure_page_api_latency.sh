@@ -9,7 +9,7 @@ set -euo pipefail
 #   ITERATIONS=20 LABEL=warm-before bash scripts/measure_page_api_latency.sh
 #   ITERATIONS=3  COLD=1 LABEL=cold-before bash scripts/measure_page_api_latency.sh
 #
-# The endpoint list is a map of the eight routed pages in App.tsx onto the exact
+# The endpoint list is a map of the nine routed pages in App.tsx onto the exact
 # query strings their fetch functions build. It goes stale whenever the SPA
 # changes a request shape, which is what made the original Dashboard group wrong
 # for a release: it kept timing the seven calls `fetchDashboardDataLegacy` makes
@@ -118,6 +118,10 @@ assets_json=$(get_json '/assets/?page_size=1')
 ASSET_ID=$(printf '%s' "$assets_json" | json_get results.0.id)
 ASSET_SYMBOL=$(printf '%s' "$assets_json" | json_get results.0.symbol)
 BACKTEST_ID=$(get_json '/backtest/?page_size=1' | json_get results.0.id)
+# The ETF dashboard chooses its own lead run: fetchEtfBacktests({limit: 5,
+# sort: 'alpha'}) picks it server-side and comparison_curve follows the first row.
+# Reading the id off that same list measures the row the page will actually plot.
+ETF_BACKTEST_ID=$(get_json '/etf/backtests/?page_size=5&sort=alpha' | json_get results.0.id)
 
 if [[ -z "$ASSET_ID" ]]; then
 	echo "No assets returned; cannot measure detail pages." >&2
@@ -164,6 +168,17 @@ ENDPOINTS=(
 	'Models|ensemble weights|/ensemble-weights/?page_size=20'
 	'Models|feature importance|/lightgbm-models/feature-importance-trends/?limit_models=5&top_n=5'
 	'Backtest|runs|/backtest/?page_size=100'
+	# ETF Rotation: three useApiResource mounts fire together on open. The latest
+	# signal 404s when the daily job has produced nothing, and an empty result set
+	# still costs the query, so it belongs on the load path either way. The
+	# universe tab is a click, not a mount, so it is not measured here.
+	'ETF|latest signal|/etf/signals/latest/'
+	'ETF|open positions|/etf/positions/?status=OPEN&ordering=-entry_date&page_size=50'
+	'ETF|runs (alpha sort)|/etf/backtests/?page_size=5&sort=alpha'
+	# ETF Workbench: one request on open. The page starts with no selected row, so
+	# the retrieve -- the only place `report.runtime_state` lives, and the request a
+	# running row makes every 5s -- is priced below rather than charged to the mount.
+	'ETF Workbench|runs (created sort)|/etf/backtests/?page_size=20&page=1&sort=created'
 	# Alert Center: page_size=20. The old entry measured the Dashboard's 200.
 	'Alert Center|alert events|/alert-events/?page_size=20'
 	# Settings renders from useI18n alone -- no API call -- so its cost is the SPA
@@ -178,6 +193,15 @@ if [[ -n "$BACKTEST_ID" ]]; then
 	ENDPOINTS+=("Backtest|comparison curve|/backtest/$BACKTEST_ID/comparison_curve/")
 else
 	echo "note: no backtest runs found; skipping trades/comparison_curve" >&2
+fi
+
+# The ETF curve is the payload the dashboard plots without a click, and it is the
+# one detail response that carries thousands of points per series.
+if [[ -n "$ETF_BACKTEST_ID" ]]; then
+	ENDPOINTS+=("ETF|comparison curve|/etf/backtests/$ETF_BACKTEST_ID/comparison_curve/")
+	ENDPOINTS+=("ETF Workbench|run detail (polled every 5s)|/etf/backtests/$ETF_BACKTEST_ID/")
+else
+	echo "note: no ETF backtest rows found; skipping etf comparison_curve" >&2
 fi
 
 # A cold iteration restarts the stack and then waits out real inference, so the
@@ -331,7 +355,7 @@ lines += [
 # even though it makes no API call, because its cost is the SPA shell.
 BUDGETS = {page: 3.0 for page in (
     'Dashboard', 'Indicator Board', 'Stock Detail', 'Macro Context', 'Models',
-    'Backtest', 'Alert Center', 'Settings',
+    'Backtest', 'ETF', 'ETF Workbench', 'Alert Center', 'Settings',
 )}
 
 for page, items in pages.items():

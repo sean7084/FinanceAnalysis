@@ -1,5 +1,433 @@
 # Changelog
 
+### version 0.1.21
+
+#### Added:
+
+- **The `/etf` page says what data it is standing on.** `GET
+  /api/v1/etf/signals/freshness/` (`apps/etf_rotation/views.py:463`) compares the
+  newest signal's `signal_date` against the newest **eligible**
+  `ETFFeatureSnapshot` and answers `lag_sessions` / `is_stale`; the signal card
+  renders the as-of date, the row's `created_at` as "generated" and `updated_at`,
+  and a warning banner the moment the pool has moved on without it. This is the
+  answer to the question the page used to invite: the date on the card was never
+  the model's generation date -- it is the trading session the features stop at,
+  and generation is a separate timestamp. Unknown freshness now degrades to
+  "unknown" rather than to a confident date.
+- **`metadata.config` is a panel, not a caption.**
+  `frontend/src/pages/EtfRotationPage.tsx:260` renders
+  `Object.entries(metadata.config)`, so the rebalance frequency, position count,
+  lookback, absolute-momentum gate, weighting mode and the two selection
+  constraints appear from whatever the engine actually recorded, and a knob added
+  later needs no frontend edit. The `RULE` chip is derived from the same metadata
+  instead of being a hardcoded string, so the tag and the parameters cannot drift
+  apart the way they had.
+- **One fund per tracked index, and a cap per category**
+  (`apps/etf_rotation/etf_universe.py` `track_index_key`, migration `0004`).
+  `ETFUniverse.track_index_key` normalises the seven benchmark spellings TuShare
+  uses, `dedup_track_index` (default on) keeps one wrapper per index and
+  `max_per_category` (default 2) bounds a single sector, and the tie-break is now
+  score → shares outstanding → `ts_code` rather than score → ticker string. The
+  trigger was the 2026-10-20 book, in which four of five legs were bank ETFs and
+  two had byte-identical scores.
+- **份额 is in the database.** `pro.fund_share` feeds
+  `shares_outstanding` / `share_date`, refreshed by `sync_etf_fund_shares` on
+  Sunday 18:10Z on the `ops` queue, so the tie-break and any later capacity
+  reasoning have a real number instead of a guess.
+- **`invvol` weighting** (`rotation_engine.allocate_weights`): legs get
+  `w_i ∝ 1/max(vol_i, ε)` clamped to `[0.5x, 1.5x]` of equal weight, and the mode
+  degrades to `equal` with the reason written into `weight_method` when the
+  volatility column is missing -- the same no-silent-zero rule `_rule_scores`
+  already follows. The choices are in sync in all four places that carry them
+  (`models.Weighting`, the serializer, the engine, the workbench form).
+- **A fractional-Kelly exposure governor, off by default**
+  (`apps/core/finance_metrics.py:payoff_ratio`, `kelly_fraction` / `kelly_cap` /
+  `kelly_floor` / `kelly_lookback_trades`). It sizes the *whole book*, not each
+  leg, from trades closed strictly before the session being sized, and publishes
+  its state in `report['counters']['exposure_governor']` (win rate, payoff,
+  `kelly_full`, mean scale, scaled sessions). `kelly_fraction=0` is a bit-identical
+  no-op: the reference rerun with `--kelly-fraction 0` returned
+  +99.69% / 35.41% / Sharpe 0.5357 / 22.8514x, byte-for-byte the reference row.
+- **The defensive sleeve is validated and can earn interest.**
+  `defensive_asset_problem()` rejects a sleeve with no bars over the requested
+  window at create time (`400`), `GET /api/v1/etf/defensive_assets/` publishes the
+  tradable list, `cash_yield_annual` accrues on uninvested cash and
+  `defensive_sleeve_uninvested` counts the sessions it could not be placed. The
+  four independent hardcoded `'511880.SH'` defaults (rotation config, backtest
+  config, model column, workbench form) are collapsed onto
+  `settings.ETF_DEFENSIVE_ASSET`, default unchanged.
+- **A blind cross-section is a feed gap, not a signal**: `signals.py` raises
+  `SignalGenerationError` rather than persisting an all-defensive plan computed
+  over rows with nothing to rank on.
+- **New production reference row: id 256**
+  `grid-dedup-rule-biweekly-p3-mom120-noabs-equal` -- +99.69% total, 35.41%
+  maxDD, Sharpe 0.5357, alpha +9.39%, 22.85x/yr turnover over
+  2016-01-29..2023-12-31. It replaces row 82 (+18.21%, 80% banks). Full
+  verification record in `docs/plans/etf-rotation-selection-sizing-2026-10-23.md`
+  §7.
+
+#### Changed:
+
+- **`weighting` has one default.** The column, `BacktestConfig` and the CLI banner
+  all say `score`; the banner used to print `equal(default)` while the engine ran
+  `score`, which is exactly the kind of label that survives review because nobody
+  checks the console against the config. Measured at the reference config the
+  ordering is equal (+99.69% / Sharpe 0.5357) ≥ invvol (+81.86% / 35.24% maxDD /
+  0.4961) ≥ score (+71.73% / 44.53% / 0.4437), so the choice of default is
+  genuinely arguable and is logged in `BACKLOG.md` rather than decided silently.
+- **Kelly, tried and left disabled.** The plan's rule was "if a positive fraction
+  is indistinguishable from zero, ship it off and say so". It is distinguishable,
+  but not in the intended direction: on the reference book the realised edge is
+  **negative** -- 51 closed trades, win rate 43.1%, payoff ratio 1.29, so
+  `f* = W - (1-W)/b = -0.009` and the raw scale floors at zero. At the default
+  `kelly_floor=0` the governor is a kill switch, not a throttle: it delivers
+  Sharpe 0.967 and 6.84% maxDD by holding beta 0.03 and turning 22.85x of turnover
+  into 2.13x. Raising the floor makes it a throttle with a readable trade
+  (floor 0.75: +86.32% / 26.55% / Sharpe 0.5878), but that is a tuning-window
+  observation and the holdout was not spent on it, so the default stays 0 and the
+  honest answer to "why isn't size tied to odds?" is that the strategy's own odds
+  say the edge is not there yet.
+
+#### Fixed:
+
+- **The 2026-10-22 19:45Z signal job wrote no row.** `H00905.CSI` (the total-return
+  benchmark) stopped at 10-21 while `000905.SH` had advanced, so
+  `rs_vs_benchmark_60d` was null across all 488 eligible snapshots, every fund was
+  excluded, and `build_rotation_plan` answered `no_scored_candidates`. The job had
+  no log line to say so: `PYTHONUNBUFFERED` was unset and the restart script
+  truncated rather than appended, so `tmp/cold_stack/beat.log` held no dispatch
+  history. Both are fixed, and `docs/how-to/runbook-sync-failure.md` §2.3 / §5.1
+  now carry the diagnosis and the three-command recovery.
+- **`--no-dedup-track-index` had never worked**, and neither did the API path.
+  The two selection knobs were passed as top-level `run_rotation_backtest()`
+  arguments -- a `TypeError` on the first invocation -- while `tasks.py` and
+  `--backtest-id` silently omitted them, so a row created with
+  `dedup_track_index=false` reported a configuration its worker never ran. They
+  now travel through `config_overrides` on every path, guarded by
+  `SingleRunKwargForwardingTests`.
+- **`bool(None)` was read as "off".** `--no-dedup-track-index` is a tri-state
+  (`action='store_false', default=None`), and `bool(None) is False`, so *every*
+  command-line run without the flag silently selected the dedup-off book: +55.61%
+  / 47.72% / Sharpe 0.3788 for the same configuration whose grid row returned
+  +99.69% / 35.41% / 0.5357. CLI and grid numbers for one config were not
+  comparable, and every Phase-3 measurement taken that way was retaken on the
+  fixed path (`docs/plans/…-2026-10-23.md` §7.5).
+
+### version 0.1.20
+
+#### Added:
+
+- **ETF rotation has a page.** `GET /etf` renders `EtfRotationPage.tsx` --
+  signal-of-the-day card (the date, model type, average turnover and the selected
+  funds with their weights and scores), an open-positions card, a
+  strategy-versus-benchmark chart and a universe tab with server pagination and an
+  `is_rankable` filter. Before this, `frontend/src` contained zero ETF code and the
+  only trace was a bare `ETF_LIGHTGBM` string on `/models`, so every question about
+  the strategy required a shell and a `--grid` re-run. `/etf/signals/latest/`
+  answers **404** when the daily job has produced nothing; `fetchEtfLatestSignal`
+  resolves `null` rather than throwing, and the page renders the empty state, which
+  is the difference between "no signal yet" and a red error banner. The universe
+  browser is a tab rather than a fourth page.
+- **`GET /api/v1/etf/backtests/{id}/comparison_curve/`**
+  (`apps/etf_rotation/views.py`, built by the new `apps/etf_rotation/comparison.py`)
+  returns the stock payload shape -- `{run, series, available_series_keys,
+  message}` -- so `BacktestComparisonChart.tsx` is reused rather than copied. The
+  benchmark series is **recomputed from `BenchmarkIndexDaily` and rescaled to the
+  row's opening equity**, because `_comparison_bundle` derives `benchmark_equity`
+  and never persists it: reading `report` would have returned scalars only, and
+  nothing in the API exposed an index time series at all. Recompute is what makes
+  the endpoint work for all 168 rows already in the table without rerunning them --
+  verified against row 82, run months before this change: 641 points per series,
+  `H00905.CSI` +32.68% total return against the strategy's +77.56%. Caching mirrors
+  the stock side (`BACKTEST_PAYLOAD_CACHE_SECONDS`, terminal statuses only); the
+  second request answered from cache. `?extra_ids=` overlays other runs, and both
+  that and the stock component's repeated `?extra_compare_run_id=` spelling are
+  accepted. Detail-only, never in a list serializer.
+- **ETF-aware model monitoring.** `ModelMonitoringPage` maps the three
+  `ETF_*` model types to labels and renders a card for them in which each row's
+  `deployment_note` is the headline, not a tooltip. That note is the honest record
+  of why all three are `READY` and `is_active=False` (LightGBM and ENSEMBLE lost
+  all three configs on the holdout; LSTM passed two of three at beta 1.08--1.19);
+  a bare enum string made the page look uninformed when it was actually reporting
+  a decision. No backend work was needed -- `ModelVersionSerializer` already
+  carries `metadata`.
+- **`POST /api/v1/etf/backtests/` launches a RULE backtest and answers 202.**
+  `ETFRotationBacktestViewSet` is create-enabled, and the order inside `create` is
+  the load-bearing part: validate, then look for an in-flight row with the same
+  `BacktestConfig.fingerprint()`, then check the concurrency cap, then persist,
+  then enqueue under `transaction.on_commit`. A duplicate therefore returns **200
+  with the existing row** and consumes no slot -- a client that retries a POST it
+  already has running gets something it can act on rather than a 429 it cannot.
+  Exceeding the cap raises 429 with the count, the cap and the three ways out
+  (`ETF_MAX_CONCURRENT_BACKTESTS`, default 2). Four guardrails bound the surface,
+  all server-side, because these endpoints are public on an internal network and
+  the threat is an accidental loop rather than an attacker: ML is refused with a
+  400 that names `model_type` (a backtest needs a registered, non-bleeding
+  booster, which the API cannot create), the date range is sanity-checked,
+  identical in-flight configs dedupe, and the cap bounds blast radius. DRF
+  throttling was deleted with the auth module, so an application semaphore is what
+  was available without reintroducing it repo-wide. `http_method_names` stays
+  without PUT/PATCH: a launched row is immutable, and `rerun`/`restart` are how you
+  change one's outcome instead of its config.
+- **ETF learned the stock backtest's lifecycle.** `ETFRotationBacktest` had no
+  `PAUSED` status at all, so one migration adds it plus `pending_control_action`
+  (NONE/PAUSE/RESTART/DELETE), `current_task_id` and **`weighting` promoted to a
+  real column**, data-migrated out of `parameters['weighting']` (168 rows → 85
+  `score` / 83 `equal`). The backfill uses `QuerySet.update()` deliberately:
+  `updated_at` is `auto_now`, and a row-by-row save would have stamped every ETF
+  backtest as just-modified and made the workbench's "last touched" column
+  meaningless for the table's whole history. `backtest_engine` now reads
+  `pending_control_action` at the 120-session chunk boundary it already persisted
+  `runtime_state` on: PAUSE stores state, sets PAUSED and returns without
+  finishing; RESTART discards `runtime_state` and starts clean; DELETE removes the
+  row. `pause` on PENDING or a dead task owner sets PAUSED immediately, `pause` on
+  RUNNING returns 202 and waits for the boundary, and `resume` is legal only from
+  PAUSED. `get_backtest_run_task_owner_state` moved from `apps/backtest` to a new
+  **`apps/core/task_health.py`** with a status-agnostic comparison -- on ETF the
+  old code worked only because both enums happen to spell `'RUNNING'` the same
+  way, and two consumers is the point to extract.
+- **`/etf/workbench` (`EtfBacktestWorkbenchPage.tsx`) drives that lifecycle.** It
+  is the first page to pass a **server-side** `sort=` param (`alpha`, `sharpe`,
+  `return`, `drawdown`, `created`), so `useApiResource` is re-keyed on it, and
+  `drawdown` sorts
+  ascending because a smaller drawdown is the better row. Progress comes from
+  `report.runtime_state.cursor`, which is **detail-only** -- the list serializer
+  drops `equity_curve`/`trade_log`/`report`, so the panel polls the retrieve key
+  every 5s while the row is non-terminal and stops otherwise. Lifecycle buttons
+  are gated on `status` + `pending_control_action` under the same conditions the
+  server enforces, so a disabled button and a 400 are not both reachable.
+  Eight page tests, forty-nine backend tests (18 create guardrails, 15 lifecycle
+  transitions, 7 chunk-boundary controls, 9 task lifecycle); CI floors rose to
+  **514** backend and **66** frontend. `docs/reference/api.md` is hand-edited --
+  it claimed the ETF routes are read-only, which this falsifies.
+  **The lifecycle was then driven over real HTTP against the real worker, not only
+  in tests.** Twenty-one checks pass across two runs; the single early failure was
+  the script's own sequencing -- it re-POSTed a config the cap had already refused,
+  so there was no row to dedupe against -- and it was rewritten as the adjacent
+  cap probe described below. A POST answered 202 (`id=179`,
+  PENDING) and the identical payload answered 200 with the same id; the cursor
+  reached `120/2056 sessions` with `chunked run in progress: 120/2056 sessions`;
+  `resume` on a PENDING row was rejected 400 ("Only paused ETF backtests can be
+  resumed"); `pause` on a RUNNING row returned 202 "will pause after the current
+  chunk" and the row landed in PAUSED at exactly `360/2056`, the chunk boundary,
+  with the pause note persisted. `resume` then re-queued and the cursor ran 360 →
+  600 -- **it continued rather than restarting**, which is the whole point: a
+  restart would have shown 120 again -- and the equity curve grew 360 → 600 points
+  through the pause. The resumed row finished COMPLETED with real metrics (alpha
+  0.0441, beta 0.5704, 2056 points, 46s end to end). With the consumer parked, a
+  distinct config was rejected 429 at the cap while a same-fingerprint POST in the
+  same second returned 200 with its existing row, which is the dedupe-before-cap
+  ordering observed rather than asserted; `pause` on PENDING became PAUSED
+  immediately (202 "ETF backtest paused."), DELETE of a PAUSED row was 204 then
+  404, and DELETE of a RUNNING row was the 202 intent ("It will be removed after
+  the current chunk.") with the row gone at the next boundary. Three things worth
+  knowing from doing it: the deterministic PENDING windows came from `celery
+  control cancel_consumer/add_consumer etf-rotation`, which parks a queue without
+  touching any process; the fingerprint covers **parameters, not `name`**, so two
+  differently-named rows with identical parameters are the same run and the second
+  POST gets the first row back; and a running sweep keeps one `tune-lstm-*` PENDING
+  placeholder in flight, so those rows occupy slots in the cap and the workbench
+  answers 429 until the sweep ends. That is the cap doing its stated job -- binding
+  accidental load -- and it is self-clearing, but an operator should expect it.
+- **`manage.py sweep_etf_rotation_lstm` is the tuning surface, and it is honest by
+  construction.** One command runs a bounded, resumable 32-trial grid (2
+  `hidden_size` x 2 `num_layers` x 2 `dropout` x 2 `loss` x 2
+  (`learning_rate`, `epochs`)) through `train_walk_forward`'s keyword-only seam, on
+  the tuning window ending **2023-12-31**, and the locked holdout is never read: an
+  `--end` that reaches into 2024-01-01+ is refused unless `--allow-holdout-overlap`
+  is passed, which exists for the operator and is not a default. Resumability is
+  `get_or_create` on the trial name plus a fingerprint that covers the grid
+  *and* the resolved window *and* every protocol knob, so a COMPLETED row is reused
+  only when it is comparable; change `--folds` or `--sequence-length` and the stored
+  digest no longer matches, the trial re-runs, and the command says so. A trial that
+  raises or returns `insufficient_data` is marked FAILED and the sweep continues --
+  one bad fold plan must not cost the other thirty-one.
+  Contamination is closed at three points. Every ledger row is `tune-lstm-`prefixed
+  and carries `report['tuning_only']` with the per-fold rank ICs and **no portfolio
+  metrics at all**, because a mean rank IC is not alpha and the workbench must not be
+  able to show it as one. Every trial registers with `activate=False` (Phase 0) and
+  `sweep={...}`, and `train_lstm` now writes `metadata['pooled_holdout']` only when
+  `sweep is None` -- so a sweep result cannot be read as out-of-sample evidence, and
+  `_stamp_winner` raises if that ever stops being true. Then the command checks its
+  own work: it snapshots the active `ETF_LSTM` set before training and raises
+  `CommandError` if the set differs afterwards, on the success path and the
+  mid-sweep-failure path alike. `_select_winner` ranks by mean fold rank IC then
+  positive-fold count and prints the Phase D single-shot retrain command, with the
+  training window stopped at the holdout boundary -- the overlap that produced the
+  +513.76% row that had to be relabelled `INSAMPLE-`.
+  **Two deliberate deviations from the plan.** The grid's fourth axis is
+  `loss ∈ {bce_top_bucket, pairwise_rank}`, not `objective ∈ {binary, lambdarank}`:
+  those are LightGBM's objective names, and `train_lstm` has no such parameter -- a
+  test asserts the axis equals `train_lstm.LOSS_BCE`/`LOSS_PAIRWISE` so the two
+  cannot drift apart silently. And the trials run **sequentially in-process**, not
+  "through the `train-lstm` queue": a sweep needs to see each result before deciding
+  the next, to hold one torch import rather than thirty-two, and to own its
+  cancellation; the queue's 1-2-slot VRAM ceiling from Phase 0 was the reason for the
+  sequential *schedule*, which in-process iteration satisfies without thirty-two
+  serialized task payloads. A test asserts `_run_sweep` contains no `apply_async`,
+  `delay(`, `queue_etf`, `send_task` or `chord`, so nobody reintroduces the dispatch
+  without noticing. `--plan` and `--dry-run` read the grid and the panel without
+  importing torch or writing a row, which is what CI can run. Thirty-five backend
+  tests; the backend floor rose to **549**.
+  **Measured on the WSL2 venv, not only asserted in tests.** A `--limit 2 --folds 2`
+  smoke run wrote rows 174 and 175 in 1.7 min. Both carry the `tune-lstm-` prefix,
+  `report['tuning_only']` with the tuning window and per-fold ICs, a `note` that says
+  outright that no portfolio simulation ran, and **every metric column NULL** with an
+  empty `equity_curve` and `trade_log` -- so the workbench cannot draw a curve that
+  was never simulated. `ModelVersion` rows 66 and 67 came back `READY` with
+  `is_active=False`, `metadata['sweep']` populated (`campaign`, `fingerprint`,
+  `protocol`, `grid`, `tuning_window`, `per_trial_ic`, `selected_config`,
+  `activated: False`) and no `pooled_holdout` key, which remained absent from every
+  sweep row while still present on the four pre-existing oos/live rows. The active
+  `ModelVersion` count was 5 before and 5 after, none of them ETF, and the command's
+  own guard printed `activation guard: OK -- the active ETF_LSTM set is unchanged
+  ((none))`. Then the full 32-trial x 6-fold run printed, on its first trial, `stored
+  fingerprint fd4deb2197916c3b does not match cf1276f13897866f; the window or protocol
+  changed, so this trial is re-run` -- the resumability rule is not merely covered by
+  a test, it correctly refused to reuse the smoke run's rows for a different fold
+  count.
+  **The full 32-trial run: 32/32 trials produced results in 48.6 min, 0 reused from
+  persisted rows, 0 that produced nothing.** Selected
+  `tune-lstm-h64-l1-d020-pair-lr1e-3-e50` (row 176): mean fold rank IC **0.0650**,
+  ICIR 0.1996, **5/6** folds positive, per-fold ICs
+  `[0.134, 0.040, -0.082, 0.043, 0.142, 0.113]` -> `ModelVersion` 70
+  `etf-lstm-2023-12-29-t-1becb8db`, `is_active=False` and stamped with the full
+  32-trial provenance. Runner-up row 191 (`h64-l2-d035-pair`) is close: 0.0626 with a
+  marginally *better* ICIR of 0.2017.
+  **One trade-off the selection rule makes, stated plainly because the data does not
+  settle it.** Row 184 (`h64-l2-d020-bce`) is the only config in the grid that is
+  positive in **all 6** folds, yet it ranks 22nd: its mean IC is 0.0424, i.e.
+  consistent but weak. `_select_winner` ranks by mean IC *then* positive-fold count,
+  so breadth of signal beats consistency of sign. That is the plan's rule, and the
+  Phase D gate asked for `>=5/6` folds -- not 6/6 -- so both candidates clear the fold
+  leg and only the mean IC distinguishes them. A future sweep should consider a
+  second-order tie-break on ICIR, which would have picked row 191.
+  After the run, all **14** contamination checks re-passed on the full 32-row ledger:
+  every row `tune-lstm-`prefixed with `report['tuning_only']`, **zero** non-null metric
+  columns, empty `equity_curve` and `trade_log`, 34 `metadata['sweep']` `ModelVersion`
+  rows all inactive and none carrying `pooled_holdout`, the `-t-` tag appearing exactly
+  where `metadata['sweep']` does, the active ETF set empty while the 5 stock models
+  (ids 55-59) stayed untouched, one single `training_window_end` of 2023-12-29 across
+  the whole sweep, and no sweep row scored into the holdout window.
+
+- **Phase D: the locked holdout was spent once, and the LSTM failed the gate.** The
+  sweep-selected config was retrained as one shot over 2016-01-29..2023-12-31
+  (`etf-lstm-2023-12-29-oos-lstm-v2`, `ModelVersion` 100, `activate=False`, 95 s, and
+  it reproduced the sweep's tuning numbers exactly -- mean rank IC 0.06503 vs 0.0650,
+  5/6 folds positive -- which is the replay determinism you want before spending an
+  unrecoverable window). Then one backtest, `oos-lstm-v2-p3-mom20-monthly-abson-score`
+  (row 209), over **2024-01-01..2026-10-20** with the portfolio rules held identical to
+  the RULE reference on all ten config fields, checked before the run rather than
+  assumed. Against RULE row 82: alpha **0.0888 vs 0.1821**, max drawdown **0.4567 vs
+  0.2000**, beta **1.1038 vs 0.6070**, IR 0.4366 vs 0.4580, Sharpe 0.6685 vs 0.9080.
+  Three gate legs fail, one passes (5/6 folds). `PHASE D GATE: FAIL` -> RULE stays
+  production, the candidate is deactivated, and `deployment_note` plus `phase_d_gate`
+  carry the numbers into `ModelVersion` 100's metadata, which `/models` renders.
+  **The plan's gate bands did not contain the reference row's own values, so they were
+  widened before scoring rather than after.** The plan specifies maxDD 0.18-0.20 and
+  beta 0.61-0.69; row 82's actuals are 0.19998 and 0.60704, which sit *outside* those
+  ranges. A literal reading would fail a model for matching RULE more closely than
+  RULE matches the band. The gate therefore anchored each band on the reference +-0.01
+  (0.170-0.210, 0.597-0.700) -- a fairness fix, not a softening: the widened beta band
+  still rejected 1.1038 by a mile. Recorded here because a reviewer comparing the
+  driver to the plan text should find the difference intentional.
+  **Two caveats that travel with these numbers.** The serving artifact is the *last*
+  fold's model, which trains through about 2022-10-21 rather than 2023-12-31
+  (`train_lstm.py:1454` takes `payloads[-1]`) -- conservative, not leaky, but it means
+  the deployed model saw less data than the aggregate metrics imply. And RULE's +18.21%
+  was itself selected on this same holdout, so it is mildly optimistic in RULE's
+  favour; that asymmetry is the reason Phase D is one shot, not a search.
+  **The restore path is proven, not asserted.** The driver ran the temporary activation
+  inside a `try` with an emergency deactivate in `finally`, and its last act is to
+  re-read the authoritative active sets from the database rather than trust its own
+  bookkeeping: it finished with `authoritative active ETF rows now: []` and the same 5
+  stock rows as before. This mattered on the first attempt, which died in a `NameError`
+  before any activation -- `json.dumps(None)` emits JSON `null`, which is not Python,
+  so the replayed `horizon_days`/`min_train_days` arrived as bare `null` tokens. That
+  abort was contained (no ETF row went live, the locked holdout stayed unspent), and the
+  fix came with two durable artifacts: a helper that renders *Python* literals, and a
+  separate render check that `compile()`s the generated shell source before GPU time is
+  spent. The step-1 guards were also moved inside the `try`, because the
+  "candidate registered active despite `activate=False`" abort -- the Phase 0
+  regression guard -- sat outside it and would have escaped the emergency restore.
+  Fallback deliverable stands as planned: Phases 0, A, B and C are the product here,
+  not a consolation prize.
+
+#### Changed:
+
+- **A trainer can now register without activating.** `_register_model_version`
+  gained `activate: bool = True` in both `train_lstm.py:1079` and
+  `train_lightgbm.py:650`, threaded through each `train_walk_forward`. Until then
+  it hardcoded `'is_active': True` and flipped every prior row of that type
+  inactive, so the last trial of any hyperparameter sweep became the model
+  `rotation_engine.load_active_predictor` serves -- regardless of its rank IC.
+  That is precisely the contamination the `INSAMPLE-` relabelling (rows 153--161)
+  cleaned up, and it was one argument away from happening again. `activate=False`
+  writes the row inactive and touches no other row, which is now asserted by a
+  test rather than reasoned about. This is a prerequisite for Phase C, not a
+  follow-up to it.
+- **The local stack pins the train worker to 2 slots and refuses to start a
+  second beat.** `run_celery_worker.sh` leaves `CELERY_WORKER_CONCURRENCY` unset,
+  so the train queue was getting 16 prefork slots (`nproc`) for jobs whose real
+  ceiling is 12 GB of VRAM -- a second concurrent LSTM needs its own memory, so
+  this is a hardware limit that GPU availability does not lift. `run_local_stack.sh`
+  now passes `STACK_TRAIN_CONCURRENCY` (default 2) to that one service. Separately,
+  this script had been run twice while the first stack was still up, producing two
+  schedulers sharing `celerybeat.pid` and therefore **double-dispatching every
+  entry in `CELERY_BEAT_SCHEDULE`** -- not just ETF ones. A pidfile check cannot
+  catch it because `run_celery_beat.sh` deletes the pidfile on start, so a newer
+  beat clears the older one's entry and both then look stopped; the guard matches
+  the live command line (`pgrep -f '[-]A config\.celery beat'`) and refuses the
+  start, with `STACK_SKIP_BEAT=1` for when a scheduler is deliberately running
+  elsewhere. `--check` is unaffected: a live beat only blocks a real start. Both
+  guards were then **relocated to the scripts that actually start the processes**
+  -- `run_celery_beat.sh` and `run_celery_worker.sh` -- because a guard that lives
+  in one caller is not a guard: `restart_cold_stack.sh` starts beat and the
+  workers directly and walked straight past them.
+- **Two things the cold-restart script does not do, both found verifying this
+  lifecycle.** `restart_cold_stack.sh` never runs `migrate`, so a schema change
+  can be green across 514 tests -- Django's runner builds its own database -- and
+  still 500 in production. It did exactly that: `GET /etf/backtests/?page_size=1`
+  returned `ProgrammingError: column ...weighting does not exist` until
+  `0003_etfrotationbacktest_lifecycle_and_weighting` was applied. Probing with
+  `?status=` hid it, because `count` compiles to `COUNT(*)` and an empty page never
+  reaches the serializer. Separately, its stop sequence cannot stop a wedged beat:
+  the old scheduler survived `kill -TERM` and the 30-iteration drain loop because
+  SIGTERM is *caught* and the process was blocked in a futex with 32 threads, so
+  the script reported a clean stop and restarted beside it -- which is how the
+  double beat was born in the first place. Not fixed here; the beat guard is what
+  turns it from silent double-dispatch into a refusal.
+- **The lifecycle was verified against the running stack, not only in tests.**
+  A 2,586-session RULE run (22 chunks) was created via `POST` (202), and the same
+  fingerprint re-POSTed while it was in flight returned **200 with the same id**;
+  the third distinct run was refused with **429** quoting the cap; `model_type`
+  `LSTM` was refused with a 400 naming the field. `pause` on the running row landed
+  at the chunk boundary within 2s (`paused by request at 120/2586 sessions`), and
+  `resume` continued to **960** rather than restarting -- the persisted cursor is
+  what the queue picks up, not a fresh run. `resume` on a RUNNING row and on a
+  COMPLETED one both 400; `DELETE` on a RUNNING row returned 202 with the removal
+  intent and the row was gone at the next boundary. `?weighting=` filtered the
+  promoted column (83 `equal` / 85 `score`) and `sort=alpha` / `sort=drawdown`
+  ordered server-side. One branch is test-only: pausing a row that is still
+  PENDING, because on a live worker the queue took the row into RUNNING inside the
+  round trip.
+- **The page-load harnesses had to learn that `/etf` exists.** Adding a ninth
+  routed page broke `apps/core/tests_frontend.PageLoadLatencyHarnessTests` in three
+  places -- group count, an unmeasured route, and the browser harness's route list
+  -- which is the intended behaviour of tests that derive coverage from `App.tsx`
+  instead of restating it. Both scripts and `EXPECTED_GROUPS` now carry ETF, with
+  the counts de-counted in prose so the comments cannot go stale the next time a
+  page lands. Measured: ETF's four calls sum to 0.571s p50 with a 0.197s max p95,
+  and a cold one-iteration browser pass over all nine routes put `/etf` at **649 ms
+  (stamped, not a shell fallback)** against the 3.0s budget, worst page overall
+  `/indicator-board` at 1597 ms; `FRONTEND_OVERHEAD_SECONDS` is now 0.588 rather
+  than the 0.000 the previous release had to caveat.
+- **`frontend/src/test/setup.ts` stubs `ResizeObserver`.** recharts'
+  `ResponsiveContainer` reads it during effect, jsdom has none, and an exception
+  there unmounts the whole tree -- so every chart test failed with an empty
+  document rather than a chart assertion. The no-op is test-environment plumbing
+  only.
+
 ### version 0.1.19
 
 #### Changed:

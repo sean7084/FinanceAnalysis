@@ -26,7 +26,7 @@ class BacktestRun(models.Model):
     ``status`` tracks the lifecycle (``PENDING`` -> ``RUNNING`` -> ``COMPLETED`` or
     ``FAILED``, with ``PAUSED`` reachable from ``RUNNING``). ``current_task_id`` and
     ``pending_control_action`` are what make an asynchronous, resumable run
-    controllable from the API; ``apps.backtest.task_health`` reads them to detect a
+    controllable from the API; ``apps.core.task_health`` reads them to detect a
     run whose worker has gone away.
 
     ``report.runtime_state`` is resume bookkeeping rather than a result -- a run is

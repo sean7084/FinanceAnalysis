@@ -135,7 +135,7 @@ class PageLoadLatencyHarnessTests(SimpleTestCase):
         Path(__file__).resolve().parents[2] / "scripts" / "measure_browser_time_to_data.sh"
     )
 
-    # The eight routed pages, per the router in frontend/src/App.tsx.
+    # The ten routed pages, per the router in frontend/src/App.tsx.
     EXPECTED_GROUPS = {
         "Dashboard",
         "Indicator Board",
@@ -143,6 +143,8 @@ class PageLoadLatencyHarnessTests(SimpleTestCase):
         "Macro Context",
         "Models",
         "Backtest",
+        "ETF",
+        "ETF Workbench",
         "Alert Center",
         "Settings",
     }

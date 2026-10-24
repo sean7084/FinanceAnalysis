@@ -29,7 +29,7 @@ from django.utils import timezone
 from .comparison import build_backtest_comparison_payload
 from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer, BacktestTradeSerializer
-from .task_health import get_backtest_run_task_owner_state
+from apps.core.task_health import get_backtest_run_task_owner_state
 from .tasks import reset_backtest_run_for_restart, revoke_backtest_task, run_backtest
 
 

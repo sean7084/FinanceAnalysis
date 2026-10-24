@@ -261,7 +261,7 @@ response schemas are in Swagger; this is the map.
 | `/lightgbm-predictions/`, `/lightgbm-models/`, `/ensemble-weights/` | prediction | LightGBM surface |
 | `/lstm-predictions/` | prediction | LSTM surface |
 | `/backtest/`, `/backtest-trades/` | backtest | Runs, lifecycle actions, comparison curves, trade detail |
-| `/etf/universe/`, `/etf/daily/`, `/etf/features/`, `/etf/signals/`, `/etf/positions/`, `/etf/backtests/` | etf_rotation | ETF rotation: fund directory, daily bars, point-in-time features, rotation signals, position legs, backtest runs |
+| `/etf/universe/`, `/etf/daily/`, `/etf/features/`, `/etf/signals/`, `/etf/positions/`, `/etf/backtests/` | etf_rotation | ETF rotation: fund directory, daily bars, point-in-time features, rotation signals, position legs, and a create/pause/resume/rerun/restart/delete backtest surface |
 | `/developer/changelog/` | developer | Public, read-only API changelog |
 
 ### Backtest lifecycle actions
@@ -274,14 +274,20 @@ See [`celery.md`](celery.md) and `docs/how-to/backfill.md`.
 
 ### ETF rotation surface
 
-All six `/etf/` routes are `ReadOnlyModelViewSet`, so they expose GET and
-nothing else — unlike `/backtest/` above. Rows are written by the `etf-rotation`
-Celery tasks and the `sync_etf_*` / `compute_etf_features` /
-`generate_etf_rotation_signal` / `run_etf_rotation_backtest` commands, never by
-HTTP, so there are no create, update or delete transitions to document. Being
-read-only is the only thing limiting them: under the global `AllowAny` default
-any caller who can reach the API can read the whole ETF surface without a
-credential.
+Five of the six `/etf/` routes are `ReadOnlyModelViewSet`: `universe`, `daily`,
+`features`, `signals` and `positions` expose GET and nothing else, and their rows
+are written by the `etf-rotation` Celery tasks and the `sync_etf_*` /
+`compute_etf_features` / `generate_etf_rotation_signal` /
+`run_etf_rotation_backtest` commands, never by HTTP. `/etf/backtests/` is the
+exception — it now takes the same write surface as `/backtest/` above, so see
+**ETF backtest lifecycle** below for what a caller may POST.
+
+Being unauthenticated is the only thing limiting them: under the global
+`AllowAny` default any caller who can reach the API can read the whole ETF
+surface without a credential, and can launch RULE backtests through
+`/etf/backtests/`. Both are accepted because the API is deployed on an internal
+network; the write surface is bounded against *accidental* load rather than
+against adversaries (see the lifecycle section).
 
 The prefixes are namespaced under `/etf/` because `signals` and `positions` are
 already registered by the analytics `SignalEventViewSet` and the prediction
@@ -307,6 +313,41 @@ Four contracts the schema does not express:
   backtest survivorship-biased. Use `is_active=true`, or `listed_before` (which
   falls back to `first_trade_date` when `list_date` is null), to reproduce a
   point-in-time pool.
+- **The defensive sleeve must be a listed money-market ETF.**
+  `GET /etf/defensive_assets/` answers the question "what can I actually park
+  risk-off cash in", richest first, with the `avg_amount_20d` from the newest
+  eligible cross-section next to the liquidity floor the engine applies. It is an
+  `@action` on the universe viewset published at a short path rather than
+  `/etf/universe/defensive_assets/`, and it does not change how many read-only
+  routes exist. A `defensive_asset` with no bars is refused at create time
+  (`400 {'defensive_asset': ...}`) rather than discovered at settlement: the
+  engine only buys the sleeve on a rebalance, so a dead code used to complete
+  successfully while every risk-off month sat in phantom cash. Brokerage cash
+  sweep products (a 零钱宝-style 保证金理财) are not in this list and cannot be:
+  no row in `ETFUniverse` matches `零钱`, because they are OTC contracts with a
+  NAV series rather than an exchange-listed fund with daily bars, so they can be a
+  sleeve in an account statement but not in a bar-driven backtest. The nearest
+  listed equivalents are the money-market ETFs the endpoint already returns.
+  `ETF_DEFENSIVE_ASSET` (default `511880.SH`) is the single
+  source for the default; the engine, the model field and the workbench all read it.
+
+### ETF signal freshness
+
+`GET /api/v1/etf/signals/freshness/` answers what the signal row cannot answer
+about itself: whether the pool underneath it has moved on. `signal_date` is an
+**as-of** date, not a generation time, so the card is only honest while the two
+agree. The endpoint compares it against the newest `ETFFeatureSnapshot` with
+`is_eligible=true` and counts the `ETFDaily` sessions strictly between them —
+sessions the strategy *could* have been re-planned on — so `lag_sessions=0` means
+current whatever the calendar says, and a long weekend is not three sessions of
+staleness. Payload: `{signal_date, latest_snapshot_date, latest_bar_date,
+lag_sessions, is_stale, model_version}`; `is_stale` is `lag_sessions >= 1`. With
+no signal row the answer is `signal_date=null, lag_sessions=0, is_stale=false`,
+which the page renders as "unknown freshness" rather than as a confident date.
+For a RULE signal `model_version` is the row's own derived tag from the knobs that
+change the book — `rule-v1:mom60-score:dedup:cap2` — because RULE has no
+`ModelVersion` row to point at; it degrades to bare `rule-v1` when the
+configuration is unavailable.
 
 `/etf/signals/latest/` returns the newest signal matching the same filters as
 the list route, and answers `404` rather than an empty page when none exists.
@@ -316,3 +357,116 @@ leaderboard is only readable ordered: `sort` accepts `alpha`, `sharpe`,
 `return`, `drawdown` and `created`, and anything else falls back to newest
 first. Runs that never computed a metric sort last on every key rather than
 first, so an aborted run cannot head the table.
+
+### ETF backtest lifecycle
+
+`/etf/backtests/` is the one ETF route that writes. It answers GET (list and
+retrieve), POST, and DELETE; `http_method_names` omits PUT and PATCH on purpose,
+because a run's configuration *is* its identity: the fingerprint in
+`report['runtime_state']` is what lets a paused row resume, so editing the window
+or the knobs of a live row would resume a different computation under resumable
+state belonging to another one. Change a run by creating a new one.
+
+`POST /etf/backtests/` validates, then acts in the order dedupe → cap → persist →
+queue, and the status code says which step answered:
+
+- `400` from the serializer: a non-`RULE` `model_type` (ML backtests need a
+  booster trained and registered by command, so they go through
+  `run_etf_rotation_backtest`, not HTTP), `end_date` before `start_date`, an
+  `end_date` in the future, or a non-positive `max_positions`,
+  `momentum_lookback` or `initial_capital`.
+- `200`, not `202`, with the *existing* row when an in-flight PENDING/RUNNING run
+  already carries the same `BacktestConfig` fingerprint. Nothing new was accepted,
+  so a client that retries a POST it already has running gets its row back instead
+  of a second copy of the same computation — and never a 429 it cannot act on,
+  because dedupe runs before the cap.
+- `429` when `ETF_MAX_CONCURRENT_BACKTESTS` (default 2) rows are already PENDING
+  or RUNNING. DRF throttling is not configured repo-wide, so this application-level
+  semaphore is the entire bound. It counts CLI and `--grid` rows too, excludes
+  PAUSED on purpose (a paused row holds a cursor, not a worker slot), and fails
+  closed: a cap of 0 or less refuses every creation.
+- `202` with the new row. The task is queued on the `etf-rotation` Celery queue
+  inside `transaction.on_commit`, so nothing is published for a row that never
+  committed.
+
+The `202` body is the **list** serializer — `get_serializer_class` switches on
+`self.detail` and a POST is not a detail view — so it carries no `report`, exactly
+like a list row. That is the same contract as the dropped
+`equity_curve`/`trade_log`/`report`: **progress is detail-only**, so a client
+watches `report['runtime_state']['cursor']` by polling `GET /etf/backtests/{id}/`.
+
+Writable fields are `name`, `start_date`, `end_date`, `rebalance_frequency`,
+`max_positions`, `momentum_lookback`, `absolute_momentum_filter`,
+`defensive_asset`, `weighting` and `initial_capital`. `model_type` is writable but
+pinned to RULE, because a read-only field would silently drop a caller's `LSTM`
+and answer 202 with a RULE row it did not ask for — worse than the 400. The cost
+model is not writable at all: `commission_rate`, `min_commission`, `slippage`,
+`liquidity_floor_multiple` and `benchmark_code` come from their column defaults,
+which are the same numbers `config/settings/base.py` assigns to
+`ETF_COMMISSION_RATE`, `ETF_MIN_COMMISSION`, `ETF_SLIPPAGE`,
+`ETF_LIQUIDITY_FLOOR_MULTIPLE` and `ETF_BENCHMARK_CODE`, and
+`walk_forward_steps` is pinned to 0 because the API does not do walk-forward runs.
+Note the asymmetry: the API reads the *column* default and the CLI reads the
+*settings* value, so overriding one of those in `.env` decouples the two surfaces
+and an API-launched run will no longer dedupe against the identical CLI-launched
+one.
+
+Lifecycle transitions are `POST /etf/backtests/{id}/pause|resume|rerun|restart/`
+plus `DELETE /etf/backtests/{id}/`. They answer with `{'message', 'id'}` rather
+than serializer output: the row a client should act on is the one it re-reads, and
+echoing a body for an intent that has not landed yet would be misleading.
+
+- **pause** — `400` unless the row is PENDING or RUNNING. PENDING, and RUNNING
+  whose task owner is gone, go to `PAUSED` in place, because there is no live
+  chunk to protect; pausing a PENDING row is also what stops its queued task from
+  starting work, since the task re-reads `PAUSED` before it touches the engine.
+  RUNNING with a live owner writes `pending_control_action=PAUSE`.
+- **resume** — `400` unless `PAUSED`; otherwise PENDING again with the control
+  intent cleared and re-queued. `report['runtime_state']` is untouched, so the run
+  continues from its cursor rather than restarting.
+- **restart** and **rerun** are one action under two names, matching the stock
+  route. A live-owned RUNNING row gets `pending_control_action=RESTART` and the
+  engine hands the halt back to the task wrapper, which wipes the result columns
+  and re-queues; any other status is reset and re-queued immediately.
+- **delete** — a live-owned RUNNING row gets `pending_control_action=DELETE` and
+  the loop deletes itself at the boundary; everything else is deleted outright with
+  `204`. Deleting a RUNNING row outright would let `_persist_progress` re-INSERT it
+  under the same primary key and leave a row with no owner.
+
+Pause, restart and delete are **coarse**: they land at a `chunk_trading_days`
+boundary (default 120 sessions), so a 202 means "requested" and the status changes
+when the engine gets there. ETF never revokes the worker task to make a request
+land faster — a live task reaches the boundary on its own, a dead one cannot be
+revoked, `terminate=True` discards the in-flight chunk, and revoking a task that is
+already winding down would make the stale-owner check flag a finishing row as
+orphaned.
+
+Both list and detail rows carry `task_state` and `has_stale_task_owner`, resolved
+by `apps.core.task_health` — the same helper [`celery.md`](celery.md) describes for
+the stock route — because `status='RUNNING'` cannot by itself tell an advancing run
+from one whose worker died. They short-circuit for any non-RUNNING row and are
+resolved once per row per request, not once per field, so a 20-row page costs at
+most 20 broker lookups.
+
+List filtering covers the dimensions a grid sweep varies: `status`, `model_type`
+and `rebalance_frequency` are compared uppercased, `weighting` lowercased — it is a
+column since the lifecycle migration and the grid stores `equal`/`score`, so
+`?weighting=SCORE` matches — plus `window_start`/`window_end` as inclusive bounds
+on the run's own window and a case-insensitive `name` substring, which is how
+`grid-rule-*` rows are found by prefix.
+
+`/etf/backtests/{id}/comparison_curve/` is the one ETF action that is not a table
+read. It rebuilds the strategy series from `equity_curve` and every benchmark
+series by querying `BenchmarkIndexDaily` for the row's window, because
+`_comparison_bundle` computes a benchmark curve but never persists one --
+recomputing is what makes a run that predates this endpoint chartable at all. All
+series are rescaled onto the strategy's opening equity and forward-filled onto the
+strategy's own session grid, so the line on the chart is the sample the stored
+metrics were measured against rather than a different sample of the same index. A
+requested code with no rows is named in `message` instead of being silently
+dropped. `?extra_ids=1,2` (or repeated `?extra_compare_run_id=`, which is what the
+stock chart component sends) overlays other COMPLETED runs on the same scale, and
+an unparseable overlay id is ignored rather than failing the request. Terminal
+statuses are cached under `BACKTEST_PAYLOAD_CACHE_SECONDS` with `status`,
+`updated_at` and the overlay ids in the key, so a write to a finished row or a
+different overlay set cannot serve a stale curve.

@@ -176,6 +176,46 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Open — correctness
 
+### The `weighting` default is arguable and currently unmeasured on the holdout
+
+`score` is the default in all three places that carry it (`ETFRotationBacktest`
+column `models.py:398`, `BacktestConfig` `backtest_engine.py:213`,
+`settings.ETF_WEIGHTING` `base.py:305`), but measured at the new reference config
+on 2016-01-29..2023-12-31 the ordering is **equal +99.69% / Sharpe 0.5357 /
+22.85x** ≥ invvol +81.86% / 35.24% maxDD / 0.4961 ≥ score +71.73% / 44.53% /
+0.4437. `equal` wins the tuning window on return, Sharpe and turnover at once.
+The reason it is still not the default is that the default was chosen for a
+different question and the holdout has never seen `equal` under the 2026-10
+selection constraints -- flipping the default on a tuning-window ranking is
+exactly how the module ended up with a reference row that was 80% banks. Decide
+with a holdout run, or leave `score` and let the workbench pass `equal`.
+
+### The Kelly governor is a kill switch at its own default floor
+
+`kelly_fraction=0` (off) is bit-identical to the pre-change engine, which is the
+regression guarantee the plan asked for. Enabling it is a different story: on the
+reference book the realised edge is negative (51 closed trades, win rate 43.1%,
+payoff 1.29 → `f* = -0.009`), so `raw_scale` is negative and the default
+`kelly_floor=0` clamps to *zero exposure* on 164 of 213 sessions. The result is
+Sharpe 0.967 / maxDD 6.84% / turnover 2.13x, which is flattering only because
+beta is 0.03. Two open items: (a) a floor sweep (0.5 → Sharpe 0.692, 0.75 → 0.588
+with 8.9pp less drawdown than off) has tuning-window evidence and no holdout
+evidence; (b) `kelly_*` have no `ETFRotationBacktest` columns, so `--queue`
+refuses them -- a queued run cannot carry a sized book until they become columns
+the way `weighting` did.
+
+### Rows 354 and 356-361 are a dedup-off measurement set
+
+`--no-dedup-track-index` was silently applied to *every* command-line run while
+`bool(None)` stood in for "not asked for" (fixed in 0.1.21). Rows written during
+that window have `dedup_track_index=False` in their own columns, so they are
+self-describing but misleadingly named -- `verify-invvol-*` (354) reads like the
+Phase-3a comparison row and is not it. Route them out of the leaderboard by
+name, or rerun them under the fixed path; the corrected numbers are already in
+`docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.3/§7.4 as ephemeral
+runs. Nothing here is a data-integrity problem: the fingerprint/digest was always
+built from the columns that were actually written.
+
 ### Test suite green — 339/339
 
 Resolved. The reduction ran 109 (Redis) → 17 → 10 → 7 → 6 → 3 → **0**. Every step was
@@ -343,7 +383,7 @@ snapshot is inactive now, but the mechanism is not guarded.
 ### Stuck `RUNNING` backtest runs
 
 The coverage sheet shows runs in `RUNNING` whose `created_at` is weeks old. They
-will not self-heal. `apps/backtest/task_health.py` can identify them; see
+will not self-heal. `apps/core/task_health.py` can identify them; see
 `docs/how-to/runbook-sync-failure.md` §6. Needs a sweep and a decision on whether
 to restart or fail them.
 
@@ -510,7 +550,7 @@ enough to dominate the job runtime.
 
 ### `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` is not configurable
 
-`apps/backtest/task_health.py` reads it via `getattr(settings, ..., 2400)`, but
+`apps/core/task_health.py` reads it via `getattr(settings, ..., 2400)`, but
 the setting is never defined and never read from the environment. Changing the
 stale-run threshold currently requires a code edit. Wire it through `env.int()`.
 
