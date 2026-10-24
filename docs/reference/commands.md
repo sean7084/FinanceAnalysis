@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-24T08:02:24Z_
+_Generated: 2026-10-24T09:14:13Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**41** project commands across **9** apps.
+**42** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -231,6 +231,15 @@ Rank the point-in-time ETF pool and write the rotation signal for one date.
 | `--dry-run` | flag | `False` |  | Score, rank, verify and report; write nothing. |
 
 
+### `mark_etf_rotation_positions_daily`
+
+Mark OPEN ETF rotation positions to the newest close and close legs displaced by a newer signal of the same type.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--date` | value | &mdash; |  | Mark date (YYYY-MM-DD). Default: the newest ETFDaily session. |
+
+
 ### `run_etf_rotation_backtest`
 
 Run a single ETF rotation backtest, or the 144-combination RULE grid search.
@@ -274,6 +283,7 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--grid-plan` | flag | `False` |  | Print the combinations the grid would run and execute nothing. |
 | `--grid-prefix` | value | `grid` |  | Name stem for the persisted grid rows (default: grid). The row name is the resume key, so a re-run after a selection-rule change needs a fresh stem to keep both generations side by side. |
 | `--grid-force` | flag | `False` |  | Re-run grid rows that already COMPLETED under the same name (default: skip them). |
+| `--walk-forward-steps` | value | &mdash; |  | With --grid: split the window into N expanding folds, select the RULE configuration on each training window by Sharpe (lower turnover breaks a tie), and trade it on that fold's validation window. Ephemeral: no row is written. A fold with fewer than 20 rebalances is too thin; rerun with N=4, which gives longer validation blocks. |
 
 
 ### `sweep_etf_rotation_lstm`

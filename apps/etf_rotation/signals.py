@@ -26,6 +26,7 @@ import logging
 import pandas as pd
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 
 from apps.etf_rotation import rotation_engine as engine
 from apps.etf_rotation.backtest_engine import DatabaseDataSource
@@ -280,6 +281,11 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
     appending a second row for "the latest signal" to choose between. The day's positions are
     deleted and rewritten from this plan, so a re-run whose ranking changed cannot leave the
     previous ranking's legs open under the same signal.
+
+    A fund already OPEN for this signal type is carried, not reopened: one row is one
+    holding, and the ledger's realised history would otherwise count the same position
+    once per signal. The carried row keeps its original ``signal``/``entry_date`` (the
+    trade that opened it) and only its target weight and ranking metadata are refreshed.
     """
     signal, created = ETFRotationSignal.objects.update_or_create(
         date=trade_date,
@@ -296,12 +302,32 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
             'metadata': metadata,
         },
     )
-    replaced = ETFRotationPosition.objects.filter(signal=signal).delete()[0]
+    # Only OPEN legs are rebuilt. A leg the ledger closed is realised history: deleting it
+    # on a same-day regeneration would erase the only record of a completed trade and make
+    # the live track record depend on how often the signal job was rerun.
+    replaced = ETFRotationPosition.objects.filter(
+        signal=signal, status=ETFRotationPosition.Status.OPEN,
+    ).delete()[0]
 
     codes = [leg.ts_code for leg in plan.legs]
     prices = _entry_prices(trade_date, codes)
     etf_ids = dict(ETFUniverse.objects.filter(ts_code__in=codes).values_list('ts_code', 'id'))
+    # A fund the newest signal still selects is the same holding it was on the previous
+    # signal, not a second one. Re-creating a row for it would double the live book on
+    # every signal; the ledger would then close both duplicates only when the fund is
+    # finally dropped. Earliest row wins so ``entry_date``/``entry_price`` stay the
+    # original entry, and ``last_selected_signal`` records the latest re-confirmation.
+    held: dict[str, ETFRotationPosition] = {}
+    existing_legs = (
+        ETFRotationPosition.objects
+        .filter(status=ETFRotationPosition.Status.OPEN, etf__ts_code__in=codes)
+        .filter(Q(signal__signal_type=signal_type) | Q(metadata__signal_type=signal_type))
+        .order_by('entry_date', 'id')
+    )
+    for position in existing_legs:
+        held.setdefault(position.etf.ts_code, position)
     legs = []
+    carried = []
     unpriced = []
     for leg in plan.legs:
         price = prices.get(leg.ts_code)
@@ -310,6 +336,20 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
             # is recorded nowhere rather than booked at a fabricated price. It stays in
             # ``selected_etfs``, and ``legs_without_price`` says which.
             unpriced.append(leg.ts_code)
+            continue
+        existing = held.get(leg.ts_code)
+        if existing is not None:
+            metadata = dict(existing.metadata or {})
+            metadata.update({
+                'rank': leg.rank,
+                'score': leg.score,
+                'reason': leg.reason,
+                'last_selected_signal': signal.pk,
+            })
+            existing.weight = leg.weight
+            existing.metadata = metadata
+            existing.save(update_fields=['weight', 'metadata'])
+            carried.append(leg.ts_code)
             continue
         legs.append(ETFRotationPosition(
             signal=signal,
@@ -331,6 +371,7 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
         'signal': signal,
         'created': created,
         'positions_written': len(legs),
+        'positions_carried': len(carried),
         'positions_replaced': replaced,
         'legs_without_price': unpriced,
     }
@@ -466,6 +507,7 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         'signal_pk': None,
         'created': False,
         'positions_written': 0,
+        'positions_carried': 0,
         'positions_replaced': 0,
         'legs_without_price': [],
     }
@@ -481,6 +523,7 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         'signal_pk': written['signal'].pk,
         'created': written['created'],
         'positions_written': written['positions_written'],
+        'positions_carried': written['positions_carried'],
         'positions_replaced': written['positions_replaced'],
         'legs_without_price': written['legs_without_price'],
     })

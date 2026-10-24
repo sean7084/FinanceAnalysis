@@ -36,6 +36,7 @@ import talib
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
+from django.db.models import Sum
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -46,6 +47,7 @@ from apps.etf_rotation import (
     backtest_engine,
     comparison,
     features,
+    position_ledger,
     rotation_engine,
     signals as rotation_signals,
     tasks as etf_tasks,
@@ -71,6 +73,7 @@ from apps.etf_rotation.features import (
     resolve_pool_parameters,
     sessions_to_calendar_days,
 )
+from apps.etf_rotation.management.commands import mark_etf_rotation_positions_daily as ledger_cmd
 from apps.etf_rotation.management.commands import run_etf_rotation_backtest as backtest_cmd
 from apps.etf_rotation.management.commands import sweep_etf_rotation_lstm as sweep_cmd
 from apps.etf_rotation.models import (
@@ -79,6 +82,7 @@ from apps.etf_rotation.models import (
     ETFFeatureSnapshot,
     ETFUniverse,
     ETFRotationBacktest,
+    ETFRotationPosition,
     ETFRotationSignal,
     ETFRotationSignalRun,
 )
@@ -5150,4 +5154,277 @@ class SignalFreshnessEndpointTests(TestCase):
             message='yesterday was stale',
         )
         self.assertIsNone(self._get()['feed_stale'])
+
+
+@override_settings(ETF_COMMISSION_RATE=0.0003, ETF_MIN_COMMISSION=5)
+class LivePositionLedgerTests(_PanelSeedMixin, TestCase):
+    """The daily ledger closes what a newer signal dropped and marks the rest.
+
+    Before this writer existed every ``ETFRotationPosition`` row said OPEN forever, so the live
+    track record could not be computed even in principle. Each test pins one promise the page
+    now relies on: a displaced leg becomes realised history at the next session's close, a
+    same-day regeneration leaves that history alone, cumulative pnl comes from CLOSED rows
+    alone, and no leg is ever marked or closed from a bar after the mark date.
+    """
+
+    def setUp(self):
+        self.seed()
+        self.entry_day = self.pool_date
+        self.next_day = self.days[self.split + 1]
+        self.signal_type = 'MONTHLY'
+
+    def _signal(self, day, codes, signal_type=None):
+        selected = [
+            {
+                'ts_code': code,
+                'name': ETFUniverse.objects.get(ts_code=code).name,
+                'weight': (1.0 / len(codes)) if codes else 1.0,
+                'reason': 'test',
+            }
+            for code in codes
+        ]
+        return ETFRotationSignal.objects.create(
+            date=day,
+            signal_type=signal_type or self.signal_type,
+            model_type='RULE',
+            rankings=[],
+            selected_etfs=selected,
+            max_positions=max(1, len(codes)),
+            metadata={},
+        )
+
+    def _position(self, signal, etf, *, shares=1000, day=None):
+        entry_day = day or signal.date
+        entry_price = ETFDaily.objects.get(etf=etf, date=entry_day).close
+        return ETFRotationPosition.objects.create(
+            signal=signal,
+            etf=etf,
+            entry_date=entry_day,
+            entry_price=entry_price,
+            weight=0.5,
+            shares=shares,
+            status=ETFRotationPosition.Status.OPEN,
+            metadata={'signal_type': signal.signal_type},
+        )
+
+    @staticmethod
+    def _commission(notional):
+        return max(notional * 0.0003, 5.0)
+
+    def _expected_pnl(self, leg):
+        entry_price = float(leg.entry_price)
+        exit_price = float(leg.exit_price)
+        shares = int(leg.shares)
+        return (
+            (exit_price - entry_price) * shares
+            - self._commission(entry_price * shares)
+            - self._commission(exit_price * shares)
+        )
+
+    def test_a_displaced_leg_closes_at_the_next_signal(self):
+        entry_signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        kept = self._position(entry_signal, self.etf_a)
+        dropped = self._position(entry_signal, self.etf_b, shares=2000)
+        entry_price_b = float(dropped.entry_price)
+        next_signal = self._signal(self.next_day, ['512760.SH'])
+
+        summary = position_ledger.mark_positions(self.next_day)
+
+        self.assertEqual(summary['closed_count'], 1)
+        self.assertEqual(summary['marked_count'], 1)
+        self.assertEqual(summary['latest_signals'], {self.signal_type: self.next_day.isoformat()})
+
+        dropped.refresh_from_db()
+        exit_close = float(ETFDaily.objects.get(etf=self.etf_b, date=self.next_day).close)
+        self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
+        self.assertEqual(dropped.exit_date, self.next_day)
+        self.assertEqual(dropped.exit_reason, 'DISPLACED_BY_SIGNAL')
+        self.assertEqual(float(dropped.exit_price), exit_close)
+        expected_pnl = (
+            (exit_close - entry_price_b) * 2000
+            - self._commission(entry_price_b * 2000)
+            - self._commission(exit_close * 2000)
+        )
+        self.assertAlmostEqual(dropped.pnl, expected_pnl, places=6)
+        self.assertAlmostEqual(
+            dropped.return_pct,
+            expected_pnl / (entry_price_b * 2000 + self._commission(entry_price_b * 2000)),
+            places=6,
+        )
+        self.assertEqual(dropped.metadata['exit']['displacing_signal'], next_signal.pk)
+
+        kept.refresh_from_db()
+        kept_close = float(ETFDaily.objects.get(etf=self.etf_a, date=self.next_day).close)
+        self.assertEqual(kept.status, ETFRotationPosition.Status.OPEN)
+        self.assertEqual(kept.metadata['live_mark']['date'], self.next_day.isoformat())
+        self.assertEqual(kept.metadata['live_mark']['price'], round(kept_close, 4))
+        self.assertEqual(
+            kept.metadata['live_mark']['market_value'], round(kept_close * 1000, 4),
+        )
+
+    def _persist(self, day, codes):
+        plan = SimpleNamespace(
+            rankings=[],
+            defensive_allocation=0.0,
+            defensive_asset='',
+            legs=[
+                SimpleNamespace(
+                    ts_code=code, weight=1.0 / len(codes), rank=index + 1,
+                    score=1.0, reason='test',
+                )
+                for index, code in enumerate(codes)
+            ],
+        )
+        selected = [
+            {
+                'ts_code': code,
+                'name': ETFUniverse.objects.get(ts_code=code).name,
+                'weight': 1.0 / len(codes),
+                'reason': 'test',
+            }
+            for code in codes
+        ]
+        return rotation_signals.persist_signal(
+            trade_date=day,
+            signal_type=self.signal_type,
+            model_type='RULE',
+            config=SimpleNamespace(max_positions=max(1, len(codes))),
+            plan=plan,
+            selected=selected,
+            metadata={},
+            model_version='test',
+            benchmark_return=None,
+        )
+
+    def test_a_continued_holding_is_carried_not_reopened(self):
+        first = self._persist(self.entry_day, ['512760.SH', '515980.SH'])
+        second = self._persist(self.next_day, ['512760.SH'])
+
+        # One row per holding: the second signal re-confirms A instead of opening it again.
+        self.assertEqual(first['positions_written'], 2)
+        self.assertEqual(second['positions_written'], 0)
+        self.assertEqual(second['positions_carried'], 1)
+        held = ETFRotationPosition.objects.get(etf=self.etf_a, status=ETFRotationPosition.Status.OPEN)
+        self.assertEqual(held.signal_id, first['signal'].pk)
+        self.assertEqual(held.entry_date, self.entry_day)
+        self.assertEqual(held.metadata['last_selected_signal'], second['signal'].pk)
+
+        position_ledger.mark_positions(self.next_day)
+
+        self.assertEqual(
+            ETFRotationPosition.objects.get(etf=self.etf_a).pk, held.pk,
+        )
+        dropped = ETFRotationPosition.objects.get(etf=self.etf_b)
+        self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
+        self.assertEqual(dropped.metadata['exit']['displacing_signal'], second['signal'].pk)
+
+    def test_regeneration_preserves_closed_history(self):
+        signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        self._position(signal, self.etf_a)
+        self._position(signal, self.etf_b)
+        self._signal(self.next_day, ['512760.SH'])
+        position_ledger.mark_positions(self.next_day)
+        realised = ETFRotationPosition.objects.get(
+            signal=signal, etf=self.etf_b, status=ETFRotationPosition.Status.CLOSED,
+        )
+
+        plan = SimpleNamespace(
+            rankings=[],
+            defensive_allocation=0.0,
+            defensive_asset='',
+            legs=[SimpleNamespace(
+                ts_code='512760.SH', weight=1.0, rank=1, score=1.0, reason='rerun',
+            )],
+        )
+        result = rotation_signals.persist_signal(
+            trade_date=self.entry_day,
+            signal_type=self.signal_type,
+            model_type='RULE',
+            config=SimpleNamespace(max_positions=1),
+            plan=plan,
+            selected=[{
+                'ts_code': '512760.SH', 'name': self.etf_a.name,
+                'weight': 1.0, 'reason': 'rerun',
+            }],
+            metadata={},
+            model_version='test',
+            benchmark_return=None,
+        )
+
+        # Only the OPEN leg was replaced; the CLOSED row is the record of a completed trade.
+        self.assertEqual(result['positions_replaced'], 1)
+        self.assertEqual(result['positions_written'], 1)
+        self.assertEqual(
+            ETFRotationPosition.objects.filter(
+                signal=signal, status=ETFRotationPosition.Status.OPEN,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            ETFRotationPosition.objects.get(
+                signal=signal, status=ETFRotationPosition.Status.CLOSED,
+            ).pk,
+            realised.pk,
+        )
+
+    def test_cumulative_live_pnl_is_computable_from_closed_rows_alone(self):
+        signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        self._position(signal, self.etf_a, shares=1000)
+        self._position(signal, self.etf_b, shares=1500)
+        self._signal(self.next_day, [])
+
+        summary = position_ledger.mark_positions(self.next_day)
+
+        closed = ETFRotationPosition.objects.filter(
+            status=ETFRotationPosition.Status.CLOSED,
+        )
+        self.assertEqual(summary['closed_count'], 2)
+        self.assertEqual(closed.count(), 2)
+        for leg in closed:
+            self.assertIsNotNone(leg.exit_date)
+            self.assertIsNotNone(leg.exit_price)
+            self.assertIsNotNone(leg.pnl)
+            self.assertIsNotNone(leg.return_pct)
+            self.assertEqual(leg.exit_reason, 'DISPLACED_BY_SIGNAL')
+            self.assertAlmostEqual(leg.pnl, self._expected_pnl(leg), places=6)
+        aggregate = closed.aggregate(total=Sum('pnl'))['total']
+        self.assertAlmostEqual(aggregate, summary['realised_pnl_total'], places=6)
+
+    def test_the_ledger_task_never_queries_the_holdout_window(self):
+        source = inspect.getsource(position_ledger) + inspect.getsource(ledger_cmd)
+        for forbidden in (
+            'ETFRotationBacktest', 'run_rotation_backtest',
+            'LOCKED_HOLDOUT_START', '2024-01-01',
+        ):
+            self.assertNotIn(forbidden, source)
+        # The no-future-bar guarantee is a query bound, not a convention.
+        self.assertIn('date__lte=mark_date', inspect.getsource(position_ledger))
+
+        signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        self._position(signal, self.etf_a)
+        self._position(signal, self.etf_b)
+        displacing = self._signal(self.next_day, ['512760.SH'])
+        future = self._signal(self.days[-1], ['515980.SH'])
+        ETFDaily.objects.filter(date=self.days[-1]).update(
+            close=Decimal('999.0000'), adj_close=Decimal('999.0000'),
+        )
+        next_close_a = float(ETFDaily.objects.get(etf=self.etf_a, date=self.next_day).close)
+        next_close_b = float(ETFDaily.objects.get(etf=self.etf_b, date=self.next_day).close)
+
+        call_command(
+            'mark_etf_rotation_positions_daily', '--date', self.next_day.isoformat(),
+            stdout=io.StringIO(),
+        )
+
+        dropped = ETFRotationPosition.objects.get(etf=self.etf_b)
+        self.assertEqual(dropped.exit_date, self.next_day)
+        self.assertEqual(float(dropped.exit_price), next_close_b)
+        # A signal dated after the mark session is not the one that displaced the leg.
+        self.assertEqual(dropped.metadata['exit']['displacing_signal'], displacing.pk)
+        self.assertNotEqual(dropped.metadata['exit']['displacing_signal'], future.pk)
+        kept = ETFRotationPosition.objects.get(etf=self.etf_a)
+        self.assertEqual(kept.status, ETFRotationPosition.Status.OPEN)
+        self.assertEqual(kept.metadata['live_mark']['date'], self.next_day.isoformat())
+        self.assertEqual(kept.metadata['live_mark']['price'], round(next_close_a, 4))
+
 

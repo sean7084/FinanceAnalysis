@@ -133,6 +133,7 @@ class Command(BaseCommand):
                 'scored_size': summary.get('scored_size'),
                 'ranked_size': summary.get('ranked_size'),
                 'positions_written': summary.get('positions_written'),
+                'positions_carried': summary.get('positions_carried'),
                 'legs_without_price': summary.get('legs_without_price') or [],
             })
         try:
@@ -183,6 +184,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 f'  {"created" if summary["created"] else "overwrote"} ETFRotationSignal '
                 f'{summary["signal_pk"]}: {summary["positions_written"]} position row(s), '
+                f'{summary["positions_carried"]} carried, '
                 f'{summary["positions_replaced"]} replaced'
                 + (f', legs with no bar: {summary["legs_without_price"]}' if summary['legs_without_price'] else '')
             ))

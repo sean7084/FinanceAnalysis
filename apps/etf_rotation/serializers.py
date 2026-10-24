@@ -140,7 +140,7 @@ class ETFRotationPositionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'signal', 'signal_date', 'etf', 'etf_ts_code', 'etf_name',
             'entry_date', 'exit_date', 'entry_price', 'exit_price', 'weight', 'shares',
-            'pnl', 'return_pct', 'status', 'metadata', 'created_at',
+            'pnl', 'return_pct', 'status', 'exit_reason', 'metadata', 'created_at',
         ]
         read_only_fields = fields
 

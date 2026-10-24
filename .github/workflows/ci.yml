@@ -153,7 +153,11 @@ jobs:
       # instead of gaining padded boundaries, a fold's selection runs end before its
       # validation starts, the winner follows Sharpe then lower turnover, and the fold
       # table prints each fold's own rebalance count.
-      MIN_TEST_COUNT: "645"
+      # 645 -> 650: Phase 5 live ledger. Five tests: a displaced leg closes at the next
+      # signal with its own pnl, a continued holding is carried rather than reopened,
+      # regeneration preserves closed history, cumulative pnl is summable from closed
+      # rows alone, and the ledger task never reads a bar or signal after its mark date.
+      MIN_TEST_COUNT: "650"
 
     steps:
       - uses: actions/checkout@v4
@@ -299,8 +303,11 @@ jobs:
       # when that list cannot be loaded). 72 -> 76: the signal card reports a
       # stale feed independently of snapshot lag and the last attempt even when it
       # refused (and stays silent on an OK attempt); the alert center names an
-      # asset-less FEED_STALE event instead of rendering a null asset.
-      MIN_TEST_COUNT: "76"
+      # asset-less FEED_STALE event instead of rendering a null asset. 76 -> 77:
+      # the live ledger card sums realised pnl from closed rows, shows the closed
+      # trade table and the latest signals, and leaves realised pnl blank when no
+      # closed row carries a priced pnl.
+      MIN_TEST_COUNT: "77"
 
     steps:
       - uses: actions/checkout@v4

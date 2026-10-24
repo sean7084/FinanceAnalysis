@@ -956,6 +956,9 @@ export interface EtfPositionDto {
   pnl: number | string | null
   return_pct: number | string | null
   status: string
+  // Empty while OPEN. The daily ledger writes DISPLACED_BY_SIGNAL when a newer signal
+  // of the same type no longer selects the fund and the leg is closed at that session.
+  exit_reason: string
   metadata: Record<string, unknown>
   created_at: string
 }
@@ -1153,6 +1156,15 @@ export async function fetchEtfSignals(limit = 10): Promise<EtfSignalDto[]> {
 export async function fetchEtfOpenPositions(limit = 50): Promise<EtfPositionDto[]> {
   const payload = await apiGet<Paginated<EtfPositionDto>>(
     `/etf/positions/?status=OPEN&ordering=-entry_date&page_size=${limit}`,
+  )
+  return payload.results
+}
+
+// Realised history, newest first by entry date (the endpoint's ordering). The ledger card
+// sums `pnl` over these rows only, so an OPEN leg's mark can never leak into the track record.
+export async function fetchEtfClosedPositions(limit = 20): Promise<EtfPositionDto[]> {
+  const payload = await apiGet<Paginated<EtfPositionDto>>(
+    `/etf/positions/?status=CLOSED&page_size=${limit}`,
   )
   return payload.results
 }

@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import {
   fetchEtfBacktests,
+  fetchEtfClosedPositions,
   fetchEtfComparisonCurve,
   fetchEtfLatestSignal,
   fetchEtfOpenPositions,
   fetchEtfSignalFreshness,
+  fetchEtfSignals,
   fetchEtfUniverse,
   fmtPct,
   type EtfBacktestDto,
@@ -31,9 +33,10 @@ const EMPTY_POSITIONS: EtfPositionDto[] = []
 const EMPTY_RUNS: EtfBacktestDto[] = []
 const EMPTY_RANKINGS: EtfRankingDto[] = []
 const EMPTY_UNIVERSE_ROWS: EtfUniverseDto[] = []
+const EMPTY_SIGNALS: EtfSignalDto[] = []
 const EMPTY_OBJECT: Record<string, unknown> = {}
 
-function fmtNumber(value: number | string | null | undefined, digits = 4): string {
+function fmtNumber(value: unknown, digits = 4): string {
   if (value === null || value === undefined || value === '') {
     return '--'
   }
@@ -386,22 +389,143 @@ function PositionsCard({ positions }: { positions: EtfPositionDto[] }) {
               <th>{t('etf.dash.colEntryDate')}</th>
               <th>{t('etf.dash.colEntryPrice')}</th>
               <th>{t('etf.dash.colWeight')}</th>
+              <th>{t('etf.dash.colLivePrice')}</th>
+              <th>{t('etf.dash.colUnrealizedPnl')}</th>
               <th>{t('etf.dash.colSignalDate')}</th>
             </tr>
           </thead>
           <tbody>
-            {positions.map((row) => (
+            {positions.map((row) => {
+              // The daily ledger stamps ``live_mark`` on every leg it can price; a leg
+              // opened after the last beat has none, and ``--`` is the honest answer.
+              const liveMark = readPath(row.metadata, ['live_mark'])
+              return (
+                <tr key={row.id}>
+                  <td>{row.etf_name} <span className="subtitle">{row.etf_ts_code}</span></td>
+                  <td>{row.entry_date}</td>
+                  <td>{fmtNumber(row.entry_price, 3)}</td>
+                  <td>{fmtPct(row.weight)}</td>
+                  <td>{fmtNumber(readPath(liveMark, ['price']), 4)}</td>
+                  <td>{fmtNumber(readPath(liveMark, ['unrealized_pnl']), 2)}</td>
+                  <td>{row.signal_date ?? '--'}</td>
+                </tr>
+              )
+            })}
+            {positions.length === 0 && (
+              <tr>
+                <td colSpan={7}>{t('etf.dash.positionsEmpty')}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The live simulated book: what the signals told us, and what the daily ledger realised.
+ *
+ * Signals and closed legs are separate endpoints on purpose. The signal list says what the
+ * strategy wanted; the CLOSED rows are the only source of realised pnl, so the summary here
+ * is computed from them alone and never from OPEN marks.
+ */
+function LiveLedgerCard({
+  signals,
+  closedPositions,
+}: {
+  signals: EtfSignalDto[]
+  closedPositions: EtfPositionDto[]
+}) {
+  const { t } = useI18n()
+  const priced = closedPositions.filter(
+    (row) => row.pnl !== null && row.pnl !== undefined && Number.isFinite(Number(row.pnl)),
+  )
+  // A leg booked without shares closes with a price return and no yuan pnl. Summing the
+  // empty set would draw 0.00 and read as break-even, so "unknown" stays unknown.
+  const realisedPnl = priced.length
+    ? priced.reduce((total, row) => total + Number(row.pnl), 0)
+    : null
+  const wins = priced.filter((row) => Number(row.pnl) > 0).length
+  const winRate = priced.length ? wins / priced.length : null
+
+  return (
+    <div className="card">
+      <h3>{t('etf.dash.ledgerTitle')}</h3>
+      <p className="subtitle">{t('etf.dash.ledgerDesc')}</p>
+      <div className="metric-grid">
+        <article className="metric-card">
+          <span>{t('etf.dash.realisedPnl')}</span>
+          <strong>{fmtNumber(realisedPnl, 2)}</strong>
+        </article>
+        <article className="metric-card">
+          <span>{t('etf.dash.winRate')}</span>
+          <strong>{fmtPct(winRate)}</strong>
+        </article>
+        <article className="metric-card">
+          <span>{t('etf.dash.closedCount')}</span>
+          <strong>{closedPositions.length}</strong>
+        </article>
+      </div>
+
+      <div className="table-wrap">
+        <table className="data-table">
+          <caption className="subtitle">{t('etf.dash.ledgerClosedTitle')}</caption>
+          <thead>
+            <tr>
+              <th>{t('etf.dash.colEtf')}</th>
+              <th>{t('etf.dash.colEntryDate')}</th>
+              <th>{t('etf.dash.colExitDate')}</th>
+              <th>{t('etf.dash.colPnl')}</th>
+              <th>{t('etf.dash.colReturn')}</th>
+              <th>{t('etf.dash.colExitReason')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {closedPositions.map((row) => (
               <tr key={row.id}>
                 <td>{row.etf_name} <span className="subtitle">{row.etf_ts_code}</span></td>
                 <td>{row.entry_date}</td>
-                <td>{fmtNumber(row.entry_price, 3)}</td>
-                <td>{fmtPct(row.weight)}</td>
-                <td>{row.signal_date ?? '--'}</td>
+                <td>{row.exit_date ?? '--'}</td>
+                <td>{fmtNumber(row.pnl, 2)}</td>
+                <td>{fmtPct(row.return_pct)}</td>
+                <td>{row.exit_reason || '--'}</td>
               </tr>
             ))}
-            {positions.length === 0 && (
+            {closedPositions.length === 0 && (
               <tr>
-                <td colSpan={5}>{t('etf.dash.positionsEmpty')}</td>
+                <td colSpan={6}>{t('etf.dash.ledgerEmpty')}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="table-wrap">
+        <table className="data-table">
+          <caption className="subtitle">{t('etf.dash.ledgerSignalsTitle')}</caption>
+          <thead>
+            <tr>
+              <th>{t('etf.dash.signalDate')}</th>
+              <th>{t('etf.dash.colSignalType')}</th>
+              <th>{t('etf.dash.signalModel')}</th>
+              <th>{t('etf.dash.ledgerSelectedCount')}</th>
+              <th>{t('etf.dash.defensive')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {signals.map((row) => (
+              <tr key={row.id}>
+                <td>{row.date}</td>
+                <td>{row.signal_type}</td>
+                <td>{row.model_type}</td>
+                <td>{row.selected_etfs.length}</td>
+                <td>{fmtPct(row.defensive_allocation)}</td>
+              </tr>
+            ))}
+            {signals.length === 0 && (
+              <tr>
+                <td colSpan={5}>{t('common.noData')}</td>
               </tr>
             )}
           </tbody>
@@ -603,6 +727,13 @@ export function EtfRotationPage() {
     () => fetchEtfSignalFreshness(),
   )
   const positionsResource = useApiResource<EtfPositionDto[]>('etf/positions/open', () => fetchEtfOpenPositions(50))
+  // The ledger's two reads: what the strategy recently said, and the only rows that carry
+  // realised pnl. Neither is derived from the other, so both are fetched independently.
+  const signalHistoryResource = useApiResource<EtfSignalDto[]>('etf/signals?limit=10', () => fetchEtfSignals(10))
+  const closedPositionsResource = useApiResource<EtfPositionDto[]>(
+    'etf/positions/closed',
+    () => fetchEtfClosedPositions(20),
+  )
   // `sort=alpha` is server-side, and the leaderboard is a page of it rather than a
   // re-sort of a truncated page -- an aborted run with no metric must not head it.
   const runsResource = useApiResource('etf/backtests?sort=alpha&n=5', () => fetchEtfBacktests({ limit: 5, sort: 'alpha' }))
@@ -610,6 +741,8 @@ export function EtfRotationPage() {
   const signal = signalResource.data ?? EMPTY_SIGNAL
   const freshness = freshnessResource.data ?? EMPTY_FRESHNESS
   const positions = positionsResource.data ?? EMPTY_POSITIONS
+  const signalHistory = signalHistoryResource.data ?? EMPTY_SIGNALS
+  const closedPositions = closedPositionsResource.data ?? EMPTY_POSITIONS
   const runs = runsResource.data?.results ?? EMPTY_RUNS
 
   return (
@@ -638,7 +771,11 @@ export function EtfRotationPage() {
         </button>
       </div>
 
-      {(signalResource.error || positionsResource.error || runsResource.error) && (
+      {(signalResource.error
+        || positionsResource.error
+        || signalHistoryResource.error
+        || closedPositionsResource.error
+        || runsResource.error) && (
         <p className="status disconnected">{t('etf.dash.loadError')}</p>
       )}
 
@@ -653,8 +790,14 @@ export function EtfRotationPage() {
           )}
           {signal !== null && <SignalCard signal={signal} freshness={freshness} />}
           {signal !== null && <ModelParamsCard signal={signal} />}
-          {positionsResource.loading && <TableSkeleton columns={5} rows={3} />}
+          {positionsResource.loading && <TableSkeleton columns={7} rows={3} />}
           {!positionsResource.loading && <PositionsCard positions={positions} />}
+          {(signalHistoryResource.loading || closedPositionsResource.loading) && (
+            <TableSkeleton columns={6} rows={3} />
+          )}
+          {!signalHistoryResource.loading && !closedPositionsResource.loading && (
+            <LiveLedgerCard signals={signalHistory} closedPositions={closedPositions} />
+          )}
           {runsResource.loading && <TableSkeleton columns={4} rows={2} />}
           {!runsResource.loading && <ComparisonCard runs={runs} />}
         </>

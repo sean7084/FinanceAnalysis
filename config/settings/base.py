@@ -248,6 +248,10 @@ CELERY_TASK_ROUTES = {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
     },
+    "apps.etf_rotation.tasks.mark_etf_rotation_positions_daily": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
     "apps.etf_rotation.tasks.run_etf_rotation_backtest": {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
@@ -477,6 +481,13 @@ CELERY_BEAT_SCHEDULE = {
     'generate-etf-rotation-signal-daily': {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
         'schedule': crontab(hour='19', minute='45'),
+    },
+    # After the 19:45 signal: a leg the newest signal no longer selects is closed on the
+    # session its replacement was decided, and every surviving leg gets a fresh mark. A
+    # day the signal job did not run has no newer signal, so the ledger only marks.
+    'mark-etf-rotation-positions-daily': {
+        'task': 'apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
+        'schedule': crontab(hour='20', minute='15'),
     },
     # Fund 份额 is a period stamp, not a live quote, and the rotation engine only uses it to
     # pick which wrapper represents an index cluster -- a ranking that moves over months, not

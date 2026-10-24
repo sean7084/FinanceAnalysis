@@ -644,6 +644,15 @@ def generate_etf_rotation_signal_daily(self, signal_type='MONTHLY', model_type='
     )
 
 
+@shared_task(bind=True, name='apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
+             soft_time_limit=300, time_limit=360)
+def mark_etf_rotation_positions_daily(self):
+    """Beat entry point: mark the live book and close legs the newest signal displaced."""
+    from django.core.management import call_command
+
+    return call_command('mark_etf_rotation_positions_daily', verbosity=0)
+
+
 @shared_task(bind=True, name='apps.etf_rotation.tasks.check_etf_rotation_feed_health',
              soft_time_limit=120, time_limit=180)
 def check_etf_rotation_feed_health(self):

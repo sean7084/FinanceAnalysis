@@ -1,5 +1,43 @@
 # Changelog
 
+### version 0.1.26
+
+#### Added:
+
+- **Live simulated ledger.** A new `mark_etf_rotation_positions_daily` command,
+  Celery task and beat entry (20:15 on trading days, after the 19:45 signal)
+  marks every OPEN leg at the newest close on or before the mark date. A leg the
+  newest signal of its type no longer selects is closed at that bar with
+  `exit_date`, `exit_price`, `pnl`, `return_pct`, `status=CLOSED` and
+  `exit_reason='DISPLACED_BY_SIGNAL'`; `pnl` is
+  `(exit − entry) × shares − both commissions`, or null when the leg has no
+  shares (price return is still recorded). Neither bars nor signals after the
+  mark date are ever read, so a backdated `--date` cannot use a future signal.
+- **Carry-forward in signal regeneration.** A fund the new signal still selects
+  is updated in place (weight and metadata) instead of being deleted and
+  reopened; the summary and diagnostics gain `positions_carried`.
+- **Live ledger card on `/etf`.** Realised PnL (summed from CLOSED rows alone),
+  win rate, closed count, closed-trade details and recent signals; the positions
+  table shows the latest price and unrealised PnL from `metadata.live_mark`.
+
+#### Changed:
+
+- `ETFRotationPosition` gains `exit_reason` and a `(status, exit_date)` index
+  (migration `0008`). Neither is part of `to_parameters()`, so the resume
+  fingerprint is unchanged.
+- Regeneration now deletes only OPEN rows of the same `signal_type`; CLOSED
+  history is preserved across signal regeneration.
+
+#### Verified:
+
+- Backend 645 → 650 tests; the five new ones pin displaced-leg close arithmetic,
+  carry-forward, closed-history preservation, cumulative PnL from CLOSED rows
+  alone, and the absence of any post-mark-date read. Frontend 76 → 77.
+- `makemigrations --check` clean; frontend `tsc --noEmit` and lint/build
+  baselines clean. No manual browser click-through was performed.
+- Existing dev-database duplicate OPEN rows from the pre-fix path are left in
+  place and documented in BACKLOG.
+
 ### version 0.1.25
 
 #### Added:

@@ -368,6 +368,14 @@ class ETFRotationPosition(models.Model):
     pnl = models.FloatField(_('PnL'), null=True, blank=True)
     return_pct = models.FloatField(_('Return Pct'), null=True, blank=True)
     status = models.CharField(_('Status'), max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True)
+    # Why a leg left the book. Today only the daily ledger writes this: a newer signal of
+    # the same type no longer selects the fund. Kept as a column (not metadata) so closed
+    # history can be grouped and counted without reading JSON.
+    exit_reason = models.CharField(
+        _('Exit Reason'), max_length=32, blank=True, default='',
+        choices=[('DISPLACED_BY_SIGNAL', _('Displaced by signal'))],
+        help_text=_('Empty while OPEN; the ledger sets it when the leg is closed.'),
+    )
     metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -378,6 +386,9 @@ class ETFRotationPosition(models.Model):
         indexes = [
             models.Index(fields=['status', 'entry_date']),
             models.Index(fields=['etf', 'status']),
+            # The ledger's two reads: which legs are still open, and the most recently
+            # closed history the ledger page shows first.
+            models.Index(fields=['status', 'exit_date']),
         ]
 
     def __str__(self):

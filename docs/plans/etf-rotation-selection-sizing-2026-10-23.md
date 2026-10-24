@@ -957,3 +957,46 @@ N<2；`--grid-plan` 只打印计划不执行；短面板减少折数而不补边
 后端 **641 → 645**，前端不变（**76**）。新增 4 条测试钉住：短面板不补折、
 每折选择窗口不越过自己的交易窗口、赢家由声明的 Sharpe→换手准则决定、分折
 表带自己的调仓次数。命令不写库，页面无入口。
+
+### 7.13 Phase 5：实盘模拟盘账本（2026-10-24）
+
+**写入器。** 新命令 `mark_etf_rotation_positions_daily`（Celery task；beat
+`mark-etf-rotation-positions-daily` 每个交易日 20:15，排在 19:45 信号之后，
+队列 `etf-rotation`）。每个 OPEN 腿按"标记日当天或之前最新一根收盘价"盯市；
+若该腿所属 `signal_type` 的最新信号严格晚于开仓信号、且不再选择该 ETF，
+则平仓：写 `exit_date` / `exit_price` / `exit_reason='DISPLACED_BY_SIGNAL'`
+/ `status=CLOSED`，`pnl=(exit−entry)×shares − 两次佣金`；shares 未知时
+`pnl=None`、只记录价格收益，不伪造份额。不计印花税。没有可用 bar 的腿跳过
+并列入 `skipped_no_price`，不拿更晚的价格充数。平仓价取信号决策那一交易日
+（或之前最近）的收盘，语义对齐回测 `_execute_plan` 的退出成交。
+
+**时点边界。** 价格查询 `date__lte=mark_date`，最新信号也加同样的上界：
+`--date` 回放过去某天时，未来才发布的信号不能触发平仓。任务不写死任何
+窗口；测试用源码断言与"999 年后的 bar + 未来信号"证明两者都不会被读到，
+即账本不碰已关闭的 holdout。
+
+**信号重生成不再制造重复持仓。** `persist_signal` 的删除只作用于同
+`signal_type` 的 OPEN 行，CLOSED 历史保留。旧实现里每次生成信号都会给仍在
+册的腿新开一行（dev 库因此留有 159887.SZ / 515300.SH 的重复 OPEN 行，本次
+不删除；账本按最早 entry 视作同一持仓，新信号只会更新它）。现在仍在册的腿
+走 carry-forward：更新 weight 与 metadata（rank/score/reason/最新选中信号），
+不新开行；摘要与诊断新增 `positions_carried`。
+
+**前端。** `/etf` 新增实时账本卡：已实现 PnL（只从 CLOSED 行求和，无定价行
+时为 null）、胜率、平仓笔数、平仓明细（exit date / pnl / return / reason）
+与最近信号；持仓表用 `metadata.live_mark` 显示最新价与浮动盈亏。
+
+**迁移与指纹。** migration `0008` 只加 `exit_reason` 列与
+`(status, exit_date)` 索引，二者都不在 `to_parameters()` 内，**续跑指纹
+不变**。前端 **76 → 77**。
+
+**验证。** 后端 **645 → 650**：被新信号挤出的腿在次日收盘平仓且
+`pnl=(exit−entry)×shares−两次佣金`、继续持有的腿不重开、重生成保留 CLOSED
+历史、累计 PnL 仅由 CLOSED 行可算、账本任务不读标记日之后的 bar 或信号；
+前端 77、`tsc --noEmit`、lint/build 静态基线通过；`makemigrations --check`
+干净。**未做人工浏览器点击**，UI 由 vitest、类型检查与静态基线验证。
+
+**没有份额就没有人民币 PnL。** 信号写入的腿 `shares=NULL`（仓位按权重、
+不按金额定仓），所以线上账本的 `pnl` 会保持 null，只有测试里带份额的行才
+能验证人民币口径；价格收益与已实现收益率仍可用。这是账本的已知边界，
+记入 BACKLOG，未在本阶段引入资金规模假设。
