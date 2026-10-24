@@ -585,8 +585,9 @@ holdout（`start_date >= 2024-01-01`）里最新的 `created_at` 仍是 2026-10-
 
 ### 7.1 Phase 2.7 网格
 
-144 组（3 个调仓频率 × 4 个持仓数 × 4 个 lookback × 2 个绝对动量开关 ×
-2 种 weighting），行 id 210–353，耗时 2181.5s。**144 行全部 `COMPLETED`，
+144 组（4 个调仓频率 `WEEKLY, BIWEEKLY, MONTHLY, TRIGGER` × 3 个持仓数
+3/5/8 × 3 个 lookback 20/60/120 × 2 个绝对动量开关 × 2 种 weighting），
+行 id 210–353，耗时 2181.5s。**144 行全部 `COMPLETED`，
 指标缺失 0 行**，75/144 的 alpha 为正，全部 `dedup_track_index=True`。
 
 | 频率 | n | 最佳 alpha | 该行 |
@@ -594,6 +595,7 @@ holdout（`start_date >= 2024-01-01`）里最新的 `created_at` 仍是 2026-10-
 | BIWEEKLY | 36 | **+9.39%** | 256 |
 | MONTHLY | 36 | +5.89% | 292 |
 | WEEKLY | 36 | +5.00% | 221 |
+| TRIGGER | 36 | −1.30%（全族为负） | — |
 
 Sharpe 前 5 名全是 BIWEEKLY：256（equal/无绝对动量）、250（equal/绝对动量）、
 276（equal/p8/mom20）、257（score/无绝对动量）、251（score/绝对动量）。
@@ -705,3 +707,38 @@ bool(options['dedup_track_index'])`：`--no-dedup-track-index` 是
 目前三个 `ETF_*` 模型全部 `is_active=False`，从 API 跑 ML 回测没有可跑的对象，
 而且它需要 `_resolve_predictor` 增加按版本加载的分支——等真要用页面调 ML 的时候
 再启动，比现在建一条没人走的路好。
+
+### 7.7 Phase 0c：weighting 默认值的 holdout 裁决（2026-10-24，窗口自此关闭）
+
+事前登记（跑之前写死）：三臂 `equal / score / invvol`，其余参数与 row 256 完全一致
+（BIWEEKLY / p3 / mom120 / 绝对动量关闭 / dedup 与 cap 用默认值），窗口
+`2024-01-01..2026-10-20`，ephemeral 运行；判据依次为 Sharpe、maxDD、换手；
+**只有 `equal` 同时在调优窗口与 holdout 胜出才改默认值**。
+
+| weighting | 总收益 | maxDD | Sharpe | 换手 | alpha | 成交笔数 |
+| --- | --- | --- | --- | --- | --- | --- |
+| equal | −7.15% | 28.80% | 0.0913 | 29.16x | −9.00% | 273 |
+| **score** | **+1.70%** | **26.02%** | **0.1987** | 32.18x | **−5.01%** | 318 |
+| invvol | −7.78% | 26.30% | 0.0782 | 30.53x | −9.11% | 314 |
+
+**裁决：保持 `weighting=score` 默认不变。** `equal` 在调优窗口的三项全胜
+（+99.69% / 0.5357 / 22.85x 对 +71.73% / 0.4437 / 25.32x）**没有**在 holdout 上复现：
+它的 Sharpe 只有 `score` 的 46%，收益比 `score` 低 8.85pp，回撤反而更深。
+两个窗口结论相反，按预案不做任何默认值改动（三处默认值 `models.py:398`、
+`backtest_engine.py:213`、`base.py:305` 均未动，也不需重跑实盘信号）。
+**这条相反本身就是本轮关于过拟合最有价值的记录：调优窗口上 28pp 的收益差在样本外
+翻成了 8.9pp 的反向差，任何"从单窗口网格直接部署赢家"的做法都应被视为未经验证。**
+holdout 自此关闭；本计划后续各期不再查询该窗口，Phase 5 有测试钉住账本任务。
+
+### 7.8 Phase 0b：页面核对（无浏览器，代码/测试层面）
+
+四项逐一核对，未发现页面与接口不一致，故未新增 vitest 用例：
+- 信号卡三个日期互相独立：as-of 用 `signal.date` 原样、`created_at`/`updated_at`
+  本地化，`EtfRotationPage.test.tsx` 已有断言 `generatedAt != updatedAt`。
+- 陈旧告警只在 `freshness.is_stale` 为真时渲染（`EtfRotationPage.tsx:155-166`），
+  lag 0 的用例断言卡片里没有告警文本。
+- `metadata.config` 由 `Object.entries` 全量渲染（`:267-271`），测试专门放入一个
+  前端从未见过的键并断言其出现。
+- 防御资产下拉显示 `avg_amount_20d`（`EtfBacktestWorkbenchPage.tsx:76,535`），
+  fixture 覆盖了大小两种成交额。
+**限制：本环境没有可用浏览器，未做人工点击，只做了接口返回 + 前端测试 + 静态审查。**
