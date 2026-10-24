@@ -1,5 +1,31 @@
 # Changelog
 
+### version 0.1.25
+
+#### Added:
+
+- **RULE walk-forward, CLI-only.** `--grid --walk-forward-steps N` builds
+  expanding folds over the session calendar, scores the full 144-configuration
+  grid on each fold's training window only, selects by Sharpe (lower turnover
+  breaks a tie), and trades those parameters in the following validation block.
+  Nothing is persisted: `--backtest-id`, `--queue`, cost flags and non-RULE
+  models are refused, and `--grid-plan` prints the plan without executing it.
+  A short panel loses folds rather than gaining invented boundaries, and each
+  fold's own rebalance count is printed because it is the reading floor.
+
+#### Verified:
+
+- 2016–2023, four folds: every fold has at least 20 out-of-sample rebalances
+  (20/21/21/20). The reference configuration (row 256: BIWEEKLY / p3 / mom120 /
+  absolute momentum off / equal) was selected in **0 of 4** folds; all four
+  winners were MONTHLY + mom120, varying positions 3/5/8, absolute filter 2 on /
+  2 off and weighting 3 equal / 1 score. The reference parameter set is therefore
+  window-specific; **no default was changed**.
+- N=6 was attempted first and abandoned under the pre-declared guardrail: fold 1
+  produced only 14 out-of-sample rebalances.
+- Full table and reading in plan §7.12.
+- Backend 641 → 645 tests; frontend unchanged at 76.
+
 ### version 0.1.24
 
 #### Added:

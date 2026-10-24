@@ -4488,6 +4488,136 @@ class GridResumeKeyTests(SimpleTestCase):
             self.assertEqual(len(names), len(set(names)), f'{prefix} produced duplicate row names')
 
 
+class WalkForwardRuleTests(SimpleTestCase):
+    """Phase 4: the RULE selection process is scored only on data each fold never trained on."""
+
+    FIRST = date(2016, 1, 4)
+
+    def _sessions(self, count):
+        return [self.FIRST + timedelta(days=offset) for offset in range(count)]
+
+    def _combo(self, frequency, positions, lookback, absolute, weighting):
+        return {
+            'rebalance_frequency': frequency, 'max_positions': positions,
+            'absolute_momentum_filter': absolute, 'momentum_lookback': lookback,
+            'weighting': weighting,
+        }
+
+    def test_fold_plan_refuses_to_pad_when_the_panel_is_short(self):
+        """A short panel loses folds; it must never gain a boundary no session sits on.
+
+        ``expanding_folds`` clamps a fold's validation end, not its start, so an
+        over-requested plan can emit a fold whose window is empty. The wrapper drops the
+        requested count until every fold scores at least one session -- 255 dates seat
+        four one-session folds, not six, and 250 dates seat none.
+        """
+        self.assertEqual(backtest_cmd.walk_forward_folds(self._sessions(250), 6), [])
+        narrow = self._sessions(255)
+        folds = backtest_cmd.walk_forward_folds(narrow, 6)
+        self.assertEqual(len(folds), 4)
+        self.assertTrue(all(fold.valid_start <= fold.valid_end for fold in folds))
+        for fold in folds:
+            self.assertIn(fold.valid_start, narrow)
+            self.assertIn(fold.valid_end, narrow)
+            self.assertEqual(fold.train_start, narrow[0])
+            self.assertLess(fold.train_end, fold.valid_start)
+
+    def test_a_fold_never_sees_data_after_its_training_window(self):
+        """The selection grid's window ends at ``train_end``; validation starts after it."""
+        sessions = self._sessions(600)
+        folds = backtest_cmd.walk_forward_folds(sessions, 2)
+        self.assertEqual(len(folds), 2)
+        combos = [
+            self._combo('MONTHLY', 3, 20, True, 'score'),
+            self._combo('WEEKLY', 5, 60, False, 'equal'),
+        ]
+        calls = []
+
+        def fake_run(**kwargs):
+            calls.append(kwargs)
+            return {
+                'metrics': {'sharpe_ratio': 0.5, 'turnover_annual': 2.0, 'total_return': 0.1,
+                            'annualized_return': 0.05, 'max_drawdown': 0.02,
+                            'alpha_vs_benchmark': 0.01},
+                'report': {'counters': {'rebalances': 8}},
+            }
+
+        inner = MagicMock()
+        inner.sessions.return_value = sessions
+        with patch.object(backtest_cmd, 'DatabaseDataSource', return_value=inner), \
+                patch.object(backtest_cmd, 'run_rotation_backtest', side_effect=fake_run), \
+                patch.object(backtest_cmd, 'grid_combinations', return_value=combos):
+            call_command(
+                'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
+                '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat(),
+                stdout=io.StringIO(),
+            )
+
+        self.assertEqual(len(calls), len(folds) * (len(combos) + 1))
+        for fold in folds:
+            train_calls = [
+                call for call in calls
+                if (call['start_date'], call['end_date']) == (fold.train_start, fold.train_end)
+            ]
+            self.assertEqual(len(train_calls), len(combos))
+            valid_calls = [
+                call for call in calls
+                if (call['start_date'], call['end_date']) == (fold.valid_start, fold.valid_end)
+            ]
+            self.assertEqual(len(valid_calls), 1)
+            # The declared invariant behind the window choice: no fold's selection run
+            # can reach a bar its own validation block is scored on.
+            self.assertLess(fold.train_end, fold.valid_start)
+
+    def test_the_winner_is_chosen_by_the_declared_criterion(self):
+        """Highest Sharpe wins; a dead heat goes to the lower turnover, never to row order."""
+        def row(name, sharpe, turnover, frequency='MONTHLY'):
+            return {
+                **self._combo(frequency, 3, 20, True, 'score'), 'name': name,
+                'metrics': {'sharpe_ratio': sharpe, 'turnover_annual': turnover},
+            }
+
+        rows = [
+            row('rule-a-high-turnover', 0.9, 30.0),
+            row('rule-b-low-turnover', 0.9, 10.0),
+            row('rule-c-lower-sharpe', 0.8, 1.0, 'WEEKLY'),
+        ]
+        self.assertEqual(
+            backtest_cmd.select_walk_forward_winner(rows)['name'], 'rule-b-low-turnover'
+        )
+        rows.append(row('rule-d-unmeasured', float('nan'), 0.1, 'BIWEEKLY'))
+        self.assertEqual(
+            backtest_cmd.select_walk_forward_winner(rows)['name'], 'rule-b-low-turnover'
+        )
+        with self.assertRaises(ValueError):
+            backtest_cmd.select_walk_forward_winner([row('rule-e', None, 1.0)])
+
+    def test_the_fold_table_reports_its_own_rebalance_counts(self):
+        """Each fold's line carries its own trade count -- the reading floor the plan sets."""
+        def outcome(index, rebalances):
+            return {
+                'fold': {
+                    'fold_index': index, 'train_start': '2016-01-29', 'train_end': '2018-01-02',
+                    'valid_start': '2018-01-03', 'valid_end': '2019-01-02',
+                },
+                'winner': backtest_cmd.REFERENCE_RULE_COMBO,
+                'winner_name': backtest_cmd.grid_stem(backtest_cmd.REFERENCE_RULE_COMBO),
+                'train_metrics': {'sharpe_ratio': 0.5}, 'train_rebalances': rebalances + 100,
+                'valid_metrics': {
+                    'total_return': 0.1, 'annualized_return': 0.05, 'max_drawdown': 0.02,
+                    'sharpe_ratio': 0.4, 'alpha_vs_benchmark': 0.01, 'turnover_annual': 2.0,
+                },
+                'valid_rebalances': rebalances, 'reference': True,
+            }
+
+        lines = backtest_cmd.walk_forward_table([outcome(0, 7), outcome(1, 21)])
+        self.assertEqual(len(lines), 3)
+        self.assertIn('reb', lines[0].split())
+        for line, expected in zip(lines[1:], (7, 21)):
+            self.assertEqual(int(line.split()[-2]), expected)
+            self.assertEqual(line.split()[-1], 'yes')
+
+
 class SingleRunKwargForwardingTests(SimpleTestCase):
     """Every flag the single-run path accepts must arrive in a form the engine accepts.
 
@@ -5020,5 +5150,4 @@ class SignalFreshnessEndpointTests(TestCase):
             message='yesterday was stale',
         )
         self.assertIsNone(self._get()['feed_stale'])
-
 

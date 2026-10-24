@@ -184,6 +184,21 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Open — correctness
 
+### The reference RULE parameter set is window-specific
+
+Phase 4 ran a CLI-only walk-forward over 2016–2023 (four expanding folds,
+selection by Sharpe with lower turnover as the tie-break, training window only).
+The row-256 configuration — BIWEEKLY / p3 / mom120 / absolute momentum off /
+equal — was selected in **0 of 4** folds. Every fold picked MONTHLY + mom120,
+with positions 3/5/8, the absolute filter on twice and off twice, and weighting
+equal three times / score once. Out-of-sample returns were +0.98% / +75.26% /
+−2.32% / −27.75% and Sharpe 0.1090 / 1.4493 / 0.0746 / −1.4334. The table is in
+`docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.12. This is a
+statement about stability, not a better configuration: folds 1 and 4 sit exactly
+on the 20-rebalance floor, only four folds exist, and each fold restarts from
+initial capital. No default was changed, and the 2024–2026 holdout may not be
+reused to rank these winners — it was spent in §7.7.
+
 ### The band and the capacity cap have tuning-window evidence only
 
 Phase 3 added `drift_band_fraction`, `liquidity_mode` and

@@ -149,7 +149,11 @@ jobs:
       # never suppressed, a paused banded run resumes to the same fills and cash, capacity
       # scaling reallocates clipped weight before the defensive fallback, and reject mode
       # is byte-identical whether or not the capacity knobs are set.
-      MIN_TEST_COUNT: "641"
+      # 641 -> 645: Phase 4 RULE walk-forward. Four tests: a short panel loses folds
+      # instead of gaining padded boundaries, a fold's selection runs end before its
+      # validation starts, the winner follows Sharpe then lower turnover, and the fold
+      # table prints each fold's own rebalance count.
+      MIN_TEST_COUNT: "645"
 
     steps:
       - uses: actions/checkout@v4
