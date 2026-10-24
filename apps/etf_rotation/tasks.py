@@ -796,6 +796,9 @@ def run_etf_rotation_backtest(self, backtest_id):
         slippage=run.slippage,
         liquidity_floor_multiple=run.liquidity_floor_multiple,
         min_trade_notional_fraction=float(run.min_trade_notional_fraction),
+        drift_band_fraction=float(run.drift_band_fraction),
+        liquidity_mode=run.liquidity_mode,
+        adv_participation_cap=float(run.adv_participation_cap),
         benchmark_code=run.benchmark_code,
         # ``weighting`` is a column now, so the row -- not the caller's default -- decides
         # how the plan is scaled. Reading it here is what makes the promotion observable.

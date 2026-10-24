@@ -90,7 +90,8 @@ _QUEUE_KNOB_FIELDS = (
     'start_date', 'end_date', 'model_type', 'rebalance_frequency', 'max_positions',
     'momentum_lookback', 'absolute_momentum_filter', 'defensive_asset', 'initial_capital',
     'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
-    'min_trade_notional_fraction', 'benchmark_code', 'walk_forward_steps', 'weighting',
+    'min_trade_notional_fraction', 'drift_band_fraction', 'liquidity_mode',
+    'adv_participation_cap', 'benchmark_code', 'walk_forward_steps', 'weighting',
     'dedup_track_index', 'max_per_category',
 )
 
@@ -298,6 +299,12 @@ class Command(BaseCommand):
                                  '0 disables the screen. Default: settings.ETF_LIQUIDITY_FLOOR_MULTIPLE (10).')
         parser.add_argument('--min-trade-notional-fraction', type=float, default=None,
                             help='Skip rebalance deltas below this share of equity (default 0.005).')
+        parser.add_argument('--drift-band-fraction', type=float, default=None,
+                            help='Leave a delta below this share of its target notional to drift (default 0 = off).')
+        parser.add_argument('--liquidity-mode', choices=('reject', 'scale'), default=None,
+                            help='Reject an oversized leg (default) or scale it to the ADV cap.')
+        parser.add_argument('--adv-participation-cap', type=float, default=None,
+                            help='Scale-mode ceiling as a multiple of trailing daily turnover (default 0 = off).')
         parser.add_argument('--name', default='', help='Name of the persisted row.')
         parser.add_argument('--persist', dest='persist', action='store_true', default=True,
                             help='Persist an ETFRotationBacktest row (the default).')
@@ -361,6 +368,9 @@ class Command(BaseCommand):
             'slippage': options['slippage'],
             'liquidity_floor_multiple': options['liquidity_floor_multiple'],
             'min_trade_notional_fraction': options['min_trade_notional_fraction'],
+            'drift_band_fraction': options['drift_band_fraction'],
+            'liquidity_mode': options['liquidity_mode'],
+            'adv_participation_cap': options['adv_participation_cap'],
         }
         overrides = {
             key: options[key]
@@ -435,6 +445,9 @@ class Command(BaseCommand):
             ('--commission-rate', 'commission_rate'), ('--min-commission', 'min_commission'),
             ('--slippage', 'slippage'), ('--liquidity-floor-multiple', 'liquidity_floor_multiple'),
             ('--min-trade-notional-fraction', 'min_trade_notional_fraction'),
+            ('--drift-band-fraction', 'drift_band_fraction'),
+            ('--liquidity-mode', 'liquidity_mode'),
+            ('--adv-participation-cap', 'adv_participation_cap'),
             ('--no-absolute-momentum-filter', 'absolute_momentum_filter'),
         ) if options[key] not in (None, '')]
         if mixed:
@@ -464,6 +477,9 @@ class Command(BaseCommand):
             'commission_rate': row.commission_rate, 'min_commission': float(row.min_commission),
             'slippage': row.slippage, 'liquidity_floor_multiple': row.liquidity_floor_multiple,
             'min_trade_notional_fraction': float(row.min_trade_notional_fraction),
+            'drift_band_fraction': float(row.drift_band_fraction),
+            'liquidity_mode': row.liquidity_mode,
+            'adv_participation_cap': float(row.adv_participation_cap),
             'benchmark_code': row.benchmark_code,
             'config_overrides': {
                 'walk_forward_steps': row.walk_forward_steps, 'weighting': row.weighting,
@@ -650,6 +666,8 @@ class Command(BaseCommand):
             f"liquidity_rejected={counters['rejected_liquidity_fills']} "
             f"skipped_no_price={counters['skipped_no_price_fills']} "
             f"min_commission_bound={counters.get('min_commission_bound_fills', 0)} "
+            f"band_suppressed={counters.get('band_suppressed_deltas', 0)} "
+            f"capacity_scaled={counters.get('capacity_scaled_legs', 0)} "
             f"dividends={_yuan(counters['dividend_cash_yuan'])}"
         )
         turnover = report.get('turnover') or {}
@@ -739,11 +757,12 @@ class Command(BaseCommand):
             flag for flag in (
                 'commission_rate', 'min_commission', 'slippage',
                 'liquidity_floor_multiple', 'min_trade_notional_fraction',
+                'drift_band_fraction', 'liquidity_mode', 'adv_participation_cap',
             ) if options.get(flag) is not None
         ]
         if cost_flags:
             raise CommandError(
-                '--grid runs every configuration under one cost model; drop '
+                '--grid runs every configuration under one execution/cost model; drop '
                 + ', '.join('--' + flag.replace('_', '-') for flag in cost_flags)
                 + ' or run the configuration once without --grid.'
             )

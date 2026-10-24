@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-24T07:45:38Z_
+_Generated: 2026-10-24T08:02:24Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -259,6 +259,9 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--slippage` | value | &mdash; |  | Fraction applied to the execution price. Default: settings.ETF_SLIPPAGE (0.001). |
 | `--liquidity-floor-multiple` | value | &mdash; |  | Required trailing daily turnover as a multiple of the leg notional; 0 disables the screen. Default: settings.ETF_LIQUIDITY_FLOOR_MULTIPLE (10). |
 | `--min-trade-notional-fraction` | value | &mdash; |  | Skip rebalance deltas below this share of equity (default 0.005). |
+| `--drift-band-fraction` | value | &mdash; |  | Leave a delta below this share of its target notional to drift (default 0 = off). |
+| `--liquidity-mode` | value | &mdash; |  | Reject an oversized leg (default) or scale it to the ADV cap. |
+| `--adv-participation-cap` | value | &mdash; |  | Scale-mode ceiling as a multiple of trailing daily turnover (default 0 = off). |
 | `--name` | value | `""` |  | Name of the persisted row. |
 | `--persist` | flag | `True` |  | Persist an ETFRotationBacktest row (the default). |
 | `--no-persist` | flag | `True` |  | Run without writing anything; metrics go to stdout only. |

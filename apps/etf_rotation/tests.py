@@ -28,7 +28,7 @@ import tempfile
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -1066,6 +1066,8 @@ class BacktestConfigValidationTests(SimpleTestCase):
             {'initial_capital': 0}, {'initial_capital': -480000}, {'max_positions': 0},
             {'momentum_lookback': 0}, {'commission_rate': -0.0003}, {'slippage': -0.01},
             {'min_commission': -5}, {'liquidity_floor_multiple': -10}, {'chunk_trading_days': 0},
+            {'drift_band_fraction': -0.1}, {'drift_band_fraction': 1.5},
+            {'liquidity_mode': 'cap'}, {'adv_participation_cap': -1},
         ):
             with self.subTest(**overrides):
                 with self.assertRaises(backtest_engine.BacktestConfigError):
@@ -1076,6 +1078,10 @@ class BacktestConfigValidationTests(SimpleTestCase):
         self.assertEqual(left.fingerprint(), self.config(momentum_lookback=60).fingerprint())
         self.assertNotEqual(left.fingerprint(), self.config(momentum_lookback=120).fingerprint())
         self.assertNotEqual(left.fingerprint(), self.config(commission_rate=0.0009).fingerprint())
+        # A default change to the execution model must invalidate a stored cursor.
+        self.assertNotEqual(left.fingerprint(), self.config(drift_band_fraction=0.01).fingerprint())
+        self.assertNotEqual(left.fingerprint(), self.config(liquidity_mode='scale').fingerprint())
+        self.assertNotEqual(left.fingerprint(), self.config(adv_participation_cap=0.1).fingerprint())
         self.assertEqual(len(left.fingerprint()), 16)
 
     def test_parameters_record_the_fee_model_and_the_label_block_it_excludes(self):
@@ -1086,15 +1092,8 @@ class BacktestConfigValidationTests(SimpleTestCase):
         self.assertEqual(payload['start_date'], '2024-01-01')
 
 
-class BacktestReportInstrumentationTests(SimpleTestCase):
-    """Phase 2: the report explains a run without moving it.
-
-    Every observation is derived from state that already existed (``trade_log``, the
-    persisted curve) or is copied from the selection layer's own turnover metadata, so the
-    equity curve, fills and realised P&L stay a pure function of prices, commission and
-    slippage. The reference rerun's byte-identity against production row 256 is checked
-    out of band; the ledger identities below are the CI-sized version of that gate.
-    """
+class _BacktestReportHarness:
+    """Shared seam for the report/execution-policy tests: a cached book, no database."""
 
     DAYS = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)]
 
@@ -1109,7 +1108,7 @@ class BacktestReportInstrumentationTests(SimpleTestCase):
         values.update(overrides)
         return backtest_engine.BacktestConfig(**values)
 
-    def context(self, prices, *, snapshots=None, module=None, **overrides):
+    def context(self, prices, *, snapshots=None, module=None, amounts=None, **overrides):
         """A context whose price cache is pre-populated, so no data source is consulted."""
         config = self.config(**overrides)
         source = SimpleNamespace(
@@ -1122,7 +1121,9 @@ class BacktestReportInstrumentationTests(SimpleTestCase):
             book._cache[code] = {
                 'close': pd.Series(closes, index=index, dtype='float64'),
                 'adj_close': pd.Series(closes, index=index, dtype='float64'),
-                'amount': pd.Series([1e9] * len(self.DAYS), index=index, dtype='float64'),
+                'amount': pd.Series(
+                    [(amounts or {}).get(code, 1e9)] * len(self.DAYS), index=index, dtype='float64',
+                ),
                 'volume': pd.Series([1e7] * len(self.DAYS), index=index, dtype='float64'),
                 'adj_factor': pd.Series([1.0] * len(self.DAYS), index=index, dtype='float64'),
             }
@@ -1158,11 +1159,12 @@ class BacktestReportInstrumentationTests(SimpleTestCase):
                 metadata={'turnover': turnover},
             )
 
-    def _seeded_context(self, *, min_trade_notional_fraction=0.005):
+    def _seeded_context(self, *, min_trade_notional_fraction=0.005, **overrides):
         ctx = self.context(
             {'512760.SH': [1.0] * len(self.DAYS)},
             initial_capital=100_000.0,
             min_trade_notional_fraction=min_trade_notional_fraction,
+            **overrides,
         )
         ctx.state.cash = 90_000.0
         ctx.state.positions['512760.SH'] = backtest_engine.PositionLot(
@@ -1176,6 +1178,17 @@ class BacktestReportInstrumentationTests(SimpleTestCase):
             'leg_meta': {},
         }
         return ctx
+
+
+class BacktestReportInstrumentationTests(_BacktestReportHarness, SimpleTestCase):
+    """Phase 2: the report explains a run without moving it.
+
+    Every observation is derived from state that already existed (``trade_log``, the
+    persisted curve) or is copied from the selection layer's own turnover metadata, so the
+    equity curve, fills and realised P&L stay a pure function of prices, commission and
+    slippage. The reference rerun's byte-identity against production row 256 is checked
+    out of band; the ledger identities below are the CI-sized version of that gate.
+    """
 
     def test_the_report_carries_one_entry_per_rebalance(self):
         turnovers = [
@@ -1456,6 +1469,172 @@ class BacktestReportInstrumentationTests(SimpleTestCase):
             ),
         )
         self.assertAlmostEqual(summary['total_return'], 480_969.0 / 480_000.0 - 1.0, places=12)
+
+
+class BacktestExecutionPolicyTests(_BacktestReportHarness, SimpleTestCase):
+    """Phase 3: the band and the capacity cap, both off by default.
+
+    ``drift_band_fraction=0`` and ``liquidity_mode='reject'``/``cap=0`` leave the Phase 2
+    arithmetic untouched; these tests pin the opt-in branch and the resume contract around
+    it.
+    """
+
+    def test_a_band_of_zero_suppresses_nothing(self):
+        executed = self._seeded_context(min_trade_notional_fraction=0.0005, drift_band_fraction=0.0)
+        backtest_engine._execute_plan(executed, self.DAYS[1])
+        self.assertEqual(executed.state.band_suppressed_deltas, 0)
+        self.assertEqual(executed.state.sub_minimum_deltas, 0)
+        self.assertEqual([item['status'] for item in executed.state.trade_log], ['FILLED'])
+
+        # The same 100 yuan delta, below 2% of a 10,100 yuan target, now drifts instead.
+        banded = self._seeded_context(min_trade_notional_fraction=0.0005, drift_band_fraction=0.02)
+        backtest_engine._execute_plan(banded, self.DAYS[1])
+        self.assertEqual(banded.state.band_suppressed_deltas, 1)
+        self.assertEqual(banded.state.sub_minimum_deltas, 0)
+        self.assertEqual(banded.state.trade_log, [])
+
+    def test_the_band_never_suppresses_a_mandatory_exit(self):
+        ctx = self._seeded_context(min_trade_notional_fraction=0.0005, drift_band_fraction=0.5)
+        ctx.state.pending_plan = {
+            'signal_date': self.DAYS[0],
+            'target_weights': {},
+            'leg_meta': {},
+        }
+
+        backtest_engine._execute_plan(ctx, self.DAYS[1])
+
+        self.assertEqual([item['reason'] for item in ctx.state.trade_log], ['rotated_out'])
+        self.assertEqual(ctx.state.trade_log[0]['status'], 'FILLED')
+        self.assertEqual(ctx.state.trade_log[0]['shares'], 10_000)
+        self.assertEqual(ctx.state.band_suppressed_deltas, 0)
+        self.assertNotIn('512760.SH', ctx.state.positions)
+
+    def test_a_paused_banded_run_resumes_to_the_same_curve(self):
+        def seeded():
+            ctx = self.context(
+                {'512760.SH': [1.0] * len(self.DAYS), '515980.SH': [5.0] * len(self.DAYS)},
+                initial_capital=100_000.0,
+                min_trade_notional_fraction=0.0005,
+                drift_band_fraction=0.02,
+            )
+            ctx.state.cash = 90_000.0
+            ctx.state.positions['512760.SH'] = backtest_engine.PositionLot(
+                ts_code='512760.SH', name='半导体ETF', shares=10_000, avg_cost=1.0,
+                cost_notional=10_000.0, entry_date=self.DAYS[0],
+                last_close=1.0, last_close_date=self.DAYS[0], last_adj_factor=1.0,
+            )
+            ctx.state.equity_curve = [
+                {'date': day.isoformat(), 'equity': 100_000.0, 'cash': 90_000.0,
+                 'holdings': 10_000.0, 'positions': 1, 'drawdown': 0.0}
+                for day in self.DAYS[:2]
+            ]
+            ctx.state.pending_plan = {
+                'signal_date': self.DAYS[0],
+                # One banded no-op (512760) and one real buy (515980) in the same plan.
+                'target_weights': {'512760.SH': 0.101, '515980.SH': 0.02},
+                'leg_meta': {},
+            }
+            return ctx
+
+        live = seeded()
+        run = MagicMock()
+        run.report = None
+        run.equity_curve = []
+        run.trade_log = []
+        backtest_engine._persist_progress(run, live, cursor=2, total_sessions=4)
+
+        resumed = seeded()
+        resumed.state.cash = 0.0
+        resumed.state.positions.clear()
+        resumed.state.pending_plan = None
+        self.assertEqual(backtest_engine._restore_state(run, resumed), 2)
+        self.assertEqual(resumed.state.pending_plan['target_weights'], live.state.pending_plan['target_weights'])
+
+        backtest_engine._execute_plan(live, self.DAYS[1])
+        backtest_engine._execute_plan(resumed, self.DAYS[1])
+
+        self.assertEqual(resumed.state.band_suppressed_deltas, 1)
+        self.assertEqual(resumed.state.band_suppressed_deltas, live.state.band_suppressed_deltas)
+        self.assertEqual(resumed.state.trade_log, live.state.trade_log)
+        self.assertAlmostEqual(resumed.state.cash, live.state.cash, places=9)
+        self.assertEqual(
+            {code: lot.shares for code, lot in resumed.state.positions.items()},
+            {code: lot.shares for code, lot in live.state.positions.items()},
+        )
+
+        # A checkpoint taken after the suppressed plan must carry the non-zero counter
+        # and the filled leg, not just the cash balance.
+        after = MagicMock()
+        after.report = None
+        after.equity_curve = []
+        after.trade_log = []
+        backtest_engine._persist_progress(after, live, cursor=2, total_sessions=4)
+        restored = seeded()
+        restored.state.cash = 0.0
+        restored.state.positions.clear()
+        backtest_engine._restore_state(after, restored)
+        self.assertEqual(restored.state.band_suppressed_deltas, 1)
+        self.assertEqual(
+            restored.state.positions['515980.SH'].shares,
+            live.state.positions['515980.SH'].shares,
+        )
+
+    def test_capacity_scaling_renormalises_before_the_defensive_fallback(self):
+        ctx = self.context(
+            {'A': [1.0] * len(self.DAYS), 'B': [1.0] * len(self.DAYS), 'D': [1.0] * len(self.DAYS)},
+            amounts={'A': 300_000.0, 'B': 500_000.0, 'D': 1e9},
+            initial_capital=100_000.0,
+            defensive_asset='D',
+            liquidity_floor_multiple=10.0,
+            liquidity_lookback_sessions=2,
+            liquidity_mode='scale',
+            adv_participation_cap=0.1,
+        )
+
+        kept, rejected = backtest_engine._apply_liquidity_floor(
+            ctx, {'A': 0.5, 'B': 0.4, 'D': 0.1}, self.DAYS[-1],
+        )
+
+        # A is clipped 0.5 -> 0.3 (cap 0.1 x 300k / 100k). B absorbs 0.1 of the freed
+        # weight up to its own 0.5 cap; only the last 0.1 lands on the defensive sleeve.
+        self.assertEqual(rejected, [])
+        self.assertAlmostEqual(kept['A'], 0.3, places=12)
+        self.assertAlmostEqual(kept['B'], 0.5, places=12)
+        self.assertAlmostEqual(kept['D'], 0.2, places=12)
+        self.assertAlmostEqual(sum(kept.values()), 1.0, places=12)
+        self.assertEqual(len(ctx.state.capacity_scalings), 1)
+        scaling = ctx.state.capacity_scalings[0]
+        self.assertEqual(scaling['ts_code'], 'A')
+        self.assertAlmostEqual(scaling['planned_weight'], 0.5)
+        self.assertAlmostEqual(scaling['capacity_weight'], 0.3)
+        self.assertAlmostEqual(scaling['capacity_notional_yuan'], 30_000.0)
+
+    def test_reject_mode_is_untouched_by_the_capacity_knobs(self):
+        def run(cap):
+            ctx = self.context(
+                {'A': [1.0] * len(self.DAYS), 'B': [1.0] * len(self.DAYS), 'D': [1.0] * len(self.DAYS)},
+                amounts={'A': 300_000.0, 'B': 500_000.0, 'D': 1e9},
+                initial_capital=100_000.0,
+                defensive_asset='D',
+                liquidity_floor_multiple=10.0,
+                liquidity_lookback_sessions=2,
+                liquidity_mode='reject',
+                adv_participation_cap=cap,
+            )
+            return backtest_engine._apply_liquidity_floor(
+                ctx, {'A': 0.5, 'B': 0.4, 'D': 0.1}, self.DAYS[-1],
+            )
+
+        with_cap, rejected = run(0.1)
+        without_cap, baseline_rejected = run(0.0)
+
+        self.assertEqual(with_cap, without_cap)
+        self.assertEqual(rejected, baseline_rejected)
+        # A needs 500k of daily turnover for a 50k leg at the 10x floor and only trades
+        # 300k, so reject mode drops it into the defensive sleeve -- the cap never runs.
+        self.assertEqual([item['ts_code'] for item in rejected], ['A'])
+        self.assertAlmostEqual(with_cap['D'], 0.6, places=12)
+        self.assertNotIn('A', with_cap)
 
 
 class FeatureWhitelistTests(SimpleTestCase):

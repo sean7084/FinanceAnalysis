@@ -73,6 +73,9 @@ MODEL_TYPES = ('RULE', 'LIGHTGBM', 'LSTM', 'ENSEMBLE')
 # against a stub, and a module-level import of rotation_engine would break that.
 WEIGHTING_MODES = ('equal', 'score', 'invvol')
 REBALANCE_FREQUENCIES = ('WEEKLY', 'BIWEEKLY', 'MONTHLY', 'TRIGGER')
+#: ``reject`` drops a leg the fund's turnover cannot absorb; ``scale`` clips it to
+#: ``adv_participation_cap`` times that turnover and reallocates the remainder.
+LIQUIDITY_MODES = ('reject', 'scale')
 
 #: Sessions of turnover history behind the signal date used for the liquidity screen.
 LIQUIDITY_LOOKBACK_SESSIONS = 20
@@ -234,6 +237,14 @@ class BacktestConfig:
     # minimum commission to move 0.1% of the portfolio is noise that only makes the
     # result look worse than it is. Promoted to a column and a CLI flag, default unchanged.
     min_trade_notional_fraction: float = 0.005
+    # No-trade band at execution: a delta smaller than this share of the target's own
+    # notional is left to drift. 0.0 is exactly the sub-minimum rule as it stood.
+    drift_band_fraction: float = 0.0
+    # Plan-stage capacity policy. ``reject`` is the historical floor screen; ``scale``
+    # clips an oversized leg to ``adv_participation_cap`` times its trailing turnover.
+    # cap = 0 switches the capacity screen off, so both defaults reproduce every old run.
+    liquidity_mode: str = 'reject'
+    adv_participation_cap: float = 0.0
     chunk_trading_days: int = field(
         default_factory=lambda: int(_setting('ETF_ROTATION_BACKTEST_CHUNK_TRADING_DAYS', 120)),
     )
@@ -253,6 +264,7 @@ class BacktestConfig:
         self.end_date = _as_date(self.end_date)  # type: ignore[assignment]
         self.model_type = str(self.model_type or 'RULE').upper()
         self.rebalance_frequency = str(self.rebalance_frequency or 'MONTHLY').upper()
+        self.liquidity_mode = str(self.liquidity_mode or 'reject').lower()
 
     def validate(self) -> None:
         if not self.start_date or not self.end_date:
@@ -279,6 +291,14 @@ class BacktestConfig:
             raise BacktestConfigError('chunk_trading_days must be at least 1.')
         if not 0.0 <= float(self.min_trade_notional_fraction) <= 1.0:
             raise BacktestConfigError('min_trade_notional_fraction must sit between 0 and 1.')
+        if not 0.0 <= float(self.drift_band_fraction) <= 1.0:
+            raise BacktestConfigError('drift_band_fraction must sit between 0 and 1.')
+        if self.liquidity_mode not in LIQUIDITY_MODES:
+            raise BacktestConfigError(
+                f'Unsupported liquidity_mode {self.liquidity_mode!r}; expected one of {LIQUIDITY_MODES}.'
+            )
+        if float(self.adv_participation_cap) < 0:
+            raise BacktestConfigError('adv_participation_cap cannot be negative.')
         if self.max_per_category < 0:
             raise BacktestConfigError('max_per_category cannot be negative; use 0 for no cap.')
         if self.weighting not in WEIGHTING_MODES:
@@ -800,6 +820,9 @@ class EngineState:
     # ``swaps_used``/``keeps`` story that no fill row can tell.
     rebalances: list[dict[str, Any]] = field(default_factory=list)
     model_versions: dict[str, Any] = field(default_factory=dict)
+    # Legs clipped by the capacity cap (one record per clipped leg), so a scaled plan can
+    # be audited exactly like a rejected one.
+    capacity_scalings: list[dict[str, Any]] = field(default_factory=list)
     pending_plan: dict[str, Any] | None = None
     total_commission: float = 0.0
     total_slippage: float = 0.0
@@ -924,15 +947,23 @@ def _snapshot_frame_for_ranking(ctx: _Context, session: date) -> pd.DataFrame:
 
 
 def _apply_liquidity_floor(ctx: _Context, weights: dict[str, float], session: date) -> tuple[dict[str, float], list[dict]]:
-    """Drop legs whose planned notional the fund's own turnover cannot absorb.
+    """Screen the plan against the funds' own turnover before it is queued.
 
-    Screened with the trailing mean ``ETFDaily.amount`` (元) as of the SIGNAL date: the
+    The trailing mean ``ETFDaily.amount`` (元) is read as of the SIGNAL date: the
     execution day's turnover is unknowable when the order is decided, so testing it
-    would be look-ahead. A rejected leg's weight is handed to the defensive asset; if
-    the defensive asset itself breaches the floor the weight becomes cash.
+    would be look-ahead. ``reject`` (the default) drops a leg whose planned notional the
+    fund cannot absorb and hands its weight to the defensive asset; if the defensive
+    asset itself breaches the floor the weight becomes cash. ``scale`` never drops a
+    measured leg for size -- it clips the leg to ``adv_participation_cap`` times its
+    trailing turnover and reallocates the freed weight, as :func:`_apply_capacity_scale`
+    explains.
     """
     config = ctx.config
-    if config.liquidity_floor_multiple <= 0 or not weights:
+    if not weights:
+        return dict(weights), []
+    if str(config.liquidity_mode) == 'scale':
+        return _apply_capacity_scale(ctx, weights, session)
+    if config.liquidity_floor_multiple <= 0:
         return dict(weights), []
 
     equity = ctx.equity
@@ -961,26 +992,127 @@ def _apply_liquidity_floor(ctx: _Context, weights: dict[str, float], session: da
             continue
         kept[code] = weight
 
-    defensive_weight = kept.get(defensive, 0.0)
-    if defensive_weight > 0:
-        required = defensive_weight * equity * float(config.liquidity_floor_multiple)
-        average_amount = ctx.book.trailing_average_amount_yuan(defensive, session, config.liquidity_lookback_sessions)
-        if average_amount is None or average_amount < required:
+    _idle_defensive_check(ctx, kept, rejected, session)
+    return kept, rejected
+
+
+def _apply_capacity_scale(ctx: _Context, weights: dict[str, float], session: date) -> tuple[dict[str, float], list[dict]]:
+    """Clip each leg to the fund's absorbable turnover, then reallocate the remainder.
+
+    A leg larger than ``adv_participation_cap`` times its trailing turnover is scaled
+    down, never dropped; the freed weight is redistributed across the other legs in
+    proportion to their remaining headroom (a water-fill, so one pass cannot overshoot a
+    cap), and only the residual lands on the defensive sleeve -- or stays in cash when
+    the plan carries no defensive leg. A leg whose turnover cannot be measured has no
+    cap to scale to and is rejected, matching the ``reject`` path's treatment of an
+    uncharacterisable fund. The defensive sleeve's own floor check is unchanged.
+    """
+    config = ctx.config
+    cap = float(config.adv_participation_cap)
+    equity = ctx.equity
+    if cap <= 0 or equity <= 0:
+        return dict(weights), []
+
+    defensive = str(config.defensive_asset)
+    ctx.book.ensure(set(weights) | {defensive})
+    ordered = sorted(
+        (item for item in weights.items() if item[0] != defensive and item[1] > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    kept: dict[str, float] = {defensive: weights.get(defensive, 0.0)} if defensive in weights else {}
+    rejected: list[dict] = []
+    caps: dict[str, float] = {}
+    clipped = 0.0
+
+    for code, weight in ordered:
+        average_amount = ctx.book.trailing_average_amount_yuan(code, session, config.liquidity_lookback_sessions)
+        if average_amount is None:
             rejected.append(
-                _rejection_record(
-                    defensive, defensive_weight, defensive_weight * equity, required, average_amount, session,
-                    None, config.liquidity_floor_multiple,
-                )
+                _capacity_rejection_record(code, weight, equity, cap, session, defensive)
             )
             ctx.state.rejected_fills += 1
-            # The sleeve is now idle cash. Counting it and remembering the notional is what
-            # lets the report say "this run spent N sessions uninvested because 511670
-            # trades 0.01亿 a day" instead of showing a flat curve and calling it caution.
-            ctx.state.defensive_sleeve_uninvested += 1
-            ctx.state.uninvested_defensive_notional_yuan = defensive_weight * equity
-            kept.pop(defensive, None)
+            kept[defensive] = kept.get(defensive, 0.0) + weight
+            continue
+        capacity_weight = cap * average_amount / equity
+        caps[code] = capacity_weight
+        allowed = min(weight, capacity_weight)
+        kept[code] = allowed
+        if allowed < weight - 1e-12:
+            clipped += weight - allowed
+            ctx.state.capacity_scalings.append({
+                'ts_code': code,
+                'signal_date': session.isoformat(),
+                'planned_weight': float(weight),
+                'capacity_weight': float(capacity_weight),
+                'capacity_notional_yuan': float(cap * average_amount),
+                'observed_average_amount_yuan': float(average_amount),
+                'adv_participation_cap': float(cap),
+            })
 
+    while clipped > 1e-12:
+        slack = {
+            code: caps[code] - kept[code]
+            for code in caps if caps[code] - kept[code] > 1e-12
+        }
+        if not slack:
+            break
+        total_slack = float(sum(slack.values()))
+        take = min(clipped, total_slack)
+        for code, room in slack.items():
+            kept[code] += take * room / total_slack
+        clipped -= take
+    if clipped > 1e-12 and defensive in kept:
+        kept[defensive] += clipped
+
+    _idle_defensive_check(ctx, kept, rejected, session)
     return kept, rejected
+
+
+def _idle_defensive_check(
+    ctx: _Context, kept: dict[str, float], rejected: list[dict], session: date,
+) -> None:
+    """Turn the defensive sleeve into cash when its own turnover cannot carry it.
+
+    Counting the idle notional is what lets the report say "this run spent N sessions
+    uninvested because 511670 trades 0.01亿 a day" instead of showing a flat curve and
+    calling it caution.
+    """
+    config = ctx.config
+    if config.liquidity_floor_multiple <= 0:
+        return
+    defensive = str(config.defensive_asset)
+    defensive_weight = kept.get(defensive, 0.0)
+    if defensive_weight <= 0:
+        return
+    equity = ctx.equity
+    required = defensive_weight * equity * float(config.liquidity_floor_multiple)
+    average_amount = ctx.book.trailing_average_amount_yuan(defensive, session, config.liquidity_lookback_sessions)
+    if average_amount is not None and average_amount >= required:
+        return
+    rejected.append(
+        _rejection_record(
+            defensive, defensive_weight, defensive_weight * equity, required, average_amount, session,
+            None, config.liquidity_floor_multiple,
+        )
+    )
+    ctx.state.rejected_fills += 1
+    ctx.state.defensive_sleeve_uninvested += 1
+    ctx.state.uninvested_defensive_notional_yuan = defensive_weight * equity
+    kept.pop(defensive, None)
+
+
+def _capacity_rejection_record(code, weight, equity, cap, session, redistributed_to) -> dict[str, Any]:
+    return {
+        'ts_code': code,
+        'weight': float(weight),
+        'planned_notional_yuan': float(weight * equity),
+        'required_average_amount_yuan': float(weight * equity / cap),
+        'observed_average_amount_yuan': None,
+        'signal_date': session.isoformat(),
+        'rejected_reason': 'unmeasurable_liquidity',
+        'adv_participation_cap': float(cap),
+        'redistributed_to': redistributed_to,
+    }
 
 
 def _rejection_record(code, weight, notional, required, average_amount, session, redistributed_to, floor_multiple) -> dict[str, Any]:
@@ -1516,6 +1648,7 @@ def _execute_plan(ctx: _Context, session: date) -> None:
         return
 
     minimum_notional = float(config.min_trade_notional_fraction) * pre_trade_equity
+    band_fraction = max(0.0, float(config.drift_band_fraction))
 
     for code in sorted(set(ctx.state.positions) - set(targets)):
         lot = ctx.state.positions[code]
@@ -1538,8 +1671,15 @@ def _execute_plan(ctx: _Context, session: date) -> None:
         target_shares = _round_lots(target_notional, price, config.lot_size)
         current_shares = int(ctx.state.positions[code].shares) if code in ctx.state.positions else 0
         delta = target_shares - current_shares
-        if abs(delta) * price < minimum_notional:
-            ctx.state.sub_minimum_deltas += 1
+        # The band scales with the target, not the book: the same fund halfway to its
+        # intended weight is a different decision from one already at weight. A vacancy
+        # cannot be suppressed by a sub-100% band -- its delta equals its target.
+        threshold = max(minimum_notional, band_fraction * target_notional)
+        if abs(delta) * price < threshold:
+            if abs(delta) * price < minimum_notional:
+                ctx.state.sub_minimum_deltas += 1
+            else:
+                ctx.state.band_suppressed_deltas += 1
             continue
         if delta < 0:
             # Sells are not lot-rounded: the residual odd lot must be liquidable in one order.
@@ -1998,6 +2138,7 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
             'sub_minimum_deltas': int(state.sub_minimum_deltas),
             'min_commission_bound_fills': int(state.min_commission_bound_fills),
             'band_suppressed_deltas': int(state.band_suppressed_deltas),
+            'capacity_scaled_legs': int(len(state.capacity_scalings)),
             'closed_trades': int(len(state.closed_trades)),
             'dividend_cash_yuan': float(state.total_dividend_cash),
             'defensive_sleeve_uninvested': int(state.defensive_sleeve_uninvested),
@@ -2011,6 +2152,25 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
         'sub_windows': _sub_window_facets(equity, traded),
         'rebalances': list(state.rebalances),
         'model_versions': dict(state.model_versions) or {config.model_type: None},
+        'rebalance_policy': {
+            'drift_band_fraction': float(config.drift_band_fraction),
+            'basis': (
+                'a delta is suppressed when it is below '
+                'max(min_trade_notional_fraction * pre-trade equity, '
+                'drift_band_fraction * target notional); mandatory exits are never suppressed'
+            ),
+            'suppressed_deltas': int(state.band_suppressed_deltas),
+        },
+        'capacity_policy': {
+            'liquidity_mode': str(config.liquidity_mode),
+            'adv_participation_cap': float(config.adv_participation_cap),
+            'scaled_legs': int(len(state.capacity_scalings)),
+            'basis': (
+                'scale: leg notional <= adv_participation_cap * trailing average amount; '
+                'freed weight is reallocated before the defensive fallback'
+            ),
+        },
+        'capacity_scalings': list(state.capacity_scalings),
         'metrics_detail': {
             key: summary[key]
             for key in (
@@ -2038,7 +2198,8 @@ def _finalize_metrics(ctx: _Context, config: BacktestConfig, source: Any, run_se
 _RUN_PARAMETER_FIELDS = (
     'start_date', 'end_date', 'rebalance_frequency', 'max_positions', 'momentum_lookback',
     'defensive_asset', 'initial_capital', 'commission_rate', 'min_commission', 'slippage',
-    'liquidity_floor_multiple', 'min_trade_notional_fraction', 'model_type', 'benchmark_code',
+    'liquidity_floor_multiple', 'min_trade_notional_fraction', 'drift_band_fraction',
+    'liquidity_mode', 'adv_participation_cap', 'model_type', 'benchmark_code',
     'walk_forward_steps', 'absolute_momentum_filter', 'weighting', 'dedup_track_index',
     'max_per_category',
 )
@@ -2083,6 +2244,7 @@ def _adopt_backtest_row(persist_to: Any, name: str | None, config: BacktestConfi
             value = Decimal(str(value)).quantize(Decimal('0.01'))
         elif field_name in (
             'commission_rate', 'slippage', 'liquidity_floor_multiple', 'min_trade_notional_fraction',
+            'drift_band_fraction', 'adv_participation_cap',
         ):
             value = float(value)
         elif field_name == 'min_commission':
@@ -2167,6 +2329,7 @@ def _runtime_payload(ctx: _Context, cursor: int) -> dict[str, Any]:
         'sub_minimum_deltas': int(state.sub_minimum_deltas),
         'min_commission_bound_fills': int(state.min_commission_bound_fills),
         'band_suppressed_deltas': int(state.band_suppressed_deltas),
+        'capacity_scalings': [dict(item) for item in state.capacity_scalings],
         'model_versions': dict(state.model_versions),
         'signals_generated': int(state.signals_generated),
         'turnover_by_session': {day.isoformat(): float(value) for day, value in state.turnover_by_session.items()},
@@ -2307,6 +2470,7 @@ def _restore_state(run: Any, ctx: _Context) -> int:
     state.sub_minimum_deltas = int(raw.get('sub_minimum_deltas', 0))
     state.min_commission_bound_fills = int(raw.get('min_commission_bound_fills', 0))
     state.band_suppressed_deltas = int(raw.get('band_suppressed_deltas', 0))
+    state.capacity_scalings = [dict(item) for item in (raw.get('capacity_scalings') or [])]
     state.model_versions = dict(raw.get('model_versions') or {})
     state.signals_generated = int(raw.get('signals_generated', 0))
     state.turnover_by_session = {
@@ -2417,6 +2581,9 @@ def run_rotation_backtest(
     slippage: float | None = None,
     liquidity_floor_multiple: float | None = None,
     min_trade_notional_fraction: float | None = None,
+    drift_band_fraction: float | None = None,
+    liquidity_mode: str | None = None,
+    adv_participation_cap: float | None = None,
     benchmark_code: str | None = None,
     lgb_predictor: Any = None,
     lstm_predictor: Any = None,
@@ -2459,6 +2626,9 @@ def run_rotation_backtest(
         'slippage': slippage,
         'liquidity_floor_multiple': liquidity_floor_multiple,
         'min_trade_notional_fraction': min_trade_notional_fraction,
+        'drift_band_fraction': drift_band_fraction,
+        'liquidity_mode': liquidity_mode,
+        'adv_participation_cap': adv_participation_cap,
         'benchmark_code': benchmark_code,
     }
     for key, override in explicit.items():

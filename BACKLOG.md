@@ -184,6 +184,19 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Open — correctness
 
+### The band and the capacity cap have tuning-window evidence only
+
+Phase 3 added `drift_band_fraction`, `liquidity_mode` and
+`adv_participation_cap`, all off by default. A 2% band suppresses 49 drift
+fills on the reference configuration and moves the headline by less than a
+rounding-sized margin; a 1% band never binds because its threshold sits below
+the 0.5% minimum-trade floor on a three-leg equal-weight book. Both readings
+come from the 2016–2023 tuning window and the same one-shot logic as the Kelly
+floor: there is no holdout evidence for either band. `scale` mode has no
+real-window return table at all — only the unit-level redistribution proof.
+Defaults therefore stay `0.0` / `reject` / `0.0`; do not flip them from this
+evidence.
+
 ### `position_fees_paid` changed meaning; pre-0.1.23 rows keep the old one
 
 Phase 2 made a closed leg's `position_fees_paid` include the slippage its fills

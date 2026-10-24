@@ -1,5 +1,46 @@
 # Changelog
 
+### version 0.1.24
+
+#### Added:
+
+- **No-trade band at execution.** `drift_band_fraction` leaves a rebalance delta
+  alone when it is below `max(0.5% of equity, fraction x target notional)`, so a
+  book is not churned back to target over noise. Mandatory exits (`rotated_out`)
+  are never suppressed, and `report['counters']['band_suppressed_deltas']` counts
+  what the band caught. On the reference configuration a 2% band suppresses 49
+  drift fills (364 → 323) and 41 commissions; a 1% band never binds because its
+  threshold sits below the 0.5% minimum-trade floor. **Default 0.0: no curve
+  changes.**
+- **Capacity scaling at plan time.** `liquidity_mode='scale'` clips each leg to
+  `adv_participation_cap` times trailing daily turnover instead of rejecting it;
+  the freed weight is reallocated to the other legs up to their own caps before
+  the defensive fallback, and a leg with no measurable turnover is still
+  rejected. `report['capacity_scalings']` records every clipped leg.
+  **Default `reject` / cap 0.0: the historical floor screen, unchanged.**
+- **CLI flags** `--drift-band-fraction`, `--liquidity-mode`,
+  `--adv-participation-cap`. `--grid` refuses them, since a sweep must share one
+  execution model.
+
+#### Changed:
+
+- `BacktestConfig` grows three fields and `to_parameters()` records them, so the
+  resume fingerprint changes; a PAUSED row written before this version restarts
+  from scratch. Migration `0007` adds the three columns with defaults that
+  reproduce every earlier run bit for bit.
+- The defensive sleeve's idle-cash check is now `_idle_defensive_check`, shared
+  by both liquidity modes; its rejection record, counters and cash fallback are
+  unchanged.
+
+#### Verified:
+
+- Row 256 rerun under the new defaults: equity curve (1,926 points) and all 597
+  fills byte-identical to the persisted row.
+- Band evidence on the tuning window, both fee models, is in plan §7.11: 2% band
+  is error-level (+0.19pp/+0.22pp return, +0.07pp/+0.04pp drawdown,
+  +0.0005/+0.0006 Sharpe), so no default was changed.
+- Backend 636 → 641 tests; frontend unchanged at 76.
+
 ### version 0.1.23
 
 #### Added:

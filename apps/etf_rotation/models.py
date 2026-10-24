@@ -425,6 +425,10 @@ class ETFRotationBacktest(models.Model):
         MONTHLY = 'MONTHLY', _('Monthly')
         TRIGGER = 'TRIGGER', _('Trigger')
 
+    class LiquidityMode(models.TextChoices):
+        REJECT = 'reject', _('Reject the Leg')
+        SCALE = 'scale', _('Scale the Leg')
+
     name = models.CharField(_('Name'), max_length=120)
     status = models.CharField(_('Status'), max_length=20, choices=Status.choices,
                               default=Status.PENDING, db_index=True)
@@ -466,6 +470,19 @@ class ETFRotationBacktest(models.Model):
     min_trade_notional_fraction = models.FloatField(
         _('Min Trade Notional Fraction'), default=0.005,
         help_text=_('Rebalance deltas below this share of equity are skipped rather than paying the commission floor.'),
+    )
+    drift_band_fraction = models.FloatField(
+        _('Drift Band Fraction'), default=0.0,
+        help_text=_('A delta below this share of its target notional is left to drift. 0 disables the band.'),
+    )
+    liquidity_mode = models.CharField(
+        _('Liquidity Mode'), max_length=10, choices=LiquidityMode.choices,
+        default=LiquidityMode.REJECT,
+        help_text=_('Reject a leg whose notional breaches the turnover floor, or scale it to the ADV cap.'),
+    )
+    adv_participation_cap = models.FloatField(
+        _('ADV Participation Cap'), default=0.0,
+        help_text=_('Scale mode: leg notional may not exceed this multiple of trailing daily turnover. 0 disables.'),
     )
 
     model_type = models.CharField(_('Model Type'), max_length=10, choices=ModelType.choices,

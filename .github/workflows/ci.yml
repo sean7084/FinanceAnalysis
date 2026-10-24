@@ -144,7 +144,12 @@ jobs:
       # sub-windows that partition sessions without gap or overlap, the resolved
       # model version recorded (None for RULE, skipped sources included), and the
       # reference configuration's curve/trade log staying byte-identical.
-      MIN_TEST_COUNT: "636"
+      # 636 -> 641: Phase 3 execution policy. Five tests: a zero band changes nothing
+      # while a 2% band leaves the sub-minimum-sized delta to drift, a mandatory exit is
+      # never suppressed, a paused banded run resumes to the same fills and cash, capacity
+      # scaling reallocates clipped weight before the defensive fallback, and reject mode
+      # is byte-identical whether or not the capacity knobs are set.
+      MIN_TEST_COUNT: "641"
 
     steps:
       - uses: actions/checkout@v4
