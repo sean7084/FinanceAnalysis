@@ -1,5 +1,216 @@
 # Changelog
 
+### version 0.1.26
+
+#### Added:
+
+- **Live simulated ledger.** A new `mark_etf_rotation_positions_daily` command,
+  Celery task and beat entry (20:15 on trading days, after the 19:45 signal)
+  marks every OPEN leg at the newest close on or before the mark date. A leg the
+  newest signal of its type no longer selects is closed at that bar with
+  `exit_date`, `exit_price`, `pnl`, `return_pct`, `status=CLOSED` and
+  `exit_reason='DISPLACED_BY_SIGNAL'`; `pnl` is
+  `(exit − entry) × shares − both commissions`, or null when the leg has no
+  shares (price return is still recorded). Neither bars nor signals after the
+  mark date are ever read, so a backdated `--date` cannot use a future signal.
+- **Carry-forward in signal regeneration.** A fund the new signal still selects
+  is updated in place (weight and metadata) instead of being deleted and
+  reopened; the summary and diagnostics gain `positions_carried`.
+- **Live ledger card on `/etf`.** Realised PnL (summed from CLOSED rows alone),
+  win rate, closed count, closed-trade details and recent signals; the positions
+  table shows the latest price and unrealised PnL from `metadata.live_mark`.
+
+#### Changed:
+
+- `ETFRotationPosition` gains `exit_reason` and a `(status, exit_date)` index
+  (migration `0008`). Neither is part of `to_parameters()`, so the resume
+  fingerprint is unchanged.
+- Regeneration now deletes only OPEN rows of the same `signal_type`; CLOSED
+  history is preserved across signal regeneration.
+
+#### Verified:
+
+- Backend 645 → 650 tests; the five new ones pin displaced-leg close arithmetic,
+  carry-forward, closed-history preservation, cumulative PnL from CLOSED rows
+  alone, and the absence of any post-mark-date read. Frontend 76 → 77.
+- `makemigrations --check` clean; frontend `tsc --noEmit` and lint/build
+  baselines clean. No manual browser click-through was performed.
+- The 12 OPEN position rows in the dev database — including the duplicates that
+  pre-carry-forward regeneration produced and two stale 2018-12-28 rows — were
+  deleted; the table is empty until the next signal runs. CLOSED history is
+  untouched (there was none).
+
+### version 0.1.25
+
+#### Added:
+
+- **RULE walk-forward, CLI-only.** `--grid --walk-forward-steps N` builds
+  expanding folds over the session calendar, scores the full 144-configuration
+  grid on each fold's training window only, selects by Sharpe (lower turnover
+  breaks a tie), and trades those parameters in the following validation block.
+  Nothing is persisted: `--backtest-id`, `--queue`, cost flags and non-RULE
+  models are refused, and `--grid-plan` prints the plan without executing it.
+  A short panel loses folds rather than gaining invented boundaries, and each
+  fold's own rebalance count is printed because it is the reading floor.
+
+#### Verified:
+
+- 2016–2023, four folds: every fold has at least 20 out-of-sample rebalances
+  (20/21/21/20). The reference configuration (row 256: BIWEEKLY / p3 / mom120 /
+  absolute momentum off / equal) was selected in **0 of 4** folds; all four
+  winners were MONTHLY + mom120, varying positions 3/5/8, absolute filter 2 on /
+  2 off and weighting 3 equal / 1 score. The reference parameter set is therefore
+  window-specific; **no default was changed**.
+- N=6 was attempted first and abandoned under the pre-declared guardrail: fold 1
+  produced only 14 out-of-sample rebalances.
+- Full table and reading in plan §7.12.
+- Backend 641 → 645 tests; frontend unchanged at 76.
+
+### version 0.1.24
+
+#### Added:
+
+- **No-trade band at execution.** `drift_band_fraction` leaves a rebalance delta
+  alone when it is below `max(0.5% of equity, fraction x target notional)`, so a
+  book is not churned back to target over noise. Mandatory exits (`rotated_out`)
+  are never suppressed, and `report['counters']['band_suppressed_deltas']` counts
+  what the band caught. On the reference configuration a 2% band suppresses 49
+  drift fills (364 → 323) and 41 commissions; a 1% band never binds because its
+  threshold sits below the 0.5% minimum-trade floor. **Default 0.0: no curve
+  changes.**
+- **Capacity scaling at plan time.** `liquidity_mode='scale'` clips each leg to
+  `adv_participation_cap` times trailing daily turnover instead of rejecting it;
+  the freed weight is reallocated to the other legs up to their own caps before
+  the defensive fallback, and a leg with no measurable turnover is still
+  rejected. `report['capacity_scalings']` records every clipped leg.
+  **Default `reject` / cap 0.0: the historical floor screen, unchanged.**
+- **CLI flags** `--drift-band-fraction`, `--liquidity-mode`,
+  `--adv-participation-cap`. `--grid` refuses them, since a sweep must share one
+  execution model.
+
+#### Changed:
+
+- `BacktestConfig` grows three fields and `to_parameters()` records them, so the
+  resume fingerprint changes; a PAUSED row written before this version restarts
+  from scratch. Migration `0007` adds the three columns with defaults that
+  reproduce every earlier run bit for bit.
+- The defensive sleeve's idle-cash check is now `_idle_defensive_check`, shared
+  by both liquidity modes; its rejection record, counters and cash fallback are
+  unchanged.
+
+#### Verified:
+
+- Row 256 rerun under the new defaults: equity curve (1,926 points) and all 597
+  fills byte-identical to the persisted row.
+- Band evidence on the tuning window, both fee models, is in plan §7.11: 2% band
+  is error-level (+0.19pp/+0.22pp return, +0.07pp/+0.04pp drawdown,
+  +0.0005/+0.0006 Sharpe), so no default was changed.
+- Backend 636 → 641 tests; frontend unchanged at 76.
+
+### version 0.1.23
+
+#### Added:
+
+- **The backtest report explains its own turnover.** `report['turnover']` splits
+  filled BUY+SELL notional by fill reason — `rebalance_up/down` is drift,
+  `rotated_out` is a discretionary swap — and annualises each bucket exactly like
+  `turnover_annual`. On the reference row it is 11.60x drift / 11.25x
+  discretionary (22.85x total), so roughly half of the headline turnover is the
+  book drifting rather than the selection layer trading.
+- **One rebalance record per built plan.** `report['rebalances']` carries the
+  selection layer's own `mode`, `swaps_used`, entries, exits, refills and
+  displacements for every plan, including plans that filled nothing (213 on the
+  reference row). This is the only place a "kept the book" decision is visible.
+- **Sub-window facets.** `report['sub_windows']` cuts the persisted equity curve
+  into three equal, non-overlapping blocks, each with return, max drawdown,
+  Sharpe and turnover, so a full-window Sharpe cannot hide a dead regime. The
+  reference run's third block (2021-05-14..2023-12-29) is -4.99% with 34.33%
+  drawdown and 29.19x turnover; block 2 supplies almost all of the +99.69%.
+- **The report names the model that scored the run.**
+  `report['model_versions']` is `{'RULE': None}` for a rule run. ML loaders attach
+  their `ModelVersion` id, version and type to the predictor callable; the scoring
+  metadata carries that into the report, so it names the version that actually
+  ranked the run instead of re-querying "whichever row is active now". ENSEMBLE
+  records every source, and a skipped source is an explicit `None`.
+- **Counters for the commission floor and the future no-trade band.**
+  `min_commission_bound_fills` (113 on the reference run) and
+  `band_suppressed_deltas` (0 until Phase 3) are in `report['counters']`.
+- **The cost model is a CLI surface.** `--commission-rate`, `--min-commission`,
+  `--slippage`, `--liquidity-floor-multiple` and
+  `--min-trade-notional-fraction` run one configuration under an explicit cost
+  model. `--grid` refuses them because every grid row must share the same model,
+  and `--backtest-id` refuses an explicit value that disagrees with the row.
+- **`min_trade_notional_fraction` is a column.** The 0.5% delta threshold was
+  hardcoded in `_execute_plan`; it is now a `BacktestConfig` field, an
+  `ETFRotationBacktest` column (migration `0006`, default 0.005) and a CLI flag.
+  The default reproduces the old behaviour bit-for-bit; changing it changes the
+  resume fingerprint, so a paused legacy row restarts from scratch.
+
+#### Changed:
+
+- **A closed leg's `position_fees_paid` now includes slippage.** It used to sum
+  commissions only while `pnl` already carried the slipped execution price. On
+  the reference row the 233 closed legs now report 168,901.10 (39,243.23
+  commission + 129,657.86 slippage) instead of 39,243.23. `pnl`, cash and the
+  equity curve are bit-identical; only the fee line moved. Rows written before
+  this version keep the old field and are **not backfilled** — the old value never
+  stored the split, so use the `total_fees` and `total_slippage_cost` metric
+  columns for cross-version comparisons.
+
+#### Verified:
+
+- The reference configuration (row 256) reruns bit-identically: 1926 equity
+  points and 597 fills with the same SHA-256 digests, 213 rebalances, 113
+  floor-bound fills, commission 39,524.03 and slippage 130,592.93. The only
+  changed stored field is the closed-leg fee line described above.
+- Fee sensitivity on the same configuration: 万三/免五 versus 万一/不免五 is
+  39,524.03 versus 13,805.52 commission, 113 versus 128 floor-bound fills,
+  Sharpe 0.5357 versus 0.5547, total return +99.69% versus +105.88%. A
+  single-window observation, not a reason to change a default.
+
+### version 0.1.22
+
+#### Added:
+
+- **Every signal attempt leaves a row.** `ETFRotationSignalRun` (migration
+  `0005`) is append-only evidence with `outcome ∈ OK|REFUSED|FAILED|FEED_STALE`,
+  `reason_code`, a JSON `diagnostics` block, `task_id` and `duration_ms`. The
+  command writes exactly one row per attempt; a refusal is persisted **and then
+  re-raised**, so Celery still reports the task as FAILED while the next operator
+  can see *which* input was empty. `diagnostics` names the newest snapshot, bar
+  and benchmark dates, the benchmark/feature lag in sessions, the eligible row
+  count and the null count of every feature the scorers need, so
+  `no_eligible_rows` is no longer a sentence without a cause. `--dry-run` writes
+  nothing, and a ledger failure is logged rather than allowed to mask the signal
+  error.
+- **A feed-health watchdog.** `check_etf_rotation_feed_health` runs at 17:45Z
+  (before the 19:45Z signal) and compares the benchmark and the newest eligible
+  feature snapshot against the newest `ETFDaily` bar. A lag writes one
+  `HEALTH/FEED_STALE` row naming the lagging feed; a current feed writes nothing.
+  A completely absent benchmark or feature snapshot is also stale rather than
+  "lag zero", so a feed that never synced cannot pass the check. The row is
+  self-clearing in the API: it is only reported while its date equals the newest
+  bar, so yesterday's defect does not alarm forever.
+- **Feed alerts reuse the alert plumbing.** `AlertRule.asset` and
+  `AlertEvent.asset` are nullable, `condition_type` gains `FEED_STALE`, and
+  `check_alert_rules` seeds an asset-less `ETF data feed health` rule whose
+  channels come from settings. Dispatch, cooldown and the serializers'
+  `asset_symbol`/`asset_name` are null-safe; the alert center names such events
+  "data feed health" instead of rendering a null asset.
+- **The freshness endpoint reports the attempt, not only the row.**
+  `/etf/signals/freshness/` now returns `last_attempt` and `feed_stale`
+  alongside `is_stale`. The `/etf` card warns on any non-`OK` attempt — a refused
+  job that wrote no signal is visible — and separately on a defect at the newest
+  bar. The defensive-asset dropdown blanks its 20-day turnover once the
+  underlying snapshot is more than five sessions behind the newest bar.
+
+#### Fixed:
+
+- **The beat schedule's entry formatting.** The ETF block in
+  `config/settings/base.py` carried malformed indentation around the new
+  watchdog entry; it is rewritten so both ETF jobs are plain `crontab(...)`
+  dictionaries and `manage.py check` can read the schedule.
+
 ### version 0.1.21
 
 #### Added:

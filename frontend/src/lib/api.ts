@@ -42,6 +42,11 @@ export interface SignalEventDto {
 export interface AlertEventDto {
   id: number
   status: string
+  alert_name?: string
+  asset_symbol?: string | null
+  message?: string
+  metadata?: { condition_type?: string; reason_code?: string; [key: string]: unknown }
+  created_at?: string
 }
 
 export interface CandidateDto {
@@ -903,6 +908,24 @@ export interface EtfSignalFreshnessDto {
   lag_sessions: number | null
   is_stale: boolean
   model_version: string | null
+  // The newest attempt, whatever it concluded. A REFUSED/FAILED row here is the evidence
+  // that the job ran and could not answer, which `signal_date` alone cannot show.
+  last_attempt: {
+    date: string | null
+    signal_type: string
+    outcome: string
+    reason_code: string
+    message: string
+    created_at: string
+  } | null
+  // A feed defect (benchmark or feature lag) that is still true for the newest bar. It is
+  // separate from `is_stale`, which compares the signal to the newest snapshot.
+  feed_stale: {
+    date: string
+    reason_code: string
+    message: string
+    created_at: string
+  } | null
 }
 
 // One rankable money-market ETF, i.e. a candidate defensive asset. `avg_amount_20d` is
@@ -933,6 +956,9 @@ export interface EtfPositionDto {
   pnl: number | string | null
   return_pct: number | string | null
   status: string
+  // Empty while OPEN. The daily ledger writes DISPLACED_BY_SIGNAL when a newer signal
+  // of the same type no longer selects the fund and the leg is closed at that session.
+  exit_reason: string
   metadata: Record<string, unknown>
   created_at: string
 }
@@ -1130,6 +1156,15 @@ export async function fetchEtfSignals(limit = 10): Promise<EtfSignalDto[]> {
 export async function fetchEtfOpenPositions(limit = 50): Promise<EtfPositionDto[]> {
   const payload = await apiGet<Paginated<EtfPositionDto>>(
     `/etf/positions/?status=OPEN&ordering=-entry_date&page_size=${limit}`,
+  )
+  return payload.results
+}
+
+// Realised history, newest first by entry date (the endpoint's ordering). The ledger card
+// sums `pnl` over these rows only, so an OPEN leg's mark can never leak into the track record.
+export async function fetchEtfClosedPositions(limit = 20): Promise<EtfPositionDto[]> {
+  const payload = await apiGet<Paginated<EtfPositionDto>>(
+    `/etf/positions/?status=CLOSED&page_size=${limit}`,
   )
   return payload.results
 }

@@ -19,6 +19,17 @@ finds the parameter region and the ML runs are then evaluated *inside* it. The
 on exactly 144; it is both a column and part of the row's ``name``, so a grid row can be
 filtered on it without reading JSON.
 
+**Walk-forward** (`--grid --walk-forward-steps N`) answers the question the single-window
+grid cannot: would the parameter *selection itself* have survived out of sample. The
+window is cut into N expanding folds with ``walk_forward.expanding_folds`` (sessions as
+``trade_dates``, a one-session label horizon, 250 training sessions); each fold runs the
+same 144 grids on ``[train_start, train_end]`` only, takes the Sharpe winner (a dead heat
+goes to the lower turnover), then trades that configuration on
+``[valid_start, valid_end]``. Every run is ephemeral -- nothing is persisted, so this is
+a CLI evaluation and never a resumable row. A fold with fewer than 20 rebalances is too
+thin to read; the plan's answer is a rerun with ``--walk-forward-steps 4``, which the
+command flags instead of silently lengthening the folds.
+
 Every grid row is persisted (C24: ``momentum_lookback`` exists as a column precisely so a
 swept horizon is recoverable), keyed by name so an interrupted grid resumes rather than
 duplicates. That same key is why ``--grid-prefix`` exists: re-running a window under the
@@ -63,6 +74,7 @@ from apps.etf_rotation.backtest_engine import (
 )
 from apps.etf_rotation.models import ETFRotationBacktest
 from apps.etf_rotation.rotation_engine import WEIGHTING_MODES, default_defensive_asset
+from apps.etf_rotation.walk_forward import WalkForwardError, expanding_folds
 
 # ``CELERY_TASK_ROUTES`` puts ``apps.etf_rotation.tasks.run_etf_rotation_backtest`` on this
 # queue; the name is only printed, never used to route, so keep the two in step.
@@ -83,6 +95,34 @@ GRID_MOMENTUM_LOOKBACKS = (20, 60, 120)
 GRID_WEIGHTINGS = ('equal', 'score')
 GRID_EXPECTED_COMBOS = 144
 
+#: Cost/execution knobs the grid runs under a single value. Listed once so the grid and
+#: the walk-forward branch cannot drift into rejecting different flags.
+GRID_COST_FLAGS = (
+    'commission_rate', 'min_commission', 'slippage',
+    'liquidity_floor_multiple', 'min_trade_notional_fraction',
+    'drift_band_fraction', 'liquidity_mode', 'adv_participation_cap',
+)
+
+#: Walk-forward knobs handed to ``walk_forward.expanding_folds``. The RULE ranker fits no
+#: label, so a one-session horizon is enough to keep a fold's last training session from
+#: reaching its validation block; 250 sessions is roughly a year of the short list's
+#: three-year lookback. The rebalance floor is the plan's reading rule: below it a fold's
+#: OOS number is too thin to interpret and the run should drop to fewer, longer folds.
+WALK_FORWARD_LABEL_HORIZON = 1
+WALK_FORWARD_MIN_TRAIN_SESSIONS = 250
+WALK_FORWARD_MIN_FOLD_REBALANCES = 20
+
+#: The production reference (``ETFRotationBacktest`` row 256), used only to report how
+#: often the walk-forward selection lands on it. Changing a default is NOT part of this.
+REFERENCE_RULE_COMBO = {
+    'rebalance_frequency': 'BIWEEKLY',
+    'max_positions': 3,
+    'absolute_momentum_filter': False,
+    'momentum_lookback': 120,
+    'weighting': 'equal',
+}
+
+
 #: Row columns the queued task reads back as its configuration. Same set as
 #: ``tasks.run_etf_rotation_backtest``; a column added to the model belongs here too or a
 #: queued run silently inherits the model default instead of what this command intended.
@@ -90,8 +130,9 @@ _QUEUE_KNOB_FIELDS = (
     'start_date', 'end_date', 'model_type', 'rebalance_frequency', 'max_positions',
     'momentum_lookback', 'absolute_momentum_filter', 'defensive_asset', 'initial_capital',
     'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
-    'benchmark_code', 'walk_forward_steps', 'weighting', 'dedup_track_index',
-    'max_per_category',
+    'min_trade_notional_fraction', 'drift_band_fraction', 'liquidity_mode',
+    'adv_participation_cap', 'benchmark_code', 'walk_forward_steps', 'weighting',
+    'dedup_track_index', 'max_per_category',
 )
 
 #: Bounds the cross-run snapshot memo. One session's eligible cross-section is a few
@@ -140,6 +181,117 @@ def grid_name(combo: dict[str, Any], prefix: str = 'grid') -> str:
     both generations side by side.
     """
     return f'{str(prefix or "").strip() or "grid"}-{grid_stem(combo)}'
+
+
+def walk_forward_folds(sessions, n_folds: int) -> list:
+    """Build expanding folds over the session calendar, or fewer when the panel is short.
+
+    ``expanding_folds`` lays out ``n`` equal validation steps after
+    ``WALK_FORWARD_MIN_TRAIN_SESSIONS`` and before the one-session label tail. When the
+    validation region cannot supply ``n`` non-empty steps it can emit a fold whose
+    ``valid_start`` is past its ``valid_end`` (the step arithmetic clamps the end, not the
+    start); such a fold would be scored on nothing. This wrapper asks for the largest
+    count, up to ``n_folds``, whose folds are all non-empty -- so a short panel silently
+    loses folds but is never padded with invented boundaries. ``[]`` means the panel
+    cannot even seat one fold, and the caller refuses rather than training on nothing.
+    """
+    ordered = sorted({value for value in sessions if value is not None})
+    requested = int(n_folds)
+    if requested < 1:
+        raise ValueError(f'n_folds must be >= 1, got {requested}.')
+    if not ordered:
+        return []
+    for candidate in range(requested, 0, -1):
+        folds = expanding_folds(
+            ordered[0], ordered[-1], candidate,
+            horizon_days=WALK_FORWARD_LABEL_HORIZON,
+            min_train_days=WALK_FORWARD_MIN_TRAIN_SESSIONS,
+            trade_dates=ordered,
+        )
+        if not folds:
+            return []
+        if all(fold.valid_start <= fold.valid_end for fold in folds):
+            return folds
+    return []
+
+
+def _measured(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def walk_forward_rank_key(row: dict[str, Any]) -> tuple:
+    """Declared selection order: Sharpe first, a dead heat to the lower turnover.
+
+    An unmeasured Sharpe sorts after every measured one; the configuration name last so
+    the same grid always picks the same winner instead of depending on dict order.
+    """
+    metrics = row.get('metrics') or {}
+    sharpe = _measured(metrics.get('sharpe_ratio'))
+    turnover = _measured(metrics.get('turnover_annual'))
+    return (
+        sharpe is None,
+        -sharpe if sharpe is not None else 0.0,
+        turnover if turnover is not None else math.inf,
+        str(row.get('name') or grid_stem(row)),
+    )
+
+
+def select_walk_forward_winner(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The one row the declared criterion selects; refuses a fold with nothing measured."""
+    if not rows:
+        raise ValueError('no configuration was scored, so no winner can be selected.')
+    winner = min(rows, key=walk_forward_rank_key)
+    if _measured((winner.get('metrics') or {}).get('sharpe_ratio')) is None:
+        raise ValueError('no configuration produced a finite Sharpe ratio.')
+    return winner
+
+
+def is_reference_combo(combo: dict[str, Any]) -> bool:
+    """Whether a selected configuration is exactly the production reference (row 256)."""
+    return all(combo.get(key) == value for key, value in REFERENCE_RULE_COMBO.items())
+
+
+def walk_forward_table(outcomes: list[dict[str, Any]]) -> list[str]:
+    """One line per fold: the selected configuration, its training score, and OOS evidence.
+
+    Validation metrics are the fold's own run (each fold starts from the configured
+    initial capital), so the table is a series of independent OOS readings, not a
+    compounded curve. The rebalance count is printed per fold because it is the reading
+    floor the plan sets: a fold whose winner trades rarely cannot support a conclusion.
+    """
+    lines = [
+        f'{"fold":>4} {"train":<22} {"valid":<22} {"config":<36} '
+        f'{"tr_sharpe":>9} {"tr_reb":>6} {"return":>9} {"annual":>9} {"maxDD":>8} '
+        f'{"sharpe":>7} {"alpha":>9} {"turnover":>8} {"reb":>5} {"ref":>3}'
+    ]
+    for item in outcomes:
+        fold = item['fold']
+        train = item.get('train_metrics') or {}
+        valid = item.get('valid_metrics') or {}
+        window = f'{fold["train_start"]}..{fold["train_end"]}'
+        valid_window = f'{fold["valid_start"]}..{fold["valid_end"]}'
+        lines.append(
+            f'{int(fold["fold_index"]) + 1:>4} '
+            f'{window:<22} '
+            f'{valid_window:<22} '
+            f'{str(item.get("winner_name") or ""):<36} '
+            f'{_num(train.get("sharpe_ratio")):>9} '
+            f'{int(item.get("train_rebalances") or 0):>6} '
+            f'{_pct(valid.get("total_return")):>9} '
+            f'{_pct(valid.get("annualized_return")):>9} '
+            f'{_pct(valid.get("max_drawdown"), signed=False):>8} '
+            f'{_num(valid.get("sharpe_ratio")):>7} '
+            f'{_pct(valid.get("alpha_vs_benchmark")):>9} '
+            f'{_num(valid.get("turnover_annual")):>8} '
+            f'{int(item.get("valid_rebalances") or 0):>5} '
+            f'{"yes" if item.get("reference") else "no":>3}'
+        )
+    return lines
+
 
 
 def parse_iso_date(value: str, label: str) -> date:
@@ -287,6 +439,23 @@ class Command(BaseCommand):
         parser.add_argument('--initial-capital', type=float, default=None,
                             help='Starting equity in yuan. Default: settings.ETF_INITIAL_CAPITAL. '
                                  'A small value is how the min-commission floor gets exercised.')
+        parser.add_argument('--commission-rate', type=float, default=None,
+                            help='Two-way broker commission rate. Default: settings.ETF_COMMISSION_RATE (0.0003).')
+        parser.add_argument('--min-commission', type=float, default=None,
+                            help='Yuan floor on one fill. Default: settings.ETF_MIN_COMMISSION (5).')
+        parser.add_argument('--slippage', type=float, default=None,
+                            help='Fraction applied to the execution price. Default: settings.ETF_SLIPPAGE (0.001).')
+        parser.add_argument('--liquidity-floor-multiple', type=float, default=None,
+                            help='Required trailing daily turnover as a multiple of the leg notional; '
+                                 '0 disables the screen. Default: settings.ETF_LIQUIDITY_FLOOR_MULTIPLE (10).')
+        parser.add_argument('--min-trade-notional-fraction', type=float, default=None,
+                            help='Skip rebalance deltas below this share of equity (default 0.005).')
+        parser.add_argument('--drift-band-fraction', type=float, default=None,
+                            help='Leave a delta below this share of its target notional to drift (default 0 = off).')
+        parser.add_argument('--liquidity-mode', choices=('reject', 'scale'), default=None,
+                            help='Reject an oversized leg (default) or scale it to the ADV cap.')
+        parser.add_argument('--adv-participation-cap', type=float, default=None,
+                            help='Scale-mode ceiling as a multiple of trailing daily turnover (default 0 = off).')
         parser.add_argument('--name', default='', help='Name of the persisted row.')
         parser.add_argument('--persist', dest='persist', action='store_true', default=True,
                             help='Persist an ETFRotationBacktest row (the default).')
@@ -313,11 +482,23 @@ class Command(BaseCommand):
                                  'keep both generations side by side.')
         parser.add_argument('--grid-force', action='store_true',
                             help='Re-run grid rows that already COMPLETED under the same name (default: skip them).')
+        parser.add_argument('--walk-forward-steps', type=int, default=None, metavar='N',
+                            help='With --grid: split the window into N expanding folds, select the RULE '
+                                 'configuration on each training window by Sharpe (lower turnover breaks a '
+                                 'tie), and trade it on that fold\'s validation window. Ephemeral: no row '
+                                 'is written. A fold with fewer than 20 rebalances is too thin; rerun '
+                                 'with N=4, which gives longer validation blocks.')
 
     def handle(self, *args, **options):
         # Returns nothing on purpose: Django writes a truthy return value to stdout, and a
         # dict here would raise inside ``BaseCommand.execute``.
-        if options['grid']:
+        if options['walk_forward_steps'] is not None:
+            if not options['grid']:
+                raise CommandError(
+                    '--walk-forward-steps evaluates the RULE grid out of sample and needs --grid.'
+                )
+            self._handle_walk_forward(options)
+        elif options['grid']:
             self._handle_grid(options)
         else:
             self._handle_single(options)
@@ -345,6 +526,14 @@ class Command(BaseCommand):
             'absolute_momentum_filter': options['absolute_momentum_filter'],
             'defensive_asset': options['defensive_asset'],
             'initial_capital': options['initial_capital'],
+            'commission_rate': options['commission_rate'],
+            'min_commission': options['min_commission'],
+            'slippage': options['slippage'],
+            'liquidity_floor_multiple': options['liquidity_floor_multiple'],
+            'min_trade_notional_fraction': options['min_trade_notional_fraction'],
+            'drift_band_fraction': options['drift_band_fraction'],
+            'liquidity_mode': options['liquidity_mode'],
+            'adv_participation_cap': options['adv_participation_cap'],
         }
         overrides = {
             key: options[key]
@@ -416,6 +605,12 @@ class Command(BaseCommand):
             ('--max-positions', 'max_positions'), ('--momentum-lookback', 'momentum_lookback'),
             ('--weighting', 'weighting'), ('--defensive-asset', 'defensive_asset'),
             ('--initial-capital', 'initial_capital'),
+            ('--commission-rate', 'commission_rate'), ('--min-commission', 'min_commission'),
+            ('--slippage', 'slippage'), ('--liquidity-floor-multiple', 'liquidity_floor_multiple'),
+            ('--min-trade-notional-fraction', 'min_trade_notional_fraction'),
+            ('--drift-band-fraction', 'drift_band_fraction'),
+            ('--liquidity-mode', 'liquidity_mode'),
+            ('--adv-participation-cap', 'adv_participation_cap'),
             ('--no-absolute-momentum-filter', 'absolute_momentum_filter'),
         ) if options[key] not in (None, '')]
         if mixed:
@@ -444,6 +639,10 @@ class Command(BaseCommand):
             'defensive_asset': row.defensive_asset, 'initial_capital': float(row.initial_capital),
             'commission_rate': row.commission_rate, 'min_commission': float(row.min_commission),
             'slippage': row.slippage, 'liquidity_floor_multiple': row.liquidity_floor_multiple,
+            'min_trade_notional_fraction': float(row.min_trade_notional_fraction),
+            'drift_band_fraction': float(row.drift_band_fraction),
+            'liquidity_mode': row.liquidity_mode,
+            'adv_participation_cap': float(row.adv_participation_cap),
             'benchmark_code': row.benchmark_code,
             'config_overrides': {
                 'walk_forward_steps': row.walk_forward_steps, 'weighting': row.weighting,
@@ -625,10 +824,22 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             f"sessions={counters['sessions']} signals={counters['signals_generated']} "
+            f"rebalances={counters.get('rebalances', 0)} "
             f"trades={counters['trades']} filled={counters['filled_trades']} "
             f"liquidity_rejected={counters['rejected_liquidity_fills']} "
             f"skipped_no_price={counters['skipped_no_price_fills']} "
+            f"min_commission_bound={counters.get('min_commission_bound_fills', 0)} "
+            f"band_suppressed={counters.get('band_suppressed_deltas', 0)} "
+            f"capacity_scaled={counters.get('capacity_scaled_legs', 0)} "
             f"dividends={_yuan(counters['dividend_cash_yuan'])}"
+        )
+        turnover = report.get('turnover') or {}
+        share = turnover.get('share') or {}
+        self.stdout.write(
+            f"turnover_split=drift {_pct(share.get('drift_share'))} / "
+            f"discretionary {_pct(share.get('discretionary_share'))} / "
+            f"other {_pct(share.get('other_share'))} "
+            f"model_versions={report.get('model_versions')}"
         )
         for note in report.get('errors') or []:
             self.stdout.write(self.style.WARNING(f'engine note: {note}'))
@@ -705,6 +916,13 @@ class Command(BaseCommand):
             raise CommandError('--grid builds one row per configuration; it cannot take --backtest-id.')
         if not options['start'] or not options['end']:
             raise CommandError('--grid requires --start and --end.')
+        cost_flags = [flag for flag in GRID_COST_FLAGS if options.get(flag) is not None]
+        if cost_flags:
+            raise CommandError(
+                '--grid runs every configuration under one execution/cost model; drop '
+                + ', '.join('--' + flag.replace('_', '-') for flag in cost_flags)
+                + ' or run the configuration once without --grid.'
+            )
         prefix = str(options['grid_prefix'] or 'grid').strip() or 'grid'
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')
@@ -789,6 +1007,204 @@ class Command(BaseCommand):
                 f'{len(failures)} grid run(s) failed: ' + '; '.join(failures[:10])
             ))
         self._render_grid_table(rows, top=max(int(options['grid_top'] or 10), 1), start=start, end=end)
+
+    # -- RULE walk-forward ----------------------------------------------------
+    def _handle_walk_forward(self, options):
+        """Select RULE parameters inside each training window, then trade them OOS.
+
+        Nothing here is persisted. A persisted grid row is a resumable configuration; a
+        walk-forward fold is a one-shot measurement of the *selection process*, and
+        writing 144 rows per fold would both pollute the grid's resume keys and invite a
+        later reader to treat a training-window run as an OOS result.
+        """
+        if options['model'] and str(options['model']).upper() != 'RULE':
+            raise CommandError('--walk-forward-steps sweeps RULE only; drop --model or use --model RULE.')
+        if options['backtest_id']:
+            raise CommandError('--walk-forward-steps runs ephemeral folds; it cannot take --backtest-id.')
+        if options['queue']:
+            raise CommandError('--walk-forward-steps is a CLI evaluation; --queue has no row to hand to a worker.')
+        cost_flags = [flag for flag in GRID_COST_FLAGS if options.get(flag) is not None]
+        if cost_flags:
+            raise CommandError(
+                '--walk-forward-steps runs every configuration under one execution/cost model; drop '
+                + ', '.join('--' + flag.replace('_', '-') for flag in cost_flags)
+                + ' or run the configuration once without --grid.'
+            )
+        if not options['start'] or not options['end']:
+            raise CommandError('--walk-forward-steps requires --start and --end.')
+        requested = int(options['walk_forward_steps'])
+        if requested < 2:
+            raise CommandError(
+                f'--walk-forward-steps must be at least 2, got {requested}: one fold has nothing '
+                'to be out of sample against.'
+            )
+        start = parse_iso_date(options['start'], '--start')
+        end = parse_iso_date(options['end'], '--end')
+        if end < start:
+            raise CommandError('--end must be on or after --start.')
+
+        source = CachedDataSource(DatabaseDataSource())
+        try:
+            folds = walk_forward_folds(source.sessions(start, end), requested)
+        except WalkForwardError as exc:
+            raise CommandError(f'walk-forward fold plan is invalid: {exc}') from exc
+        if not folds:
+            raise CommandError(
+                f'the session calendar in {start}..{end} cannot seat one fold: '
+                f'{WALK_FORWARD_MIN_TRAIN_SESSIONS} training sessions plus a '
+                f'{WALK_FORWARD_LABEL_HORIZON}-session label tail plus one validation session are needed.'
+            )
+        if len(folds) < requested:
+            self.stdout.write(self.style.WARNING(
+                f'the panel supports {len(folds)} fold(s), not the {requested} requested; '
+                'the plan is reported as-is rather than padded.'
+            ))
+        self.stdout.write(
+            f'walk-forward plan: {len(folds)} expanding fold(s), '
+            f'min_train={WALK_FORWARD_MIN_TRAIN_SESSIONS} sessions, '
+            f'label_tail={WALK_FORWARD_LABEL_HORIZON} session'
+        )
+        for fold in folds:
+            self.stdout.write(
+                f'  fold {fold.fold_index + 1}: train {fold.train_start}..{fold.train_end} '
+                f'({fold.purged_train_dates} date(s) purged), '
+                f'validate {fold.valid_start}..{fold.valid_end}'
+            )
+
+        combos = grid_combinations()
+        if options['grid_limit'] and options['grid_limit'] < len(combos):
+            combos = combos[:options['grid_limit']]
+            self.stdout.write(self.style.WARNING(
+                f'--grid-limit {options["grid_limit"]}: selection runs on a subset of the '
+                f'{GRID_EXPECTED_COMBOS} configurations, not the full sweep.'
+            ))
+        if options['grid_plan']:
+            self.stdout.write(self.style.SUCCESS(
+                f'--grid-plan: {len(folds)} fold(s) x {len(combos)} configuration(s), none executed.'
+            ))
+            return
+
+        outcomes: list[dict[str, Any]] = []
+        started = time.monotonic()
+        for fold in folds:
+            label = fold.fold_index + 1
+            self.stdout.write(
+                f'--- fold {label}/{len(folds)}: select on {fold.train_start}..{fold.train_end}, '
+                f'trade {fold.valid_start}..{fold.valid_end} ---'
+            )
+            selection_rows, failures = self._select_fold_winner(fold, combos, source, label)
+            try:
+                winner = select_walk_forward_winner(selection_rows)
+            except ValueError as exc:
+                raise CommandError(f'fold {label}: {exc}') from exc
+            self.stdout.write(
+                f'  winner: {winner["name"]} train_sharpe={_num(winner["metrics"].get("sharpe_ratio"))} '
+                f'train_rebalances={winner["rebalances"]}'
+                + (f' ({len(failures)} configuration(s) failed)' if failures else '')
+            )
+            try:
+                result = run_rotation_backtest(
+                    start_date=fold.valid_start, end_date=fold.valid_end, model_type='RULE',
+                    rebalance_frequency=winner['rebalance_frequency'],
+                    max_positions=winner['max_positions'],
+                    momentum_lookback=winner['momentum_lookback'],
+                    absolute_momentum_filter=winner['absolute_momentum_filter'],
+                    config_overrides={'weighting': winner['weighting']}, data_source=source,
+                )
+            except Exception as exc:
+                raise CommandError(
+                    f'fold {label}: the selected configuration failed out of sample: '
+                    f'{type(exc).__name__}: {exc}'
+                ) from exc
+            counters = result['report']['counters']
+            metrics = result['metrics']
+            outcomes.append({
+                'fold': fold.as_dict(),
+                'winner': {key: winner[key] for key in REFERENCE_RULE_COMBO},
+                'winner_name': winner['name'],
+                'train_metrics': winner['metrics'],
+                'train_rebalances': winner['rebalances'],
+                'valid_metrics': metrics,
+                'valid_rebalances': int(counters.get('rebalances', 0) or 0),
+                'reference': is_reference_combo(winner),
+            })
+            self.stdout.write(
+                f'  out of sample: return={_pct(metrics.get("total_return"))} '
+                f'maxDD={_pct(metrics.get("max_drawdown"), signed=False)} '
+                f'sharpe={_num(metrics.get("sharpe_ratio"))} '
+                f'alpha={_pct(metrics.get("alpha_vs_benchmark"))} '
+                f'rebalances={outcomes[-1]["valid_rebalances"]}'
+            )
+
+        self.stdout.write(
+            f'--- RULE walk-forward: {len(folds)} fold(s), winner = highest Sharpe '
+            '(lower turnover breaks a tie) ---'
+        )
+        for line in walk_forward_table(outcomes):
+            self.stdout.write(line)
+        hits = sum(1 for item in outcomes if item['reference'])
+        self.stdout.write(
+            f'reference configuration {grid_stem(REFERENCE_RULE_COMBO)} (row 256) was selected in '
+            f'{hits}/{len(outcomes)} fold(s)'
+        )
+        thin = [
+            (item['fold']['fold_index'] + 1, item['valid_rebalances'])
+            for item in outcomes
+            if item['valid_rebalances'] < WALK_FORWARD_MIN_FOLD_REBALANCES
+        ]
+        if thin:
+            self.stdout.write(self.style.WARNING(
+                'guardrail: fold(s) '
+                + ', '.join(f'{index} ({count} rebalances)' for index, count in thin)
+                + f' fall below {WALK_FORWARD_MIN_FOLD_REBALANCES}; rerun with '
+                '--walk-forward-steps 4 for longer validation blocks.'
+            ))
+        else:
+            self.stdout.write(self.style.SUCCESS(
+                f'guardrail: every fold has at least {WALK_FORWARD_MIN_FOLD_REBALANCES} rebalances.'
+            ))
+        self.stdout.write(
+            f'walk-forward executed {len(folds)} fold(s) in {time.monotonic() - started:.1f}s; '
+            'no ETFRotationBacktest row was written.'
+        )
+
+    def _select_fold_winner(self, fold, combos, source, label):
+        """Run the grid on the fold's training window only and return its scored rows."""
+        selection_rows: list[dict[str, Any]] = []
+        failures: list[str] = []
+        for index, combo in enumerate(combos, start=1):
+            name = grid_stem(combo)
+            try:
+                result = run_rotation_backtest(
+                    start_date=fold.train_start, end_date=fold.train_end, model_type='RULE',
+                    rebalance_frequency=combo['rebalance_frequency'],
+                    max_positions=combo['max_positions'],
+                    momentum_lookback=combo['momentum_lookback'],
+                    absolute_momentum_filter=combo['absolute_momentum_filter'],
+                    config_overrides={'weighting': combo['weighting']}, data_source=source,
+                )
+            except Exception as exc:
+                # One config a short training window cannot score must not cost the fold;
+                # it simply is not a candidate. If nothing survives, the caller refuses.
+                failures.append(f'{name}: {type(exc).__name__}: {exc}')
+                self.stdout.write(self.style.ERROR(f'  [{index}/{len(combos)}] {name} FAILED: {exc}'))
+                continue
+            counters = result['report']['counters']
+            selection_rows.append({
+                **combo, 'name': name, 'metrics': result['metrics'],
+                'rebalances': int(counters.get('rebalances', 0) or 0),
+            })
+            if index % 24 == 0 or index == len(combos):
+                best = min(selection_rows, key=walk_forward_rank_key)
+                self.stdout.write(
+                    f'  [{index}/{len(combos)}] best so far: {best["name"]} '
+                    f'sharpe={_num(best["metrics"].get("sharpe_ratio"))} '
+                    f'turnover={_num(best["metrics"].get("turnover_annual"))}'
+                )
+        if not selection_rows:
+            detail = '; '.join(failures[:3]) or 'no configuration produced metrics'
+            raise CommandError(f'fold {label}: no configuration could be scored on the training window: {detail}')
+        return selection_rows, failures
 
     def _render_grid_table(self, rows: list[dict[str, Any]], *, top: int, start: date, end: date) -> None:
         """Ranked by alpha vs the benchmark, then Sharpe -- the plan's two decision columns."""

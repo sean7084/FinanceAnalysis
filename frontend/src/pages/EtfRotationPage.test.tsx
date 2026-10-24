@@ -11,6 +11,8 @@ const apiMocks = vi.hoisted(() => ({
   fetchEtfLatestSignal: vi.fn(),
   fetchEtfSignalFreshness: vi.fn(),
   fetchEtfOpenPositions: vi.fn(),
+  fetchEtfSignals: vi.fn(),
+  fetchEtfClosedPositions: vi.fn(),
   fetchEtfBacktests: vi.fn(),
   fetchEtfComparisonCurve: vi.fn(),
   fetchEtfUniverse: vi.fn(),
@@ -23,6 +25,8 @@ vi.mock('../lib/api', async () => {
     fetchEtfLatestSignal: apiMocks.fetchEtfLatestSignal,
     fetchEtfSignalFreshness: apiMocks.fetchEtfSignalFreshness,
     fetchEtfOpenPositions: apiMocks.fetchEtfOpenPositions,
+    fetchEtfSignals: apiMocks.fetchEtfSignals,
+    fetchEtfClosedPositions: apiMocks.fetchEtfClosedPositions,
     fetchEtfBacktests: apiMocks.fetchEtfBacktests,
     fetchEtfComparisonCurve: apiMocks.fetchEtfComparisonCurve,
     fetchEtfUniverse: apiMocks.fetchEtfUniverse,
@@ -67,8 +71,56 @@ const positionRow = {
   pnl: null,
   return_pct: null,
   status: 'OPEN',
-  metadata: {},
+  exit_reason: '',
+  // What the daily ledger stamps on a marked leg: newest close plus its unrealised pnl.
+  metadata: {
+    live_mark: {
+      date: '2026-10-22',
+      price: 1.3,
+      market_value: 10660,
+      unrealized_pnl: 541.2,
+      unrealized_return_pct: 0.0535,
+    },
+  },
   created_at: '2026-10-21T09:00:00Z',
+}
+
+// Realised history only exists because the ledger closed a leg. The two rows below
+// straddle break-even so the win-rate assertion cannot pass on a hardcoded 100%.
+const closedPositionRow = {
+  ...positionRow,
+  id: 442,
+  signal: 8999,
+  signal_date: '2026-10-10',
+  etf: 13,
+  etf_ts_code: '510500.SH',
+  etf_name: 'CSI 500 ETF',
+  entry_date: '2026-10-12',
+  exit_date: '2026-10-20',
+  entry_price: '2.0000',
+  exit_price: '2.2410',
+  weight: '0.3000',
+  shares: 5000,
+  pnl: 120.5,
+  return_pct: 0.1205,
+  status: 'CLOSED',
+  exit_reason: 'DISPLACED_BY_SIGNAL',
+  metadata: { exit: { displacing_signal: 9001 } },
+  created_at: '2026-10-12T09:00:00Z',
+}
+
+const losingClosedPositionRow = {
+  ...closedPositionRow,
+  id: 443,
+  etf: 14,
+  etf_ts_code: '515980.SH',
+  etf_name: 'Chip ETF',
+  entry_date: '2026-10-13',
+  entry_price: '1.0000',
+  exit_price: '0.9795',
+  pnl: -20.5,
+  return_pct: -0.0205,
+  created_at: '2026-10-13T09:00:00Z',
 }
 
 const backtestRow = {
@@ -146,6 +198,8 @@ const freshPayload = {
   lag_sessions: 0,
   is_stale: false,
   model_version: 'rule-v1:mom60-score',
+  last_attempt: null,
+  feed_stale: null,
 }
 
 const stalePayload = {
@@ -200,6 +254,8 @@ describe('EtfRotationPage', () => {
     apiMocks.fetchEtfLatestSignal.mockResolvedValue(signalRow)
     apiMocks.fetchEtfSignalFreshness.mockResolvedValue(freshPayload)
     apiMocks.fetchEtfOpenPositions.mockResolvedValue([positionRow])
+    apiMocks.fetchEtfSignals.mockResolvedValue([signalRow])
+    apiMocks.fetchEtfClosedPositions.mockResolvedValue([closedPositionRow, losingClosedPositionRow])
     apiMocks.fetchEtfBacktests.mockResolvedValue({ count: 1, next: null, previous: null, results: [backtestRow] })
     apiMocks.fetchEtfComparisonCurve.mockResolvedValue(comparisonPayload)
     apiMocks.fetchEtfUniverse.mockResolvedValue({ count: 1, next: null, previous: null, results: [universeRow] })
@@ -225,6 +281,25 @@ describe('EtfRotationPage', () => {
     expect(within(positionsCard).getByText('2026-10-21')).toBeInTheDocument()
     expect(within(positionsCard).getByText('1.234')).toBeInTheDocument()
     expect(within(positionsCard).getByText('40.00%')).toBeInTheDocument()
+    // The daily ledger's mark is shown beside the entry price, not folded into it.
+    expect(within(positionsCard).getByText('1.3000')).toBeInTheDocument()
+    expect(within(positionsCard).getByText('541.20')).toBeInTheDocument()
+  })
+
+  it('builds the live ledger from closed legs and recent signals', async () => {
+    renderEtfPage()
+
+    const ledger = await cardByTitle('Live Simulated Ledger')
+    // +120.50 and -20.50 net to 100.00, one winner out of two.
+    expect(within(ledger).getByText('100.00')).toBeInTheDocument()
+    expect(within(ledger).getByText('50.00%')).toBeInTheDocument()
+    expect(within(ledger).getByText('120.50')).toBeInTheDocument()
+    expect(within(ledger).getByText('-20.50')).toBeInTheDocument()
+    expect(within(ledger).getAllByText('DISPLACED_BY_SIGNAL')).toHaveLength(2)
+    // Recent-signal history is the same DTO the signal card uses.
+    expect(within(ledger).getByText('ROTATION')).toBeInTheDocument()
+    expect(apiMocks.fetchEtfSignals).toHaveBeenCalledWith(10)
+    expect(apiMocks.fetchEtfClosedPositions).toHaveBeenCalledWith(20)
   })
 
   it('plots the alpha-leading run against its benchmark without a click', async () => {
@@ -321,6 +396,65 @@ describe('EtfRotationPage', () => {
     expect(warning).toHaveClass('status', 'disconnected')
     expect(warning.textContent).toContain('Data as-of 2026-10-20')
     expect(warning.textContent).toContain('newest snapshot 2026-10-22')
+  })
+
+  it('warns separately when the feed is stale even though the signal date is current', async () => {
+    apiMocks.fetchEtfSignalFreshness.mockResolvedValue({
+      ...freshPayload,
+      feed_stale: {
+        date: '2026-10-20',
+        reason_code: 'benchmark_lag',
+        message: 'The benchmark H00905.CSI is 1 session behind the newest ETF bar.',
+        created_at: '2026-10-22T09:45:00Z',
+      },
+    })
+    renderEtfPage()
+
+    const signalCard = await cardByTitle('Signal of the Day')
+    const warning = await within(signalCard).findByText(/Data feed alert: benchmark or feature history is lagging/)
+    expect(warning).toHaveClass('status', 'disconnected')
+    expect(warning.textContent).toContain('benchmark_lag')
+    // is_stale is false in this payload: the two conditions are independent.
+    expect(within(signalCard).queryByText(/it trails the newest eligible feature snapshot/)).not.toBeInTheDocument()
+  })
+
+  it('shows the latest attempt when the signal job refused', async () => {
+    apiMocks.fetchEtfSignalFreshness.mockResolvedValue({
+      ...freshPayload,
+      last_attempt: {
+        date: '2026-10-20',
+        signal_type: 'MONTHLY',
+        outcome: 'REFUSED',
+        reason_code: 'blind_cross_section',
+        message: 'no candidate could be scored',
+        created_at: '2026-10-22T11:45:00Z',
+      },
+    })
+    renderEtfPage()
+
+    const signalCard = await cardByTitle('Signal of the Day')
+    const warning = await within(signalCard).findByText(/The latest signal job did not succeed/)
+    expect(warning).toHaveClass('status', 'disconnected')
+    expect(warning.textContent).toContain('REFUSED')
+    expect(warning.textContent).toContain('blind_cross_section')
+  })
+
+  it('says nothing about an attempt that succeeded', async () => {
+    apiMocks.fetchEtfSignalFreshness.mockResolvedValue({
+      ...freshPayload,
+      last_attempt: {
+        date: '2026-10-20',
+        signal_type: 'MONTHLY',
+        outcome: 'OK',
+        reason_code: '',
+        message: '',
+        created_at: '2026-10-22T11:45:00Z',
+      },
+    })
+    renderEtfPage()
+
+    const signalCard = await cardByTitle('Signal of the Day')
+    expect(within(signalCard).queryByText(/The latest signal job did not succeed/)).not.toBeInTheDocument()
   })
 
   it('renders every knob in metadata.config, including one the frontend has never heard of', async () => {

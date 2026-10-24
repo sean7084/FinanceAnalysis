@@ -298,6 +298,54 @@ class ETFRotationSignal(models.Model):
         return f"{self.get_signal_type_display()} {self.date}"
 
 
+class ETFRotationSignalRun(models.Model):
+    """One attempt to produce a signal, or to prove the feed is healthy.
+
+    ``ETFRotationSignal`` records what the strategy said; this records that the job *ran*.
+    Without it a refused signal left no row anywhere -- ``tasks.py`` swallowed the error into
+    a worker log -- so "the market told us to hold" and "nothing ran for two days" looked
+    identical on the page. Rows are append-only on purpose: a refused attempt followed by a
+    successful retry is two observations, not one row to overwrite.
+    """
+    class SignalType(models.TextChoices):
+        WEEKLY = 'WEEKLY', _('Weekly')
+        BIWEEKLY = 'BIWEEKLY', _('Bi-Weekly')
+        MONTHLY = 'MONTHLY', _('Monthly')
+        TRIGGER = 'TRIGGER', _('Trigger')
+        HEALTH = 'HEALTH', _('Feed Health')
+
+    class Outcome(models.TextChoices):
+        OK = 'OK', _('Ok')
+        REFUSED = 'REFUSED', _('Refused')
+        FAILED = 'FAILED', _('Failed')
+        FEED_STALE = 'FEED_STALE', _('Feed Stale')
+
+    date = models.DateField(_('Date'), db_index=True,
+                            help_text=_('As-of trading date the attempt was about.'))
+    signal_type = models.CharField(_('Signal Type'), max_length=10,
+                                   choices=SignalType.choices, db_index=True)
+    outcome = models.CharField(_('Outcome'), max_length=12, choices=Outcome.choices,
+                               db_index=True)
+    reason_code = models.CharField(_('Reason Code'), max_length=40, blank=True)
+    message = models.TextField(_('Message'), blank=True)
+    diagnostics = models.JSONField(_('Diagnostics'), default=dict, blank=True)
+    task_id = models.CharField(_('Task ID'), max_length=64, blank=True)
+    duration_ms = models.PositiveIntegerField(_('Duration (ms)'), null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('ETF Rotation Signal Run')
+        verbose_name_plural = _('ETF Rotation Signal Runs')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['date', 'signal_type']),
+            models.Index(fields=['-created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.date} {self.signal_type} {self.outcome}'
+
+
 class ETFRotationPosition(models.Model):
     """One holding leg, open or closed, attributable to the signal that created it."""
     class Status(models.TextChoices):
@@ -320,6 +368,14 @@ class ETFRotationPosition(models.Model):
     pnl = models.FloatField(_('PnL'), null=True, blank=True)
     return_pct = models.FloatField(_('Return Pct'), null=True, blank=True)
     status = models.CharField(_('Status'), max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True)
+    # Why a leg left the book. Today only the daily ledger writes this: a newer signal of
+    # the same type no longer selects the fund. Kept as a column (not metadata) so closed
+    # history can be grouped and counted without reading JSON.
+    exit_reason = models.CharField(
+        _('Exit Reason'), max_length=32, blank=True, default='',
+        choices=[('DISPLACED_BY_SIGNAL', _('Displaced by signal'))],
+        help_text=_('Empty while OPEN; the ledger sets it when the leg is closed.'),
+    )
     metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -330,6 +386,9 @@ class ETFRotationPosition(models.Model):
         indexes = [
             models.Index(fields=['status', 'entry_date']),
             models.Index(fields=['etf', 'status']),
+            # The ledger's two reads: which legs are still open, and the most recently
+            # closed history the ledger page shows first.
+            models.Index(fields=['status', 'exit_date']),
         ]
 
     def __str__(self):
@@ -377,6 +436,10 @@ class ETFRotationBacktest(models.Model):
         MONTHLY = 'MONTHLY', _('Monthly')
         TRIGGER = 'TRIGGER', _('Trigger')
 
+    class LiquidityMode(models.TextChoices):
+        REJECT = 'reject', _('Reject the Leg')
+        SCALE = 'scale', _('Scale the Leg')
+
     name = models.CharField(_('Name'), max_length=120)
     status = models.CharField(_('Status'), max_length=20, choices=Status.choices,
                               default=Status.PENDING, db_index=True)
@@ -415,6 +478,23 @@ class ETFRotationBacktest(models.Model):
     slippage = models.FloatField(_('Slippage'), default=0.001)
     liquidity_floor_multiple = models.FloatField(_('Liquidity Floor Multiple'), default=10.0,
                                                  help_text=_('Required daily turnover multiple of the trade notional.'))
+    min_trade_notional_fraction = models.FloatField(
+        _('Min Trade Notional Fraction'), default=0.005,
+        help_text=_('Rebalance deltas below this share of equity are skipped rather than paying the commission floor.'),
+    )
+    drift_band_fraction = models.FloatField(
+        _('Drift Band Fraction'), default=0.0,
+        help_text=_('A delta below this share of its target notional is left to drift. 0 disables the band.'),
+    )
+    liquidity_mode = models.CharField(
+        _('Liquidity Mode'), max_length=10, choices=LiquidityMode.choices,
+        default=LiquidityMode.REJECT,
+        help_text=_('Reject a leg whose notional breaches the turnover floor, or scale it to the ADV cap.'),
+    )
+    adv_participation_cap = models.FloatField(
+        _('ADV Participation Cap'), default=0.0,
+        help_text=_('Scale mode: leg notional may not exceed this multiple of trailing daily turnover. 0 disables.'),
+    )
 
     model_type = models.CharField(_('Model Type'), max_length=10, choices=ModelType.choices,
                                   default=ModelType.RULE, db_index=True)

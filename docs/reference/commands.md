@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-23T11:53:53Z_
+_Generated: 2026-10-24T09:14:13Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**41** project commands across **9** apps.
+**42** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -231,6 +231,15 @@ Rank the point-in-time ETF pool and write the rotation signal for one date.
 | `--dry-run` | flag | `False` |  | Score, rank, verify and report; write nothing. |
 
 
+### `mark_etf_rotation_positions_daily`
+
+Mark OPEN ETF rotation positions to the newest close and close legs displaced by a newer signal of the same type.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--date` | value | &mdash; |  | Mark date (YYYY-MM-DD). Default: the newest ETFDaily session. |
+
+
 ### `run_etf_rotation_backtest`
 
 Run a single ETF rotation backtest, or the 144-combination RULE grid search.
@@ -254,6 +263,14 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--cash-yield-annual` | value | &mdash; |  | Annualised rate credited to cash the liquidity floor left idle (default 0.0, which reproduces every pre-existing run). |
 | `--defensive-asset` | value | &mdash; |  | TS code of the risk-off sleeve. Default: settings.ETF_DEFENSIVE_ASSET. |
 | `--initial-capital` | value | &mdash; |  | Starting equity in yuan. Default: settings.ETF_INITIAL_CAPITAL. A small value is how the min-commission floor gets exercised. |
+| `--commission-rate` | value | &mdash; |  | Two-way broker commission rate. Default: settings.ETF_COMMISSION_RATE (0.0003). |
+| `--min-commission` | value | &mdash; |  | Yuan floor on one fill. Default: settings.ETF_MIN_COMMISSION (5). |
+| `--slippage` | value | &mdash; |  | Fraction applied to the execution price. Default: settings.ETF_SLIPPAGE (0.001). |
+| `--liquidity-floor-multiple` | value | &mdash; |  | Required trailing daily turnover as a multiple of the leg notional; 0 disables the screen. Default: settings.ETF_LIQUIDITY_FLOOR_MULTIPLE (10). |
+| `--min-trade-notional-fraction` | value | &mdash; |  | Skip rebalance deltas below this share of equity (default 0.005). |
+| `--drift-band-fraction` | value | &mdash; |  | Leave a delta below this share of its target notional to drift (default 0 = off). |
+| `--liquidity-mode` | value | &mdash; |  | Reject an oversized leg (default) or scale it to the ADV cap. |
+| `--adv-participation-cap` | value | &mdash; |  | Scale-mode ceiling as a multiple of trailing daily turnover (default 0 = off). |
 | `--name` | value | `""` |  | Name of the persisted row. |
 | `--persist` | flag | `True` |  | Persist an ETFRotationBacktest row (the default). |
 | `--no-persist` | flag | `True` |  | Run without writing anything; metrics go to stdout only. |
@@ -266,6 +283,7 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--grid-plan` | flag | `False` |  | Print the combinations the grid would run and execute nothing. |
 | `--grid-prefix` | value | `grid` |  | Name stem for the persisted grid rows (default: grid). The row name is the resume key, so a re-run after a selection-rule change needs a fresh stem to keep both generations side by side. |
 | `--grid-force` | flag | `False` |  | Re-run grid rows that already COMPLETED under the same name (default: skip them). |
+| `--walk-forward-steps` | value | &mdash; |  | With --grid: split the window into N expanding folds, select the RULE configuration on each training window by Sharpe (lower turnover breaks a tie), and trade it on that fold's validation window. Ephemeral: no row is written. A fold with fewer than 20 rebalances is too thin; rerun with N=4, which gives longer validation blocks. |
 
 
 ### `sweep_etf_rotation_lstm`

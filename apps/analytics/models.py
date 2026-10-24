@@ -81,12 +81,18 @@ class AlertRule(models.Model):
         PRICE_BELOW = 'PRICE_BELOW', _('Price Below')
         INDICATOR_ABOVE = 'INDICATOR_ABOVE', _('Indicator Above')
         INDICATOR_BELOW = 'INDICATOR_BELOW', _('Indicator Below')
+        FEED_STALE = 'FEED_STALE', _('Feed Stale')
 
+    # Nullable for conditions that are about a data feed rather than one tradable asset
+    # (currently FEED_STALE). Price/indicator rules still name an asset; the dispatch and
+    # evaluation paths tolerate ``None`` so the same email/websocket plumbing is reused.
     asset = models.ForeignKey(
         Asset,
         on_delete=models.CASCADE,
         related_name='alert_rules',
         verbose_name=_('Asset'),
+        null=True,
+        blank=True,
     )
     name = models.CharField(_('Name'), max_length=120)
     condition_type = models.CharField(
@@ -147,6 +153,8 @@ class AlertEvent(models.Model):
         on_delete=models.CASCADE,
         related_name='alert_events',
         verbose_name=_('Asset'),
+        null=True,
+        blank=True,
     )
     status = models.CharField(
         _('Status'),
@@ -177,7 +185,8 @@ class AlertEvent(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.alert_rule.name} - {self.asset.symbol} ({self.created_at})"
+        subject = self.asset.symbol if self.asset_id else 'feed'
+        return f"{self.alert_rule.name} - {subject} ({self.created_at})"
 
 
 class SignalEvent(models.Model):

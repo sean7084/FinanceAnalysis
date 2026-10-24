@@ -28,7 +28,7 @@ import tempfile
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,7 @@ import talib
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
+from django.db.models import Sum
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -46,6 +47,7 @@ from apps.etf_rotation import (
     backtest_engine,
     comparison,
     features,
+    position_ledger,
     rotation_engine,
     signals as rotation_signals,
     tasks as etf_tasks,
@@ -71,6 +73,7 @@ from apps.etf_rotation.features import (
     resolve_pool_parameters,
     sessions_to_calendar_days,
 )
+from apps.etf_rotation.management.commands import mark_etf_rotation_positions_daily as ledger_cmd
 from apps.etf_rotation.management.commands import run_etf_rotation_backtest as backtest_cmd
 from apps.etf_rotation.management.commands import sweep_etf_rotation_lstm as sweep_cmd
 from apps.etf_rotation.models import (
@@ -79,7 +82,9 @@ from apps.etf_rotation.models import (
     ETFFeatureSnapshot,
     ETFUniverse,
     ETFRotationBacktest,
+    ETFRotationPosition,
     ETFRotationSignal,
+    ETFRotationSignalRun,
 )
 from apps.etf_rotation.tasks import (
     TUSHARE_AMOUNT_QIAN_YUAN_TO_YUAN,
@@ -1065,6 +1070,8 @@ class BacktestConfigValidationTests(SimpleTestCase):
             {'initial_capital': 0}, {'initial_capital': -480000}, {'max_positions': 0},
             {'momentum_lookback': 0}, {'commission_rate': -0.0003}, {'slippage': -0.01},
             {'min_commission': -5}, {'liquidity_floor_multiple': -10}, {'chunk_trading_days': 0},
+            {'drift_band_fraction': -0.1}, {'drift_band_fraction': 1.5},
+            {'liquidity_mode': 'cap'}, {'adv_participation_cap': -1},
         ):
             with self.subTest(**overrides):
                 with self.assertRaises(backtest_engine.BacktestConfigError):
@@ -1075,6 +1082,10 @@ class BacktestConfigValidationTests(SimpleTestCase):
         self.assertEqual(left.fingerprint(), self.config(momentum_lookback=60).fingerprint())
         self.assertNotEqual(left.fingerprint(), self.config(momentum_lookback=120).fingerprint())
         self.assertNotEqual(left.fingerprint(), self.config(commission_rate=0.0009).fingerprint())
+        # A default change to the execution model must invalidate a stored cursor.
+        self.assertNotEqual(left.fingerprint(), self.config(drift_band_fraction=0.01).fingerprint())
+        self.assertNotEqual(left.fingerprint(), self.config(liquidity_mode='scale').fingerprint())
+        self.assertNotEqual(left.fingerprint(), self.config(adv_participation_cap=0.1).fingerprint())
         self.assertEqual(len(left.fingerprint()), 16)
 
     def test_parameters_record_the_fee_model_and_the_label_block_it_excludes(self):
@@ -1083,6 +1094,551 @@ class BacktestConfigValidationTests(SimpleTestCase):
         self.assertEqual(payload['excluded_label_columns'], list(backtest_engine.LABEL_COLUMNS))
         self.assertEqual(payload['fee_model']['stamp_duty'], 0.0)
         self.assertEqual(payload['start_date'], '2024-01-01')
+
+
+class _BacktestReportHarness:
+    """Shared seam for the report/execution-policy tests: a cached book, no database."""
+
+    DAYS = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)]
+
+    def config(self, **overrides):
+        values = {
+            'start_date': self.DAYS[0], 'end_date': self.DAYS[-1],
+            'initial_capital': 100_000.0,
+            'commission_rate': 0.0003, 'min_commission': 5.0, 'slippage': 0.001,
+            'liquidity_floor_multiple': 0.0,
+            'secondary_benchmark_codes': (), 'compute_proxy_benchmark': False,
+        }
+        values.update(overrides)
+        return backtest_engine.BacktestConfig(**values)
+
+    def context(self, prices, *, snapshots=None, module=None, amounts=None, **overrides):
+        """A context whose price cache is pre-populated, so no data source is consulted."""
+        config = self.config(**overrides)
+        source = SimpleNamespace(
+            benchmark_close=lambda *args, **kwargs: pd.Series(dtype='float64'),
+            snapshots=(lambda session: snapshots) if snapshots is not None else None,
+        )
+        book = backtest_engine.PriceBook(source, self.DAYS[0], self.DAYS[-1], self.DAYS)
+        index = pd.Index(self.DAYS)
+        for code, closes in prices.items():
+            book._cache[code] = {
+                'close': pd.Series(closes, index=index, dtype='float64'),
+                'adj_close': pd.Series(closes, index=index, dtype='float64'),
+                'amount': pd.Series(
+                    [(amounts or {}).get(code, 1e9)] * len(self.DAYS), index=index, dtype='float64',
+                ),
+                'volume': pd.Series([1e7] * len(self.DAYS), index=index, dtype='float64'),
+                'adj_factor': pd.Series([1.0] * len(self.DAYS), index=index, dtype='float64'),
+            }
+        return backtest_engine._Context(
+            config, module=module, book=book, source=source, predictors={},
+        )
+
+    class _StubRotation:
+        """The narrow slice of ``rotation_engine`` that ``_build_plan`` calls."""
+
+        class RotationConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        def __init__(self, turnovers):
+            self.turnovers = list(turnovers)
+            self.built = 0
+
+        def score_snapshots(self, snapshots, **kwargs):
+            return pd.DataFrame({
+                'ts_code': snapshots['ts_code'].tolist(),
+                'score': [0.5] * len(snapshots),
+            })
+
+        def build_rotation_plan(self, scored, snapshots, config, **kwargs):
+            turnover = self.turnovers[min(self.built, len(self.turnovers) - 1)]
+            self.built += 1
+            return SimpleNamespace(
+                legs=[SimpleNamespace(ts_code='512760.SH', weight=0.1)],
+                defensive_asset='511010.SH',
+                defensive_allocation=0.0,
+                rankings=[{'ts_code': '512760.SH', 'score': 0.5}],
+                metadata={'turnover': turnover},
+            )
+
+    def _seeded_context(self, *, min_trade_notional_fraction=0.005, **overrides):
+        ctx = self.context(
+            {'512760.SH': [1.0] * len(self.DAYS)},
+            initial_capital=100_000.0,
+            min_trade_notional_fraction=min_trade_notional_fraction,
+            **overrides,
+        )
+        ctx.state.cash = 90_000.0
+        ctx.state.positions['512760.SH'] = backtest_engine.PositionLot(
+            ts_code='512760.SH', name='半导体ETF', shares=10_000, avg_cost=1.0,
+            cost_notional=10_000.0, entry_date=self.DAYS[0],
+            last_close=1.0, last_close_date=self.DAYS[0], last_adj_factor=1.0,
+        )
+        ctx.state.pending_plan = {
+            'signal_date': self.DAYS[0],
+            'target_weights': {'512760.SH': 0.101},
+            'leg_meta': {},
+        }
+        return ctx
+
+
+class BacktestReportInstrumentationTests(_BacktestReportHarness, SimpleTestCase):
+    """Phase 2: the report explains a run without moving it.
+
+    Every observation is derived from state that already existed (``trade_log``, the
+    persisted curve) or is copied from the selection layer's own turnover metadata, so the
+    equity curve, fills and realised P&L stay a pure function of prices, commission and
+    slippage. The reference rerun's byte-identity against production row 256 is checked
+    out of band; the ledger identities below are the CI-sized version of that gate.
+    """
+
+    def test_the_report_carries_one_entry_per_rebalance(self):
+        turnovers = [
+            {
+                'mode': 'full', 'swaps_used': 1,
+                'entries': [{'ts_code': '512760.SH', 'rank': 1, 'reason': 'vacant_slot'}],
+                'exits': [{'ts_code': '515980.SH', 'reason': 'ineligible'}],
+                'refills': 1,
+                'displacements': [{'ts_code': '515980.SH', 'rank': 4, 'replaced_by': '512760.SH'}],
+            },
+            {
+                'mode': 'kept', 'swaps_used': 0, 'entries': [],
+                'exits': [], 'refills': 0, 'displacements': [],
+            },
+        ]
+        module = self._StubRotation(turnovers)
+        snapshots = pd.DataFrame({
+            'ts_code': ['512760.SH', '515980.SH'],
+            'name': ['半导体ETF', '芯片ETF'],
+            'category': ['SECTOR_TECH', 'SECTOR_TECH'],
+            'mom_60d': [0.3, 0.1],
+        })
+        ctx = self.context({}, snapshots=snapshots, module=module)
+        ctx.state.equity_curve = [
+            {'date': day.isoformat(), 'equity': 100_000.0, 'cash': 100_000.0,
+             'holdings': 0.0, 'positions': 0, 'drawdown': 0.0}
+            for day in self.DAYS[:2]
+        ]
+
+        backtest_engine._build_plan(ctx, self.DAYS[0], self.DAYS[1])
+        backtest_engine._build_plan(ctx, self.DAYS[1], self.DAYS[2])
+        report = backtest_engine._finalize_metrics(
+            ctx, ctx.config, ctx.source, self.DAYS[:2],
+        )['report']
+
+        self.assertEqual(report['counters']['rebalances'], 2)
+        self.assertEqual(report['counters']['signals_generated'], 2)
+        self.assertEqual(
+            set(report['rebalances'][0]),
+            {'signal_date', 'execute_date', 'mode', 'swaps_used', 'entries', 'exits',
+             'refills', 'displacements'},
+        )
+        self.assertEqual(
+            [(item['signal_date'], item['execute_date']) for item in report['rebalances']],
+            [('2024-01-02', '2024-01-03'), ('2024-01-03', '2024-01-04')],
+        )
+        self.assertEqual(report['rebalances'][0]['mode'], 'full')
+        self.assertEqual(report['rebalances'][0]['swaps_used'], 1)
+        self.assertEqual(
+            report['rebalances'][0]['entries'],
+            [{'ts_code': '512760.SH', 'rank': 1, 'reason': 'vacant_slot'}],
+        )
+        self.assertEqual(
+            report['rebalances'][0]['displacements'],
+            [{'ts_code': '515980.SH', 'rank': 4, 'replaced_by': '512760.SH'}],
+        )
+        self.assertEqual(report['rebalances'][0]['refills'], 1)
+        # A plan that changed nothing still leaves a record: no fill row could tell this story.
+        self.assertEqual(report['rebalances'][1]['mode'], 'kept')
+        self.assertEqual(report['rebalances'][1]['swaps_used'], 0)
+
+    def test_drift_and_discretionary_turnover_are_split_by_fill_reason(self):
+        days = self.DAYS
+        equity = pd.Series(
+            [100.0, 101.0, 102.0, 103.0], index=pd.Index(days), dtype='float64',
+        )
+        trade_log = [
+            {'date': days[0].isoformat(), 'status': 'FILLED', 'reason': 'rebalance_up', 'notional': 10.0},
+            {'date': days[1].isoformat(), 'status': 'FILLED', 'reason': 'rebalance_down', 'notional': 20.0},
+            {'date': days[2].isoformat(), 'status': 'FILLED', 'reason': 'rotated_out', 'notional': 30.0},
+            {'date': days[3].isoformat(), 'status': 'SKIPPED_NO_PRICE', 'reason': 'rotated_out', 'notional': 0.0},
+            {'date': days[3].isoformat(), 'status': 'REJECTED_LIQUIDITY', 'reason': 'rotated_out', 'notional': 0.0},
+        ]
+
+        facets = backtest_engine._turnover_facets(days, equity, trade_log)
+
+        self.assertEqual(facets['buckets']['rebalance_up'], 'drift')
+        self.assertEqual(facets['buckets']['rebalance_down'], 'drift')
+        self.assertEqual(facets['buckets']['rotated_out'], 'discretionary')
+        self.assertEqual(
+            facets['notional'],
+            {'drift_yuan': 30.0, 'discretionary_yuan': 30.0, 'other_yuan': 0.0, 'total_yuan': 60.0},
+        )
+        self.assertEqual(
+            facets['by_reason_yuan'],
+            {'rebalance_down': 20.0, 'rebalance_up': 10.0, 'rotated_out': 30.0},
+        )
+        self.assertAlmostEqual(facets['share']['drift_share'], 0.5)
+        self.assertAlmostEqual(facets['share']['discretionary_share'], 0.5)
+        self.assertAlmostEqual(facets['share']['other_share'], 0.0)
+        # The two buckets plus ``other`` must reconcile with the headline column exactly.
+        traded = pd.Series([10.0, 20.0, 30.0, 0.0], index=pd.Index(days), dtype='float64')
+        self.assertAlmostEqual(
+            facets['annualized']['total'],
+            finance_metrics.annualized_turnover(traded, equity),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            facets['annualized']['drift'],
+            finance_metrics.annualized_turnover(
+                pd.Series([10.0, 20.0, 0.0, 0.0], index=pd.Index(days), dtype='float64'), equity,
+            ),
+            places=12,
+        )
+
+    def test_a_closed_trade_pays_its_own_slippage(self):
+        ctx = self.context({'512760.SH': [10.0, 11.0, 11.0, 11.0]})
+
+        self.assertTrue(backtest_engine._buy(
+            ctx, '512760.SH', 1_000, self.DAYS[0], weight=0.1,
+            reason='rebalance_up', signal_date=None,
+        ))
+        self.assertTrue(backtest_engine._sell(
+            ctx, '512760.SH', 1_000, self.DAYS[1], weight=0.0,
+            reason='rotated_out', signal_date=None,
+        ))
+
+        closed = ctx.state.closed_trades[0]
+        # 1000 shares, 10 -> 11 raw, 10 bps slippage each way, two 5 yuan floors.
+        self.assertAlmostEqual(ctx.state.total_commission, 10.0, places=9)
+        self.assertAlmostEqual(ctx.state.total_slippage, 21.0, places=9)
+        self.assertAlmostEqual(closed['position_fees_paid'], 31.0, places=9)
+        self.assertAlmostEqual(closed['pnl'], 969.0, places=9)
+        self.assertAlmostEqual(ctx.state.cash, 100_969.0, places=6)
+        self.assertEqual(ctx.state.min_commission_bound_fills, 2)
+        # ``pnl`` is untouched by the fee-line change: the gross price move is fully
+        # explained by realised P&L plus every cost the leg actually paid.
+        self.assertAlmostEqual(closed['pnl'] + closed['position_fees_paid'], 1_000.0, places=9)
+
+    def test_the_default_min_trade_fraction_is_the_hardcode_it_replaces(self):
+        default = backtest_engine.BacktestConfig(
+            start_date=self.DAYS[0], end_date=self.DAYS[-1],
+        )
+        self.assertEqual(default.min_trade_notional_fraction, 0.005)
+        self.assertEqual(
+            ETFRotationBacktest._meta.get_field('min_trade_notional_fraction').default,
+            0.005,
+        )
+
+        # One board lot (100 yuan) against a 100,000 yuan book: suppressed at 0.5%, filled
+        # at 0.05%. The default is the 0.5% that used to be written into ``_execute_plan``.
+        suppressed = self._seeded_context()
+        backtest_engine._execute_plan(suppressed, self.DAYS[1])
+        self.assertEqual(suppressed.state.sub_minimum_deltas, 1)
+        self.assertEqual(suppressed.state.trade_log, [])
+
+        executed = self._seeded_context(min_trade_notional_fraction=0.0005)
+        backtest_engine._execute_plan(executed, self.DAYS[1])
+        self.assertEqual(executed.state.sub_minimum_deltas, 0)
+        self.assertEqual([item['status'] for item in executed.state.trade_log], ['FILLED'])
+        self.assertEqual(executed.state.trade_log[0]['shares'], 100)
+        self.assertAlmostEqual(executed.state.trade_log[0]['weight'], 0.101)
+
+    def test_sub_window_facets_cover_the_window_without_overlap_or_gap(self):
+        days = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(9)]
+        equity = pd.Series(
+            [100.0, 102.0, 101.0, 104.0, 103.0, 106.0, 105.0, 108.0, 107.0],
+            index=pd.Index(days), dtype='float64',
+        )
+        traded = pd.Series(
+            [0.0, 10.0, 0.0, 20.0, 0.0, 30.0, 0.0, 40.0, 0.0],
+            index=pd.Index(days), dtype='float64',
+        )
+
+        facets = backtest_engine._sub_window_facets(equity, traded)
+
+        self.assertEqual([facet['block'] for facet in facets], [1, 2, 3])
+        self.assertEqual(facets[0]['base_date'], days[0].isoformat())
+        for previous, current in zip(facets, facets[1:]):
+            self.assertEqual(current['base_date'], previous['end_date'])
+            self.assertEqual(
+                days.index(date.fromisoformat(current['start_date'])),
+                days.index(date.fromisoformat(previous['end_date'])) + 1,
+            )
+        self.assertEqual(sum(facet['sessions'] for facet in facets), len(days) - 1)
+        self.assertAlmostEqual(
+            math.prod(1.0 + facet['total_return'] for facet in facets),
+            float(equity.iloc[-1]) / float(equity.iloc[0]),
+            places=12,
+        )
+        for facet in facets:
+            self.assertEqual(set(facet), {
+                'block', 'start_date', 'end_date', 'base_date', 'sessions',
+                'total_return', 'max_drawdown', 'sharpe_ratio', 'turnover_annual',
+                'traded_notional_yuan',
+            })
+
+    def test_the_resolved_model_version_is_recorded_and_null_for_rule(self):
+        rule = pd.DataFrame({'ts_code': ['512760.SH'], 'score': [1.0]})
+        rule.attrs['rotation'] = {'model_type': 'RULE'}
+        self.assertEqual(
+            backtest_engine._model_version_summary(rule, 'RULE'), {'RULE': None},
+        )
+
+        ml = pd.DataFrame({'ts_code': ['512760.SH'], 'score': [1.0]})
+        ml.attrs['rotation'] = {
+            'model_version': {'id': 7, 'version': '20261024', 'model_type': 'LIGHTGBM'},
+        }
+        self.assertEqual(
+            backtest_engine._model_version_summary(ml, 'LIGHTGBM'),
+            {'LIGHTGBM': {'id': 7, 'version': '20261024', 'model_type': 'LIGHTGBM'}},
+        )
+
+        ensemble = pd.DataFrame({'ts_code': ['512760.SH'], 'score': [1.0]})
+        ensemble.attrs['rotation'] = {
+            'source_metadata': {
+                'RULE': {'model_type': 'RULE'},
+                'LIGHTGBM': {'model_version': {'id': 7}},
+            },
+            'ensemble': {'skipped_sources': ['LSTM']},
+        }
+        self.assertEqual(
+            backtest_engine._model_version_summary(ensemble, 'ENSEMBLE'),
+            {'RULE': None, 'LIGHTGBM': {'id': 7}, 'LSTM': None},
+        )
+
+        # The identity travels from the loader-attached callable, not a second "active
+        # model" query, so the report names the version that actually ranked the run.
+        def predictor(frame):
+            return pd.DataFrame({
+                'ts_code': frame['ts_code'].tolist(),
+                'score': [1.0] * len(frame),
+            })
+
+        predictor.model_version = {
+            'id': 7, 'version': 'v1', 'model_type': 'LIGHTGBM', 'artifact_path': '/tmp/x',
+        }
+        scored = rotation_engine.score_snapshots(
+            pd.DataFrame({'ts_code': ['A', 'B'], 'mom_60d': [0.1, 0.2]}),
+            model_type='LIGHTGBM',
+            momentum_lookback=60,
+            lgb_predictor=predictor,
+        )
+        self.assertEqual(
+            scored.attrs['rotation']['model_version'],
+            {'id': 7, 'version': 'v1', 'model_type': 'LIGHTGBM'},
+        )
+
+    def test_the_reference_configuration_is_byte_identical_after_instrumentation(self):
+        """The ledger identity the reference row's rerun checks at production scale.
+
+        Row 256 is rerun out of band (equity curve digest and all 597 fills); this pins the
+        same arithmetic in CI. Instrumentation adds counters and a report-only fee line, but
+        cash, marks and realised P&L must remain a pure function of price, commission and
+        slippage, and the fee line must reconcile with the gross move.
+        """
+        ctx = self.context({'512760.SH': [10.0, 10.0, 11.0, 11.0]}, initial_capital=480_000.0)
+
+        backtest_engine._mark_equity(ctx, self.DAYS[0])
+        self.assertTrue(backtest_engine._buy(
+            ctx, '512760.SH', 1_000, self.DAYS[1], weight=0.02,
+            reason='rebalance_up', signal_date=self.DAYS[0],
+        ))
+        backtest_engine._mark_equity(ctx, self.DAYS[1])
+        self.assertTrue(backtest_engine._sell(
+            ctx, '512760.SH', 1_000, self.DAYS[2], weight=0.0,
+            reason='rotated_out', signal_date=self.DAYS[1],
+        ))
+        backtest_engine._mark_equity(ctx, self.DAYS[2])
+
+        self.assertEqual(
+            [point['equity'] for point in ctx.state.equity_curve],
+            [480_000.0, 479_985.0, 480_969.0],
+        )
+        self.assertEqual(
+            [point['cash'] for point in ctx.state.equity_curve],
+            [480_000.0, 469_985.0, 480_969.0],
+        )
+        closed = ctx.state.closed_trades[0]
+        self.assertAlmostEqual(closed['pnl'], 969.0, places=9)
+        self.assertAlmostEqual(closed['position_fees_paid'], 31.0, places=9)
+        self.assertAlmostEqual(ctx.state.total_commission + ctx.state.total_slippage, 31.0, places=9)
+        summary = finance_metrics.summarize_performance(
+            pd.Series(
+                [point['equity'] for point in ctx.state.equity_curve],
+                index=pd.Index([date.fromisoformat(point['date']) for point in ctx.state.equity_curve]),
+                dtype='float64',
+            ),
+        )
+        self.assertAlmostEqual(summary['total_return'], 480_969.0 / 480_000.0 - 1.0, places=12)
+
+
+class BacktestExecutionPolicyTests(_BacktestReportHarness, SimpleTestCase):
+    """Phase 3: the band and the capacity cap, both off by default.
+
+    ``drift_band_fraction=0`` and ``liquidity_mode='reject'``/``cap=0`` leave the Phase 2
+    arithmetic untouched; these tests pin the opt-in branch and the resume contract around
+    it.
+    """
+
+    def test_a_band_of_zero_suppresses_nothing(self):
+        executed = self._seeded_context(min_trade_notional_fraction=0.0005, drift_band_fraction=0.0)
+        backtest_engine._execute_plan(executed, self.DAYS[1])
+        self.assertEqual(executed.state.band_suppressed_deltas, 0)
+        self.assertEqual(executed.state.sub_minimum_deltas, 0)
+        self.assertEqual([item['status'] for item in executed.state.trade_log], ['FILLED'])
+
+        # The same 100 yuan delta, below 2% of a 10,100 yuan target, now drifts instead.
+        banded = self._seeded_context(min_trade_notional_fraction=0.0005, drift_band_fraction=0.02)
+        backtest_engine._execute_plan(banded, self.DAYS[1])
+        self.assertEqual(banded.state.band_suppressed_deltas, 1)
+        self.assertEqual(banded.state.sub_minimum_deltas, 0)
+        self.assertEqual(banded.state.trade_log, [])
+
+    def test_the_band_never_suppresses_a_mandatory_exit(self):
+        ctx = self._seeded_context(min_trade_notional_fraction=0.0005, drift_band_fraction=0.5)
+        ctx.state.pending_plan = {
+            'signal_date': self.DAYS[0],
+            'target_weights': {},
+            'leg_meta': {},
+        }
+
+        backtest_engine._execute_plan(ctx, self.DAYS[1])
+
+        self.assertEqual([item['reason'] for item in ctx.state.trade_log], ['rotated_out'])
+        self.assertEqual(ctx.state.trade_log[0]['status'], 'FILLED')
+        self.assertEqual(ctx.state.trade_log[0]['shares'], 10_000)
+        self.assertEqual(ctx.state.band_suppressed_deltas, 0)
+        self.assertNotIn('512760.SH', ctx.state.positions)
+
+    def test_a_paused_banded_run_resumes_to_the_same_curve(self):
+        def seeded():
+            ctx = self.context(
+                {'512760.SH': [1.0] * len(self.DAYS), '515980.SH': [5.0] * len(self.DAYS)},
+                initial_capital=100_000.0,
+                min_trade_notional_fraction=0.0005,
+                drift_band_fraction=0.02,
+            )
+            ctx.state.cash = 90_000.0
+            ctx.state.positions['512760.SH'] = backtest_engine.PositionLot(
+                ts_code='512760.SH', name='半导体ETF', shares=10_000, avg_cost=1.0,
+                cost_notional=10_000.0, entry_date=self.DAYS[0],
+                last_close=1.0, last_close_date=self.DAYS[0], last_adj_factor=1.0,
+            )
+            ctx.state.equity_curve = [
+                {'date': day.isoformat(), 'equity': 100_000.0, 'cash': 90_000.0,
+                 'holdings': 10_000.0, 'positions': 1, 'drawdown': 0.0}
+                for day in self.DAYS[:2]
+            ]
+            ctx.state.pending_plan = {
+                'signal_date': self.DAYS[0],
+                # One banded no-op (512760) and one real buy (515980) in the same plan.
+                'target_weights': {'512760.SH': 0.101, '515980.SH': 0.02},
+                'leg_meta': {},
+            }
+            return ctx
+
+        live = seeded()
+        run = MagicMock()
+        run.report = None
+        run.equity_curve = []
+        run.trade_log = []
+        backtest_engine._persist_progress(run, live, cursor=2, total_sessions=4)
+
+        resumed = seeded()
+        resumed.state.cash = 0.0
+        resumed.state.positions.clear()
+        resumed.state.pending_plan = None
+        self.assertEqual(backtest_engine._restore_state(run, resumed), 2)
+        self.assertEqual(resumed.state.pending_plan['target_weights'], live.state.pending_plan['target_weights'])
+
+        backtest_engine._execute_plan(live, self.DAYS[1])
+        backtest_engine._execute_plan(resumed, self.DAYS[1])
+
+        self.assertEqual(resumed.state.band_suppressed_deltas, 1)
+        self.assertEqual(resumed.state.band_suppressed_deltas, live.state.band_suppressed_deltas)
+        self.assertEqual(resumed.state.trade_log, live.state.trade_log)
+        self.assertAlmostEqual(resumed.state.cash, live.state.cash, places=9)
+        self.assertEqual(
+            {code: lot.shares for code, lot in resumed.state.positions.items()},
+            {code: lot.shares for code, lot in live.state.positions.items()},
+        )
+
+        # A checkpoint taken after the suppressed plan must carry the non-zero counter
+        # and the filled leg, not just the cash balance.
+        after = MagicMock()
+        after.report = None
+        after.equity_curve = []
+        after.trade_log = []
+        backtest_engine._persist_progress(after, live, cursor=2, total_sessions=4)
+        restored = seeded()
+        restored.state.cash = 0.0
+        restored.state.positions.clear()
+        backtest_engine._restore_state(after, restored)
+        self.assertEqual(restored.state.band_suppressed_deltas, 1)
+        self.assertEqual(
+            restored.state.positions['515980.SH'].shares,
+            live.state.positions['515980.SH'].shares,
+        )
+
+    def test_capacity_scaling_renormalises_before_the_defensive_fallback(self):
+        ctx = self.context(
+            {'A': [1.0] * len(self.DAYS), 'B': [1.0] * len(self.DAYS), 'D': [1.0] * len(self.DAYS)},
+            amounts={'A': 300_000.0, 'B': 500_000.0, 'D': 1e9},
+            initial_capital=100_000.0,
+            defensive_asset='D',
+            liquidity_floor_multiple=10.0,
+            liquidity_lookback_sessions=2,
+            liquidity_mode='scale',
+            adv_participation_cap=0.1,
+        )
+
+        kept, rejected = backtest_engine._apply_liquidity_floor(
+            ctx, {'A': 0.5, 'B': 0.4, 'D': 0.1}, self.DAYS[-1],
+        )
+
+        # A is clipped 0.5 -> 0.3 (cap 0.1 x 300k / 100k). B absorbs 0.1 of the freed
+        # weight up to its own 0.5 cap; only the last 0.1 lands on the defensive sleeve.
+        self.assertEqual(rejected, [])
+        self.assertAlmostEqual(kept['A'], 0.3, places=12)
+        self.assertAlmostEqual(kept['B'], 0.5, places=12)
+        self.assertAlmostEqual(kept['D'], 0.2, places=12)
+        self.assertAlmostEqual(sum(kept.values()), 1.0, places=12)
+        self.assertEqual(len(ctx.state.capacity_scalings), 1)
+        scaling = ctx.state.capacity_scalings[0]
+        self.assertEqual(scaling['ts_code'], 'A')
+        self.assertAlmostEqual(scaling['planned_weight'], 0.5)
+        self.assertAlmostEqual(scaling['capacity_weight'], 0.3)
+        self.assertAlmostEqual(scaling['capacity_notional_yuan'], 30_000.0)
+
+    def test_reject_mode_is_untouched_by_the_capacity_knobs(self):
+        def run(cap):
+            ctx = self.context(
+                {'A': [1.0] * len(self.DAYS), 'B': [1.0] * len(self.DAYS), 'D': [1.0] * len(self.DAYS)},
+                amounts={'A': 300_000.0, 'B': 500_000.0, 'D': 1e9},
+                initial_capital=100_000.0,
+                defensive_asset='D',
+                liquidity_floor_multiple=10.0,
+                liquidity_lookback_sessions=2,
+                liquidity_mode='reject',
+                adv_participation_cap=cap,
+            )
+            return backtest_engine._apply_liquidity_floor(
+                ctx, {'A': 0.5, 'B': 0.4, 'D': 0.1}, self.DAYS[-1],
+            )
+
+        with_cap, rejected = run(0.1)
+        without_cap, baseline_rejected = run(0.0)
+
+        self.assertEqual(with_cap, without_cap)
+        self.assertEqual(rejected, baseline_rejected)
+        # A needs 500k of daily turnover for a 50k leg at the 10x floor and only trades
+        # 300k, so reject mode drops it into the defensive sleeve -- the cap never runs.
+        self.assertEqual([item['ts_code'] for item in rejected], ['A'])
+        self.assertAlmostEqual(with_cap['D'], 0.6, places=12)
+        self.assertNotIn('A', with_cap)
 
 
 class FeatureWhitelistTests(SimpleTestCase):
@@ -2030,7 +2586,8 @@ class EtfBacktestCreateGuardrailTests(_EtfBacktestLifecycleMixin, TestCase):
         """
         response, _ = self._post_and_commit(
             commission_rate=0.0, min_commission=0, slippage=0.0,
-            liquidity_floor_multiple=0, benchmark_code='000300.SH', walk_forward_steps=6,
+            liquidity_floor_multiple=0, min_trade_notional_fraction=0.0,
+            benchmark_code='000300.SH', walk_forward_steps=6,
         )
 
         self.assertEqual(response.status_code, 202)
@@ -2039,6 +2596,7 @@ class EtfBacktestCreateGuardrailTests(_EtfBacktestLifecycleMixin, TestCase):
         self.assertEqual(float(run.min_commission), 5.0)
         self.assertEqual(run.slippage, 0.001)
         self.assertEqual(run.liquidity_floor_multiple, 10.0)
+        self.assertEqual(run.min_trade_notional_fraction, 0.005)
         self.assertEqual(run.benchmark_code, 'H00905.CSI')
         self.assertEqual(run.walk_forward_steps, 0)
 
@@ -3934,6 +4492,136 @@ class GridResumeKeyTests(SimpleTestCase):
             self.assertEqual(len(names), len(set(names)), f'{prefix} produced duplicate row names')
 
 
+class WalkForwardRuleTests(SimpleTestCase):
+    """Phase 4: the RULE selection process is scored only on data each fold never trained on."""
+
+    FIRST = date(2016, 1, 4)
+
+    def _sessions(self, count):
+        return [self.FIRST + timedelta(days=offset) for offset in range(count)]
+
+    def _combo(self, frequency, positions, lookback, absolute, weighting):
+        return {
+            'rebalance_frequency': frequency, 'max_positions': positions,
+            'absolute_momentum_filter': absolute, 'momentum_lookback': lookback,
+            'weighting': weighting,
+        }
+
+    def test_fold_plan_refuses_to_pad_when_the_panel_is_short(self):
+        """A short panel loses folds; it must never gain a boundary no session sits on.
+
+        ``expanding_folds`` clamps a fold's validation end, not its start, so an
+        over-requested plan can emit a fold whose window is empty. The wrapper drops the
+        requested count until every fold scores at least one session -- 255 dates seat
+        four one-session folds, not six, and 250 dates seat none.
+        """
+        self.assertEqual(backtest_cmd.walk_forward_folds(self._sessions(250), 6), [])
+        narrow = self._sessions(255)
+        folds = backtest_cmd.walk_forward_folds(narrow, 6)
+        self.assertEqual(len(folds), 4)
+        self.assertTrue(all(fold.valid_start <= fold.valid_end for fold in folds))
+        for fold in folds:
+            self.assertIn(fold.valid_start, narrow)
+            self.assertIn(fold.valid_end, narrow)
+            self.assertEqual(fold.train_start, narrow[0])
+            self.assertLess(fold.train_end, fold.valid_start)
+
+    def test_a_fold_never_sees_data_after_its_training_window(self):
+        """The selection grid's window ends at ``train_end``; validation starts after it."""
+        sessions = self._sessions(600)
+        folds = backtest_cmd.walk_forward_folds(sessions, 2)
+        self.assertEqual(len(folds), 2)
+        combos = [
+            self._combo('MONTHLY', 3, 20, True, 'score'),
+            self._combo('WEEKLY', 5, 60, False, 'equal'),
+        ]
+        calls = []
+
+        def fake_run(**kwargs):
+            calls.append(kwargs)
+            return {
+                'metrics': {'sharpe_ratio': 0.5, 'turnover_annual': 2.0, 'total_return': 0.1,
+                            'annualized_return': 0.05, 'max_drawdown': 0.02,
+                            'alpha_vs_benchmark': 0.01},
+                'report': {'counters': {'rebalances': 8}},
+            }
+
+        inner = MagicMock()
+        inner.sessions.return_value = sessions
+        with patch.object(backtest_cmd, 'DatabaseDataSource', return_value=inner), \
+                patch.object(backtest_cmd, 'run_rotation_backtest', side_effect=fake_run), \
+                patch.object(backtest_cmd, 'grid_combinations', return_value=combos):
+            call_command(
+                'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
+                '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat(),
+                stdout=io.StringIO(),
+            )
+
+        self.assertEqual(len(calls), len(folds) * (len(combos) + 1))
+        for fold in folds:
+            train_calls = [
+                call for call in calls
+                if (call['start_date'], call['end_date']) == (fold.train_start, fold.train_end)
+            ]
+            self.assertEqual(len(train_calls), len(combos))
+            valid_calls = [
+                call for call in calls
+                if (call['start_date'], call['end_date']) == (fold.valid_start, fold.valid_end)
+            ]
+            self.assertEqual(len(valid_calls), 1)
+            # The declared invariant behind the window choice: no fold's selection run
+            # can reach a bar its own validation block is scored on.
+            self.assertLess(fold.train_end, fold.valid_start)
+
+    def test_the_winner_is_chosen_by_the_declared_criterion(self):
+        """Highest Sharpe wins; a dead heat goes to the lower turnover, never to row order."""
+        def row(name, sharpe, turnover, frequency='MONTHLY'):
+            return {
+                **self._combo(frequency, 3, 20, True, 'score'), 'name': name,
+                'metrics': {'sharpe_ratio': sharpe, 'turnover_annual': turnover},
+            }
+
+        rows = [
+            row('rule-a-high-turnover', 0.9, 30.0),
+            row('rule-b-low-turnover', 0.9, 10.0),
+            row('rule-c-lower-sharpe', 0.8, 1.0, 'WEEKLY'),
+        ]
+        self.assertEqual(
+            backtest_cmd.select_walk_forward_winner(rows)['name'], 'rule-b-low-turnover'
+        )
+        rows.append(row('rule-d-unmeasured', float('nan'), 0.1, 'BIWEEKLY'))
+        self.assertEqual(
+            backtest_cmd.select_walk_forward_winner(rows)['name'], 'rule-b-low-turnover'
+        )
+        with self.assertRaises(ValueError):
+            backtest_cmd.select_walk_forward_winner([row('rule-e', None, 1.0)])
+
+    def test_the_fold_table_reports_its_own_rebalance_counts(self):
+        """Each fold's line carries its own trade count -- the reading floor the plan sets."""
+        def outcome(index, rebalances):
+            return {
+                'fold': {
+                    'fold_index': index, 'train_start': '2016-01-29', 'train_end': '2018-01-02',
+                    'valid_start': '2018-01-03', 'valid_end': '2019-01-02',
+                },
+                'winner': backtest_cmd.REFERENCE_RULE_COMBO,
+                'winner_name': backtest_cmd.grid_stem(backtest_cmd.REFERENCE_RULE_COMBO),
+                'train_metrics': {'sharpe_ratio': 0.5}, 'train_rebalances': rebalances + 100,
+                'valid_metrics': {
+                    'total_return': 0.1, 'annualized_return': 0.05, 'max_drawdown': 0.02,
+                    'sharpe_ratio': 0.4, 'alpha_vs_benchmark': 0.01, 'turnover_annual': 2.0,
+                },
+                'valid_rebalances': rebalances, 'reference': True,
+            }
+
+        lines = backtest_cmd.walk_forward_table([outcome(0, 7), outcome(1, 21)])
+        self.assertEqual(len(lines), 3)
+        self.assertIn('reb', lines[0].split())
+        for line, expected in zip(lines[1:], (7, 21)):
+            self.assertEqual(int(line.split()[-2]), expected)
+            self.assertEqual(line.split()[-1], 'yes')
+
+
 class SingleRunKwargForwardingTests(SimpleTestCase):
     """Every flag the single-run path accepts must arrive in a form the engine accepts.
 
@@ -4097,6 +4785,134 @@ class BlindCrossSectionGuardTests(_PanelSeedMixin, TestCase):
             trade_date=self.pool_date, model_type='RULE', dry_run=True,
         )
         self.assertGreater(summary['scored_size'], 0)
+
+
+class SignalRunLedgerTests(_PanelSeedMixin, TestCase):
+    """Every attempt leaves a row, and a refusal still fails the task.
+
+    Before this table existed a refused signal was only a worker log line: the page could not
+    distinguish "the model said hold" from "the job never produced an answer". The row is
+    written by the command so manual runs and beat runs are equally visible.
+    """
+
+    def _refuse_through_the_task(self):
+        self.seed()
+        self.compute_at_pool_date()
+        ETFFeatureSnapshot.objects.filter(date=self.pool_date).update(rs_vs_benchmark_60d=None)
+        # One session of benchmark history is missing, the 2026-10-22 shape.
+        BenchmarkIndexDaily.objects.filter(trade_date=self.days[-1]).delete()
+        with self.assertRaises(CommandError):
+            etf_tasks.generate_etf_rotation_signal_daily.run()
+        return ETFRotationSignalRun.objects.get()
+
+    def test_a_refused_signal_writes_one_run_row_and_still_fails_the_task(self):
+        run = self._refuse_through_the_task()
+        self.assertEqual(run.outcome, ETFRotationSignalRun.Outcome.REFUSED)
+        self.assertEqual(run.reason_code, 'blind_cross_section')
+        self.assertEqual(run.signal_type, ETFRotationSignalRun.SignalType.MONTHLY)
+        self.assertEqual(run.date, self.pool_date)
+        self.assertEqual(ETFRotationSignal.objects.filter(date=self.pool_date).count(), 0)
+
+    def test_the_run_row_diagnostics_name_the_null_column_and_the_lagging_benchmark(self):
+        run = self._refuse_through_the_task()
+        eligible = ETFFeatureSnapshot.objects.filter(
+            date=self.pool_date, is_eligible=True,
+        ).count()
+        self.assertEqual(run.diagnostics['null_counts']['rs_vs_benchmark_60d'], eligible)
+        self.assertEqual(run.diagnostics['benchmark_code'], 'H00905.CSI')
+        self.assertEqual(run.diagnostics['benchmark_lag_sessions'], 1)
+        self.assertEqual(str(run.diagnostics['latest_benchmark_date']), str(self.days[-2]))
+
+    def test_a_successful_signal_writes_an_ok_run_row(self):
+        self.seed()
+        self.compute_at_pool_date()
+        call_command(
+            'generate_etf_rotation_signal',
+            date=self.pool_date.isoformat(),
+            verbosity=0,
+        )
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.outcome, ETFRotationSignalRun.Outcome.OK)
+        self.assertEqual(run.reason_code, '')
+        self.assertIsNotNone(run.duration_ms)
+        self.assertTrue(str(run.diagnostics['model_version']).startswith('rule-v1'))
+        self.assertTrue(ETFRotationSignal.objects.filter(date=self.pool_date).exists())
+
+    def test_a_dry_run_still_writes_nothing(self):
+        self.seed()
+        self.compute_at_pool_date()
+        call_command(
+            'generate_etf_rotation_signal',
+            date=self.pool_date.isoformat(),
+            dry_run=True,
+            verbosity=0,
+        )
+        self.assertEqual(ETFRotationSignalRun.objects.count(), 0)
+
+
+class FeedHealthTests(TestCase):
+    """A lagging benchmark or feature run becomes a FEED_STALE row within one beat cycle."""
+
+    def setUp(self):
+        self.days = _session_grid(5, last=POOL_DATE)
+        self.fund = _seed_etf('512760.SH', name='半导体ETF')
+        _seed_bars(self.fund, self.days, [10.0] * len(self.days))
+        _seed_benchmark(self.days[:-1])
+
+    def test_a_benchmark_lag_produces_a_feed_stale_row_within_one_beat_cycle(self):
+        ETFFeatureSnapshot.objects.create(
+            etf=self.fund, date=self.days[-1], is_eligible=True,
+        )
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'FEED_STALE')
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.date, self.days[-1])
+        self.assertEqual(run.signal_type, ETFRotationSignalRun.SignalType.HEALTH)
+        self.assertEqual(run.outcome, ETFRotationSignalRun.Outcome.FEED_STALE)
+        self.assertEqual(run.reason_code, 'benchmark_lag')
+        self.assertIn('H00905.CSI', run.message)
+        self.assertEqual(run.diagnostics['benchmark_lag_sessions'], 1)
+
+        # The same beat on the same day must not append a second identical row.
+        again = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertFalse(again['created'])
+        self.assertEqual(ETFRotationSignalRun.objects.count(), 1)
+
+    def test_a_feature_lag_is_named_when_the_benchmark_is_current(self):
+        _seed_benchmark([self.days[-1]])
+        ETFFeatureSnapshot.objects.create(
+            etf=self.fund, date=self.days[-2], is_eligible=True,
+        )
+        etf_tasks.check_etf_rotation_feed_health.run()
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.reason_code, 'feature_lag')
+        self.assertEqual(run.diagnostics['feature_lag_sessions'], 1)
+
+    def test_a_current_feed_writes_nothing(self):
+        _seed_benchmark([self.days[-1]])
+        ETFFeatureSnapshot.objects.create(
+            etf=self.fund, date=self.days[-1], is_eligible=True,
+        )
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'OK')
+        self.assertEqual(ETFRotationSignalRun.objects.count(), 0)
+
+    def test_an_absent_benchmark_is_stale_not_ok(self):
+        # No rows is not lag zero: a feed that never synced must not pass the check.
+        BenchmarkIndexDaily.objects.all().delete()
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'FEED_STALE')
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.reason_code, 'benchmark_missing')
+        self.assertTrue(run.diagnostics['benchmark_missing'])
+
+    def test_an_absent_feature_snapshot_is_stale_not_ok(self):
+        _seed_benchmark([self.days[-1]])
+        result = etf_tasks.check_etf_rotation_feed_health.run()
+        self.assertEqual(result['outcome'], 'FEED_STALE')
+        run = ETFRotationSignalRun.objects.get()
+        self.assertEqual(run.reason_code, 'feature_missing')
+        self.assertTrue(run.diagnostics['feature_missing'])
 
 
 # ---------------------------------------------------------------------------
@@ -4269,7 +5085,7 @@ class SignalFreshnessEndpointTests(TestCase):
         self.assertEqual(
             set(response.data),
             {'signal_date', 'latest_snapshot_date', 'latest_bar_date', 'lag_sessions',
-             'is_stale', 'model_version'},
+             'is_stale', 'model_version', 'last_attempt', 'feed_stale'},
         )
         return response.data
 
@@ -4295,5 +5111,320 @@ class SignalFreshnessEndpointTests(TestCase):
         data = self._get()
         self.assertIsNone(data['signal_date'])
         self.assertFalse(data['is_stale'])
+        self.assertIsNone(data['last_attempt'])
+        self.assertIsNone(data['feed_stale'])
+
+    def test_the_last_attempt_is_reported_even_when_it_refused(self):
+        self._signal(self.days[-1])
+        ETFRotationSignalRun.objects.create(
+            date=self.days[-1],
+            signal_type=ETFRotationSignalRun.SignalType.MONTHLY,
+            outcome=ETFRotationSignalRun.Outcome.REFUSED,
+            reason_code='blind_cross_section',
+            message='nothing could be scored',
+        )
+        data = self._get()
+        self.assertEqual(data['last_attempt']['outcome'], 'REFUSED')
+        self.assertEqual(data['last_attempt']['reason_code'], 'blind_cross_section')
+        self.assertEqual(str(data['last_attempt']['date']), str(self.days[-1]))
+
+    def test_a_feed_defect_on_the_newest_bar_is_reported_separately_from_signal_lag(self):
+        self._signal(self.days[-1])
+        ETFRotationSignalRun.objects.create(
+            date=self.days[-1],
+            signal_type=ETFRotationSignalRun.SignalType.HEALTH,
+            outcome=ETFRotationSignalRun.Outcome.FEED_STALE,
+            reason_code='benchmark_lag',
+            message='benchmark is one session behind',
+        )
+        data = self._get()
+        self.assertEqual(data['lag_sessions'], 0)
+        self.assertFalse(data['is_stale'])
+        self.assertEqual(data['feed_stale']['reason_code'], 'benchmark_lag')
+        # The watchdog is not a signal attempt, so it never becomes ``last_attempt``.
+        self.assertIsNone(data['last_attempt'])
+
+    def test_a_stale_row_for_an_older_bar_clears_once_bars_advance(self):
+        self._signal(self.days[-1])
+        ETFRotationSignalRun.objects.create(
+            date=self.days[-2],
+            signal_type=ETFRotationSignalRun.SignalType.HEALTH,
+            outcome=ETFRotationSignalRun.Outcome.FEED_STALE,
+            reason_code='benchmark_lag',
+            message='yesterday was stale',
+        )
+        self.assertIsNone(self._get()['feed_stale'])
+
+
+@override_settings(ETF_COMMISSION_RATE=0.0003, ETF_MIN_COMMISSION=5)
+class LivePositionLedgerTests(_PanelSeedMixin, TestCase):
+    """The daily ledger closes what a newer signal dropped and marks the rest.
+
+    Before this writer existed every ``ETFRotationPosition`` row said OPEN forever, so the live
+    track record could not be computed even in principle. Each test pins one promise the page
+    now relies on: a displaced leg becomes realised history at the next session's close, a
+    same-day regeneration leaves that history alone, cumulative pnl comes from CLOSED rows
+    alone, and no leg is ever marked or closed from a bar after the mark date.
+    """
+
+    def setUp(self):
+        self.seed()
+        self.entry_day = self.pool_date
+        self.next_day = self.days[self.split + 1]
+        self.signal_type = 'MONTHLY'
+
+    def _signal(self, day, codes, signal_type=None):
+        selected = [
+            {
+                'ts_code': code,
+                'name': ETFUniverse.objects.get(ts_code=code).name,
+                'weight': (1.0 / len(codes)) if codes else 1.0,
+                'reason': 'test',
+            }
+            for code in codes
+        ]
+        return ETFRotationSignal.objects.create(
+            date=day,
+            signal_type=signal_type or self.signal_type,
+            model_type='RULE',
+            rankings=[],
+            selected_etfs=selected,
+            max_positions=max(1, len(codes)),
+            metadata={},
+        )
+
+    def _position(self, signal, etf, *, shares=1000, day=None):
+        entry_day = day or signal.date
+        entry_price = ETFDaily.objects.get(etf=etf, date=entry_day).close
+        return ETFRotationPosition.objects.create(
+            signal=signal,
+            etf=etf,
+            entry_date=entry_day,
+            entry_price=entry_price,
+            weight=0.5,
+            shares=shares,
+            status=ETFRotationPosition.Status.OPEN,
+            metadata={'signal_type': signal.signal_type},
+        )
+
+    @staticmethod
+    def _commission(notional):
+        return max(notional * 0.0003, 5.0)
+
+    def _expected_pnl(self, leg):
+        entry_price = float(leg.entry_price)
+        exit_price = float(leg.exit_price)
+        shares = int(leg.shares)
+        return (
+            (exit_price - entry_price) * shares
+            - self._commission(entry_price * shares)
+            - self._commission(exit_price * shares)
+        )
+
+    def test_a_displaced_leg_closes_at_the_next_signal(self):
+        entry_signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        kept = self._position(entry_signal, self.etf_a)
+        dropped = self._position(entry_signal, self.etf_b, shares=2000)
+        entry_price_b = float(dropped.entry_price)
+        next_signal = self._signal(self.next_day, ['512760.SH'])
+
+        summary = position_ledger.mark_positions(self.next_day)
+
+        self.assertEqual(summary['closed_count'], 1)
+        self.assertEqual(summary['marked_count'], 1)
+        self.assertEqual(summary['latest_signals'], {self.signal_type: self.next_day.isoformat()})
+
+        dropped.refresh_from_db()
+        exit_close = float(ETFDaily.objects.get(etf=self.etf_b, date=self.next_day).close)
+        self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
+        self.assertEqual(dropped.exit_date, self.next_day)
+        self.assertEqual(dropped.exit_reason, 'DISPLACED_BY_SIGNAL')
+        self.assertEqual(float(dropped.exit_price), exit_close)
+        expected_pnl = (
+            (exit_close - entry_price_b) * 2000
+            - self._commission(entry_price_b * 2000)
+            - self._commission(exit_close * 2000)
+        )
+        self.assertAlmostEqual(dropped.pnl, expected_pnl, places=6)
+        self.assertAlmostEqual(
+            dropped.return_pct,
+            expected_pnl / (entry_price_b * 2000 + self._commission(entry_price_b * 2000)),
+            places=6,
+        )
+        self.assertEqual(dropped.metadata['exit']['displacing_signal'], next_signal.pk)
+
+        kept.refresh_from_db()
+        kept_close = float(ETFDaily.objects.get(etf=self.etf_a, date=self.next_day).close)
+        self.assertEqual(kept.status, ETFRotationPosition.Status.OPEN)
+        self.assertEqual(kept.metadata['live_mark']['date'], self.next_day.isoformat())
+        self.assertEqual(kept.metadata['live_mark']['price'], round(kept_close, 4))
+        self.assertEqual(
+            kept.metadata['live_mark']['market_value'], round(kept_close * 1000, 4),
+        )
+
+    def _persist(self, day, codes):
+        plan = SimpleNamespace(
+            rankings=[],
+            defensive_allocation=0.0,
+            defensive_asset='',
+            legs=[
+                SimpleNamespace(
+                    ts_code=code, weight=1.0 / len(codes), rank=index + 1,
+                    score=1.0, reason='test',
+                )
+                for index, code in enumerate(codes)
+            ],
+        )
+        selected = [
+            {
+                'ts_code': code,
+                'name': ETFUniverse.objects.get(ts_code=code).name,
+                'weight': 1.0 / len(codes),
+                'reason': 'test',
+            }
+            for code in codes
+        ]
+        return rotation_signals.persist_signal(
+            trade_date=day,
+            signal_type=self.signal_type,
+            model_type='RULE',
+            config=SimpleNamespace(max_positions=max(1, len(codes))),
+            plan=plan,
+            selected=selected,
+            metadata={},
+            model_version='test',
+            benchmark_return=None,
+        )
+
+    def test_a_continued_holding_is_carried_not_reopened(self):
+        first = self._persist(self.entry_day, ['512760.SH', '515980.SH'])
+        second = self._persist(self.next_day, ['512760.SH'])
+
+        # One row per holding: the second signal re-confirms A instead of opening it again.
+        self.assertEqual(first['positions_written'], 2)
+        self.assertEqual(second['positions_written'], 0)
+        self.assertEqual(second['positions_carried'], 1)
+        held = ETFRotationPosition.objects.get(etf=self.etf_a, status=ETFRotationPosition.Status.OPEN)
+        self.assertEqual(held.signal_id, first['signal'].pk)
+        self.assertEqual(held.entry_date, self.entry_day)
+        self.assertEqual(held.metadata['last_selected_signal'], second['signal'].pk)
+
+        position_ledger.mark_positions(self.next_day)
+
+        self.assertEqual(
+            ETFRotationPosition.objects.get(etf=self.etf_a).pk, held.pk,
+        )
+        dropped = ETFRotationPosition.objects.get(etf=self.etf_b)
+        self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
+        self.assertEqual(dropped.metadata['exit']['displacing_signal'], second['signal'].pk)
+
+    def test_regeneration_preserves_closed_history(self):
+        signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        self._position(signal, self.etf_a)
+        self._position(signal, self.etf_b)
+        self._signal(self.next_day, ['512760.SH'])
+        position_ledger.mark_positions(self.next_day)
+        realised = ETFRotationPosition.objects.get(
+            signal=signal, etf=self.etf_b, status=ETFRotationPosition.Status.CLOSED,
+        )
+
+        plan = SimpleNamespace(
+            rankings=[],
+            defensive_allocation=0.0,
+            defensive_asset='',
+            legs=[SimpleNamespace(
+                ts_code='512760.SH', weight=1.0, rank=1, score=1.0, reason='rerun',
+            )],
+        )
+        result = rotation_signals.persist_signal(
+            trade_date=self.entry_day,
+            signal_type=self.signal_type,
+            model_type='RULE',
+            config=SimpleNamespace(max_positions=1),
+            plan=plan,
+            selected=[{
+                'ts_code': '512760.SH', 'name': self.etf_a.name,
+                'weight': 1.0, 'reason': 'rerun',
+            }],
+            metadata={},
+            model_version='test',
+            benchmark_return=None,
+        )
+
+        # Only the OPEN leg was replaced; the CLOSED row is the record of a completed trade.
+        self.assertEqual(result['positions_replaced'], 1)
+        self.assertEqual(result['positions_written'], 1)
+        self.assertEqual(
+            ETFRotationPosition.objects.filter(
+                signal=signal, status=ETFRotationPosition.Status.OPEN,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            ETFRotationPosition.objects.get(
+                signal=signal, status=ETFRotationPosition.Status.CLOSED,
+            ).pk,
+            realised.pk,
+        )
+
+    def test_cumulative_live_pnl_is_computable_from_closed_rows_alone(self):
+        signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        self._position(signal, self.etf_a, shares=1000)
+        self._position(signal, self.etf_b, shares=1500)
+        self._signal(self.next_day, [])
+
+        summary = position_ledger.mark_positions(self.next_day)
+
+        closed = ETFRotationPosition.objects.filter(
+            status=ETFRotationPosition.Status.CLOSED,
+        )
+        self.assertEqual(summary['closed_count'], 2)
+        self.assertEqual(closed.count(), 2)
+        for leg in closed:
+            self.assertIsNotNone(leg.exit_date)
+            self.assertIsNotNone(leg.exit_price)
+            self.assertIsNotNone(leg.pnl)
+            self.assertIsNotNone(leg.return_pct)
+            self.assertEqual(leg.exit_reason, 'DISPLACED_BY_SIGNAL')
+            self.assertAlmostEqual(leg.pnl, self._expected_pnl(leg), places=6)
+        aggregate = closed.aggregate(total=Sum('pnl'))['total']
+        self.assertAlmostEqual(aggregate, summary['realised_pnl_total'], places=6)
+
+    def test_the_ledger_task_never_queries_the_holdout_window(self):
+        source = inspect.getsource(position_ledger) + inspect.getsource(ledger_cmd)
+        for forbidden in (
+            'ETFRotationBacktest', 'run_rotation_backtest',
+            'LOCKED_HOLDOUT_START', '2024-01-01',
+        ):
+            self.assertNotIn(forbidden, source)
+        # The no-future-bar guarantee is a query bound, not a convention.
+        self.assertIn('date__lte=mark_date', inspect.getsource(position_ledger))
+
+        signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        self._position(signal, self.etf_a)
+        self._position(signal, self.etf_b)
+        displacing = self._signal(self.next_day, ['512760.SH'])
+        future = self._signal(self.days[-1], ['515980.SH'])
+        ETFDaily.objects.filter(date=self.days[-1]).update(
+            close=Decimal('999.0000'), adj_close=Decimal('999.0000'),
+        )
+        next_close_a = float(ETFDaily.objects.get(etf=self.etf_a, date=self.next_day).close)
+        next_close_b = float(ETFDaily.objects.get(etf=self.etf_b, date=self.next_day).close)
+
+        call_command(
+            'mark_etf_rotation_positions_daily', '--date', self.next_day.isoformat(),
+            stdout=io.StringIO(),
+        )
+
+        dropped = ETFRotationPosition.objects.get(etf=self.etf_b)
+        self.assertEqual(dropped.exit_date, self.next_day)
+        self.assertEqual(float(dropped.exit_price), next_close_b)
+        # A signal dated after the mark session is not the one that displaced the leg.
+        self.assertEqual(dropped.metadata['exit']['displacing_signal'], displacing.pk)
+        self.assertNotEqual(dropped.metadata['exit']['displacing_signal'], future.pk)
+        kept = ETFRotationPosition.objects.get(etf=self.etf_a)
+        self.assertEqual(kept.status, ETFRotationPosition.Status.OPEN)
+        self.assertEqual(kept.metadata['live_mark']['date'], self.next_day.isoformat())
+        self.assertEqual(kept.metadata['live_mark']['price'], round(next_close_a, 4))
 
 

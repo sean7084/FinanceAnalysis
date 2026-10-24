@@ -22,6 +22,7 @@ verbatim):
 from dataclasses import asdict, dataclass, field
 import logging
 import math
+from typing import Any
 
 from django.conf import settings
 import numpy as np
@@ -449,10 +450,28 @@ def _call_predictor(predictor, snapshots, model_type):
         'feature_source': feature_source,
         'feature_count': len(columns),
         'excluded_missing_score': dropped,
+        # The loader attaches its registry identity to the callable, so the report can
+        # name the exact ModelVersion that scored this run instead of re-querying
+        # "whichever is active now".
+        'model_version': _predictor_version(predictor),
     }
 
 
+def _predictor_version(predictor: Any) -> dict[str, Any] | None:
+    raw = getattr(predictor, 'model_version', None)
+    if not isinstance(raw, dict):
+        return None
+    version = {key: raw[key] for key in ('id', 'version', 'model_type') if raw.get(key) is not None}
+    return version or None
+
+
 def _resolve_predictor(model_type, supplied):
+    """The callable for ``model_type``, from the caller or the registry loader.
+
+    A loader-produced callable carries ``model_version`` (its ``ModelVersion`` id and
+    version string); ``_call_predictor`` copies that into the scoring metadata, which is
+    how ``report['model_versions']`` names what actually ranked the run.
+    """
     if supplied is not None:
         return supplied
     module_path = PREDICTOR_LOADERS.get(model_type)

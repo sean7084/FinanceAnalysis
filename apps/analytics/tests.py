@@ -119,6 +119,79 @@ class Phase9AlertTaskTests(TestCase):
         mock_delay.assert_not_called()
 
 
+class FeedStaleAlertTests(TestCase):
+    """FEED_STALE rules have no asset; the existing email/websocket path must still carry them."""
+
+    def _seed_stale_feed(self):
+        from apps.etf_rotation.models import ETFDaily, ETFRotationSignalRun, ETFUniverse
+
+        today = timezone.now().date()
+        fund = ETFUniverse.objects.create(
+            ts_code='512760.SH', symbol='512760', name='Semiconductor ETF',
+        )
+        ETFDaily.objects.create(
+            etf=fund, date=today,
+            open=Decimal('10'), high=Decimal('10'), low=Decimal('10'),
+            close=Decimal('10'), adj_close=Decimal('10'),
+            volume=1, amount=Decimal('10'),
+        )
+        return ETFRotationSignalRun.objects.create(
+            date=today,
+            signal_type='HEALTH',
+            outcome='FEED_STALE',
+            reason_code='benchmark_lag',
+            message='The benchmark H00905.CSI is 1 session behind the newest ETF bar.',
+        )
+
+    def _rule(self):
+        return AlertRule.objects.create(
+            asset=None,
+            name='ETF data feed health',
+            condition_type=AlertRule.ConditionType.FEED_STALE,
+            threshold=Decimal('0'),
+            channels=['websocket'],
+            cooldown_minutes=60,
+        )
+
+    @patch('apps.analytics.tasks.send_alert_notifications.delay')
+    def test_a_feed_stale_rule_without_an_asset_still_dispatches(self, mock_delay):
+        run = self._seed_stale_feed()
+        rule = self._rule()
+
+        result = check_alert_rules()
+
+        self.assertIn('Triggered 1 alert events', result)
+        event = AlertEvent.objects.get()
+        self.assertIsNone(event.asset)
+        self.assertEqual(event.alert_rule, rule)
+        self.assertIn('benchmark', event.message)
+        self.assertEqual(event.metadata['reason_code'], 'benchmark_lag')
+        self.assertEqual(event.metadata['signal_run_id'], run.pk)
+        mock_delay.assert_called_once_with(event.id)
+
+    @patch('apps.analytics.tasks.send_alert_notifications.delay')
+    def test_the_cooldown_prevents_a_second_dispatch_inside_the_window(self, mock_delay):
+        self._seed_stale_feed()
+        self._rule()
+
+        check_alert_rules()
+        result = check_alert_rules()
+
+        self.assertIn('Triggered 0 alert events', result)
+        self.assertEqual(AlertEvent.objects.count(), 1)
+        mock_delay.assert_called_once()
+
+    def test_asset_symbol_serialises_to_null_rather_than_raising(self):
+        from apps.analytics.serializers import AlertEventSerializer, AlertRuleSerializer
+
+        rule = self._rule()
+        event = AlertEvent.objects.create(alert_rule=rule, asset=None, message='feed down')
+
+        self.assertIsNone(AlertRuleSerializer(rule).data['asset_symbol'])
+        self.assertIsNone(AlertRuleSerializer(rule).data['asset_name'])
+        self.assertIsNone(AlertEventSerializer(event).data['asset_symbol'])
+
+
 class Phase9AlertNotificationDispatchTests(TestCase):
     """send_alert_notifications dispatches to configured targets, not a rule owner."""
 

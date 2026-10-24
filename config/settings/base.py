@@ -248,6 +248,10 @@ CELERY_TASK_ROUTES = {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
     },
+    "apps.etf_rotation.tasks.mark_etf_rotation_positions_daily": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
     "apps.etf_rotation.tasks.run_etf_rotation_backtest": {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
@@ -466,9 +470,24 @@ CELERY_BEAT_SCHEDULE = {
     'compute-etf-features-daily': {
         'task': 'apps.etf_rotation.tasks.compute_etf_features_daily',
         'schedule': crontab(hour='17', minute='20'),
-    },    'generate-etf-rotation-signal-daily': {
+    },
+    # After the benchmark (17:05) and feature (17:20) jobs, with 2 hours before the signal:
+    # a lag is written as a FEED_STALE row and dispatched while it is still actionable,
+    # instead of surfacing as a silent 19:45 refusal.
+    'check-etf-rotation-feed-health-daily': {
+        'task': 'apps.etf_rotation.tasks.check_etf_rotation_feed_health',
+        'schedule': crontab(hour='17', minute='45'),
+    },
+    'generate-etf-rotation-signal-daily': {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
         'schedule': crontab(hour='19', minute='45'),
+    },
+    # After the 19:45 signal: a leg the newest signal no longer selects is closed on the
+    # session its replacement was decided, and every surviving leg gets a fresh mark. A
+    # day the signal job did not run has no newer signal, so the ledger only marks.
+    'mark-etf-rotation-positions-daily': {
+        'task': 'apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
+        'schedule': crontab(hour='20', minute='15'),
     },
     # Fund 份额 is a period stamp, not a live quote, and the rotation engine only uses it to
     # pick which wrapper represents an index cluster -- a ranking that moves over months, not

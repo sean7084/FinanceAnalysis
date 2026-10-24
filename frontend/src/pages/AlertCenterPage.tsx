@@ -43,13 +43,20 @@ export function AlertCenterPage() {
         </ul>
         <h3>{t('alerts.history')}</h3>
         <ul className="stack-list">
-          {history.map((item) => (
-            <li key={item.id}>
-              <strong>{item.status}</strong>
-              <span>Alert Event #{item.id}</span>
-              <em>API</em>
-            </li>
-          ))}
+          {history.map((item) => {
+            const isFeedStale = item.metadata?.condition_type === 'FEED_STALE'
+            const target = item.asset_symbol ?? (isFeedStale ? t('alerts.feedStale') : null)
+            return (
+              <li key={item.id}>
+                <strong>{item.status}</strong>
+                <span>
+                  {item.alert_name ?? `Alert Event #${item.id}`}
+                  {target ? ` · ${target}` : ''}
+                </span>
+                <em>API</em>
+              </li>
+            )
+          })}
         </ul>
       </div>
     </section>

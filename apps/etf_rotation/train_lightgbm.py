@@ -1170,6 +1170,13 @@ def load_active_predictor():
             codes = pd.Series([''] * len(snapshots_df), index=snapshots_df.index)
         return pd.DataFrame({'ts_code': list(codes), 'score': np.asarray(booster.predict(matrix), dtype=float)})
 
+    # Registry identity travels with the callable so a backtest report can name the exact
+    # version that scored it; re-querying "the active row" later could name a newer one.
+    score.model_version = {
+        'id': int(version.pk),
+        'version': str(version.version),
+        'model_type': str(version.model_type),
+    }
     return score
 
 

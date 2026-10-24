@@ -26,6 +26,7 @@ import logging
 import pandas as pd
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 
 from apps.etf_rotation import rotation_engine as engine
 from apps.etf_rotation.backtest_engine import DatabaseDataSource
@@ -62,7 +63,16 @@ WEIGHT_SUM_TOLERANCE = 1e-6
 
 
 class SignalGenerationError(RuntimeError):
-    """The date, the pool or the model registry cannot produce a usable signal."""
+    """The date, the pool or the model registry cannot produce a usable signal.
+
+    ``reason_code`` lets the caller persist a machine-readable verdict without parsing the
+    message; the message stays the operator-facing explanation.
+    """
+
+    def __init__(self, message, *, reason_code='signal_error', diagnostics=None):
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.diagnostics = dict(diagnostics or {})
 
 
 def build_config(max_positions=None, momentum_lookback=None) -> engine.RotationConfig:
@@ -88,7 +98,10 @@ def resolve_trade_date(trade_date=None, *, source=None) -> date:
     if trade_date not in (None, ''):
         day = _as_date(trade_date)
         if day is None:
-            raise SignalGenerationError(f'trade_date {trade_date!r} is neither a date nor YYYY-MM-DD.')
+            raise SignalGenerationError(
+                f'trade_date {trade_date!r} is neither a date nor YYYY-MM-DD.',
+                reason_code='bad_arguments',
+            )
         return day
 
     reader = source or DatabaseDataSource()
@@ -102,7 +115,8 @@ def resolve_trade_date(trade_date=None, *, source=None) -> date:
     raise SignalGenerationError(
         'ETFFeatureSnapshot has no eligible row with a rankable cross-section'
         f'{f" in its newest {len(candidates)} session(s)" if candidates else " at all"}; '
-        'run compute_etf_features for the window, or pass --date for a covered session.'
+        'run compute_etf_features for the window, or pass --date for a covered session.',
+        reason_code='no_eligible_rows',
     )
 
 
@@ -113,7 +127,8 @@ def load_snapshots(trade_date, *, source=None) -> pd.DataFrame:
         raise SignalGenerationError(
             f'No eligible ETFFeatureSnapshot rows on {trade_date} -- the point-in-time feature '
             'job has not produced a pool for this date, so there is nothing to rank. Run '
-            'compute_etf_features for the window before generating a signal.'
+            'compute_etf_features for the window before generating a signal.',
+            reason_code='no_eligible_rows',
         )
     return frame
 
@@ -174,7 +189,8 @@ def resolve_model_version(model_type: str, config=None) -> tuple[str, dict[str, 
         wanted = required or '/'.join(REGISTRY_LABELS.values())
         raise SignalGenerationError(
             f'no READY {wanted} ModelVersion is registered, so {model_type} cannot be scored; '
-            'train one with manage.py train_etf_rotation_model before requesting this model type.'
+            'train one with manage.py train_etf_rotation_model before requesting this model type.',
+            reason_code='model_registry_missing',
         )
 
     versions = {label: str(row.version) for label, row in members.items()}
@@ -226,7 +242,8 @@ def verify_book(plan, selected: list[dict]) -> float:
     if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
         raise SignalGenerationError(
             f'selected_etfs weights plus the {plan.defensive_asset} sleeve sum to {total:.9f}, '
-            f'not 1.0 (defensive {plan.defensive_allocation:.6f}).'
+            f'not 1.0 (defensive {plan.defensive_allocation:.6f}).',
+            reason_code='weight_sum_invalid',
         )
     return round(total, 6)
 
@@ -264,6 +281,11 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
     appending a second row for "the latest signal" to choose between. The day's positions are
     deleted and rewritten from this plan, so a re-run whose ranking changed cannot leave the
     previous ranking's legs open under the same signal.
+
+    A fund already OPEN for this signal type is carried, not reopened: one row is one
+    holding, and the ledger's realised history would otherwise count the same position
+    once per signal. The carried row keeps its original ``signal``/``entry_date`` (the
+    trade that opened it) and only its target weight and ranking metadata are refreshed.
     """
     signal, created = ETFRotationSignal.objects.update_or_create(
         date=trade_date,
@@ -280,12 +302,32 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
             'metadata': metadata,
         },
     )
-    replaced = ETFRotationPosition.objects.filter(signal=signal).delete()[0]
+    # Only OPEN legs are rebuilt. A leg the ledger closed is realised history: deleting it
+    # on a same-day regeneration would erase the only record of a completed trade and make
+    # the live track record depend on how often the signal job was rerun.
+    replaced = ETFRotationPosition.objects.filter(
+        signal=signal, status=ETFRotationPosition.Status.OPEN,
+    ).delete()[0]
 
     codes = [leg.ts_code for leg in plan.legs]
     prices = _entry_prices(trade_date, codes)
     etf_ids = dict(ETFUniverse.objects.filter(ts_code__in=codes).values_list('ts_code', 'id'))
+    # A fund the newest signal still selects is the same holding it was on the previous
+    # signal, not a second one. Re-creating a row for it would double the live book on
+    # every signal; the ledger would then close both duplicates only when the fund is
+    # finally dropped. Earliest row wins so ``entry_date``/``entry_price`` stay the
+    # original entry, and ``last_selected_signal`` records the latest re-confirmation.
+    held: dict[str, ETFRotationPosition] = {}
+    existing_legs = (
+        ETFRotationPosition.objects
+        .filter(status=ETFRotationPosition.Status.OPEN, etf__ts_code__in=codes)
+        .filter(Q(signal__signal_type=signal_type) | Q(metadata__signal_type=signal_type))
+        .order_by('entry_date', 'id')
+    )
+    for position in existing_legs:
+        held.setdefault(position.etf.ts_code, position)
     legs = []
+    carried = []
     unpriced = []
     for leg in plan.legs:
         price = prices.get(leg.ts_code)
@@ -294,6 +336,20 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
             # is recorded nowhere rather than booked at a fabricated price. It stays in
             # ``selected_etfs``, and ``legs_without_price`` says which.
             unpriced.append(leg.ts_code)
+            continue
+        existing = held.get(leg.ts_code)
+        if existing is not None:
+            metadata = dict(existing.metadata or {})
+            metadata.update({
+                'rank': leg.rank,
+                'score': leg.score,
+                'reason': leg.reason,
+                'last_selected_signal': signal.pk,
+            })
+            existing.weight = leg.weight
+            existing.metadata = metadata
+            existing.save(update_fields=['weight', 'metadata'])
+            carried.append(leg.ts_code)
             continue
         legs.append(ETFRotationPosition(
             signal=signal,
@@ -315,6 +371,7 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
         'signal': signal,
         'created': created,
         'positions_written': len(legs),
+        'positions_carried': len(carried),
         'positions_replaced': replaced,
         'legs_without_price': unpriced,
     }
@@ -378,10 +435,14 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     model_type = str(model_type or '').strip().upper()
     if signal_type not in ETFRotationSignal.SignalType.values:
         raise SignalGenerationError(
-            f'signal_type must be one of {ETFRotationSignal.SignalType.values}, got {signal_type!r}.'
+            f'signal_type must be one of {ETFRotationSignal.SignalType.values}, got {signal_type!r}.',
+            reason_code='bad_arguments',
         )
     if model_type not in engine.MODEL_TYPES:
-        raise SignalGenerationError(f'model_type must be one of {engine.MODEL_TYPES}, got {model_type!r}.')
+        raise SignalGenerationError(
+            f'model_type must be one of {engine.MODEL_TYPES}, got {model_type!r}.',
+            reason_code='bad_arguments',
+        )
 
     source = DatabaseDataSource()
     day = resolve_trade_date(trade_date, source=source)
@@ -396,10 +457,12 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         )
         blind_reason = _whole_pool_unscorable(snapshots, scored, model_type, day)
         if blind_reason:
-            raise SignalGenerationError(blind_reason)
+            raise SignalGenerationError(blind_reason, reason_code='blind_cross_section')
         plan = engine.build_rotation_plan(scored, snapshots, config, current_weights=current_weights)
     except engine.RotationEngineError as exc:
-        raise SignalGenerationError(f'rotation engine failed for {day}: {exc}') from exc
+        raise SignalGenerationError(
+            f'rotation engine failed for {day}: {exc}', reason_code='rotation_engine_error',
+        ) from exc
 
     selected = plan.selected_etfs()
     weights_total = verify_book(plan, selected)
@@ -444,6 +507,7 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         'signal_pk': None,
         'created': False,
         'positions_written': 0,
+        'positions_carried': 0,
         'positions_replaced': 0,
         'legs_without_price': [],
     }
@@ -459,6 +523,7 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         'signal_pk': written['signal'].pk,
         'created': written['created'],
         'positions_written': written['positions_written'],
+        'positions_carried': written['positions_carried'],
         'positions_replaced': written['positions_replaced'],
         'legs_without_price': written['legs_without_price'],
     })

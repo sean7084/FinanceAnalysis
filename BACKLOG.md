@@ -171,24 +171,82 @@ Items here have no commitment attached. When something is done, move it to
   looked in `scripts/`, so `CELERY_WORKER_QUEUES` — read by a container on every boot —
   would have been reported as "no consumer found — inert". The generated sheet is only
   trustworthy if its detection covers every place a key can be consumed.
+- **The `weighting` default was decided by a pre-registered holdout.** `equal` won the
+  2016–2023 tuning window (+99.69% / Sharpe 0.5357 vs `score`'s +71.73% / 0.4437) but
+  lost the 2024-01-01..2026-10-20 holdout on every criterion: −7.15% / 28.80% maxDD /
+  Sharpe 0.0913, versus `score` +1.70% / 26.02% / 0.1987 and `invvol` −7.78% / 26.30% /
+  0.0782. The default stays `score` in all three places that carry it; the
+  contradiction is the evidence that the tuning-window ranking was overfit, recorded in
+  `docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.7. That window is spent:
+  no later phase may query it again.
 
 ---
 
 ## Open — correctness
 
-### The `weighting` default is arguable and currently unmeasured on the holdout
+### The reference RULE parameter set is window-specific
 
-`score` is the default in all three places that carry it (`ETFRotationBacktest`
-column `models.py:398`, `BacktestConfig` `backtest_engine.py:213`,
-`settings.ETF_WEIGHTING` `base.py:305`), but measured at the new reference config
-on 2016-01-29..2023-12-31 the ordering is **equal +99.69% / Sharpe 0.5357 /
-22.85x** ≥ invvol +81.86% / 35.24% maxDD / 0.4961 ≥ score +71.73% / 44.53% /
-0.4437. `equal` wins the tuning window on return, Sharpe and turnover at once.
-The reason it is still not the default is that the default was chosen for a
-different question and the holdout has never seen `equal` under the 2026-10
-selection constraints -- flipping the default on a tuning-window ranking is
-exactly how the module ended up with a reference row that was 80% banks. Decide
-with a holdout run, or leave `score` and let the workbench pass `equal`.
+Phase 4 ran a CLI-only walk-forward over 2016–2023 (four expanding folds,
+selection by Sharpe with lower turnover as the tie-break, training window only).
+The row-256 configuration — BIWEEKLY / p3 / mom120 / absolute momentum off /
+equal — was selected in **0 of 4** folds. Every fold picked MONTHLY + mom120,
+with positions 3/5/8, the absolute filter on twice and off twice, and weighting
+equal three times / score once. Out-of-sample returns were +0.98% / +75.26% /
+−2.32% / −27.75% and Sharpe 0.1090 / 1.4493 / 0.0746 / −1.4334. The table is in
+`docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.12. This is a
+statement about stability, not a better configuration: folds 1 and 4 sit exactly
+on the 20-rebalance floor, only four folds exist, and each fold restarts from
+initial capital. No default was changed, and the 2024–2026 holdout may not be
+reused to rank these winners — it was spent in §7.7.
+
+### The live ledger records no yuan PnL until signals size shares
+
+`mark_etf_rotation_positions_daily` computes `pnl=(exit−entry)×shares−both
+commissions` only when the position row carries a share count. Rows written by
+the signal generator deliberately have `shares=NULL`: the strategy targets a
+percentage weight and the system holds no capital base anywhere, so there is no
+share count to derive. In production the ledger therefore records `exit_price`,
+`return_pct` and the daily mark, while `pnl` stays null and the page's
+realised-PnL card renders `--` rather than a misleading 0.00. The yuan
+arithmetic is tested against rows that do carry shares; it is not faked in the
+writer. Closing this needs a capital base and a lot-size rounding rule in signal
+persistence, which is a product decision, not a ledger bug.
+
+The duplicate OPEN rows that pre-carry-forward regeneration produced (159887.SZ
+and 515300.SH, one row per signal) were deleted from the dev database on
+2026-10-24 together with every other OPEN row, including two stale 2018-12-28
+rows; `ETFRotationPosition` is empty until the next signal runs. Carry-forward
+means regeneration cannot recreate them.
+
+### The band and the capacity cap have tuning-window evidence only
+
+Phase 3 added `drift_band_fraction`, `liquidity_mode` and
+`adv_participation_cap`, all off by default. A 2% band suppresses 49 drift
+fills on the reference configuration and moves the headline by less than a
+rounding-sized margin; a 1% band never binds because its threshold sits below
+the 0.5% minimum-trade floor on a three-leg equal-weight book. Both readings
+come from the 2016–2023 tuning window and the same one-shot logic as the Kelly
+floor: there is no holdout evidence for either band. `scale` mode has no
+real-window return table at all — only the unit-level redistribution proof.
+Defaults therefore stay `0.0` / `reject` / `0.0`; do not flip them from this
+evidence.
+
+### `position_fees_paid` changed meaning; pre-0.1.23 rows keep the old one
+
+Phase 2 made a closed leg's `position_fees_paid` include the slippage its fills
+embedded, not just commission. The reference row's 233 closed trades sum to
+168,901.10 on a rerun (39,243.23 commission + 129,657.86 closed-leg slippage),
+while the persisted row still sums to 39,243.23. Nothing is corrupted — `pnl`
+already carried slippage inside the execution price and is bit-identical — but a
+query that averages `position_fees_paid` across rows must either filter by
+`created_at` or use the `total_fees` / `total_slippage_cost` metric columns. No
+backfill is planned: the old field never stored the commission/slippage split, so
+inventing one would be worse than the documented break.
+
+The other Phase 2 report blocks (`turnover`, `sub_windows`, `rebalances`,
+`model_versions`) are computed at finalization and are absent from rows completed
+earlier. Readers must treat them as optional; the §7.10 evidence comes from an
+ephemeral rerun of the reference configuration, not from the stored row.
 
 ### The Kelly governor is a kill switch at its own default floor
 

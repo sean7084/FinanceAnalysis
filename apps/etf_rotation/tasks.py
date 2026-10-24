@@ -644,6 +644,29 @@ def generate_etf_rotation_signal_daily(self, signal_type='MONTHLY', model_type='
     )
 
 
+@shared_task(bind=True, name='apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
+             soft_time_limit=300, time_limit=360)
+def mark_etf_rotation_positions_daily(self):
+    """Beat entry point: mark the live book and close legs the newest signal displaced."""
+    from django.core.management import call_command
+
+    return call_command('mark_etf_rotation_positions_daily', verbosity=0)
+
+
+@shared_task(bind=True, name='apps.etf_rotation.tasks.check_etf_rotation_feed_health',
+             soft_time_limit=120, time_limit=180)
+def check_etf_rotation_feed_health(self):
+    """Beat entry point: prove the benchmark and feature feed are current.
+
+    Runs after the benchmark sync and the feature job but before the signal job, so a lag
+    is recorded and dispatched while there is still time to see it, rather than being
+    discovered as a silent refusal at 19:45.
+    """
+    from apps.etf_rotation.signal_runs import feed_health
+
+    return feed_health()
+
+
 def revoke_etf_rotation_task(run, *, terminate=False):
     """Ask the broker to drop the task owning ``run``. Returns False when it has none.
 
@@ -781,6 +804,10 @@ def run_etf_rotation_backtest(self, backtest_id):
         min_commission=float(run.min_commission),
         slippage=run.slippage,
         liquidity_floor_multiple=run.liquidity_floor_multiple,
+        min_trade_notional_fraction=float(run.min_trade_notional_fraction),
+        drift_band_fraction=float(run.drift_band_fraction),
+        liquidity_mode=run.liquidity_mode,
+        adv_participation_cap=float(run.adv_participation_cap),
         benchmark_code=run.benchmark_code,
         # ``weighting`` is a column now, so the row -- not the caller's default -- decides
         # how the plan is scaled. Reading it here is what makes the promotion observable.
