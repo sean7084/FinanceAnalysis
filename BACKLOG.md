@@ -201,18 +201,22 @@ reused to rank these winners — it was spent in §7.7.
 
 ### The live ledger records no yuan PnL until signals size shares
 
-`mark_etf_rotation_positions_daily` closes a displaced leg with
-`pnl=(exit−entry)×shares−both commissions` only when the row carries shares.
-Signal-created legs deliberately have `shares=NULL` — the strategy targets
-weights, not amounts — so in production the ledger records `exit_price`,
-`return_pct` and marks, while `pnl` stays null and the page's realised-PnL card
-has nothing to sum. The arithmetic is tested with sized rows, not faked in the
-writer. Closing this needs a capital base and lot-size rule in signal
-persistence, which is a product decision, not a ledger bug. Separately, the dev
-database still holds duplicate OPEN rows created before carry-forward
-(159887.SZ and 515300.SH across two signals); the ledger treats the earliest
-entry as the holding and new signals update it, but the stale duplicate rows
-have not been deleted.
+`mark_etf_rotation_positions_daily` computes `pnl=(exit−entry)×shares−both
+commissions` only when the position row carries a share count. Rows written by
+the signal generator deliberately have `shares=NULL`: the strategy targets a
+percentage weight and the system holds no capital base anywhere, so there is no
+share count to derive. In production the ledger therefore records `exit_price`,
+`return_pct` and the daily mark, while `pnl` stays null and the page's
+realised-PnL card renders `--` rather than a misleading 0.00. The yuan
+arithmetic is tested against rows that do carry shares; it is not faked in the
+writer. Closing this needs a capital base and a lot-size rounding rule in signal
+persistence, which is a product decision, not a ledger bug.
+
+The duplicate OPEN rows that pre-carry-forward regeneration produced (159887.SZ
+and 515300.SH, one row per signal) were deleted from the dev database on
+2026-10-24 together with every other OPEN row, including two stale 2018-12-28
+rows; `ETFRotationPosition` is empty until the next signal runs. Carry-forward
+means regeneration cannot recreate them.
 
 ### The band and the capacity cap have tuning-window evidence only
 

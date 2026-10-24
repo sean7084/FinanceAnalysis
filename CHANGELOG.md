@@ -35,8 +35,10 @@
   alone, and the absence of any post-mark-date read. Frontend 76 → 77.
 - `makemigrations --check` clean; frontend `tsc --noEmit` and lint/build
   baselines clean. No manual browser click-through was performed.
-- Existing dev-database duplicate OPEN rows from the pre-fix path are left in
-  place and documented in BACKLOG.
+- The 12 OPEN position rows in the dev database — including the duplicates that
+  pre-carry-forward regeneration produced and two stale 2018-12-28 rows — were
+  deleted; the table is empty until the next signal runs. CLOSED history is
+  untouched (there was none).
 
 ### version 0.1.25
 
