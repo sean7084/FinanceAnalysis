@@ -153,6 +153,11 @@ class ETFRotationBacktestSerializer(serializers.ModelSerializer):
     ``status`` alone cannot, because a run that outlived its worker keeps saying RUNNING.
     Both short-circuit before touching Celery unless the row is RUNNING, which is what
     keeps a 20-row list page from making 20 round-trips to the broker.
+
+    Reader caution on ``report['closed_trades'][].position_fees_paid``: rows written before
+    0.1.23 carry commission only, while later rows also include the slippage their fills
+    embedded. The field never stored the split, so there is no backfill; compare across
+    generations with the ``total_fees`` / ``total_slippage_cost`` metric columns instead.
     """
 
     task_state = serializers.SerializerMethodField()
@@ -182,7 +187,8 @@ class ETFRotationBacktestSerializer(serializers.ModelSerializer):
             'initial_capital', 'commission_rate',
             'min_commission', 'slippage', 'liquidity_floor_multiple',
             'min_trade_notional_fraction', 'drift_band_fraction', 'liquidity_mode',
-            'adv_participation_cap', 'model_type',
+            'adv_participation_cap', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+            'kelly_lookback_trades', 'cash_yield_annual', 'model_type',
             'walk_forward_steps', 'benchmark_code',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',
             'calmar_ratio', 'win_rate', 'turnover_annual', 'alpha_vs_benchmark',
@@ -198,7 +204,8 @@ class ETFRotationBacktestSerializer(serializers.ModelSerializer):
             'status', 'pending_control_action', 'task_state', 'has_stale_task_owner',
             'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
             'min_trade_notional_fraction', 'drift_band_fraction', 'liquidity_mode',
-            'adv_participation_cap', 'walk_forward_steps', 'benchmark_code',
+            'adv_participation_cap', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+            'kelly_lookback_trades', 'cash_yield_annual', 'walk_forward_steps', 'benchmark_code',
             'total_return', 'annualized_return', 'max_drawdown', 'sharpe_ratio',
             'calmar_ratio', 'win_rate', 'turnover_annual', 'alpha_vs_benchmark',
             'beta_vs_benchmark', 'information_ratio', 'benchmark_return', 'total_fees',

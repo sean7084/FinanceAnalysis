@@ -302,6 +302,21 @@ describe('EtfRotationPage', () => {
     expect(apiMocks.fetchEtfClosedPositions).toHaveBeenCalledWith(20)
   })
 
+  it('renders -- for realised pnl when no closed row carries a share count', async () => {
+    // A leg booked without shares closes with a price return and no yuan pnl. Summing it
+    // as 0.00 would report a loss that never happened, which is the failure this pins.
+    apiMocks.fetchEtfClosedPositions.mockResolvedValue([
+      { ...closedPositionRow, pnl: null },
+      { ...losingClosedPositionRow, pnl: null },
+    ])
+    renderEtfPage()
+
+    const ledger = await cardByTitle('Live Simulated Ledger')
+    // The summary card and both per-row pnl cells fall back to the placeholder.
+    expect(within(ledger).getAllByText('--').length).toBeGreaterThanOrEqual(3)
+    expect(within(ledger).queryByText('0.00')).not.toBeInTheDocument()
+  })
+
   it('plots the alpha-leading run against its benchmark without a click', async () => {
     renderEtfPage()
 

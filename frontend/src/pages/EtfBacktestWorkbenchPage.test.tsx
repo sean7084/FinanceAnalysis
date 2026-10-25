@@ -428,6 +428,28 @@ describe('EtfBacktestWorkbenchPage', () => {
     expect(apiMocks.fetchEtfBacktests).toHaveBeenCalledTimes(2)
   })
 
+  it('launches with the backend default max_positions of 3', async () => {
+    // The form used to pre-fill 5 while the backend default moved to 3, so an operator
+    // who accepted the form as-is launched a p5 run without choosing one. This pins the
+    // two defaults together from the client side.
+    const user = userEvent.setup()
+    const { createCard } = await renderWorkbench()
+
+    const created = makeRun({ id: 85, name: 'ui-rule-default', status: 'PENDING' })
+    rows.push(created)
+    apiMocks.createEtfBacktest.mockImplementation(() => Promise.resolve(listProjection(created)))
+
+    await user.clear(within(createCard).getByLabelText('Name'))
+    await user.type(within(createCard).getByLabelText('Name'), 'ui-rule-default')
+    await user.click(within(createCard).getByRole('button', { name: 'Launch Backtest' }))
+
+    await waitFor(() => {
+      expect(apiMocks.createEtfBacktest).toHaveBeenCalledTimes(1)
+    })
+    const payload = apiMocks.createEtfBacktest.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(payload.max_positions).toBe(3)
+  })
+
   it('posts only the writable subset and follows the row the server returned', async () => {
     const user = userEvent.setup()
     const { createCard } = await renderWorkbench()

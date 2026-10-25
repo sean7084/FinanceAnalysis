@@ -1,5 +1,109 @@
 # Changelog
 
+### version 0.1.27
+
+Phases 6-12 of the ETF rotation follow-on work. Plan and full record:
+`docs/plans/etf-rotation-next-phases-2026-10-24.md`.
+
+#### Added:
+
+- **Capital-base share sizing for the live ledger.** `ETF_SIM_CAPITAL_BASE`
+  (default 1,000,000) turns each new signal leg's target weight into a whole-lot
+  share count (`floor(base x weight / price / 100) * 100`), so
+  `mark_etf_rotation_positions_daily` can state a yuan `pnl` instead of only a
+  price return. `0` restores the previous `shares=NULL` / `pnl=NULL` behaviour.
+  A carried holding keeps the shares it was opened with: a carry-forward
+  refreshes the target weight, not the position's history.
+- **Combinatorial purged cross-validation.** `walk_forward.combinatorial_purged_folds`
+  cuts the panel into blocks, holds out every combination of `test_blocks`, and
+  builds each training set by purging label-window overlap and embargoing the
+  sessions after a held-out block. `audit_combinatorial_folds` re-derives and
+  checks the plan. The CLI surface is
+  `run_etf_rotation_backtest --cpcv-blocks N --cpcv-test-blocks K --cpcv-embargo D`:
+  ephemeral, single-configuration, and it refuses any window reaching 2024-01-01.
+- **ML rematch shadow book.** `ETFRotationSignal.SignalType.SHADOW` plus
+  `ETF_ML_SHADOW_MODEL` (empty by default). When set, a 19:50 beat task writes a
+  second daily signal under `SHADOW`; the ledger tracks it as its own book. The
+  signal and position endpoints hide it unless `?signal_type=SHADOW` is passed,
+  so production reads cannot mix in rematch performance. The task is fail-closed:
+  an ML type with no active `ModelVersion` writes `REFUSED/model_registry_missing`
+  and raises rather than degrading to the RULE blend.
+- **Forward-track report and drift alert.** `report_etf_rotation_live_track` is a
+  read-only per-book summary (realised/unrealised pnl, win rate, mean return).
+  With a declared reference (`ETF_LIVE_REFERENCE_BACKTEST_ID`) it compares the
+  live closed-trade distribution against that row and can write an asset-less
+  `LIVE_DRIFT` alert event; the monthly beat task is the only caller that passes
+  `--alert`. The report has no write path for signals, positions or parameters.
+
+#### Changed:
+
+- **`max_positions` default 5 -> 3**, aligning the live default with the
+  production reference row 256 (`p3`) and the §7.7 holdout book. This is an
+  alignment, not evidence that p3 is better: the §7.12 walk-forward selected
+  p3/p3/p5/p8 across its four folds. Five sites now agree -
+  `ETF_MAX_POSITIONS`, `DEFAULT_MAX_POSITIONS`, `RotationConfig`,
+  `BacktestConfig` (now reads settings) and both model columns; `train_lstm`'s
+  Top-N fallback follows. A deployer's `ETF_MAX_POSITIONS` override still wins.
+- **Kelly and cash-yield knobs are backtest columns** (`kelly_fraction`,
+  `kelly_cap`, `kelly_floor`, `kelly_lookback_trades`, `cash_yield_annual`,
+  migration `etf_rotation/0009`). `--queue` can now carry a sized book. Defaults
+  `0 / 1.0 / 0 / 60 / 0` reproduce the pre-promotion engine bit for bit; the
+  resume fingerprint changes, so old PAUSED rows restart from the beginning.
+- **`/etf/backtests/` accepts `?dedup_track_index=true|false`.** The 2026-10 rows
+  written while `--no-dedup-track-index` was silently applied self-describe in
+  that column; `true` reads the production-rule rows alone without hiding the
+  intended dedup-off control when no filter is passed.
+- `position_fees_paid` on a closed trade now carries a reader caution at the
+  point it is written: pre-0.1.23 rows hold commission only, so cross-generation
+  comparisons should use `total_fees` / `total_slippage_cost`.
+
+- **Pinned-version inference for the ML rematch.** `load_predictor_for_version`
+  in both trainers loads a READY artifact by version string while ignoring
+  `is_active`, so a candidate can be measured without being deployed, and
+  `run_etf_rotation_backtest --cpcv-blocks --model LIGHTGBM --model-version <v>`
+  scores with it. `apps/etf_rotation/rank_ic.py` reports per-block Spearman IC
+  next to the portfolio metrics (IC is signal quality, not alpha). A load never
+  flips `is_active`; the tests pin that.
+
+- **LSTM backtests no longer look ahead.** `rotation_engine._call_predictor` used
+  to drop the `date` column, so the LSTM scorer (whose contract needs each row's
+  as-of date to assemble its trailing window) fell back to the newest eligible
+  snapshot for every historical session. The as-of date now travels with the
+  scoring frame; LightGBM reindexes to its trained columns, ignores the extra
+  key, and produces identical numbers. The fix has a test, and the LSTM CPCV arm
+  logs zero "no date column" warnings. Phase D's stored LSTM numbers (row 209)
+  were produced through the old path and must not be quoted as valid
+  measurements; re-measuring them would re-query the spent holdout.
+
+#### Notes:
+
+- Migrations `etf_rotation/0010` (default 3), `0011` (SHADOW choice) and
+  `analytics/0009` (LIVE_DRIFT choice) are column-default/choice changes only;
+  no data migration and no existing row is rewritten.
+- **CPCV evidence is now on the record.** The row-256 distribution and the
+  p3-vs-p5 comparison ran against the dev panel; both are in
+  `docs/plans/etf-rotation-next-phases-2026-10-24.md` §7.9/§7.10. p3 stays the
+  default: p5 wins on median Sharpe and median drawdown but loses positive-block
+  share (66.67% vs 83.33%), so the pre-registered three-leg rule did not fire.
+- **The ML rematch now has a verdict, and it is a loss.** LSTM was adjudicated and
+  failed the CV leg: Sharpe median 0.1238 vs RULE 0.1620, positive blocks 66.67%
+  vs 83.33%, median drawdown 15.93% vs 17.96% (only the drawdown leg won). Its
+  serving artifact is fold 5, trained through 2022-10-21, so blocks 1–5 were
+  in-sample and block 6 was genuinely out of sample — the loss stands despite the
+  advantage. The LightGBM arm is not adjudicable: its artifact was trained
+  through 2023-11-30, covering every measured block, so its Sharpe 1.5–3.3 is
+  in-sample fit. No `ETF_*` model version was activated, and the Phase 5
+  ML-via-API surface is still not built.
+- **Consolidated CPCV report.** `docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md`
+  puts all four arms (RULE p3, RULE p5, LightGBM, LSTM) in one place with a validity
+  verdict per arm, the pre-registered criteria and their outcomes, and a cross-check
+  against the registry's own holdout `deployment_note` records — which is what settles
+  "the LightGBM numbers look great": that same artifact scored alpha −0.0141 against
+  RULE's +0.1821 on data it never saw.
+- The next live signal run will write shares and a `p3` book; until it runs, the
+  ledger keeps rendering `--` for realised pnl, which is expected.
+- Backend suite 650 -> 704. Frontend 77 -> 79.
+
 ### version 0.1.26
 
 #### Added:

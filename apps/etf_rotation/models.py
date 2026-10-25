@@ -257,6 +257,11 @@ class ETFRotationSignal(models.Model):
         BIWEEKLY = 'BIWEEKLY', _('Bi-Weekly')
         MONTHLY = 'MONTHLY', _('Monthly')
         TRIGGER = 'TRIGGER', _('Trigger')
+        # A parallel book whose only purpose is the ML rematch: an ML model is scored into
+        # the same rotation rules and the ledger keeps its legs separate from production,
+        # so forward evidence accrues without the production signal ever being replaced.
+        # ``views`` hides this type unless a caller asks for it by name.
+        SHADOW = 'SHADOW', _('Shadow (ML)')
 
     class ModelType(models.TextChoices):
         RULE = 'RULE', _('Rule')
@@ -279,7 +284,7 @@ class ETFRotationSignal(models.Model):
     defensive_asset = models.CharField(_('Defensive Asset'), max_length=20, blank=True)
     model_version = models.CharField(_('Model Version'), max_length=50, blank=True)
     benchmark_return_20d = models.FloatField(_('Benchmark Return 20D'), null=True, blank=True)
-    max_positions = models.PositiveIntegerField(_('Max Positions'), default=5)
+    max_positions = models.PositiveIntegerField(_('Max Positions'), default=3)
     metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -447,7 +452,7 @@ class ETFRotationBacktest(models.Model):
     end_date = models.DateField(_('End Date'))
     rebalance_frequency = models.CharField(_('Rebalance Frequency'), max_length=10,
                                            choices=RebalanceFrequency.choices, default=RebalanceFrequency.MONTHLY)
-    max_positions = models.PositiveIntegerField(_('Max Positions'), default=5)
+    max_positions = models.PositiveIntegerField(_('Max Positions'), default=3)
     # The grid sweeps lookback as well; without this column a run's ranking
     # horizon is unrecoverable and grid results cannot be attributed.
     momentum_lookback = models.PositiveIntegerField(_('Momentum Lookback'), default=60)
@@ -494,6 +499,31 @@ class ETFRotationBacktest(models.Model):
     adv_participation_cap = models.FloatField(
         _('ADV Participation Cap'), default=0.0,
         help_text=_('Scale mode: leg notional may not exceed this multiple of trailing daily turnover. 0 disables.'),
+    )
+    # The exposure/sizing knobs used to live only in ``parameters``, which is enough for an
+    # inline run but not for a queued one: the worker rebuilds its config from the row's own
+    # columns, so a knob with no column silently re-defaults and a --queue call would run a
+    # configuration the operator never asked for. They are columns for the same reason
+    # ``weighting`` is. Defaults reproduce every pre-existing row exactly.
+    kelly_fraction = models.FloatField(
+        _('Kelly Fraction'), default=0.0,
+        help_text=_('Fraction of the Kelly-optimal exposure used to cap the risk budget. 0 disables.'),
+    )
+    kelly_cap = models.FloatField(
+        _('Kelly Cap'), default=1.0,
+        help_text=_('Upper bound on the Kelly exposure scale; 1.0 never levers.'),
+    )
+    kelly_floor = models.FloatField(
+        _('Kelly Floor'), default=0.0,
+        help_text=_('Lower bound on the Kelly exposure scale.'),
+    )
+    kelly_lookback_trades = models.PositiveIntegerField(
+        _('Kelly Lookback Trades'), default=60,
+        help_text=_('Closed trades the win/payoff estimate is taken over.'),
+    )
+    cash_yield_annual = models.FloatField(
+        _('Cash Yield Annual'), default=0.0,
+        help_text=_('Annualised rate credited to cash the liquidity floor left idle. 0 reproduces the no-yield model.'),
     )
 
     model_type = models.CharField(_('Model Type'), max_length=10, choices=ModelType.choices,

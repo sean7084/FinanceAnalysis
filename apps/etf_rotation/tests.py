@@ -47,13 +47,16 @@ from apps.etf_rotation import (
     backtest_engine,
     comparison,
     features,
+    live_track,
     position_ledger,
+    rank_ic,
     rotation_engine,
     signals as rotation_signals,
     tasks as etf_tasks,
     train_lightgbm,
     train_lstm,
     views as etf_views,
+    walk_forward,
 )
 from apps.etf_rotation.etf_universe import (
     TRACK_INDEX_MAX_LENGTH,
@@ -1979,6 +1982,24 @@ class BacktestLeaderboardOrderingTests(TestCase):
         self._backtest('newer', alpha_vs_benchmark=0.18)
         self.assertEqual(self._names('nonsense'), ['newer', 'older'])
 
+    def test_the_dedup_off_measurement_set_can_be_filtered_by_its_own_column(self):
+        """Rows written with dedup off describe themselves; the leaderboard reads that column.
+
+        A name-based exclusion was the alternative the plan floated, and it is fragile: the
+        rows are already self-describing, and one of them (row 355) is an *intended* control
+        that must stay visible when nobody asks for a filter.
+        """
+        self._backtest('production-ref', alpha_vs_benchmark=0.09)
+        self._backtest('measurement-invvol', dedup_track_index=False)
+
+        response = self.client.get('/api/v1/etf/backtests/', {'dedup_track_index': 'true'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [row['name'] for row in response.data['results']], ['production-ref'],
+        )
+        both = self.client.get('/api/v1/etf/backtests/')
+        self.assertEqual(len(both.data['results']), 2)
+
 
 class SweepSafeRegistrationTests(TestCase):
     """``activate=False`` registers a candidate without disturbing what is serving today.
@@ -2415,7 +2436,7 @@ class _EtfBacktestLifecycleMixin:
             'end_date': self.END,
             'model_type': 'RULE',
             'rebalance_frequency': 'MONTHLY',
-            'max_positions': 5,
+            'max_positions': 3,
             'momentum_lookback': 60,
             'weighting': 'score',
         }
@@ -2466,7 +2487,7 @@ class EtfBacktestCreateGuardrailTests(_EtfBacktestLifecycleMixin, TestCase):
             'start_date': self.START.isoformat(),
             'end_date': self.END.isoformat(),
             'rebalance_frequency': 'MONTHLY',
-            'max_positions': 5,
+            'max_positions': 3,
             'momentum_lookback': 60,
             'weighting': 'score',
         }
@@ -3213,6 +3234,10 @@ class EtfBacktestTaskLifecycleTests(_EtfBacktestLifecycleMixin, TestCase):
         self.assertEqual(kwargs['config_overrides'], {
             'walk_forward_steps': 0, 'weighting': 'equal',
             'dedup_track_index': False, 'max_per_category': 5,
+            # Phase 7 promoted the sizing knobs to columns; the task forwards them so a
+            # queued sized run cannot silently re-default in the worker.
+            'kelly_fraction': 0.0, 'kelly_cap': 1.0, 'kelly_floor': 0.0,
+            'kelly_lookback_trades': 60, 'cash_yield_annual': 0.0,
         })
         self.assertEqual(kwargs['initial_capital'], 250000.0)
         self.assertEqual(kwargs['min_commission'], 7.0)
@@ -4622,6 +4647,493 @@ class WalkForwardRuleTests(SimpleTestCase):
             self.assertEqual(line.split()[-1], 'yes')
 
 
+class CombinatorialPurgedFoldTests(SimpleTestCase):
+    """Phase 8: the block plan a stability reading -- and a fitted model -- consumes."""
+
+    FIRST = date(2016, 1, 4)
+
+    def _sessions(self, count):
+        return [self.FIRST + timedelta(days=offset) for offset in range(count)]
+
+    def _folds(self, sessions, blocks=6, test_blocks=2, horizon=1, embargo=5):
+        return walk_forward.combinatorial_purged_folds(
+            sessions[0], sessions[-1], blocks, test_blocks,
+            horizon_days=horizon, embargo_days=embargo, trade_dates=sessions,
+        )
+
+    def test_the_plan_is_every_combination_of_held_out_blocks(self):
+        sessions = self._sessions(305)
+        folds = self._folds(sessions, blocks=6, test_blocks=2)
+
+        self.assertEqual(len(folds), 15)  # C(6, 2)
+        for fold in folds:
+            self.assertEqual(len(fold.validation_blocks), 2)
+            for block_start, block_end in fold.validation_blocks:
+                self.assertLessEqual(block_start, block_end)
+                self.assertIn(block_start, sessions)
+                self.assertIn(block_end, sessions)
+        # Each of the six blocks is held out the same number of times, so no block is
+        # systematically more out of sample than another.
+        flat = [block for fold in folds for block in fold.validation_blocks]
+        counts = {block: flat.count(block) for block in set(flat)}
+        self.assertEqual(len(counts), 6)
+        self.assertEqual(set(counts.values()), {5})
+
+    def test_no_training_date_can_reach_a_held_out_block(self):
+        sessions = self._sessions(305)
+        horizon, embargo = 3, 5
+        folds = self._folds(sessions, horizon=horizon, embargo=embargo)
+        positions = {value: index for index, value in enumerate(sessions)}
+
+        for fold in folds:
+            self.assertTrue(fold.train_dates, 'a fold must keep a training set')
+            for value in fold.train_dates:
+                for block_start, block_end in fold.validation_blocks:
+                    self.assertFalse(block_start <= value <= block_end)
+                    if value < block_start:
+                        self.assertLess(positions[value] + horizon, positions[block_start])
+                        self.assertLess(value + timedelta(days=horizon), block_start)
+                    else:
+                        self.assertGreater(positions[value] - positions[block_end], embargo)
+
+    def test_the_embargo_counts_and_the_audit_agrees(self):
+        sessions = self._sessions(305)
+        folds = self._folds(sessions, horizon=1, embargo=5)
+        trail = walk_forward.audit_combinatorial_folds(folds, sessions, 1, 5)
+
+        self.assertEqual(len(trail), len(folds))
+        self.assertTrue(any(item['embargoed_train_dates'] for item in trail))
+        self.assertTrue(any(item['purged_train_dates'] for item in trail))
+        for item, fold in zip(trail, folds):
+            self.assertEqual(item['train_dates_kept'], len(fold.train_dates))
+            self.assertEqual(item['purged_train_dates'], fold.purged_train_dates)
+            self.assertEqual(item['embargoed_train_dates'], fold.embargoed_train_dates)
+
+    def test_the_audit_rejects_a_tampered_plan(self):
+        sessions = self._sessions(305)
+        folds = self._folds(sessions, horizon=1, embargo=5)
+        original = folds[0]
+        tampered = walk_forward.CombinatorialFold(
+            fold_index=original.fold_index,
+            train_dates=original.train_dates[:-1],
+            validation_blocks=original.validation_blocks,
+            purged_train_dates=original.purged_train_dates,
+            embargoed_train_dates=original.embargoed_train_dates,
+        )
+        with self.assertRaises(walk_forward.WalkForwardError):
+            walk_forward.audit_combinatorial_folds([tampered], sessions, 1, 5)
+
+    def test_blocks_divide_the_panel_without_a_short_tail(self):
+        """``ceil`` would have produced five blocks for a ten-date, six-block request."""
+        sessions = self._sessions(16)  # usable = 15 after a one-date label tail
+        folds = self._folds(sessions, blocks=6, test_blocks=2, horizon=1, embargo=0)
+        blocks = sorted({block for fold in folds for block in fold.validation_blocks})
+        self.assertEqual(len(blocks), 6)
+        self.assertEqual(blocks[0][0], sessions[0])
+        self.assertEqual(blocks[-1][1], sessions[14])
+        for previous, current in zip(blocks, blocks[1:]):
+            self.assertEqual(current[0], previous[1] + timedelta(days=1))
+
+    def test_a_panel_too_short_for_the_request_is_refused(self):
+        sessions = self._sessions(6)
+        with self.assertRaises(walk_forward.WalkForwardError):
+            self._folds(sessions, blocks=6, test_blocks=2, horizon=1, embargo=0)
+        with self.assertRaises(walk_forward.WalkForwardError):
+            self._folds(self._sessions(50), blocks=6, test_blocks=6, horizon=1, embargo=0)
+
+
+class MaxPositionsDefaultAlignmentTests(SimpleTestCase):
+    """Phase 9: the live default is the validated reference book's ``p3``, everywhere."""
+
+    def test_every_default_carries_three(self):
+        engine = rotation_engine
+        self.assertEqual(engine.DEFAULT_MAX_POSITIONS, 3)
+        self.assertEqual(engine.RotationConfig().max_positions, 3)
+        self.assertEqual(
+            engine.rotation_config_from_settings(weighting=None).max_positions, 3,
+        )
+        self.assertEqual(
+            backtest_engine.BacktestConfig(
+                start_date=date(2024, 1, 2), end_date=date(2024, 12, 31),
+            ).max_positions, 3,
+        )
+        # Columns are read back into the engine, so a drift here re-creates the very bug
+        # the alignment closes: a five-leg book described by a p3 run.
+        self.assertEqual(
+            ETFRotationBacktest._meta.get_field('max_positions').default, 3,
+        )
+        self.assertEqual(
+            ETFRotationSignal._meta.get_field('max_positions').default, 3,
+        )
+
+    @override_settings(ETF_MAX_POSITIONS=5)
+    def test_a_deployer_override_still_wins_over_the_default(self):
+        self.assertEqual(
+            rotation_engine.rotation_config_from_settings(weighting=None).max_positions, 5,
+        )
+        self.assertEqual(
+            backtest_engine.BacktestConfig(
+                start_date=date(2024, 1, 2), end_date=date(2024, 12, 31),
+            ).max_positions, 5,
+        )
+
+
+class CpcvCommandGuardTests(SimpleTestCase):
+    """Phase 8: the CLI refuses anything that would turn the tuning window into a holdout.
+
+    Every guard fires before the command touches the database, so these run on
+    ``SimpleTestCase`` without a seeded panel. The dispatch test patches the handler to
+    prove the flag reaches it; the rest exercise the real handler's refusals.
+    """
+
+    def _invoke(self, **overrides):
+        options = {'start': '2016-01-29', 'end': '2023-12-29', 'cpcv_blocks': 6}
+        options.update(overrides)
+        call_command('run_etf_rotation_backtest', **options, stdout=io.StringIO())
+
+    def test_a_window_reaching_the_locked_holdout_is_refused(self):
+        with self.assertRaises(CommandError) as caught:
+            self._invoke(end='2024-01-02')
+        self.assertIn('holdout', str(caught.exception).lower())
+
+    def test_grid_and_queue_modes_are_refused(self):
+        for extra in ({'grid': True}, {'queue': True}, {'backtest_id': 1}):
+            with self.subTest(extra=extra), self.assertRaises(CommandError):
+                self._invoke(**extra)
+
+    def test_an_ml_model_is_refused(self):
+        with self.assertRaises(CommandError):
+            self._invoke(model='LSTM')
+
+    def test_a_named_run_is_refused_because_the_measurement_is_ephemeral(self):
+        with self.assertRaises(CommandError):
+            self._invoke(name='would-look-persisted')
+
+    def test_an_ml_arm_needs_a_pinned_version(self):
+        for model in ('LIGHTGBM', 'LSTM', 'ENSEMBLE'):
+            with self.subTest(model=model), self.assertRaises(CommandError) as caught:
+                self._invoke(model=model)
+            self.assertIn('--model-version', str(caught.exception))
+
+    def test_a_pinned_version_without_an_ml_model_is_refused(self):
+        with self.assertRaises(CommandError):
+            self._invoke(model_version='etf-lgb-x')
+
+    def test_a_single_run_refuses_a_cpcv_only_pin(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                'run_etf_rotation_backtest', start='2016-01-29', end='2023-12-29',
+                model_version='etf-lgb-x', stdout=io.StringIO(),
+            )
+
+    def test_an_ml_arm_carries_the_pinned_predictor_into_the_run(self):
+        session_dates = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(12)]
+        points = [
+            {'date': day.isoformat(), 'equity': 100.0 + offset}
+            for offset, day in enumerate(session_dates)
+        ]
+        sentinel = object()
+
+        with patch.object(
+                    backtest_cmd.Command, '_pinned_predictors',
+                    return_value={'lgb_predictor': sentinel},
+                ) as pinned, \
+                patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''), \
+                patch.object(backtest_cmd, 'CachedDataSource') as cached, \
+                patch.object(
+                    backtest_cmd.Command, '_call',
+                    return_value={'equity_curve': points},
+                ) as measured:
+            cached.return_value.sessions.return_value = session_dates
+            self._invoke(
+                model='LIGHTGBM', model_version='etf-lgb-x',
+                start=session_dates[0].isoformat(), end=session_dates[-1].isoformat(),
+                cpcv_blocks=4, cpcv_test_blocks=1, cpcv_embargo=1,
+            )
+
+        self.assertEqual(pinned.call_args.args[0], 'LIGHTGBM')
+        self.assertEqual(pinned.call_args.args[1], 'etf-lgb-x')
+        self.assertEqual(measured.call_args.kwargs['predictors'], {'lgb_predictor': sentinel})
+        self.assertEqual(measured.call_args.kwargs['run_kwargs']['model_type'], 'LIGHTGBM')
+
+    def test_a_valid_invocation_reaches_the_handler(self):
+        with patch.object(backtest_cmd.Command, '_handle_cpcv') as handler:
+            self._invoke()
+        handler.assert_called_once()
+
+
+class CpcvWritesNothingTests(TestCase):
+    """Phase 8's third promise: the measurement is ephemeral and activates nothing."""
+
+    def test_the_measurement_writes_no_row_and_activates_nothing(self):
+        from apps.prediction.models import ModelVersion
+
+        session_dates = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(12)]
+        points = [
+            {'date': day.isoformat(), 'equity': 100.0 + offset}
+            for offset, day in enumerate(session_dates)
+        ]
+        before = {
+            'backtests': ETFRotationBacktest.objects.count(),
+            'signals': ETFRotationSignal.objects.count(),
+            'active_models': set(
+                ModelVersion.objects.filter(is_active=True).values_list('pk', flat=True)
+            ),
+        }
+
+        with patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''), \
+                patch.object(backtest_cmd, 'CachedDataSource') as cached, \
+                patch.object(
+                    backtest_cmd.Command, '_call',
+                    return_value={'equity_curve': points},
+                ) as measured:
+            cached.return_value.sessions.return_value = session_dates
+            call_command(
+                'run_etf_rotation_backtest',
+                start=session_dates[0].isoformat(), end=session_dates[-1].isoformat(),
+                cpcv_blocks=4, cpcv_test_blocks=1, cpcv_embargo=1,
+                stdout=io.StringIO(),
+            )
+
+        self.assertEqual(ETFRotationBacktest.objects.count(), before['backtests'])
+        self.assertEqual(ETFRotationSignal.objects.count(), before['signals'])
+        self.assertEqual(
+            set(ModelVersion.objects.filter(is_active=True).values_list('pk', flat=True)),
+            before['active_models'],
+        )
+        # ``name=None`` is what tells the engine not to persist; pin it here so a later
+        # refactor cannot quietly start writing measurement rows.
+        self.assertIsNone(measured.call_args.kwargs['run_kwargs']['name'])
+
+
+class PredictorFrameContractTests(SimpleTestCase):
+    """The frame handed to a trained scorer must carry each row's as-of date.
+
+    Without it the LSTM contract falls back to the newest eligible snapshot, which scores
+    a 2016 cross-section with a 2026 trailing window — a look-ahead that the scorer itself
+    warns about. The engine used to drop ``date`` along with the label columns.
+    """
+
+    def _snapshots(self, with_date=True):
+        frame = pd.DataFrame({
+            'ts_code': ['512760.SH', '515980.SH'],
+            'mom_60d': [0.11, 0.08],
+        })
+        if with_date:
+            frame['date'] = [date(2020, 1, 2), date(2020, 1, 2)]
+        return frame
+
+    def test_the_as_of_date_travels_with_the_scoring_frame(self):
+        seen = {}
+
+        def predictor(frame):
+            seen['columns'] = list(frame.columns)
+            return pd.DataFrame({
+                'ts_code': list(frame['ts_code']), 'score': [1.0, 2.0],
+            })
+
+        scores, metadata = rotation_engine._call_predictor(
+            predictor, self._snapshots(with_date=True), 'LSTM',
+        )
+
+        self.assertIn('date', seen['columns'])
+        self.assertNotIn('fwd_return', seen['columns'])
+        self.assertEqual(list(scores['ts_code']), ['512760.SH', '515980.SH'])
+        self.assertEqual(metadata['model_type'], 'LSTM')
+
+    def test_a_frame_without_a_date_is_still_scored(self):
+        def predictor(frame):
+            return pd.DataFrame({
+                'ts_code': list(frame['ts_code']), 'score': [1.0, 2.0],
+            })
+
+        scores, _metadata = rotation_engine._call_predictor(
+            predictor, self._snapshots(with_date=False), 'LIGHTGBM',
+        )
+
+        self.assertEqual(list(scores['ts_code']), ['512760.SH', '515980.SH'])
+
+
+class PinnedPredictorLoaderTests(TestCase):
+    """Phase 10a: score with a READY artifact that is deliberately not serving.
+
+    ``load_active_predictor`` refuses an inactive row by design; the rematch needs the
+    opposite. These tests pin the two halves that matter: the pinned loader works without
+    ``is_active``, and calling it never flips the flag.
+    """
+
+    def _register(self, version, **kwargs):
+        values = {
+            'model_type': 'ETF_LIGHTGBM',
+            'status': ModelVersion.Status.READY,
+            'is_active': False,
+            'artifact_path': '',
+            'feature_schema': [],
+        }
+        values.update(kwargs)
+        return ModelVersion.objects.create(version=version, **values)
+
+    def _artifact_dir(self, directory):
+        with open(os.path.join(directory, 'model.pkl'), 'wb') as handle:
+            pickle.dump(_VolumePenaltyBooster(), handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(os.path.join(directory, 'metadata.json'), 'w', encoding='utf-8') as handle:
+            handle.write('{"feature_names": ["mom_60d", "vol_20d", "rs_vs_benchmark_60d"]}')
+
+    def test_a_pinned_inactive_artifact_loads_and_scores(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._artifact_dir(directory)
+            self._register('pinned-inactive', artifact_path=directory)
+
+            predictor = train_lightgbm.load_predictor_for_version('pinned-inactive')
+            scored = predictor(_rule_cross_section())
+
+            self.assertEqual(list(scored.columns), ['ts_code', 'score'])
+            self.assertEqual(list(scored['ts_code']), [
+                '512760.SH', '515980.SH', '510300.SH', '511880.SH', '159934.SZ',
+            ])
+
+    def test_loading_a_pinned_version_never_flips_is_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._artifact_dir(directory)
+            self._register('serving', artifact_path=directory, is_active=True)
+            self._register('pinned', artifact_path=directory, is_active=False)
+            before = set(
+                ModelVersion.objects.filter(is_active=True).values_list('pk', flat=True)
+            )
+
+            train_lightgbm.load_predictor_for_version('pinned')
+
+            after = set(
+                ModelVersion.objects.filter(is_active=True).values_list('pk', flat=True)
+            )
+            self.assertEqual(before, after)
+            self.assertFalse(ModelVersion.objects.get(version='pinned').is_active)
+
+    def test_an_unknown_version_is_refused_by_name(self):
+        with self.assertRaisesMessage(ValueError, 'missing-version'):
+            train_lightgbm.load_predictor_for_version('missing-version')
+        with self.assertRaisesMessage(ValueError, 'missing-version'):
+            train_lstm.load_predictor_for_version('missing-version')
+
+    def test_a_non_ready_row_cannot_be_pinned(self):
+        self._register('archived', status=ModelVersion.Status.ARCHIVED)
+        with self.assertRaisesMessage(ValueError, 'archived'):
+            train_lightgbm.load_predictor_for_version('archived')
+
+
+class RankIcTests(_PanelSeedMixin, TestCase):
+    """Phase 10a: IC measures signal quality, and says so only when it can."""
+
+    def setUp(self):
+        self.seed()
+
+    def _snapshot(self, etf, day, fwd_return):
+        return ETFFeatureSnapshot.objects.create(
+            etf=etf, date=day, is_eligible=True, fwd_return=fwd_return,
+        )
+
+    def test_the_ic_matches_a_hand_computed_spearman(self):
+        day = self.pool_date
+        self._snapshot(self.etf_a, day, 0.01)
+        self._snapshot(self.etf_b, day, 0.03)
+        third = _seed_etf('510300.SH', name='沪深300ETF', category=ETFCategory.BROAD)
+        self._snapshot(third, day, 0.02)
+
+        order = {'512760.SH': 0, '515980.SH': 2, '510300.SH': 1}
+
+        def predictor(frame):
+            return pd.DataFrame({
+                'ts_code': list(frame['ts_code']),
+                'score': [order[code] for code in frame['ts_code']],
+            })
+
+        result = rank_ic.block_rank_ic(predictor, block_start=day, block_end=day)
+
+        self.assertEqual(result['dates'], 1)
+        self.assertAlmostEqual(result['mean_ic'], 1.0, places=9)
+
+    def test_unrealised_labels_yield_no_ic(self):
+        day = self.pool_date
+        self._snapshot(self.etf_a, day, None)
+        self._snapshot(self.etf_b, day, None)
+
+        result = rank_ic.block_rank_ic(
+            lambda frame: pd.DataFrame({'ts_code': frame['ts_code'], 'score': 0.0}),
+            block_start=day, block_end=day,
+        )
+
+        self.assertEqual(result['dates'], 0)
+        self.assertIsNone(result['mean_ic'])
+
+    def test_a_date_with_too_few_names_is_skipped(self):
+        day = self.pool_date
+        self._snapshot(self.etf_a, day, 0.01)
+        self._snapshot(self.etf_b, day, 0.02)
+
+        result = rank_ic.block_rank_ic(
+            lambda frame: pd.DataFrame({
+                'ts_code': frame['ts_code'], 'score': range(len(frame)),
+            }),
+            block_start=day, block_end=day,
+        )
+
+        self.assertEqual(result['dates'], 0)
+        self.assertIsNone(result['mean_ic'])
+
+    def test_a_missing_predictor_is_refused(self):
+        with self.assertRaises(ValueError):
+            rank_ic.block_rank_ic(None, block_start=self.pool_date, block_end=self.pool_date)
+
+
+class CpcvBlockFacetTests(SimpleTestCase):
+    """Phase 8: each block is measured from the mark before it opens, on its own peak."""
+
+    def _points(self):
+        return [
+            {'date': '2020-01-02', 'equity': 100.0},
+            {'date': '2020-01-03', 'equity': 110.0},
+            {'date': '2020-01-06', 'equity': 99.0},
+            {'date': '2020-01-07', 'equity': 120.0},
+        ]
+
+    def test_the_block_return_counts_its_first_session(self):
+        facet = backtest_cmd.Command._cpcv_block_facet(
+            self._points(), date(2020, 1, 3), date(2020, 1, 6), 1,
+        )
+        # Base is the 2020-01-02 mark (100), so the block is 110 -> 99, not 110 -> 99 of 110.
+        self.assertAlmostEqual(facet['total_return'], 0.99 - 1.0, places=9)
+        self.assertEqual(facet['sessions'], 2)
+        self.assertEqual(facet['block'], 1)
+
+    def test_a_block_with_no_points_is_not_reported(self):
+        self.assertIsNone(backtest_cmd.Command._cpcv_block_facet(
+            self._points(), date(2019, 12, 1), date(2019, 12, 31), 1,
+        ))
+
+    def test_rebalances_are_attributed_by_signal_date(self):
+        rebalances = [
+            {'signal_date': '2020-01-02'},  # before the block
+            {'signal_date': '2020-01-03'},
+            {'signal_date': '2020-01-06'},
+            {'signal_date': '2020-01-07'},  # after the block
+        ]
+        facet = backtest_cmd.Command._cpcv_block_facet(
+            self._points(), date(2020, 1, 3), date(2020, 1, 6), 1, rebalances,
+        )
+        # The thin-block guardrail reads this count; an off-by-one here would either hide a
+        # thin block or claim more rebalances than the block could have made.
+        self.assertEqual(facet['rebalances'], 2)
+
+    def test_the_distribution_drops_unscored_blocks_instead_of_zeroing_them(self):
+        dist = backtest_cmd._distribution([0.2, None, -0.1, 0.0, 0.4])
+        self.assertEqual(dist['count'], 4)
+        # Nearest-rank median of [-0.1, 0, 0.2, 0.4] is the third value, not an interpolation.
+        self.assertAlmostEqual(dist['median'], 0.2, places=9)
+        self.assertAlmostEqual(dist['positive_share'], 0.5, places=9)
+        self.assertAlmostEqual(dist['min'], -0.1, places=9)
+        self.assertAlmostEqual(dist['max'], 0.4, places=9)
+
+
 class SingleRunKwargForwardingTests(SimpleTestCase):
     """Every flag the single-run path accepts must arrive in a form the engine accepts.
 
@@ -4681,6 +5193,90 @@ class SingleRunKwargForwardingTests(SimpleTestCase):
         self.assertEqual(
             (asked_off['config_overrides']['dedup_track_index'],
              asked_off['config_overrides']['max_per_category']), (False, 0))
+
+    def test_every_single_run_override_is_carried_by_a_queue_column(self):
+        """A queued run rebuilds from the row, so an override with no column silently re-defaults.
+
+        ``kelly_*`` and ``cash_yield_annual`` were the last survivors of that trap: the single
+        run accepted them into ``config_overrides`` while ``_enqueue`` refused them, so a sized
+        book could only ever be run inline. Phase 7 promoted them to columns; this is the guard
+        that a future sizing knob does not repeat the omission.
+        """
+        single_run_overrides = {
+            'weighting', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+            'kelly_lookback_trades', 'cash_yield_annual',
+            'dedup_track_index', 'max_per_category',
+        }
+        missing = sorted(single_run_overrides - set(backtest_cmd._QUEUE_KNOB_FIELDS))
+        self.assertEqual(missing, [], 'add these override keys to _QUEUE_KNOB_FIELDS')
+
+
+class QueuedSizingKnobColumnTests(TestCase):
+    """A queued sized run must read its sizing back from its own columns, not the defaults."""
+
+    def test_kelly_and_cash_yield_columns_round_trip_into_the_engine_config(self):
+        row = ETFRotationBacktest.objects.create(
+            name='queued-sized',
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 12, 31),
+            kelly_fraction=0.25,
+            kelly_cap=0.9,
+            kelly_floor=0.3,
+            kelly_lookback_trades=30,
+            cash_yield_annual=0.015,
+        )
+
+        config = etf_views._backtest_config_for(row)
+
+        # ``_backtest_config_for`` mirrors what the worker builds, so equal values here are
+        # the same claim as "the queued run is the sized run" -- the task reads the row.
+        self.assertEqual(config.kelly_fraction, 0.25)
+        self.assertEqual(config.kelly_cap, 0.9)
+        self.assertEqual(config.kelly_floor, 0.3)
+        self.assertEqual(config.kelly_lookback_trades, 30)
+        self.assertEqual(config.cash_yield_annual, 0.015)
+
+    def test_queue_accepts_a_sized_book(self):
+        """The promotion's purpose: a queued run carries the sizing instead of refusing it.
+
+        Before the columns existed, ``--queue`` raised ``--queue cannot carry kelly_fraction``
+        and the worker would have read back its own default if it had not. This drives the
+        command end to end with a stub broker and asserts the row the worker will read
+        carries the requested sizing.
+        """
+        with patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''), \
+                patch.object(
+                    backtest_cmd.tasks, 'queue_etf_rotation_run',
+                    return_value=SimpleNamespace(id='task-1'),
+                ) as queued:
+            call_command(
+                'run_etf_rotation_backtest',
+                start='2016-01-29', end='2023-12-31', queue=True,
+                kelly_fraction=0.25, kelly_floor=0.5,
+                stdout=io.StringIO(),
+            )
+
+        row = ETFRotationBacktest.objects.get()
+        self.assertEqual(row.kelly_fraction, 0.25)
+        self.assertEqual(row.kelly_floor, 0.5)
+        self.assertEqual(row.parameters['kelly_fraction'], 0.25)
+        self.assertEqual(row.parameters['kelly_floor'], 0.5)
+        queued.assert_called_once()
+
+    def test_the_column_defaults_reproduce_the_pre_promotion_engine(self):
+        row = ETFRotationBacktest.objects.create(
+            name='queued-default',
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 12, 31),
+        )
+
+        config = etf_views._backtest_config_for(row)
+
+        self.assertEqual(config.kelly_fraction, 0.0)
+        self.assertEqual(config.kelly_cap, 1.0)
+        self.assertEqual(config.kelly_floor, 0.0)
+        self.assertEqual(config.kelly_lookback_trades, 60)
+        self.assertEqual(config.cash_yield_annual, 0.0)
 
 
 class BlindCrossSectionGuardTests(_PanelSeedMixin, TestCase):
@@ -5318,6 +5914,95 @@ class LivePositionLedgerTests(_PanelSeedMixin, TestCase):
         self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
         self.assertEqual(dropped.metadata['exit']['displacing_signal'], second['signal'].pk)
 
+    @override_settings(ETF_SIM_CAPITAL_BASE=1_000_000)
+    def test_a_capital_base_sizes_new_legs_in_whole_lots(self):
+        self._persist(self.entry_day, ['512760.SH', '515980.SH'])
+
+        legs = ETFRotationPosition.objects.filter(
+            status=ETFRotationPosition.Status.OPEN,
+        )
+        self.assertEqual(legs.count(), 2)
+        for leg in legs:
+            self.assertIsNotNone(leg.shares)
+            self.assertEqual(int(leg.shares) % 100, 0, 'shares must be whole lots')
+            expected_lots = int((1_000_000 * float(leg.weight)) / float(leg.entry_price) // 100)
+            self.assertEqual(int(leg.shares), expected_lots * 100)
+            # Flooring means the book never commits more than its target notional.
+            self.assertLessEqual(int(leg.shares) * float(leg.entry_price), 1_000_000 * float(leg.weight))
+
+    @override_settings(ETF_SIM_CAPITAL_BASE=1_000_000)
+    def test_sized_shares_let_the_daily_ledger_state_a_yuan_pnl(self):
+        self._persist(self.entry_day, ['512760.SH', '515980.SH'])
+        self._persist(self.next_day, ['512760.SH'])
+
+        position_ledger.mark_positions(self.next_day)
+
+        dropped = ETFRotationPosition.objects.get(etf=self.etf_b)
+        self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
+        self.assertIsNotNone(dropped.shares)
+        self.assertIsNotNone(dropped.pnl)
+        self.assertAlmostEqual(dropped.pnl, self._expected_pnl(dropped), places=6)
+
+    @override_settings(ETF_SIM_CAPITAL_BASE=0)
+    def test_zero_capital_base_keeps_shares_null(self):
+        self._persist(self.entry_day, ['512760.SH'])
+
+        leg = ETFRotationPosition.objects.get()
+        self.assertIsNone(leg.shares)
+
+    @override_settings(ETF_SIM_CAPITAL_BASE=1_000_000)
+    def test_a_carried_leg_keeps_the_shares_it_was_opened_with(self):
+        self._persist(self.entry_day, ['512760.SH', '515980.SH'])
+        opened = ETFRotationPosition.objects.get(etf=self.etf_a).shares
+        self.assertIsNotNone(opened)
+
+        # A later signal re-confirms the holding under a different capital base. The row is
+        # the same holding, so its size and cost basis are history and must not be restated.
+        with override_settings(ETF_SIM_CAPITAL_BASE=2_000_000):
+            self._persist(self.next_day, ['512760.SH'])
+
+        carried = ETFRotationPosition.objects.get(etf=self.etf_a)
+        self.assertEqual(carried.shares, opened)
+        self.assertEqual(carried.entry_date, self.entry_day)
+
+    @override_settings(ETF_SIM_CAPITAL_BASE=1_000_000)
+    def test_sized_shares_sum_to_the_capital_base(self):
+        """Whole-lot flooring can only underspend, and the shortfall is under one lot."""
+        self._persist(self.entry_day, ['512760.SH'])
+        single = ETFRotationPosition.objects.get(etf=self.etf_a)
+        price = float(single.entry_price)
+        notional = int(single.shares) * price
+        self.assertLessEqual(notional, 1_000_000)
+        self.assertLess(1_000_000 - notional, 100 * price)
+
+        # The invariant on a multi-leg book: the sum of leg notionals cannot exceed the
+        # capital base (the defensive sleeve takes the rest).
+        ETFRotationPosition.objects.all().delete()
+        self._persist(self.entry_day, ['512760.SH', '515980.SH'])
+        total = sum(
+            int(leg.shares) * float(leg.entry_price)
+            for leg in ETFRotationPosition.objects.all()
+        )
+        self.assertLessEqual(total, 1_000_000)
+
+    def test_a_leg_without_shares_records_no_yuan_pnl(self):
+        """The writer must not invent a position size to make the ledger look complete."""
+        entry_signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
+        dropped = self._position(entry_signal, self.etf_b, shares=None)
+        self._signal(self.next_day, ['512760.SH'])
+
+        position_ledger.mark_positions(self.next_day)
+
+        dropped.refresh_from_db()
+        self.assertEqual(dropped.status, ETFRotationPosition.Status.CLOSED)
+        self.assertIsNone(dropped.pnl)
+        self.assertIsNotNone(dropped.return_pct)
+        self.assertEqual(
+            dropped.metadata['exit']['pnl_basis'], 'price_only_no_shares',
+        )
+        self.assertIsNone(dropped.metadata['exit']['entry_commission'])
+        self.assertIsNone(dropped.metadata['exit']['exit_commission'])
+
     def test_regeneration_preserves_closed_history(self):
         signal = self._signal(self.entry_day, ['512760.SH', '515980.SH'])
         self._position(signal, self.etf_a)
@@ -5426,5 +6111,245 @@ class LivePositionLedgerTests(_PanelSeedMixin, TestCase):
         self.assertEqual(kept.status, ETFRotationPosition.Status.OPEN)
         self.assertEqual(kept.metadata['live_mark']['date'], self.next_day.isoformat())
         self.assertEqual(kept.metadata['live_mark']['price'], round(next_close_a, 4))
+
+
+class ShadowBookIsolationTests(TestCase):
+    """Phase 10: the ML rematch writes its own book and never leaks into production.
+
+    The shadow is a second ``signal_type`` rather than a second table, so every read surface
+    has to decide which book it is answering for. These tests pin all three: the beat task
+    is inert until configured, the API defaults to production, and the ledger's per-type
+    displacement cannot close a production leg because a shadow signal dropped it.
+    """
+
+    def setUp(self):
+        self.api = APIClient()
+        self.etf = _seed_etf('512760.SH', name='半导体ETF', category=ETFCategory.SECTOR_TECH)
+
+    def _signal(self, day, signal_type, model_type, codes):
+        selected = [
+            {
+                'ts_code': code, 'name': code,
+                'weight': (1.0 / len(codes)) if codes else 1.0, 'reason': 'test',
+            }
+            for code in codes
+        ]
+        return ETFRotationSignal.objects.create(
+            date=day, signal_type=signal_type, model_type=model_type,
+            rankings=[], selected_etfs=selected, max_positions=3, metadata={},
+        )
+
+    def _leg(self, signal, signal_type):
+        return ETFRotationPosition.objects.create(
+            signal=signal, etf=self.etf, entry_date=signal.date,
+            entry_price=Decimal('1.0000'), weight=1.0,
+            metadata={'signal_type': signal_type},
+        )
+
+    def test_the_shadow_task_is_inert_until_the_setting_names_a_model(self):
+        with override_settings(ETF_ML_SHADOW_MODEL=''):
+            result = etf_tasks.generate_etf_rotation_shadow_signal()
+        self.assertEqual(result['shadow_model'], '')
+        self.assertIn('skipped', result)
+
+    def test_the_shadow_task_asks_for_a_shadow_book_by_name(self):
+        with override_settings(ETF_ML_SHADOW_MODEL='lstm'), \
+                patch('django.core.management.call_command') as command:
+            etf_tasks.generate_etf_rotation_shadow_signal()
+        command.assert_called_once_with(
+            'generate_etf_rotation_signal', signal_type='SHADOW', model_type='LSTM', verbosity=0,
+        )
+
+    def test_the_latest_signal_hides_the_shadow_book_by_default(self):
+        self._signal(POOL_DATE, ETFRotationSignal.SignalType.MONTHLY, 'RULE', ['512760.SH'])
+        shadow = self._signal(POOL_DATE, ETFRotationSignal.SignalType.SHADOW, 'LSTM', ['512760.SH'])
+
+        production = self.api.get('/api/v1/etf/signals/latest/')
+        self.assertEqual(production.data['signal_type'], 'MONTHLY')
+
+        asked = self.api.get('/api/v1/etf/signals/latest/', {'signal_type': 'SHADOW'})
+        self.assertEqual(asked.data['id'], shadow.pk)
+
+    def test_the_positions_endpoint_keeps_the_shadow_book_out_of_production(self):
+        production_signal = self._signal(
+            POOL_DATE, ETFRotationSignal.SignalType.MONTHLY, 'RULE', ['512760.SH'],
+        )
+        shadow_signal = self._signal(
+            POOL_DATE, ETFRotationSignal.SignalType.SHADOW, 'LSTM', ['512760.SH'],
+        )
+        production_leg = self._leg(production_signal, 'MONTHLY')
+        shadow_leg = self._leg(shadow_signal, 'SHADOW')
+
+        default = self.api.get('/api/v1/etf/positions/')
+        self.assertEqual([row['id'] for row in default.data['results']], [production_leg.pk])
+
+        asked = self.api.get('/api/v1/etf/positions/', {'signal_type': 'SHADOW'})
+        self.assertEqual([row['id'] for row in asked.data['results']], [shadow_leg.pk])
+
+    def test_a_shadow_signal_cannot_close_a_production_leg(self):
+        production_signal = self._signal(
+            POOL_DATE, ETFRotationSignal.SignalType.MONTHLY, 'RULE', ['512760.SH'],
+        )
+        production_leg = self._leg(production_signal, 'MONTHLY')
+        shadow_signal = self._signal(
+            POOL_DATE, ETFRotationSignal.SignalType.SHADOW, 'LSTM', ['512760.SH'],
+        )
+        shadow_leg = self._leg(shadow_signal, 'SHADOW')
+        # A newer shadow signal drops the fund. Only the shadow book may react to it.
+        self._signal(
+            POOL_DATE + timedelta(days=1), ETFRotationSignal.SignalType.SHADOW, 'LSTM', [],
+        )
+        ETFDaily.objects.create(
+            etf=self.etf, date=POOL_DATE + timedelta(days=1),
+            open=Decimal('1.0000'), high=Decimal('1.0000'), low=Decimal('1.0000'),
+            close=Decimal('1.0000'), adj_close=Decimal('1.0000'), volume=1000, amount=Decimal('1000.00'),
+        )
+
+        summary = position_ledger.mark_positions(POOL_DATE + timedelta(days=1))
+
+        self.assertEqual(summary['closed_count'], 1)
+        production_leg.refresh_from_db()
+        shadow_leg.refresh_from_db()
+        self.assertEqual(production_leg.status, ETFRotationPosition.Status.OPEN)
+        self.assertEqual(shadow_leg.status, ETFRotationPosition.Status.CLOSED)
+
+
+class LiveTrackReportTests(TestCase):
+    """Phase 11: the forward record is read-only and drift needs a declared expectation."""
+
+    def setUp(self):
+        self.etf = _seed_etf('512760.SH', name='半导体ETF', category=ETFCategory.SECTOR_TECH)
+        self.signal = ETFRotationSignal.objects.create(
+            date=POOL_DATE, signal_type='MONTHLY', model_type='RULE',
+            rankings=[], selected_etfs=[], max_positions=3, metadata={},
+        )
+
+    def _closed(self, return_pct, *, pnl=None, signal_type='MONTHLY'):
+        return ETFRotationPosition.objects.create(
+            signal=self.signal,
+            etf=self.etf,
+            entry_date=POOL_DATE,
+            exit_date=POOL_DATE,
+            entry_price=Decimal('1.0000'),
+            exit_price=Decimal('1.0000'),
+            weight=0.3,
+            return_pct=return_pct,
+            pnl=pnl,
+            status=ETFRotationPosition.Status.CLOSED,
+            metadata={'signal_type': signal_type},
+        )
+
+    def _reference(self, returns):
+        return ETFRotationBacktest.objects.create(
+            name='reference-row',
+            start_date=date(2016, 1, 29),
+            end_date=date(2023, 12, 31),
+            status=ETFRotationBacktest.Status.COMPLETED,
+            report={'closed_trades': [{'return_pct': value} for value in returns]},
+        )
+
+    def test_without_a_reference_the_report_makes_no_drift_claim(self):
+        for value in (0.05, -0.02, 0.03):
+            self._closed(value, pnl=100.0)
+
+        summary = live_track.build_live_track(reference_backtest_id=0)
+
+        self.assertIsNone(summary['reference'])
+        book = summary['books']['MONTHLY']
+        self.assertEqual(book['closed_count'], 3)
+        self.assertAlmostEqual(book['win_rate'], 2 / 3, places=6)
+        self.assertAlmostEqual(book['realised_pnl'], 300.0, places=6)
+        self.assertFalse(book['drift']['measured'])
+        self.assertFalse(summary['any_breach'])
+
+    def test_a_declared_reference_can_breach_either_tolerance(self):
+        for value in [0.05] * 8 + [-0.02] * 2:
+            self._closed(value)
+        reference = self._reference([0.01] * 10)
+
+        summary = live_track.build_live_track(
+            reference_backtest_id=reference.pk,
+            win_rate_tolerance=0.10,
+            mean_return_tolerance=0.01,
+            min_closed_trades=10,
+        )
+
+        drift = summary['books']['MONTHLY']['drift']
+        self.assertTrue(drift['measured'])
+        self.assertTrue(drift['breached'])
+        self.assertAlmostEqual(drift['win_rate_drift'], 0.8 - 1.0, places=6)
+        self.assertEqual(len(drift['reasons']), 2)
+        self.assertTrue(summary['any_breach'])
+
+    def test_a_thin_sample_is_not_a_drift_reading(self):
+        self._closed(0.05)
+        reference = self._reference([0.01] * 10)
+
+        summary = live_track.build_live_track(
+            reference_backtest_id=reference.pk, min_closed_trades=10,
+        )
+
+        drift = summary['books']['MONTHLY']['drift']
+        self.assertFalse(drift['measured'])
+        self.assertIn('closed trade', drift['reason'])
+        self.assertFalse(summary['any_breach'])
+
+    def test_the_report_never_writes_a_signal_position_or_parameter(self):
+        for value in (0.05, -0.02, 0.03):
+            self._closed(value, pnl=100.0)
+        reference = self._reference([0.5] * 10)
+        before = (
+            ETFRotationSignal.objects.count(), ETFRotationPosition.objects.count(),
+            ETFRotationBacktest.objects.count(),
+        )
+        parameters = dict(ETFRotationBacktest.objects.get(pk=reference.pk).parameters)
+
+        call_command(
+            'report_etf_rotation_live_track', '--reference-backtest-id', str(reference.pk),
+            '--min-closed-trades', '1', stdout=io.StringIO(),
+        )
+
+        from apps.analytics.models import AlertEvent
+
+        self.assertEqual(before, (
+            ETFRotationSignal.objects.count(), ETFRotationPosition.objects.count(),
+            ETFRotationBacktest.objects.count(),
+        ))
+        self.assertEqual(ETFRotationBacktest.objects.get(pk=reference.pk).parameters, parameters)
+        self.assertEqual(AlertEvent.objects.count(), 0)
+
+    def test_alert_writes_one_reused_live_drift_rule_and_one_event(self):
+        from apps.analytics.models import AlertEvent, AlertRule
+
+        for value in [0.5] * 10:
+            self._closed(value)
+        reference = self._reference([-0.1] * 10)
+
+        with patch('apps.analytics.tasks.send_alert_notifications.delay') as dispatch:
+            call_command(
+                'report_etf_rotation_live_track', '--reference-backtest-id', str(reference.pk),
+                '--min-closed-trades', '1', '--alert', stdout=io.StringIO(),
+            )
+            call_command(
+                'report_etf_rotation_live_track', '--reference-backtest-id', str(reference.pk),
+                '--min-closed-trades', '1', '--alert', stdout=io.StringIO(),
+            )
+
+        self.assertEqual(AlertRule.objects.filter(condition_type='LIVE_DRIFT').count(), 1)
+        self.assertEqual(AlertEvent.objects.filter(alert_rule__condition_type='LIVE_DRIFT').count(), 2)
+        self.assertEqual(dispatch.call_count, 2)
+
+    def test_the_five_minute_price_loop_skips_live_drift_rules(self):
+        from apps.analytics.models import AlertEvent, AlertRule
+        from apps.analytics.tasks import check_alert_rules
+
+        AlertRule.objects.create(
+            asset=None, name='drift', condition_type=AlertRule.ConditionType.LIVE_DRIFT,
+            threshold=Decimal('0'), channels=[], cooldown_minutes=60, is_active=True,
+        )
+
+        check_alert_rules()
+
+        self.assertEqual(AlertEvent.objects.filter(alert_rule__condition_type='LIVE_DRIFT').count(), 0)
 
 

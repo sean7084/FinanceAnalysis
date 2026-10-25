@@ -82,6 +82,9 @@ class AlertRule(models.Model):
         INDICATOR_ABOVE = 'INDICATOR_ABOVE', _('Indicator Above')
         INDICATOR_BELOW = 'INDICATOR_BELOW', _('Indicator Below')
         FEED_STALE = 'FEED_STALE', _('Feed Stale')
+        # Live-versus-backtest drift. Asset-less like FEED_STALE, and evaluated by the ETF
+        # forward-track report rather than the five-minute price loop.
+        LIVE_DRIFT = 'LIVE_DRIFT', _('Live Drift')
 
     # Nullable for conditions that are about a data feed rather than one tradable asset
     # (currently FEED_STALE). Price/indicator rules still name an asset; the dispatch and

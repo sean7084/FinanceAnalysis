@@ -61,6 +61,11 @@ MODEL_VERSION_MAX_LENGTH = 50
 #: ``selected_etfs`` weights plus the defensive sleeve must be a whole book.
 WEIGHT_SUM_TOLERANCE = 1e-6
 
+#: Minimum trade unit for an ETF: one lot is 100 shares, and a simulated book cannot buy a
+#: fraction of one. Kept local rather than imported from ``backtest_engine`` so the signal
+#: path does not gain a dependency on the backtest module for a single constant.
+ETF_LOT_SIZE = 100
+
 
 class SignalGenerationError(RuntimeError):
     """The date, the pool or the model registry cannot produce a usable signal.
@@ -271,6 +276,23 @@ def benchmark_return_20d(trade_date, *, source=None) -> float | None:
     return round(newest / oldest - 1.0, 6)
 
 
+def _sized_shares(capital_base: float, weight: float, entry_price: float) -> int | None:
+    """Whole-lot share count for one leg, or ``None`` when no capital base is configured.
+
+    The strategy targets a *weight*, not a share count, so nothing is invented when
+    ``ETF_SIM_CAPITAL_BASE`` is 0: that keeps the historical ``shares=NULL`` / ``pnl=NULL``
+    ledger byte-for-byte. With a base, the leg's notional is ``base x weight`` and shares
+    are floored to whole lots -- rounding up would spend money the book does not have and
+    make the first ``pnl`` mark optimistic rather than merely different.
+    """
+    base = float(capital_base or 0.0)
+    price = float(entry_price or 0.0)
+    if base <= 0 or price <= 0:
+        return None
+    lots = int((base * float(weight)) / price // ETF_LOT_SIZE)
+    return lots * ETF_LOT_SIZE
+
+
 @transaction.atomic
 def persist_signal(*, trade_date, signal_type: str, model_type: str, config, plan,
                    selected: list[dict], metadata: dict, model_version: str,
@@ -311,6 +333,12 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
 
     codes = [leg.ts_code for leg in plan.legs]
     prices = _entry_prices(trade_date, codes)
+    # A configured capital base turns each new leg's target weight into a whole-lot share
+    # count, which is what lets the daily ledger state a yuan pnl. Carried rows keep the
+    # shares they were opened with: a carry-forward refreshes the *target* weight, but the
+    # holding's cost basis and size are history and must not be restated at a price it
+    # never paid. Rows opened while the base was 0 therefore stay NULL.
+    capital_base = float(getattr(settings, 'ETF_SIM_CAPITAL_BASE', 0) or 0)
     etf_ids = dict(ETFUniverse.objects.filter(ts_code__in=codes).values_list('ts_code', 'id'))
     # A fund the newest signal still selects is the same holding it was on the previous
     # signal, not a second one. Re-creating a row for it would double the live book on
@@ -357,6 +385,7 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
             entry_date=trade_date,
             entry_price=price,
             weight=leg.weight,
+            shares=_sized_shares(capital_base, leg.weight, price),
             status=ETFRotationPosition.Status.OPEN,
             metadata={
                 'rank': leg.rank,

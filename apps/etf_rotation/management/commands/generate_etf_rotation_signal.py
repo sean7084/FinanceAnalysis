@@ -68,7 +68,7 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             '--max-positions', type=int,
-            help='Slots in the book. Default: settings.ETF_MAX_POSITIONS (5).',
+            help='Slots in the book. Default: settings.ETF_MAX_POSITIONS (3).',
         )
         parser.add_argument(
             '--momentum-lookback', type=int,

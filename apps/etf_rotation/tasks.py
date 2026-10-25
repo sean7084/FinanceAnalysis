@@ -644,6 +644,37 @@ def generate_etf_rotation_signal_daily(self, signal_type='MONTHLY', model_type='
     )
 
 
+@shared_task(bind=True, name='apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal',
+             soft_time_limit=900, time_limit=1000)
+def generate_etf_rotation_shadow_signal(self):
+    """Beat entry point for the ML rematch's parallel book. No-op unless configured.
+
+    ``ETF_ML_SHADOW_MODEL`` is empty by default, so an ordinary deploy never reaches the
+    signal generator and the production book is the only thing that exists. When it names a
+    model type, the signal is written under ``signal_type=SHADOW``: the ledger already groups
+    legs by signal type, so the shadow accrues its own realised history and cannot displace a
+    production leg.
+
+    Fail-closed on purpose. ``generate_etf_rotation_signal`` resolves the model through
+    ``load_active_predictor``, so an ML type with no active ``ModelVersion`` writes a
+    ``REFUSED / model_registry_missing`` run row and raises. That is the desired behaviour:
+    the shadow exists to measure a candidate that has passed the gate, and a missing artifact
+    must be visible rather than degrade to the RULE blend under an ML label.
+    """
+    from django.conf import settings
+    from django.core.management import call_command
+
+    model_type = str(getattr(settings, 'ETF_ML_SHADOW_MODEL', '') or '').strip().upper()
+    if not model_type:
+        return {'shadow_model': '', 'skipped': 'ETF_ML_SHADOW_MODEL is empty'}
+    return call_command(
+        'generate_etf_rotation_signal',
+        signal_type='SHADOW',
+        model_type=model_type,
+        verbosity=0,
+    )
+
+
 @shared_task(bind=True, name='apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
              soft_time_limit=300, time_limit=360)
 def mark_etf_rotation_positions_daily(self):
@@ -651,6 +682,20 @@ def mark_etf_rotation_positions_daily(self):
     from django.core.management import call_command
 
     return call_command('mark_etf_rotation_positions_daily', verbosity=0)
+
+
+@shared_task(bind=True, name='apps.etf_rotation.tasks.report_etf_rotation_live_track',
+             soft_time_limit=300, time_limit=360)
+def report_etf_rotation_live_track(self):
+    """Beat entry point for the monthly forward-track report.
+
+    ``alert=True`` is what distinguishes this caller from an operator running the command by
+    hand: a breach writes one asset-less ``LIVE_DRIFT`` event through the existing dispatch
+    path, and the report itself never writes a signal, position or parameter.
+    """
+    from django.core.management import call_command
+
+    return call_command('report_etf_rotation_live_track', alert=True, verbosity=0)
 
 
 @shared_task(bind=True, name='apps.etf_rotation.tasks.check_etf_rotation_feed_health',
@@ -814,9 +859,15 @@ def run_etf_rotation_backtest(self, backtest_id):
         # The two selection columns travel the same way: an API row created with
         # ``dedup_track_index=false`` or ``max_per_category=0`` that ran with the
         # ``BacktestConfig`` defaults would report a configuration it was never asked for.
+        # The Kelly/cash-yield columns are read here for the same reason: a queued run that
+        # re-defaulted them would silently run unsized while its row claimed otherwise.
         config_overrides={
             'walk_forward_steps': run.walk_forward_steps, 'weighting': run.weighting,
             'dedup_track_index': run.dedup_track_index, 'max_per_category': run.max_per_category,
+            'kelly_fraction': float(run.kelly_fraction), 'kelly_cap': float(run.kelly_cap),
+            'kelly_floor': float(run.kelly_floor),
+            'kelly_lookback_trades': int(run.kelly_lookback_trades),
+            'cash_yield_annual': float(run.cash_yield_annual),
         },
         persist_to=run,
     )

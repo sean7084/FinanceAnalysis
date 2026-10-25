@@ -372,7 +372,24 @@ instead of the global 50, because a `--grid` run writes hundreds of rows and the
 leaderboard is only readable ordered: `sort` accepts `alpha`, `sharpe`,
 `return`, `drawdown` and `created`, and anything else falls back to newest
 first. Runs that never computed a metric sort last on every key rather than
-first, so an aborted run cannot head the table.
+first, so an aborted run cannot head the table. The route also accepts
+`?dedup_track_index=true|false`: the 2026-10 rows written while
+`--no-dedup-track-index` was silently applied describe themselves in that column,
+so `true` reads the production-rule rows alone without hiding the intended
+dedup-off control (row 355) when nobody passes the filter.
+
+Two read surfaces separate the ML rematch from production without a second table.
+`/etf/signals/` and `/etf/signals/latest/` exclude `signal_type=SHADOW` unless a
+caller asks for it by name, and `/etf/positions/` applies the same rule (matching
+either the leg's own signal or its `metadata.signal_type`), so the realised-PnL
+card sums the production book alone. `?signal_type=SHADOW` is how the shadow book
+is inspected.
+
+One field in `report['closed_trades']` is not comparable across generations.
+`position_fees_paid` carried commission only before 0.1.23; later rows also include
+the slippage their fills embedded. The field never stored the split, so there is no
+backfill — compare across versions with the `total_fees` / `total_slippage_cost`
+metric columns instead.
 
 ### ETF backtest lifecycle
 

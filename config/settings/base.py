@@ -248,6 +248,14 @@ CELERY_TASK_ROUTES = {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
     },
+    "apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
+    "apps.etf_rotation.tasks.report_etf_rotation_live_track": {
+        "queue": "etf-rotation",
+        "routing_key": "etf-rotation",
+    },
     "apps.etf_rotation.tasks.mark_etf_rotation_positions_daily": {
         "queue": "etf-rotation",
         "routing_key": "etf-rotation",
@@ -301,7 +309,10 @@ ETF_MIN_AVG_AMOUNT_YUAN = env.int('ETF_MIN_AVG_AMOUNT_YUAN', default=50_000_000)
 # A single position may not exceed this multiple of the turnover its own legs consume.
 ETF_LIQUIDITY_FLOOR_MULTIPLE = env.float('ETF_LIQUIDITY_FLOOR_MULTIPLE', default=10.0)
 # Book weight not held in the ranked positions sits in the defensive asset.
-ETF_MAX_POSITIONS = env.int('ETF_MAX_POSITIONS', default=5)
+# 3, not 5: the production reference row 256 is ``p3`` and the §7.7 holdout adjudication ran
+# the same ``p3`` book, so the live default matches the validated configuration. The §7.12
+# walk-forward picked p3/p3/p5/p8 across folds, so this is an alignment, not a claim p3 wins.
+ETF_MAX_POSITIONS = env.int('ETF_MAX_POSITIONS', default=3)
 # How the risk-on budget is split across the selected legs: 'equal' | 'score' | 'invvol'.
 # This is the one place the default lives; the engine dataclass, the model column and the
 # workbench form all read it, because they used to disagree (dataclass said 'equal', the
@@ -314,6 +325,27 @@ ETF_DEDUP_TRACK_INDEX = env.bool('ETF_DEDUP_TRACK_INDEX', default=True)
 ETF_MAX_PER_CATEGORY = env.int('ETF_MAX_PER_CATEGORY', default=2)
 # Cash-substitute ETF the strategy rotates into when momentum is risk-off.
 ETF_DEFENSIVE_ASSET = env('ETF_DEFENSIVE_ASSET', default='511880.SH')
+# Notional capital the live simulated ledger sizes its holdings against. The strategy targets
+# a percentage weight, not a share count, so a signal row can only carry ``shares`` when a
+# capital base is supplied. 1,000,000 is the documented default; set 0 to keep writing
+# ``shares=NULL`` and ``pnl=NULL`` exactly as before this knob existed.
+ETF_SIM_CAPITAL_BASE = env.int('ETF_SIM_CAPITAL_BASE', default=1_000_000)
+# The ML rematch's shadow book. Empty (default) means no shadow signal is generated. Setting
+# this to LIGHTGBM/LSTM/ENSEMBLE turns on a second daily signal under ``signal_type=SHADOW``;
+# the ledger tracks it as its own book and the production signal is untouched. The task is
+# fail-closed: an ML type with no active ModelVersion writes a REFUSED run and raises, so the
+# shadow can never quietly become a RULE book. Do not set this until a candidate has passed
+# the Phase 10 gate -- activating one is what makes it runnable.
+ETF_ML_SHADOW_MODEL = env('ETF_ML_SHADOW_MODEL', default='')
+# Forward-track monitor (plan Phase 11). The live book is the only honest out-of-sample
+# evidence left after the holdout was spent, so drift is measured against a *declared*
+# reference row rather than an inferred expectation. 0 means no reference: the report is
+# descriptive and makes no drift claim. Tolerances are absolute deviations; the closed-trade
+# floor is what stops a handful of trades in one regime from being read as evidence.
+ETF_LIVE_REFERENCE_BACKTEST_ID = env.int('ETF_LIVE_REFERENCE_BACKTEST_ID', default=0)
+ETF_LIVE_DRIFT_WIN_RATE_TOLERANCE = env.float('ETF_LIVE_DRIFT_WIN_RATE_TOLERANCE', default=0.20)
+ETF_LIVE_DRIFT_MEAN_RETURN_TOLERANCE = env.float('ETF_LIVE_DRIFT_MEAN_RETURN_TOLERANCE', default=0.03)
+ETF_LIVE_DRIFT_MIN_CLOSED_TRADES = env.int('ETF_LIVE_DRIFT_MIN_CLOSED_TRADES', default=10)
 # Index the rotation signal and backtest are scored against.
 ETF_BENCHMARK_CODE = env('ETF_BENCHMARK_CODE', default='H00905.CSI')
 # Price-index comparables shown next to the alpha benchmark. These are also refreshed by
@@ -482,12 +514,27 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
         'schedule': crontab(hour='19', minute='45'),
     },
+    # The ML rematch's parallel book. No-op unless ``ETF_ML_SHADOW_MODEL`` names a model type,
+    # so an unconfigured deploy runs exactly the production signal. Five minutes after the
+    # production signal and before the 20:15 ledger, which closes a displaced shadow leg on
+    # the same clock as production while keeping the two books separate by ``signal_type``.
+    'generate-etf-rotation-shadow-signal-daily': {
+        'task': 'apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal',
+        'schedule': crontab(hour='19', minute='50'),
+    },
     # After the 19:45 signal: a leg the newest signal no longer selects is closed on the
     # session its replacement was decided, and every surviving leg gets a fresh mark. A
     # day the signal job did not run has no newer signal, so the ledger only marks.
     'mark-etf-rotation-positions-daily': {
         'task': 'apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
         'schedule': crontab(hour='20', minute='15'),
+    },
+    # Monthly forward-track report (plan Phase 11). Runs after the ledger has closed the
+    # month's last displaced leg. ``--alert`` is passed only here, so a hand-run report is a
+    # read; a breach writes one LIVE_DRIFT event through the existing asset-less dispatch path.
+    'report-etf-rotation-live-track-monthly': {
+        'task': 'apps.etf_rotation.tasks.report_etf_rotation_live_track',
+        'schedule': crontab(hour='21', minute='0', day_of_month='1'),
     },
     # Fund 份额 is a period stamp, not a live quote, and the rotation engine only uses it to
     # pick which wrapper represents an index cluster -- a ranking that moves over months, not
