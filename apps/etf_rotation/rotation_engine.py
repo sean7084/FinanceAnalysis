@@ -158,6 +158,12 @@ class RotationConfig:
     # Caps how many names one ``category`` may contribute. The index dedup alone cannot
     # collapse the bank book: ``中证银行`` and ``中证800银行`` are genuinely different indices.
     max_per_category: int = DEFAULT_MAX_PER_CATEGORY
+    # Bottom-share of the ML score distribution that is vetoed before selection. ``0`` (the
+    # default) disables it, so every plan before this knob is bit-identical. It exists to
+    # test one hypothesis: that the ML score is a useful *filter* even when it is a poor
+    # *selector* -- the arms that used it to rank lost to RULE on return while winning on
+    # drawdown, which is what a filter is for.
+    ml_veto_quantile: float = 0.0
 
     def __post_init__(self):
         # frozen dataclass, so normalisation has to go through object.__setattr__.
@@ -179,6 +185,11 @@ class RotationConfig:
             raise RotationEngineError('max_swaps cannot be negative.')
         if self.max_per_category < 0:
             raise RotationEngineError('max_per_category cannot be negative; use 0 for no cap.')
+        object.__setattr__(self, 'ml_veto_quantile', float(self.ml_veto_quantile))
+        if not 0.0 <= self.ml_veto_quantile < 1.0:
+            raise RotationEngineError(
+                f'ml_veto_quantile must be in [0, 1), got {self.ml_veto_quantile!r}.'
+            )
         if not 1 <= self.min_positions_for_risk_on <= self.max_positions:
             raise RotationEngineError(
                 f'min_positions_for_risk_on must sit between 1 and max_positions '
@@ -1210,12 +1221,15 @@ def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
             cross_section.columns, config.momentum_lookback,
         )
 
+    # Filled by the veto block below; declared here because ``metadata`` is built before it.
+    veto_dropped = []
     metadata = {
         'model_type': scoring_metadata.get('model_type', 'UNKNOWN'),
         'momentum_column': momentum_column,
         'momentum_column_substituted': substituted,
         'available_momentum_lookbacks': list(available),
         'weighting': config.weighting,
+        'ml_veto_quantile': config.ml_veto_quantile,
         'config': asdict(config),
         'scoring_metadata': scoring_metadata,
         'scoring_metadata_available': bool(scoring_metadata),
@@ -1265,6 +1279,33 @@ def build_rotation_plan(scored: pd.DataFrame, snapshots: pd.DataFrame,
     # -- once as a leg and once as the defensive allocation.
     defensive_in_pool = int(working['ts_code'].eq(config.defensive_asset).sum())
     working = working[working['ts_code'] != config.defensive_asset]
+
+    veto_dropped = []
+    if config.ml_veto_quantile > 0 and '__ml_score' in cross_section.columns:
+        # Only names the model actually scored can be vetoed: a missing score is not evidence
+        # of weakness, and dropping those would make the filter a coverage test.
+        veto_scores = (
+            cross_section[['ts_code', '__ml_score']].drop_duplicates(subset=['ts_code'])
+        )
+        working = working.merge(veto_scores, on='ts_code', how='left')
+        values = pd.to_numeric(working['__ml_score'], errors='coerce').to_numpy(dtype=float)
+        finite = values[np.isfinite(values)]
+        if finite.size >= 2:
+            cut = float(np.quantile(finite, config.ml_veto_quantile))
+            drop_mask = np.isfinite(values) & (values <= cut)
+            veto_dropped = [
+                {'ts_code': code, 'ml_score': _json_number(value), 'score': _json_number(score)}
+                for code, value, score in working.loc[
+                    drop_mask, ['ts_code', '__ml_score', 'score']
+                ].itertuples(index=False)
+            ]
+            working = working[~drop_mask].drop(columns=['__ml_score'])
+            metadata['ml_veto_excluded'] = veto_dropped[:MAX_LOGGED_CODES]
+            metadata['ml_veto_excluded_count'] = len(veto_dropped)
+        elif '__ml_score' in working.columns:
+            # Too few scored names to define a quantile: veto nobody, but do not leak the
+            # helper column into the constraint merge below.
+            working = working.drop(columns=['__ml_score'])
 
     missing_momentum = int(working[momentum_column].isna().sum())
     working = working.dropna(subset=[momentum_column])

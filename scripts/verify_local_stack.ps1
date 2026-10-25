@@ -27,6 +27,23 @@ if ($LASTEXITCODE -ne 0) {
 
 & $PythonBin -c "import celery, django, psycopg2, redis, talib; print('Python dependencies: ok')"
 & $PythonBin manage.py check
+# A committed-but-unapplied migration is a startup failure, not a footnote: on 2026-10-25
+# four migrations were merged and never applied, every test passed (the test database is
+# built from them), and the SPA showed a generic "ETF data failed to load" banner.
+$migrationOutput = & $PythonBin manage.py showmigrations --list 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Migrations: could not read state (is the database reachable?); skipping the check."
+} else {
+  $pendingMigrations = @($migrationOutput | Where-Object { $_ -match '^\[ \]' })
+  if ($pendingMigrations.Count -gt 0) {
+    Write-Host "Pending migrations: the code expects a schema this database does not have."
+    $pendingMigrations | ForEach-Object { Write-Host "  $_" }
+    Write-Host "Apply them first:  $PythonBin manage.py migrate"
+    $status = 1
+  } else {
+    Write-Host "Migrations: all applied"
+  }
+}
 & $PythonBin "$ProjectRoot\scripts\_stack_probe.py" settings
 
 exit $status

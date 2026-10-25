@@ -1,5 +1,68 @@
 # Changelog
 
+### version 0.1.28
+
+holdout 释放、按折重训与四臂复赛。记录：
+`docs/plans/etf-rotation-next-phases-2026-10-24.md` §8；
+数据：`docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §11。
+
+#### Changed:
+
+- **The 2024-2026 holdout was released into the training pool (2026-10-25).** It had
+  already been read twice (the §7.7 weighting adjudication and the Phase D gate), so it
+  could no longer serve as a clean test set, and keeping it out of training bought
+  nothing. `LOCKED_HOLDOUT_START` became `RELEASED_HOLDOUT_START` plus
+  `HOLDOUT_RELEASED_ON` in both `run_etf_rotation_backtest` and
+  `sweep_etf_rotation_lstm`: a window reaching 2024-01-01 is now **labelled** a tuning
+  measurement instead of being refused, and the label is printed on every path. The
+  `--allow-holdout-overlap` escape hatch was retired with the guard it escaped. What the
+  release does not buy back is an out-of-sample claim: the sealed forward window
+  (the live ledger, accruing from 2026-10-25) is the only honest one left.
+- **`train_etf_rotation_model --no-activate`.** The trainer defaults to `activate=True`,
+  so the first post-release retrain would have silently become the serving model -- the
+  exact state the activation gate forbids. The flag reaches both trainers and
+  `register_ensemble_version`, and the report prints the resulting activation state.
+
+#### Added:
+
+- **Pinned shadow signals.** `signals.pinned_predictors` loads a named READY artifact
+  without touching `is_active`, `generate_rotation_signal(model_version=...)` scores with
+  it and records the key in `metadata['model_versions']`, and
+  `generate_etf_rotation_signal --model-version` exposes it. `ETF_ML_SHADOW_MODEL` now
+  accepts `LSTM:<version>` (a bare model type still resolves the active row). Before this,
+  starting a shadow and passing the activation gate were the same action -- so neither
+  could happen first.
+- **Per-fold retraining for the CPCV rematch.** `walk_forward.train_dates_for_any_fold` /
+  `validation_blocks_for_any_fold` read the split from either fold shape;
+  `train_lightgbm.train_fold_predictors` fits one booster per fold;
+  `train_lstm.train_walk_forward(folds=..., capture_fold_predictors=True)` returns the
+  per-fold scorers. `run_etf_rotation_backtest --cpcv-retrain` then scores each held-out
+  block with a model trained on its complement and discards it: no `ModelVersion` row, no
+  artifact, no activation. RULE is allowed in the same mode so the baseline is measured
+  the same way. A leak assertion refuses a fold whose training dates touch its own block.
+- **`scripts/_check_migrations.sh`**, called by `verify_local_stack.sh`/`.ps1` and by
+  `run_backend.sh`: a committed-but-unapplied migration now fails startup. On 2026-10-25
+  four migrations were merged and never applied locally; every test passed (the test
+  database is built from them) and the SPA showed only "ETF data failed to load".
+
+#### Numbers:
+
+- Per-fold rematch, 2016-01-29..2023-12-31, six blocks, each scored by a model that never
+  saw it: RULE median Sharpe 0.2227 / 83.33% positive blocks / median maxDD 17.97%;
+  LightGBM -0.0136 / 50.00% / 9.35%; LSTM see the report. **RULE stays**: the ML arms lose
+  on return and consistency and win only on drawdown.
+- **Fourth arm (RULE selects, ML vetoes) measured.** `--cpcv-retrain --cpcv-hybrid --model X`
+  plus `--ml-veto-quantile` (fixed 0.2) removes the names the fold model likes least before
+  RULE's own selection: LightGBM veto -> median Sharpe 0.2906 / 83.33% positive blocks /
+  median maxDD 15.62% (beats RULE's 0.2227 / 83.33% / 17.97%); LSTM veto -> 0.1515 /
+  83.33% / 17.99% (**worse** Sharpe). Two veto models, opposite answers: the "ML as a
+  filter" hypothesis is supported by one arm and contradicted by the other, so it does not
+  justify a production change. The engine side is `RotationConfig.ml_veto_quantile` plus a
+  `__ml_score` column the backtest engine attaches per session.
+- Post-release artifacts, both registered **inactive**: `etf-lgb-20d-lambdarank-2026-09-17-post-release`
+  (pooled rank IC 0.0648, 5/6 folds positive) and `etf-lstm-2026-09-17-post-release`
+  (0.0318, 4/6).
+
 ### version 0.1.27
 
 Phases 6-12 of the ETF rotation follow-on work. Plan and full record:

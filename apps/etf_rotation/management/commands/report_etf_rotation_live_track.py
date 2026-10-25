@@ -18,6 +18,8 @@ Examples::
 
 from __future__ import annotations
 
+from datetime import date
+
 from django.core.management.base import BaseCommand
 
 from apps.etf_rotation import live_track
@@ -29,6 +31,12 @@ def _pct(value) -> str:
 
 def _yuan(value) -> str:
     return 'n/a' if value is None else f'{float(value):,.2f}'
+
+
+#: Start of the sealed forward window (``docs/plans/etf-rotation-next-phases-2026-10-24.md`` §8,
+#: 2026-10-25). A recorded decision, not a knob: the ledger accrues from here and nothing
+#: earlier can be called out-of-sample again.
+FORWARD_WINDOW_START = date(2026, 10, 25)
 
 
 class Command(BaseCommand):
@@ -61,6 +69,12 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # Display only: the sealed window never enters a calculation. It is here so a reader
+        # knows which dates are live evidence and which belong to the released holdout.
+        self.stdout.write(
+            f'forward window: sealed from {FORWARD_WINDOW_START.isoformat()} -- readings before '
+            'it are the released holdout, not live evidence.'
+        )
         summary = live_track.build_live_track(
             reference_backtest_id=options['reference_backtest_id'],
             win_rate_tolerance=options['win_rate_tolerance'],

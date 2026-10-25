@@ -664,14 +664,21 @@ def generate_etf_rotation_shadow_signal(self):
     from django.conf import settings
     from django.core.management import call_command
 
-    model_type = str(getattr(settings, 'ETF_ML_SHADOW_MODEL', '') or '').strip().upper()
-    if not model_type:
+    configured = str(getattr(settings, 'ETF_ML_SHADOW_MODEL', '') or '').strip()
+    if not configured:
         return {'shadow_model': '', 'skipped': 'ETF_ML_SHADOW_MODEL is empty'}
+    # ``LSTM:<version>`` pins that artifact without activating it, which is the only way to
+    # start a shadow before the activation gate has passed. A bare model type keeps resolving
+    # the active row, so an existing deploy behaves exactly as before.
+    model_type, _, pinned_version = configured.partition(':')
+    model_type = model_type.strip().upper()
+    kwargs = {'model_version': pinned_version.strip()} if pinned_version.strip() else {}
     return call_command(
         'generate_etf_rotation_signal',
         signal_type='SHADOW',
         model_type=model_type,
         verbosity=0,
+        **kwargs,
     )
 
 

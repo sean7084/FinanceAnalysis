@@ -192,6 +192,16 @@ Items here have no commitment attached. When something is done, move it to
 
 ---
 
+## Open — ML rematch
+
+- **The "ML as a filter" arm needs a sensitivity test before it means anything.** With a
+  fixed 20% veto quantile and the same six blocks, LightGBM vetoes and the median Sharpe
+  rises to 0.2906 (vs RULE 0.2227) while LSTM vetoes and it falls to 0.1515. Two models,
+  opposite answers: the hypothesis is not replicated. The next round should hold the
+  quantile fixed and vary only the veto model and the panel start (release-inclusive), then
+  record all readings in one table — not tune the quantile on this panel. Report:
+  `docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §11.5-§11.6.
+
 ## Open — correctness
 
 ### The reference RULE parameter set is window-specific
@@ -206,8 +216,10 @@ equal three times / score once. Out-of-sample returns were +0.98% / +75.26% /
 `docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.12. This is a
 statement about stability, not a better configuration: folds 1 and 4 sit exactly
 on the 20-rebalance floor, only four folds exist, and each fold restarts from
-initial capital. No default was changed, and the 2024–2026 holdout may not be
-reused to rank these winners — it was spent in §7.7.
+initial capital. No default was changed. The 2024–2026 window has since been
+**released into the training pool** (2026-10-25, `etf-rotation-next-phases-2026-10-24.md`
+§8): it is training data now, so ranking winners on it is allowed but produces a tuning
+number, never out-of-sample evidence. The sealed forward window is the only honest one.
 
 **Phase 8 added the measurement tool; it has now been run.**
 `walk_forward.combinatorial_purged_folds` plus
@@ -255,14 +267,21 @@ block, so its Sharpe 1.5–3.3 is in-sample fit.
 used to drop the `date` column, so every LSTM backtest scored each historical
 session as-of the newest eligible snapshot. `date` now travels with the frame
 (LightGBM ignores it), and the fix has a test. **Phase D's stored LSTM numbers
-(row 209) were produced through that path and are no longer valid evidence**;
-re-measuring them would re-query the spent holdout, which the discipline
-forbids.
+(row 209) were produced through that path and are no longer valid evidence**.
+Re-measuring them now runs in the released window (training data since
+2026-10-25, plan §8), so a fresh reading is allowed but is a tuning number, not
+a restoration of the old claim.
 
-Two remaining gaps: (a) `train_walk_forward` accepts only `expanding_folds`, so
-there is no way to retrain on each `CombinatorialFold.train_dates` set — that is
-what a real CPCV rematch needs; (b) the shadow's forward evidence needs months of
-rebalances before it can be compared with RULE.
+Gap (a) is **resolved** in 0.1.28: `walk_forward.train_dates_for_any_fold` plus
+`train_lightgbm.train_fold_predictors` /
+`train_lstm.train_walk_forward(folds=..., capture_fold_predictors=True)` and
+`run_etf_rotation_backtest --cpcv-retrain` now score each block with a model
+trained on its complement. The rematch is in the report §11: LightGBM median
+Sharpe −0.0136 and LSTM 0.0249 against RULE's 0.2227, so neither replaces RULE.
+Gap (b) stands: the shadow's forward evidence still needs ≥20 rebalances, and the
+shadow is not open — `ETF_ML_SHADOW_MODEL` can now pin a version
+(`LSTM:<version>`) without activating it, which is what makes opening it
+possible at all.
 
 ### The band and the capacity cap have tuning-window evidence only
 

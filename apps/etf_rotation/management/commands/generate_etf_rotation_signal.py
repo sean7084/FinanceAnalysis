@@ -76,6 +76,11 @@ class Command(BaseCommand):
                  'horizon is substituted and recorded in metadata when it is absent.',
         )
         parser.add_argument(
+            '--model-version', default=None, metavar='VERSION',
+            help='Pin one READY ML artifact instead of resolving the active one. Needed to run '
+                 'a shadow arm without activating the model.',
+        )
+        parser.add_argument(
             '--dry-run', action='store_true', help='Score, rank, verify and report; write nothing.',
         )
 
@@ -89,6 +94,7 @@ class Command(BaseCommand):
                 max_positions=options['max_positions'],
                 momentum_lookback=options['momentum_lookback'],
                 dry_run=options['dry_run'],
+                model_version=options['model_version'],
             )
         except signals.SignalGenerationError as error:
             self._record(options, ETFRotationSignalRun.Outcome.REFUSED, started, error=error)

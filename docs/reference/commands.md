@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-25T02:43:51Z_
+_Generated: 2026-10-25T07:26:38Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -228,6 +228,7 @@ Rank the point-in-time ETF pool and write the rotation signal for one date.
 | `--model-type` | value | `RULE` |  | Scorer: the rule blend, a trained LIGHTGBM/LSTM, or their ensemble. An ML type with no active ModelVersion fails instead of quietly falling back to RULE. |
 | `--max-positions` | value | &mdash; |  | Slots in the book. Default: settings.ETF_MAX_POSITIONS (3). |
 | `--momentum-lookback` | value | &mdash; |  | Momentum horizon in sessions, e.g. 60 -> mom_60d. Default: 60; the nearest stored horizon is substituted and recorded in metadata when it is absent. |
+| `--model-version` | value | &mdash; |  | Pin one READY ML artifact instead of resolving the active one. Needed to run a shadow arm without activating the model. |
 | `--dry-run` | flag | `False` |  | Score, rank, verify and report; write nothing. |
 
 
@@ -297,9 +298,12 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--grid-prefix` | value | `grid` |  | Name stem for the persisted grid rows (default: grid). The row name is the resume key, so a re-run after a selection-rule change needs a fresh stem to keep both generations side by side. |
 | `--grid-force` | flag | `False` |  | Re-run grid rows that already COMPLETED under the same name (default: skip them). |
 | `--walk-forward-steps` | value | &mdash; |  | With --grid: split the window into N expanding folds, select the RULE configuration on each training window by Sharpe (lower turnover breaks a tie), and trade it on that fold's validation window. Ephemeral: no row is written. A fold with fewer than 20 rebalances is too thin; rerun with N=4, which gives longer validation blocks. |
-| `--cpcv-blocks` | value | &mdash; |  | Combinatorial purged cross-validation: cut the window into N contiguous blocks and measure the named configuration on every held-out block. Ephemeral, and it will not accept a window reaching 2024-01-01. |
+| `--cpcv-blocks` | value | &mdash; |  | Combinatorial purged cross-validation: cut the window into N contiguous blocks and measure the named configuration on every held-out block. Ephemeral. A window reaching 2024-01-01 is allowed but labelled tuning-only: that holdout was released into the training pool. |
 | `--cpcv-test-blocks` | value | `2` |  | Blocks held out per split (default 2); blocks the other blocks train on after a label-window purge and an embargo. |
 | `--cpcv-embargo` | value | `5` |  | Sessions excluded after each held-out block (default 5). |
+| `--cpcv-hybrid` | flag | `False` |  | With --cpcv-retrain and an ML --model: RULE selects, the fold model only vetoes. Implements the 'ML as a filter' arm: the names the model likes least (bottom --ml-veto-quantile) are removed before selection. Fixed quantile, no tuning. |
+| `--ml-veto-quantile` | value | `0.2` |  | Bottom share of the ML score distribution vetoed by --cpcv-hybrid (default 0.2). Fixed for the whole run. |
+| `--cpcv-retrain` | flag | `False` |  | With --cpcv-blocks and an ML --model: train one model per held-out block on that block's complement (purged/embargoed) and score the block with it. In-memory only: no ModelVersion row, no artifact, no activation. Needs --cpcv-test-blocks 1. |
 | `--model-version` | value | &mdash; |  | With --cpcv-blocks and an ML --model: pin the READY ModelVersion to score with, without activating it. ENSEMBLE takes "lgb=<version>,lstm=<version>". |
 
 
@@ -320,7 +324,6 @@ Bounded, resumable LSTM hyperparameter sweep over the ETF tuning window.
 | `--force` | flag | `False` |  | Re-run configurations whose row is already COMPLETED. |
 | `--plan` | flag | `False` |  | Print every configuration, name and fingerprint; write nothing. |
 | `--dry-run` | flag | `False` |  | Resolve the window, report the ledger state, train nothing, write nothing. |
-| `--allow-holdout-overlap` | flag | `False` |  | Let --end reach past 2024-01-01 (it is refused otherwise). |
 
 
 ### `sync_etf_daily`
@@ -363,6 +366,7 @@ Walk-forward training and reporting for the ETF rotation models.
 | `--horizon` | value | &mdash; |  | Label horizon in trading sessions. Default: settings.ETF_LABEL_HORIZON_DAYS (20). |
 | `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS (250). |
 | `--version-tag` | value | `""` |  | Suffix appended to the ModelVersion key. |
+| `--no-activate` | flag | `False` |  | Register the trained row inactive and leave the serving model alone. Required for a post-release retrain: this command activates by default. |
 | `--dry-run` | flag | `False` |  | Build the frames and fold plan, print sample/group counts, train nothing, write nothing. |
 | `--report` | flag | `False` |  | Print registered ETF model versions with their holdout metrics and exit. |
 

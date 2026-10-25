@@ -169,7 +169,7 @@ jobs:
       # Spearman while refusing an unscorable sample.
       # 701 -> 704: the as-of date travels with a predictor frame, per-block rebalances are
       # attributed by signal_date, and a CPCV arm can be scored without a date column.
-      MIN_TEST_COUNT: "704"
+      MIN_TEST_COUNT: "725"
 
     steps:
       - uses: actions/checkout@v4
