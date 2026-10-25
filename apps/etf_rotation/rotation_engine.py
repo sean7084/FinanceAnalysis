@@ -44,7 +44,12 @@ def _setting(name, fallback):
 MODEL_TYPES = ('RULE', 'LIGHTGBM', 'LSTM', 'ENSEMBLE')
 WEIGHTING_MODES = ('equal', 'score', 'invvol')
 
-DEFAULT_MAX_POSITIONS = 5
+DEFAULT_MAX_POSITIONS = 3
+# Three, not five: the production reference row 256 is ``p3`` and the §7.7 holdout
+# adjudication ran the same ``p3`` book, so the live default now matches the configuration
+# that was actually validated. This is an alignment, not a claim that p3 is better -- the
+# §7.12 walk-forward picked p3/p3/p5/p8 across its four folds, so no single count is
+# stable. Do not read the change as evidence for one.
 # One value, read at construction time by every layer that needs a cash substitute: the
 # rotation config, the backtest config, the ``ETFRotationBacktest`` column default and the
 # workbench form. Each used to hardcode ``'511880.SH'`` independently, so a deployer that
@@ -136,7 +141,7 @@ class RotationEngineError(RuntimeError):
 
 @dataclass(frozen=True)
 class RotationConfig:
-    max_positions: int = 5
+    max_positions: int = DEFAULT_MAX_POSITIONS
     momentum_lookback: int = 60
     absolute_momentum_filter: bool = True
     defensive_asset: str = field(default_factory=default_defensive_asset)
@@ -427,9 +432,19 @@ def _rule_scores(snapshots, momentum_lookback):
 
 
 def _call_predictor(predictor, snapshots, model_type):
-    """Run ``(snapshots_df) -> DataFrame[ts_code, score]`` on the feature slice only."""
+    """Run ``(snapshots_df) -> DataFrame[ts_code, score]`` on the feature slice only.
+
+    ``date`` travels with the frame when the caller has it. The LSTM scorer needs each
+    row's as-of date to assemble its trailing window; without that key its contract falls
+    back to the newest eligible snapshot, which is a look-ahead in a historical backtest
+    (it logs a warning, but a warning is not a fix). LightGBM reindexes to its trained
+    feature columns and ignores the extra key, so no LightGBM result changes.
+    """
     columns, feature_source = feature_columns(snapshots.columns)
-    frame = snapshots.loc[:, ['ts_code', *columns]]
+    keep = ['ts_code', *columns]
+    if 'date' in snapshots.columns:
+        keep.insert(1, 'date')
+    frame = snapshots.loc[:, keep]
     try:
         raw = predictor(frame)
     except Exception as exc:

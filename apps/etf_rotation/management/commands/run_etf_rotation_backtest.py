@@ -59,7 +59,8 @@ from typing import Any
 import pandas as pd
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.etf_rotation import tasks
+from apps.core import finance_metrics
+from apps.etf_rotation import rank_ic, tasks
 from apps.etf_rotation.backtest_engine import (
     MODEL_TYPES,
     REBALANCE_FREQUENCIES,
@@ -74,7 +75,12 @@ from apps.etf_rotation.backtest_engine import (
 )
 from apps.etf_rotation.models import ETFRotationBacktest
 from apps.etf_rotation.rotation_engine import WEIGHTING_MODES, default_defensive_asset
-from apps.etf_rotation.walk_forward import WalkForwardError, expanding_folds
+from apps.etf_rotation.walk_forward import (
+    WalkForwardError,
+    audit_combinatorial_folds,
+    combinatorial_purged_folds,
+    expanding_folds,
+)
 
 # ``CELERY_TASK_ROUTES`` puts ``apps.etf_rotation.tasks.run_etf_rotation_backtest`` on this
 # queue; the name is only printed, never used to route, so keep the two in step.
@@ -112,6 +118,23 @@ WALK_FORWARD_LABEL_HORIZON = 1
 WALK_FORWARD_MIN_TRAIN_SESSIONS = 250
 WALK_FORWARD_MIN_FOLD_REBALANCES = 20
 
+#: CPCV (combinatorial purged cross-validation) defaults. Six blocks choosing two gives
+#: C(6,2)=15 splits, whose held-out blocks cover the panel several times over -- enough for
+#: a distribution without pretending a decade of A-share ETFs contains dozens of independent
+#: regimes. The embargo is in sessions and applies *after* each held-out block; the purge
+#: before it is the label window, the same rule walk_forward already enforces.
+CPCV_DEFAULT_BLOCKS = 6
+CPCV_DEFAULT_TEST_BLOCKS = 2
+CPCV_DEFAULT_EMBARGO_SESSIONS = 5
+#: The RULE ranker fits no label, so a one-session purge is sufficient for its own stability
+#: reading. A fitted model measuring the same splits should use its model horizon.
+CPCV_LABEL_HORIZON = 1
+
+#: The locked holdout (``docs/plans/etf-rotation-selection-sizing-2026-10-23.md`` §7.7) was
+#: spent once and must not be queried again. CPCV is a tuning-window measurement, so a
+#: window that reaches this date is refused rather than silently producing a second look.
+LOCKED_HOLDOUT_START = date(2024, 1, 1)
+
 #: The production reference (``ETFRotationBacktest`` row 256), used only to report how
 #: often the walk-forward selection lands on it. Changing a default is NOT part of this.
 REFERENCE_RULE_COMBO = {
@@ -131,8 +154,9 @@ _QUEUE_KNOB_FIELDS = (
     'momentum_lookback', 'absolute_momentum_filter', 'defensive_asset', 'initial_capital',
     'commission_rate', 'min_commission', 'slippage', 'liquidity_floor_multiple',
     'min_trade_notional_fraction', 'drift_band_fraction', 'liquidity_mode',
-    'adv_participation_cap', 'benchmark_code', 'walk_forward_steps', 'weighting',
-    'dedup_track_index', 'max_per_category',
+    'adv_participation_cap', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+    'kelly_lookback_trades', 'cash_yield_annual', 'benchmark_code', 'walk_forward_steps',
+    'weighting', 'dedup_track_index', 'max_per_category',
 )
 
 #: Bounds the cross-run snapshot memo. One session's eligible cross-section is a few
@@ -488,11 +512,25 @@ class Command(BaseCommand):
                                  'tie), and trade it on that fold\'s validation window. Ephemeral: no row '
                                  'is written. A fold with fewer than 20 rebalances is too thin; rerun '
                                  'with N=4, which gives longer validation blocks.')
+        parser.add_argument('--cpcv-blocks', type=int, default=None, metavar='N',
+                            help='Combinatorial purged cross-validation: cut the window into N contiguous '
+                                 'blocks and measure the named configuration on every held-out block. '
+                                 'Ephemeral, and it will not accept a window reaching 2024-01-01.')
+        parser.add_argument('--cpcv-test-blocks', type=int, default=CPCV_DEFAULT_TEST_BLOCKS, metavar='K',
+                            help=f'Blocks held out per split (default {CPCV_DEFAULT_TEST_BLOCKS}); blocks the '
+                                 'other blocks train on after a label-window purge and an embargo.')
+        parser.add_argument('--cpcv-embargo', type=int, default=CPCV_DEFAULT_EMBARGO_SESSIONS, metavar='D',
+                            help=f'Sessions excluded after each held-out block (default {CPCV_DEFAULT_EMBARGO_SESSIONS}).')
+        parser.add_argument('--model-version', default=None, metavar='VERSION',
+                            help='With --cpcv-blocks and an ML --model: pin the READY ModelVersion to score '
+                                 'with, without activating it. ENSEMBLE takes "lgb=<version>,lstm=<version>".')
 
     def handle(self, *args, **options):
         # Returns nothing on purpose: Django writes a truthy return value to stdout, and a
         # dict here would raise inside ``BaseCommand.execute``.
-        if options['walk_forward_steps'] is not None:
+        if options['cpcv_blocks'] is not None:
+            self._handle_cpcv(options)
+        elif options['walk_forward_steps'] is not None:
             if not options['grid']:
                 raise CommandError(
                     '--walk-forward-steps evaluates the RULE grid out of sample and needs --grid.'
@@ -508,6 +546,11 @@ class Command(BaseCommand):
         if options['backtest_id']:
             self._run_existing_row(options)
             return
+        if options['model_version']:
+            raise CommandError(
+                '--model-version is a CPCV-only pin (it loads a non-serving artifact); '
+                'add --cpcv-blocks or drop the flag.'
+            )
 
         if not options['start'] or not options['end']:
             raise CommandError('--start and --end are required (or --backtest-id).')
@@ -573,7 +616,7 @@ class Command(BaseCommand):
         predictors = self._active_predictors(model_type)
         self.stdout.write(
             f'run: model={model_type} frequency={options["frequency"] or "MONTHLY(default)"} '
-            f'positions={options["max_positions"] or "5(default)"} '
+            f'positions={options["max_positions"] or "3(default)"} '
             f'lookback={options["momentum_lookback"] or "60(default)"} '
             f'absolute_filter={"off" if options["absolute_momentum_filter"] is False else "on(default)"} '
             f'weighting={options["weighting"] or "score(default)"} '
@@ -694,7 +737,7 @@ class Command(BaseCommand):
         parts = [
             'rotation', str(knobs['model_type']).lower(),
             str(knobs['rebalance_frequency'] or 'monthly').lower(),
-            f"p{knobs['max_positions'] or 5}",
+            f"p{knobs['max_positions'] or 3}",
             f"mom{knobs['momentum_lookback'] or 60}",
             'abs' if knobs['absolute_momentum_filter'] is not False else 'noabs',
         ]
@@ -703,6 +746,51 @@ class Command(BaseCommand):
         return '-'.join(parts)[:120]
 
     # -- ML predictors --------------------------------------------------------
+    @staticmethod
+    def _pinned_predictors(model_type: str, version: str, stdout) -> dict[str, Any]:
+        """Resolve the *pinned* ML predictors for a CPCV rematch; never activates anything.
+
+        Unlike ``_active_predictors`` this reads a specific READY row and deliberately
+        ignores ``is_active``, so a candidate can be measured without being deployed. A
+        version typo is a hard error (the loader raises) rather than a silent fallback to
+        the serving model, which would grade a different artifact than the report names.
+        """
+        if model_type == 'RULE':
+            return {}
+        from apps.etf_rotation import train_lightgbm, train_lstm
+
+        try:
+            if model_type == 'LIGHTGBM':
+                predictor = train_lightgbm.load_predictor_for_version(version)
+                stdout.write(f'pinned predictor: ETF_LIGHTGBM <- {version} (is_active ignored)')
+                return {'lgb_predictor': predictor}
+            if model_type == 'LSTM':
+                predictor = train_lstm.load_predictor_for_version(version)
+                stdout.write(f'pinned predictor: ETF_LSTM <- {version} (is_active ignored)')
+                return {'lstm_predictor': predictor}
+            if model_type == 'ENSEMBLE':
+                parts: dict[str, str] = {}
+                for item in str(version).split(','):
+                    if '=' in item:
+                        key, value = item.split('=', 1)
+                        parts[key.strip().lower()] = value.strip()
+                lgb_version = parts.get('lgb', '')
+                lstm_version = parts.get('lstm', '')
+                if not lgb_version or not lstm_version:
+                    raise ValueError(
+                        'ENSEMBLE needs --model-version "lgb=<version>,lstm=<version>".'
+                    )
+                lgb = train_lightgbm.load_predictor_for_version(lgb_version)
+                lstm = train_lstm.load_predictor_for_version(lstm_version)
+                stdout.write(
+                    f'pinned predictor: ENSEMBLE <- lgb={lgb_version} lstm={lstm_version} '
+                    '(is_active ignored)'
+                )
+                return {'lgb_predictor': lgb, 'lstm_predictor': lstm}
+        except (ImportError, ValueError) as exc:
+            raise CommandError(str(exc)) from exc
+        raise CommandError(f'no pinned-loader branch for model type {model_type!r}.')
+
     def _active_predictors(self, model_type: str) -> dict[str, Any]:
         """Resolve the active ``ModelVersion`` predictors up front, or fail.
 
@@ -1168,6 +1256,284 @@ class Command(BaseCommand):
             'no ETFRotationBacktest row was written.'
         )
 
+    # -- combinatorial purged CV ------------------------------------------------
+    def _handle_cpcv(self, options):
+        """Measure one fixed configuration on combinatorial purged splits. Nothing is persisted.
+
+        For RULE the reading is one out-of-sample number per held-out block, sliced off a
+        single continuous run: no fitting happens, so the purge/embargo plan exists for the
+        *fitted* consumer (``train_etf_rotation_model``) and printing its counts keeps the
+        two paths from drifting.
+
+        An ML arm is allowed only with ``--model-version``, which loads a READY artifact by
+        name and never touches ``is_active``. The backtest then scores with that pinned
+        artifact, and the per-block rank IC is printed next to the portfolio metrics. This
+        is the 10a entry point, not a deployment path.
+
+        Two constraints are enforced rather than documented: the window may not reach the
+        locked holdout (``2024-01-01``), and the command refuses to rank configurations --
+        it measures whatever configuration the flags describe, and the caller must not run
+        it per-configuration and pick the best block reading. That would turn the tuning
+        window into a second holdout, which is exactly what §7.7 closed.
+        """
+        if options['grid'] or options['walk_forward_steps'] is not None:
+            raise CommandError(
+                '--cpcv-blocks measures one fixed configuration; drop --grid and --walk-forward-steps.'
+            )
+        if options['backtest_id']:
+            raise CommandError('--cpcv-blocks runs ephemeral splits; it cannot take --backtest-id.')
+        if options['queue']:
+            raise CommandError(
+                '--cpcv-blocks is a CLI measurement; --queue has no row to hand to a worker.'
+            )
+        model_type = str(options['model'] or 'RULE').upper()
+        pinned_version = str(options['model_version'] or '').strip()
+        if model_type != 'RULE':
+            # ML is allowed only with a pinned version: resolving "the active model" would
+            # make the report name whatever happens to be active when it re-runs, and the
+            # gate forbids activating a candidate just to measure it.
+            if not pinned_version:
+                raise CommandError(
+                    f'--model {model_type} needs --model-version: an ML rematch must pin the '
+                    'READY artifact it scores with, not resolve "the currently active one".'
+                )
+        elif pinned_version:
+            raise CommandError('--model-version only applies to an ML --model with --cpcv-blocks.')
+        if options['name']:
+            raise CommandError('--cpcv-blocks is ephemeral; drop --name.')
+        if not options['start'] or not options['end']:
+            raise CommandError('--cpcv-blocks requires --start and --end.')
+        start = parse_iso_date(options['start'], '--start')
+        end = parse_iso_date(options['end'], '--end')
+        if end < start:
+            raise CommandError('--end must be on or after --start.')
+        if end >= LOCKED_HOLDOUT_START:
+            raise CommandError(
+                f'--cpcv-blocks refuses a window reaching {LOCKED_HOLDOUT_START}: the holdout was spent '
+                'once (plan §7.7) and is closed to further queries.'
+            )
+        pinned_predictors = self._pinned_predictors(model_type, pinned_version, self.stdout)
+
+        n_blocks = int(options['cpcv_blocks'])
+        test_blocks = int(options['cpcv_test_blocks'])
+        embargo = int(options['cpcv_embargo'])
+        source = CachedDataSource(DatabaseDataSource())
+        sessions = source.sessions(start, end)
+        if not sessions:
+            raise CommandError(f'no ETF bars exist in {start}..{end}.')
+        # A requested boundary is a calendar date and may not be a session: 2023-12-31 is a
+        # Sunday, so the panel ends 2023-12-29. Build the plan over the sessions that exist
+        # (the walk-forward path does the same) and print both windows, so a report never
+        # claims a window it did not measure.
+        panel_start, panel_end = sessions[0], sessions[-1]
+        if (panel_start, panel_end) != (start, end):
+            self.stdout.write(
+                f'panel: {panel_start}..{panel_end} (requested {start}..{end}); the fold '
+                'boundaries follow the sessions that exist.'
+            )
+        try:
+            folds = combinatorial_purged_folds(
+                panel_start, panel_end, n_blocks, test_blocks,
+                horizon_days=CPCV_LABEL_HORIZON, embargo_days=embargo, trade_dates=sessions,
+            )
+            audit = audit_combinatorial_folds(folds, sessions, CPCV_LABEL_HORIZON, embargo)
+        except WalkForwardError as exc:
+            raise CommandError(f'CPCV fold plan is invalid: {exc}') from exc
+        if not folds:
+            raise CommandError(
+                f'the session calendar in {start}..{end} cannot seat {n_blocks} blocks; widen the window '
+                'or lower --cpcv-blocks.'
+            )
+
+        blocks = sorted({block for fold in folds for block in fold.validation_blocks})
+        self.stdout.write(
+            f'CPCV plan: {n_blocks} blocks x {test_blocks} held out = {len(folds)} split(s), '
+            f'{len(blocks)} distinct block(s), purge={CPCV_LABEL_HORIZON} session(s), embargo={embargo}; '
+            f'window {panel_start}..{panel_end}'
+        )
+        for item in audit[:3]:
+            self.stdout.write(
+                f"  fold {item['fold_index']}: valid blocks {item['validation_blocks']} "
+                f"train={item['train_dates_kept']} purged={item['purged_train_dates']} "
+                f"embargoed={item['embargoed_train_dates']}"
+            )
+        if len(audit) > 3:
+            self.stdout.write(f'  ... {len(audit) - 3} more split(s) audited')
+
+        knobs = {
+            'model_type': model_type,
+            'rebalance_frequency': options['frequency'],
+            'max_positions': options['max_positions'],
+            'momentum_lookback': options['momentum_lookback'],
+            'absolute_momentum_filter': options['absolute_momentum_filter'],
+            'defensive_asset': options['defensive_asset'],
+            'initial_capital': options['initial_capital'],
+            'commission_rate': options['commission_rate'],
+            'min_commission': options['min_commission'],
+            'slippage': options['slippage'],
+            'liquidity_floor_multiple': options['liquidity_floor_multiple'],
+            'min_trade_notional_fraction': options['min_trade_notional_fraction'],
+            'drift_band_fraction': options['drift_band_fraction'],
+            'liquidity_mode': options['liquidity_mode'],
+            'adv_participation_cap': options['adv_participation_cap'],
+        }
+        overrides = {
+            key: options[key]
+            for key in ('weighting', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+                        'kelly_lookback_trades', 'cash_yield_annual')
+            if options.get(key) is not None
+        }
+        if options['dedup_track_index'] is not None:
+            overrides['dedup_track_index'] = bool(options['dedup_track_index'])
+        if options['max_per_category'] is not None:
+            overrides['max_per_category'] = int(options['max_per_category'])
+        sleeve = str(knobs['defensive_asset'] or default_defensive_asset()).strip().upper()
+        sleeve_problem = defensive_asset_problem(sleeve, start_date=start, end_date=end)
+        if sleeve_problem:
+            raise CommandError(sleeve_problem)
+        knobs['defensive_asset'] = sleeve
+
+        started = time.monotonic()
+        result = self._call(
+            run_kwargs={
+                'start_date': start, 'end_date': end, 'name': None,
+                **knobs, 'config_overrides': overrides,
+            },
+            predictors=pinned_predictors,
+            data_source=source,
+        )
+        points = result.get('equity_curve') or []
+        rebalance_log = list((result.get('report') or {}).get('rebalances') or [])
+        facets = []
+        for ordinal, (block_start, block_end) in enumerate(blocks, start=1):
+            facet = self._cpcv_block_facet(
+                points, block_start, block_end, ordinal, rebalance_log,
+            )
+            if facet is not None:
+                facets.append(facet)
+        if not facets:
+            raise CommandError('the run produced no equity points inside any held-out block.')
+
+        self.stdout.write(
+            f'--- CPCV: one fixed configuration read off {len(facets)} held-out block(s) ---'
+        )
+        self.stdout.write(
+            '  block  start        end          sessions  rebal  return     maxDD      sharpe'
+        )
+        for facet in facets:
+            thin = ' thin' if facet['rebalances'] < WALK_FORWARD_MIN_FOLD_REBALANCES else ''
+            self.stdout.write(
+                f"  {facet['block']:<5}  {facet['start']}  {facet['end']}  "
+                f"{facet['sessions']:>8}  {facet['rebalances']:>5}  "
+                f"{_pct(facet['total_return']):>9}  "
+                f"{_pct(facet['max_drawdown'], signed=False):>8}  {_num(facet['sharpe_ratio']):>7}"
+                f'{thin}'
+            )
+        thin_blocks = [
+            facet['block'] for facet in facets
+            if facet['rebalances'] < WALK_FORWARD_MIN_FOLD_REBALANCES
+        ]
+        if thin_blocks:
+            self.stdout.write(self.style.WARNING(
+                'guardrail: block(s) '
+                + ', '.join(str(block) for block in thin_blocks)
+                + f' fall below {WALK_FORWARD_MIN_FOLD_REBALANCES} rebalances; their readings '
+                'are thin and are not evidence on their own.'
+            ))
+        sharpe_dist = _distribution([item['sharpe_ratio'] for item in facets])
+        return_dist = _distribution([item['total_return'] for item in facets])
+        drawdown_dist = _distribution([item['max_drawdown'] for item in facets])
+        self.stdout.write(
+            f"  sharpe  min={_num(sharpe_dist.get('min'))} q1={_num(sharpe_dist.get('q1'))} "
+            f"median={_num(sharpe_dist.get('median'))} q3={_num(sharpe_dist.get('q3'))} "
+            f"max={_num(sharpe_dist.get('max'))} positive={_pct(sharpe_dist.get('positive_share'))}"
+        )
+        self.stdout.write(
+            f"  return  min={_pct(return_dist.get('min'))} q1={_pct(return_dist.get('q1'))} "
+            f"median={_pct(return_dist.get('median'))} q3={_pct(return_dist.get('q3'))} "
+            f"max={_pct(return_dist.get('max'))} positive={_pct(return_dist.get('positive_share'))}"
+        )
+        self.stdout.write(
+            f"  maxDD   min={_pct(drawdown_dist.get('min'), signed=False)} "
+            f"median={_pct(drawdown_dist.get('median'), signed=False)} "
+            f"max={_pct(drawdown_dist.get('max'), signed=False)}"
+        )
+        if model_type in ('LIGHTGBM', 'LSTM'):
+            ic_predictor = (
+                pinned_predictors.get('lgb_predictor')
+                or pinned_predictors.get('lstm_predictor')
+            )
+            ic_rows = []
+            self.stdout.write('  rank IC (signal quality, not alpha):')
+            for ordinal, (block_start, block_end) in enumerate(blocks, start=1):
+                try:
+                    ic = rank_ic.block_rank_ic(
+                        ic_predictor, block_start=block_start, block_end=block_end,
+                    )
+                except Exception as exc:  # noqa: BLE001 - a measurement aid must not kill the run
+                    self.stdout.write(self.style.WARNING(
+                        f'    block {ordinal:<2} rank IC failed: {type(exc).__name__}: {exc}'
+                    ))
+                    continue
+                ic_rows.append((ordinal, ic))
+                self.stdout.write(
+                    f"    block {ordinal:<2} dates={ic['dates']:>4} mean_ic={_num(ic['mean_ic'])}"
+                )
+            if ic_rows:
+                ic_dist = _distribution([ic['mean_ic'] for _, ic in ic_rows])
+                self.stdout.write(
+                    f"    mean_ic min={_num(ic_dist.get('min'))} "
+                    f"median={_num(ic_dist.get('median'))} max={_num(ic_dist.get('max'))} "
+                    f"positive={_pct(ic_dist.get('positive_share'))}"
+                )
+        elif model_type == 'ENSEMBLE':
+            self.stdout.write(
+                '  rank IC: not measured for ENSEMBLE -- the blend is composed inside the '
+                'engine, so there is no single scorer to correlate.'
+            )
+        self.stdout.write(
+            'reading rule: this is a distribution of block readings for ONE configuration, not a '
+            'ranking. Do not run it per configuration and pick the best block -- that spends the '
+            'tuning window like a holdout.'
+        )
+        self.stdout.write(
+            f'CPCV measured {len(facets)} block(s) in {time.monotonic() - started:.1f}s; '
+            'no ETFRotationBacktest row was written and no ModelVersion was activated.'
+        )
+
+    @staticmethod
+    def _cpcv_block_facet(points, block_start, block_end, ordinal: int, rebalances=None):
+        """One held-out block's curve slice, measured from the mark before it opens.
+
+        The base point is the last equity before ``block_start``, so the block's first
+        session return is counted instead of being lost to a reset. The block is otherwise
+        self-contained: its max drawdown peaks at its own start, which is what makes the
+        readings comparable across blocks. ``rebalances`` is the run's per-plan log; a plan
+        is attributed to the block its ``signal_date`` sits in, which is when the selection
+        layer made the decision.
+        """
+        start_iso, end_iso = block_start.isoformat(), block_end.isoformat()
+        inside = [point for point in points if start_iso <= str(point.get('date')) <= end_iso]
+        if not inside:
+            return None
+        before = [point for point in points if str(point.get('date')) < start_iso]
+        base_equity = float((before[-1] if before else inside[0])['equity'])
+        equity = [base_equity] + [float(point['equity']) for point in inside]
+        rebalance_count = sum(
+            1 for item in (rebalances or [])
+            if start_iso <= str(item.get('signal_date')) <= end_iso
+        )
+        return {
+            'block': ordinal,
+            'start': inside[0]['date'],
+            'end': inside[-1]['date'],
+            'sessions': len(inside),
+            'rebalances': rebalance_count,
+            'total_return': (equity[-1] / equity[0] - 1.0) if equity[0] > 0 else None,
+            'max_drawdown': finance_metrics.max_drawdown(equity),
+            'sharpe_ratio': finance_metrics.sharpe_ratio(finance_metrics.returns_from_equity(equity)),
+        }
+
     def _select_fold_winner(self, fold, combos, source, label):
         """Run the grid on the fold's training window only and return its scored rows."""
         selection_rows: list[dict[str, Any]] = []
@@ -1303,3 +1669,30 @@ def _yuan(value: Any) -> str:
     if value is None or (isinstance(value, float) and not math.isfinite(value)):
         return 'n/a'
     return f'{float(value):,.2f}'
+
+
+def _distribution(values: list) -> dict:
+    """Min/quartiles/median/max and the positive share of a block-reading sample.
+
+    Quantiles are taken at the nearest rank of the sorted sample rather than interpolated:
+    with six or fifteen block readings, an interpolated quartile reads as precision the
+    data does not have. ``None`` readings are dropped (a block too short to score) rather
+    than counted as zero, which would make an unscoreable split look flat.
+    """
+    clean = sorted(float(value) for value in values if value is not None)
+    if not clean:
+        return {}
+    count = len(clean)
+
+    def rank(fraction: float) -> float:
+        return clean[min(count - 1, max(0, int(round(fraction * (count - 1)))))]
+
+    return {
+        'count': count,
+        'min': clean[0],
+        'q1': rank(0.25),
+        'median': rank(0.5),
+        'q3': rank(0.75),
+        'max': clean[-1],
+        'positive_share': sum(1 for value in clean if value > 0) / count,
+    }

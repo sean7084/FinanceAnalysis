@@ -69,7 +69,13 @@ def _commission(notional: float) -> float:
     return max(notional * rate, minimum)
 
 
-def _signal_type_of(position: ETFRotationPosition) -> str:
+def signal_type_of(position: ETFRotationPosition) -> str:
+    """The book a leg belongs to, from its metadata or the signal that opened it.
+
+    Public because the forward-track report groups by the same value: two copies of this
+    fallback is how a leg with no ``metadata.signal_type`` ends up in a different book on
+    the report than the ledger closes it under.
+    """
     metadata = position.metadata if isinstance(position.metadata, dict) else {}
     value = metadata.get('signal_type')
     if value:
@@ -181,7 +187,7 @@ def mark_positions(trade_date=None) -> dict[str, Any]:
         .filter(status=ETFRotationPosition.Status.OPEN)
     )
     closes = _latest_closes({position.etf_id for position in open_positions}, mark_date)
-    types = {kind for kind in (_signal_type_of(position) for position in open_positions) if kind}
+    types = {kind for kind in (signal_type_of(position) for position in open_positions) if kind}
     latest_signals = {
         # A backdated mark must not learn from a signal published after it. The beat runs
         # on the newest session, where this bound is a no-op, but ``--date`` replays a past
@@ -201,7 +207,7 @@ def mark_positions(trade_date=None) -> dict[str, Any]:
             skipped.append(position.etf.ts_code)
             continue
         price_date, close = bar
-        signal_type = _signal_type_of(position)
+        signal_type = signal_type_of(position)
         latest = latest_signals.get(signal_type)
         entry_signal_date = position.signal.date if position.signal_id else None
         displaced = (

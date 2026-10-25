@@ -1200,7 +1200,7 @@ def _build_config(*, model_type_label, start_date, end_date, n_folds, horizon_da
         # sibling reads an unset ETF_ROTATION_MAX_POSITIONS and quietly stays at 5; this
         # uses the knob that exists, and ``params={'top_n': 5}`` pins it if the two models
         # must be compared on an identical cut.
-        'top_n': _setting_int('ETF_MAX_POSITIONS', 5),
+        'top_n': _setting_int('ETF_MAX_POSITIONS', 3),
         # Accepted only because ``train_etf_rotation_model`` passes them to whichever
         # trainer is named. They change nothing here -- the sequence head has no boosting
         # round count and no LightGBM objective -- but they are recorded in the registry
@@ -1543,6 +1543,43 @@ def load_active_predictor(model_type_label=MODEL_TYPE_LABEL, device=None):
     version_row = _resolve_active_version(str(model_type_label or MODEL_TYPE_LABEL))
     if version_row is None:
         return None
+    return _predictor_from_version(version_row, device=device)
+
+
+def load_predictor_for_version(version, device=None, model_type_label=MODEL_TYPE_LABEL):
+    """Load one READY LSTM artifact by version string, ignoring ``is_active``.
+
+    The LSTM counterpart of ``train_lightgbm.load_predictor_for_version``: the ML rematch
+    must score with a candidate that is deliberately not serving, and activation is what
+    the gate forbids. Read-only -- it never writes ``is_active`` -- and it refuses an
+    ambiguous or missing version rather than falling back to ``_resolve_active_version``'s
+    "any READY row" behaviour.
+    """
+    rows = list(
+        ModelVersion.objects.filter(
+            version=str(version),
+            model_type=str(model_type_label or MODEL_TYPE_LABEL),
+            status=ModelVersion.Status.READY,
+        )[:2]
+    )
+    if not rows:
+        raise ValueError(f'no READY ETF_LSTM ModelVersion with version {version!r}.')
+    if len(rows) > 1:
+        raise ValueError(
+            f'ETF_LSTM version {version!r} matches more than one registry row; '
+            'refusing to guess which artifact to score with.'
+        )
+    predictor = _predictor_from_version(rows[0], device=device)
+    if predictor is None:
+        raise ValueError(
+            f'ETF_LSTM ModelVersion {version!r} has no readable artifact at '
+            f'{rows[0].artifact_path}.'
+        )
+    return predictor
+
+
+def _predictor_from_version(version_row, device=None):
+    """The scoring callable for one registry row. No lookup, no activation, no writes."""
     resolved_device = _resolve_device(device)
     artifact = _load_artifact(version_row, resolved_device)
     if artifact is None:

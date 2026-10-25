@@ -36,15 +36,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from itertools import combinations
 from math import ceil
 
 __all__ = [
+    'CombinatorialFold',
     'Fold',
     'WalkForwardError',
+    'audit_combinatorial_folds',
+    'audit_folds',
+    'combinatorial_purged_folds',
     'expanding_folds',
     'purge_train_dates',
     'train_dates_for_fold',
-    'audit_folds',
 ]
 
 #: Refuse plans so thin that every fold would be noise; the caller gets
@@ -82,6 +86,42 @@ class Fold:
             'valid_start': self.valid_start.isoformat(),
             'valid_end': self.valid_end.isoformat(),
             'purged_train_dates': self.purged_train_dates,
+        }
+
+
+@dataclass(frozen=True)
+class CombinatorialFold:
+    """One combinatorial purged CV split.
+
+    Unlike :class:`Fold` this is not an expanding window: the panel is cut into
+    ``n_blocks`` contiguous blocks, ``test_blocks`` of them are held out, and the training
+    set is every remaining date *after* purging label-window overlaps and embargoing the
+    sessions immediately after each held-out block. That shape is what lets a fitted model
+    (LightGBM/LSTM) be trained on a block set it cannot leak into, while the held-out
+    blocks give several disjoint out-of-sample readings instead of one.
+
+    ``train_dates`` is materialised because a combinatorial split is not a single range;
+    counting it here means the plan and the fit cannot disagree about what was trained on.
+    """
+
+    fold_index: int
+    train_dates: tuple
+    validation_blocks: tuple
+    purged_train_dates: int
+    embargoed_train_dates: int
+
+    def as_dict(self) -> dict:
+        """JSON-safe form for reports and ``ModelVersion.metadata``."""
+        return {
+            'fold_index': self.fold_index,
+            'validation_blocks': [
+                [start.isoformat(), end.isoformat()] for start, end in self.validation_blocks
+            ],
+            'train_dates_kept': len(self.train_dates),
+            'purged_train_dates': self.purged_train_dates,
+            'embargoed_train_dates': self.embargoed_train_dates,
+            'first_train_date': self.train_dates[0].isoformat() if self.train_dates else None,
+            'last_train_date': self.train_dates[-1].isoformat() if self.train_dates else None,
         }
 
 
@@ -310,5 +350,198 @@ def audit_folds(folds, all_dates, horizon_days: int) -> list:
             'valid_dates': sum(1 for value in panel if fold.valid_start <= value <= fold.valid_end),
             'first_kept_train_date': kept[0].isoformat(),
             'last_kept_train_date': kept[-1].isoformat(),
+        })
+    return trail
+
+
+def _panel_for(first_date, last_date, trade_dates):
+    """The panel a plan is built over, with the same boundary check for every shape."""
+    if trade_dates is None:
+        panel = _calendar_grid(first_date, last_date)
+    else:
+        panel = [value for value in _normalize_dates(trade_dates) if first_date <= value <= last_date]
+    if not panel:
+        return []
+    if panel[0] != first_date or panel[-1] != last_date:
+        raise WalkForwardError(
+            f'Panel [{panel[0]} .. {panel[-1]}] does not span the requested '
+            f'[{first_date} .. {last_date}].'
+        )
+    return panel
+
+
+def _block_sizes(total: int, n_blocks: int) -> list:
+    """``total`` dates split into ``n_blocks`` contiguous groups, as even as they go.
+
+    ``ceil(total / n_blocks)`` looks equivalent and is not: it silently produces fewer
+    than ``n_blocks`` blocks whenever the division leaves a remainder, and a plan with
+    fewer test blocks than requested changes what the distribution means. The remainder
+    is distributed one date at a time instead.
+    """
+    base, extra = divmod(total, n_blocks)
+    return [base + (1 if index < extra else 0) for index in range(n_blocks)]
+
+
+def _trim_train_dates(panel, positions, validation_blocks, horizon_days, embargo_days):
+    """Split candidate training dates into ``(kept, purged, embargoed)``.
+
+    A date inside a validation block is not a training candidate at all. A date before a
+    block is *purged* when its label window can reach that block (both conventions, as in
+    :func:`purge_train_dates`). A date after a block is *embargoed* when it sits within
+    ``embargo_days`` sessions of the block's last date. Purge wins over embargo when both
+    fire, which is the conservative reading: the date is dropped either way.
+    """
+    validation_dates = set()
+    for block_start, block_end in validation_blocks:
+        validation_dates.update(
+            value for value in panel if block_start <= value <= block_end
+        )
+    kept, purged, embargoed = [], [], []
+    for value in panel:
+        if value in validation_dates:
+            continue
+        position = positions[value]
+        reason = None
+        for block_start, block_end in validation_blocks:
+            if value < block_start:
+                session_overlap = position + horizon_days >= positions[block_start]
+                calendar_overlap = value + timedelta(days=horizon_days) >= block_start
+                if session_overlap or calendar_overlap:
+                    reason = 'purge'
+                    break
+            elif value > block_end:
+                if position - positions[block_end] <= embargo_days:
+                    reason = 'embargo'
+                    break
+        if reason == 'purge':
+            purged.append(value)
+        elif reason == 'embargo':
+            embargoed.append(value)
+        else:
+            kept.append(value)
+    return kept, purged, embargoed
+
+
+def combinatorial_purged_folds(first_date, last_date, n_blocks: int = 6,
+                               test_blocks: int = 2, *, horizon_days: int = 20,
+                               embargo_days: int = 0, trade_dates=None) -> list:
+    """Build combinatorial purged CV splits over a panel.
+
+    The usable panel is everything except the trailing ``horizon_days`` dates (a
+    validation date needs a *realised* label, the same reserve :func:`expanding_folds`
+    keeps). It is cut into ``n_blocks`` contiguous blocks and every combination of
+    ``test_blocks`` blocks becomes one fold's validation set; the rest of the panel, after
+    purging label-window overlaps and embargoing the sessions after each block, is its
+    training set.
+
+    ``C(n_blocks, test_blocks)`` folds are returned in stable combination order. Each
+    held-out block is a disjoint contiguous window, so the validation readings are
+    independent samples rather than one aggregate. This is a *measurement* plan: it says
+    nothing about which configuration is best, and the caller must not rank configurations
+    by it (that is what turns the tuning window into a second holdout).
+    """
+    n_blocks = int(n_blocks)
+    test_blocks = int(test_blocks)
+    horizon_days = int(horizon_days)
+    embargo_days = int(embargo_days)
+    if n_blocks < 2:
+        raise WalkForwardError(f'n_blocks must be >= 2, got {n_blocks}.')
+    if not 1 <= test_blocks < n_blocks:
+        raise WalkForwardError(
+            f'test_blocks must satisfy 1 <= test_blocks < n_blocks ({n_blocks}), got {test_blocks}.',
+        )
+    if horizon_days < 1:
+        raise WalkForwardError(f'horizon_days must be >= 1, got {horizon_days}.')
+    if embargo_days < 0:
+        raise WalkForwardError(f'embargo_days must be >= 0, got {embargo_days}.')
+
+    panel = _panel_for(first_date, last_date, trade_dates)
+    if not panel:
+        return []
+    usable = len(panel) - horizon_days
+    if usable < n_blocks:
+        raise WalkForwardError(
+            f'Panel has {len(panel)} dates; {n_blocks} blocks plus a {horizon_days}-date '
+            'label tail need at least that many more. Shorten the block count or widen the window.'
+        )
+
+    positions = {value: index for index, value in enumerate(panel)}
+    blocks = []
+    cursor = 0
+    for size in _block_sizes(usable, n_blocks):
+        blocks.append((panel[cursor], panel[cursor + size - 1]))
+        cursor += size
+
+    folds = []
+    for fold_index, combo in enumerate(combinations(range(n_blocks), test_blocks)):
+        validation_blocks = tuple(blocks[index] for index in combo)
+        kept, purged, embargoed = _trim_train_dates(
+            panel[:usable], positions, validation_blocks, horizon_days, embargo_days,
+        )
+        if not kept:
+            raise WalkForwardError(
+                f'Fold {fold_index}: purge and embargo removed every training date '
+                f'({len(purged)} purged, {len(embargoed)} embargoed); need a longer panel '
+                'or fewer test blocks.'
+            )
+        folds.append(CombinatorialFold(
+            fold_index=fold_index,
+            train_dates=tuple(kept),
+            validation_blocks=validation_blocks,
+            purged_train_dates=len(purged),
+            embargoed_train_dates=len(embargoed),
+        ))
+    return folds
+
+
+def audit_combinatorial_folds(folds, all_dates, horizon_days: int, embargo_days: int = 0) -> list:
+    """Re-verify a combinatorial plan against the panel and return a per-fold trail.
+
+    Recomputes the training set from the declared blocks rather than trusting the stored
+    dates, then re-checks the two leaks this shape can suffer: a training date whose label
+    window reaches a later block, and a training date inside the embargo after an earlier
+    block. A count mismatch means the plan and the recomputation disagree, which is a bug
+    in the plan even when both look plausible.
+    """
+    panel = _normalize_dates(all_dates)
+    positions = {value: index for index, value in enumerate(panel)}
+    horizon_days = int(horizon_days)
+    embargo_days = int(embargo_days)
+    usable = len(panel) - horizon_days
+    trail = []
+    for fold in folds:
+        for block_start, block_end in fold.validation_blocks:
+            if block_start not in positions or block_end not in positions:
+                raise WalkForwardError(
+                    f'Fold {fold.fold_index}: validation block {block_start}..{block_end} '
+                    'is not on the panel.'
+                )
+            if positions[block_end] >= usable:
+                raise WalkForwardError(
+                    f'Fold {fold.fold_index}: validation block ends {block_end}, inside the '
+                    f'{horizon_days}-date label tail; its labels are not realised.'
+                )
+        kept, purged, embargoed = _trim_train_dates(
+            panel[:usable], positions, fold.validation_blocks, horizon_days, embargo_days,
+        )
+        if (len(kept), len(purged), len(embargoed)) != (
+            len(fold.train_dates), fold.purged_train_dates, fold.embargoed_train_dates,
+        ):
+            raise WalkForwardError(
+                f'Fold {fold.fold_index}: plan declares '
+                f'({len(fold.train_dates)} kept, {fold.purged_train_dates} purged, '
+                f'{fold.embargoed_train_dates} embargoed) but the rule recomputes '
+                f'({len(kept)}, {len(purged)}, {len(embargoed)}).'
+            )
+        if tuple(kept) != tuple(fold.train_dates):
+            raise WalkForwardError(
+                f'Fold {fold.fold_index}: stored training dates differ from the recomputed set.'
+            )
+        trail.append({
+            'fold_index': fold.fold_index,
+            'validation_blocks': [[s.isoformat(), e.isoformat()] for s, e in fold.validation_blocks],
+            'train_dates_kept': len(kept),
+            'purged_train_dates': len(purged),
+            'embargoed_train_dates': len(embargoed),
         })
     return trail

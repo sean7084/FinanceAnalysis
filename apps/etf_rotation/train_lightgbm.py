@@ -1131,6 +1131,44 @@ def load_active_predictor():
     ).order_by('-trained_at').first()
     if version is None:
         return None
+    return _predictor_from_version(version)
+
+
+def load_predictor_for_version(version: str):
+    """Load one READY artifact by version string, ignoring ``is_active``.
+
+    Exists for the ML rematch (plan Phase 10a): evaluating a candidate requires scoring
+    with an artifact that is deliberately *not* the serving one, and activation is exactly
+    what the gate forbids until the candidate wins. This path is read-only -- it never
+    writes ``is_active`` -- and it refuses an ambiguous or missing version instead of
+    falling back to "the newest READY row", which would silently grade a different model
+    than the one the report names.
+    """
+    rows = list(
+        ModelVersion.objects.filter(
+            version=str(version),
+            model_type=_model_type('ETF_LIGHTGBM'),
+            status=ModelVersion.Status.READY,
+        )[:2]
+    )
+    if not rows:
+        raise ValueError(f'no READY ETF_LIGHTGBM ModelVersion with version {version!r}.')
+    if len(rows) > 1:
+        raise ValueError(
+            f'ETF_LIGHTGBM version {version!r} matches more than one registry row; '
+            'refusing to guess which artifact to score with.'
+        )
+    predictor = _predictor_from_version(rows[0])
+    if predictor is None:
+        raise ValueError(
+            f'ETF_LIGHTGBM ModelVersion {version!r} has no readable artifact at '
+            f'{rows[0].artifact_path}.'
+        )
+    return predictor
+
+
+def _predictor_from_version(version):
+    """The scoring callable for one registry row. No lookup, no activation, no writes."""
     artifacts = _load_artifacts(version.artifact_path)
     if artifacts is None:
         logger.warning(

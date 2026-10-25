@@ -212,6 +212,11 @@ def _backtest_config_for(run):
         drift_band_fraction=float(run.drift_band_fraction),
         liquidity_mode=run.liquidity_mode,
         adv_participation_cap=float(run.adv_participation_cap),
+        kelly_fraction=float(run.kelly_fraction),
+        kelly_cap=float(run.kelly_cap),
+        kelly_floor=float(run.kelly_floor),
+        kelly_lookback_trades=int(run.kelly_lookback_trades),
+        cash_yield_annual=float(run.cash_yield_annual),
         benchmark_code=run.benchmark_code,
         weighting=run.weighting,
         dedup_track_index=run.dedup_track_index,
@@ -460,6 +465,11 @@ class ETFRotationSignalViewSet(viewsets.ReadOnlyModelViewSet):
         signal_type = params.get('signal_type')
         if signal_type:
             qs = qs.filter(signal_type=signal_type.upper())
+        else:
+            # The shadow book is a measurement, not production. Hiding it by default keeps
+            # ``latest``/``freshness`` on the signal the operator acts on; asking for
+            # ``?signal_type=SHADOW`` is how the rematch is inspected.
+            qs = qs.exclude(signal_type=ETFRotationSignal.SignalType.SHADOW)
         model_type = params.get('model_type')
         if model_type:
             qs = qs.filter(model_type=model_type.upper())
@@ -563,6 +573,17 @@ class ETFRotationPositionViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = ETFRotationPosition.objects.select_related('etf', 'signal').all()
         params = self.request.query_params
+        # A shadow leg lives in the same table but is a different book. The realised-PnL
+        # card sums CLOSED rows, so mixing the two would report the rematch as production
+        # performance. ``signal_type`` asks for one book explicitly; the default is the
+        # production book alone.
+        shadow = Q(signal__signal_type='SHADOW') | Q(metadata__signal_type='SHADOW')
+        signal_type = params.get('signal_type')
+        if signal_type:
+            wanted = signal_type.upper()
+            qs = qs.filter(Q(signal__signal_type=wanted) | Q(metadata__signal_type=wanted))
+        else:
+            qs = qs.exclude(shadow)
         status_value = params.get('status')
         if status_value:
             qs = qs.filter(status=status_value.upper())
@@ -627,6 +648,16 @@ class ETFRotationBacktestViewSet(viewsets.ModelViewSet):
         weighting = params.get('weighting')
         if weighting:
             qs = qs.filter(weighting=weighting.strip().lower())
+        # The 2026-10 rows written while ``--no-dedup-track-index`` was silently applied are
+        # a measurement set, not baselines. They describe themselves in this column, so the
+        # way out of the leaderboard is a filter rather than a name-based exclusion:
+        # ``?dedup_track_index=true`` returns the production-rule rows alone. No default
+        # (the intended dedup-off control must stay visible when nobody asks).
+        dedup = params.get('dedup_track_index')
+        if dedup is not None and str(dedup).strip() != '':
+            qs = qs.filter(
+                dedup_track_index=str(dedup).strip().lower() in ('1', 'true', 'yes', 'on'),
+            )
         start = _date_param(params, 'window_start')
         if start is not None:
             qs = qs.filter(start_date__gte=start)

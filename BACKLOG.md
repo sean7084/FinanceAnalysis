@@ -179,6 +179,16 @@ Items here have no commitment attached. When something is done, move it to
   contradiction is the evidence that the tuning-window ranking was overfit, recorded in
   `docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.7. That window is spent:
   no later phase may query it again.
+- **The live ledger states a yuan PnL.** `ETF_SIM_CAPITAL_BASE` (default 1,000,000)
+  turns each new signal leg's target weight into a whole-lot share count, so
+  `mark_etf_rotation_positions_daily` computes `pnl=(exit−entry)×shares−both
+  commissions` instead of leaving it NULL; setting the base to 0 restores the old
+  `shares=NULL` behaviour. Carried holdings keep the shares they were opened with,
+  so a position opened while the base was 0 stays NULL rather than being restated.
+  The dev database's OPEN rows were cleared on 2026-10-24 and the next signal run is
+  what writes shares, so the ledger card keeps showing `--` until that run happens;
+  the duplicate rows from pre-carry-forward regeneration (159887.SZ and 515300.SH)
+  were deleted with that cleanup and the carry-forward path prevents their return.
 
 ---
 
@@ -199,24 +209,60 @@ on the 20-rebalance floor, only four folds exist, and each fold restarts from
 initial capital. No default was changed, and the 2024–2026 holdout may not be
 reused to rank these winners — it was spent in §7.7.
 
-### The live ledger records no yuan PnL until signals size shares
+**Phase 8 added the measurement tool; it has now been run.**
+`walk_forward.combinatorial_purged_folds` plus
+`run_etf_rotation_backtest --cpcv-blocks N` produce a per-block Sharpe
+*distribution* over 2016–2023 (purged and embargoed, window refuses 2024+). The
+row-256 distribution is in `docs/plans/etf-rotation-next-phases-2026-10-24.md`
+§7.9: six blocks, median Sharpe 0.1620 (min −0.0741, max 1.2789), 83.33% of
+blocks positive. It corroborates the walk-forward finding — the full-window
+0.5357 is not "valid throughout"; blocks 4 (2020–2021) carries almost all of it
+and block 5 is negative. Read it as a stability reading, never as a ranking over
+configurations.
 
-`mark_etf_rotation_positions_daily` computes `pnl=(exit−entry)×shares−both
-commissions` only when the position row carries a share count. Rows written by
-the signal generator deliberately have `shares=NULL`: the strategy targets a
-percentage weight and the system holds no capital base anywhere, so there is no
-share count to derive. In production the ledger therefore records `exit_price`,
-`return_pct` and the daily mark, while `pnl` stays null and the page's
-realised-PnL card renders `--` rather than a misleading 0.00. The yuan
-arithmetic is tested against rows that do carry shares; it is not faked in the
-writer. Closing this needs a capital base and a lot-size rounding rule in signal
-persistence, which is a product decision, not a ledger bug.
+### Phase 9's `max_positions=3` is an alignment, not a proven winner
 
-The duplicate OPEN rows that pre-carry-forward regeneration produced (159887.SZ
-and 515300.SH, one row per signal) were deleted from the dev database on
-2026-10-24 together with every other OPEN row, including two stale 2018-12-28
-rows; `ETFRotationPosition` is empty until the next signal runs. Carry-forward
-means regeneration cannot recreate them.
+The live default moved 5 -> 3 to match the production reference row 256 (`p3`)
+and the §7.7 holdout book. The §7.12 walk-forward selected p3/p3/p5/p8 across
+four folds, so there is no evidence that 3 is better than 5. **The p3-vs-p5
+CPCV comparison has now been run** (`docs/plans/etf-rotation-next-phases-2026-10-24.md`
+§7.10): p5 has the higher median Sharpe (0.2725 vs 0.1620) and the shallower
+median drawdown (14.54% vs 17.96%) but a worse positive-block share (66.67% vs
+83.33%), so the pre-registered "all three legs" rule kept the default at 3.
+Do not cite the default as evidence for p3, and do not flip it to 5 on the
+median Sharpe alone.
+
+### The ML rematch's CV arm needs per-fold retraining, not another artifact
+
+Phase 10 added the shadow book (`signal_type=SHADOW`, `ETF_ML_SHADOW_MODEL`, a
+19:50 beat task) and the API/ledger isolation that keeps it out of production.
+It is inert until an ML `ModelVersion` is active, which the gate forbids until a
+candidate wins.
+
+The CV arm's entry point now exists: `load_predictor_for_version` in both
+trainers loads a READY artifact while ignoring `is_active`, and
+`--cpcv-blocks --model LIGHTGBM --model-version <v>` scores with it. **LSTM was
+adjudicated and failed the CV leg; LightGBM is not adjudicable.** The pinned
+LSTM artifact is actually fold 5 (trained through 2022-10-21, per its
+`metrics.json`), so blocks 1–5 are in-sample and block 6 is genuinely out of
+sample. Even with that advantage it lost the Sharpe-median and
+positive-block-share legs (0.1238 vs 0.1620; 66.67% vs 83.33%); only median
+drawdown was lower (15.93% vs 17.96%), which does not satisfy the three-leg rule.
+The pinned LightGBM artifact was trained through 2023-11-30, covering every
+block, so its Sharpe 1.5–3.3 is in-sample fit.
+
+**A look-ahead was found and fixed on the way.** `rotation_engine._call_predictor`
+used to drop the `date` column, so every LSTM backtest scored each historical
+session as-of the newest eligible snapshot. `date` now travels with the frame
+(LightGBM ignores it), and the fix has a test. **Phase D's stored LSTM numbers
+(row 209) were produced through that path and are no longer valid evidence**;
+re-measuring them would re-query the spent holdout, which the discipline
+forbids.
+
+Two remaining gaps: (a) `train_walk_forward` accepts only `expanding_folds`, so
+there is no way to retrain on each `CombinatorialFold.train_dates` set — that is
+what a real CPCV rematch needs; (b) the shadow's forward evidence needs months of
+rebalances before it can be compared with RULE.
 
 ### The band and the capacity cap have tuning-window evidence only
 
@@ -230,6 +276,12 @@ floor: there is no holdout evidence for either band. `scale` mode has no
 real-window return table at all — only the unit-level redistribution proof.
 Defaults therefore stay `0.0` / `reject` / `0.0`; do not flip them from this
 evidence.
+
+**Phase 12 explicitly declined to add the scale-mode table.** Distinguishing "scale
+is better" from "this window happened to reward it" would require evidence the
+closed holdout cannot supply, and the band evidence is already error-sized.
+The decision is recorded in `docs/plans/etf-rotation-next-phases-2026-10-24.md`
+§2 (Phase 12); defaults remain unchanged.
 
 ### `position_fees_paid` changed meaning; pre-0.1.23 rows keep the old one
 
@@ -256,11 +308,13 @@ reference book the realised edge is negative (51 closed trades, win rate 43.1%,
 payoff 1.29 → `f* = -0.009`), so `raw_scale` is negative and the default
 `kelly_floor=0` clamps to *zero exposure* on 164 of 213 sessions. The result is
 Sharpe 0.967 / maxDD 6.84% / turnover 2.13x, which is flattering only because
-beta is 0.03. Two open items: (a) a floor sweep (0.5 → Sharpe 0.692, 0.75 → 0.588
-with 8.9pp less drawdown than off) has tuning-window evidence and no holdout
-evidence; (b) `kelly_*` have no `ETFRotationBacktest` columns, so `--queue`
-refuses them -- a queued run cannot carry a sized book until they become columns
-the way `weighting` did.
+beta is 0.03. One open item remains: (a) a floor sweep (0.5 → Sharpe 0.692,
+0.75 → 0.588 with 8.9pp less drawdown than off) has tuning-window evidence and
+no holdout evidence. Item (b) is resolved in 0.1.27: `kelly_fraction`, `kelly_cap`,
+`kelly_floor`, `kelly_lookback_trades` and `cash_yield_annual` are real columns
+(migration `etf_rotation/0009`), so `--queue` carries a sized book. Their defaults
+`0 / 1.0 / 0 / 60 / 0` reproduce the pre-promotion engine bit for bit; the
+fingerprint changes, so old PAUSED rows restart from the beginning.
 
 ### Rows 354 and 356-361 are a dedup-off measurement set
 
@@ -268,11 +322,16 @@ the way `weighting` did.
 `bool(None)` stood in for "not asked for" (fixed in 0.1.21). Rows written during
 that window have `dedup_track_index=False` in their own columns, so they are
 self-describing but misleadingly named -- `verify-invvol-*` (354) reads like the
-Phase-3a comparison row and is not it. Route them out of the leaderboard by
-name, or rerun them under the fixed path; the corrected numbers are already in
+Phase-3a comparison row and is not it. The corrected numbers are already in
 `docs/plans/etf-rotation-selection-sizing-2026-10-23.md` §7.3/§7.4 as ephemeral
 runs. Nothing here is a data-integrity problem: the fingerprint/digest was always
 built from the columns that were actually written.
+
+**Phase 12 added the filter, not a rename.** `/etf/backtests/` now accepts
+`?dedup_track_index=true|false`, so a reader can exclude the measurement set
+without a name-based rule that would also hide row 355, the *intended* dedup-off
+control. The rows themselves are unchanged; rerunning them under the fixed path
+remains optional housekeeping.
 
 ### Test suite green — 339/339
 

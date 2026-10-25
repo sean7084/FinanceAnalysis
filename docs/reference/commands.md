@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-24T09:14:13Z_
+_Generated: 2026-10-25T02:43:51Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**42** project commands across **9** apps.
+**43** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -226,7 +226,7 @@ Rank the point-in-time ETF pool and write the rotation signal for one date.
 | `--date` | value | &mdash; |  | Trade date (YYYY-MM-DD). Default: newest session with a non-empty eligible cross-section. |
 | `--signal-type` | value | `MONTHLY` |  | Rebalance cadence the row is stored under (default MONTHLY). |
 | `--model-type` | value | `RULE` |  | Scorer: the rule blend, a trained LIGHTGBM/LSTM, or their ensemble. An ML type with no active ModelVersion fails instead of quietly falling back to RULE. |
-| `--max-positions` | value | &mdash; |  | Slots in the book. Default: settings.ETF_MAX_POSITIONS (5). |
+| `--max-positions` | value | &mdash; |  | Slots in the book. Default: settings.ETF_MAX_POSITIONS (3). |
 | `--momentum-lookback` | value | &mdash; |  | Momentum horizon in sessions, e.g. 60 -> mom_60d. Default: 60; the nearest stored horizon is substituted and recorded in metadata when it is absent. |
 | `--dry-run` | flag | `False` |  | Score, rank, verify and report; write nothing. |
 
@@ -238,6 +238,19 @@ Mark OPEN ETF rotation positions to the newest close and close legs displaced by
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--date` | value | &mdash; |  | Mark date (YYYY-MM-DD). Default: the newest ETFDaily session. |
+
+
+### `report_etf_rotation_live_track`
+
+Report the live ETF rotation book and its drift against a declared reference backtest.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--reference-backtest-id` | value | &mdash; |  | ETFRotationBacktest id the live book is judged against. Default: settings.ETF_LIVE_REFERENCE_BACKTEST_ID (0 = descriptive report only). |
+| `--win-rate-tolerance` | value | &mdash; |  | Absolute win-rate deviation that counts as drift. Default: settings.ETF_LIVE_DRIFT_WIN_RATE_TOLERANCE (0.20). |
+| `--mean-return-tolerance` | value | &mdash; |  | Absolute mean-trade-return deviation that counts as drift. Default: settings.ETF_LIVE_DRIFT_MEAN_RETURN_TOLERANCE (0.03). |
+| `--min-closed-trades` | value | &mdash; |  | Closed trades required before a drift verdict is made. Default: settings.ETF_LIVE_DRIFT_MIN_CLOSED_TRADES (10). |
+| `--alert` | flag | `False` |  | Write a LIVE_DRIFT alert event when a book breaches its tolerance. |
 
 
 ### `run_etf_rotation_backtest`
@@ -284,6 +297,10 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--grid-prefix` | value | `grid` |  | Name stem for the persisted grid rows (default: grid). The row name is the resume key, so a re-run after a selection-rule change needs a fresh stem to keep both generations side by side. |
 | `--grid-force` | flag | `False` |  | Re-run grid rows that already COMPLETED under the same name (default: skip them). |
 | `--walk-forward-steps` | value | &mdash; |  | With --grid: split the window into N expanding folds, select the RULE configuration on each training window by Sharpe (lower turnover breaks a tie), and trade it on that fold's validation window. Ephemeral: no row is written. A fold with fewer than 20 rebalances is too thin; rerun with N=4, which gives longer validation blocks. |
+| `--cpcv-blocks` | value | &mdash; |  | Combinatorial purged cross-validation: cut the window into N contiguous blocks and measure the named configuration on every held-out block. Ephemeral, and it will not accept a window reaching 2024-01-01. |
+| `--cpcv-test-blocks` | value | `2` |  | Blocks held out per split (default 2); blocks the other blocks train on after a label-window purge and an embargo. |
+| `--cpcv-embargo` | value | `5` |  | Sessions excluded after each held-out block (default 5). |
+| `--model-version` | value | &mdash; |  | With --cpcv-blocks and an ML --model: pin the READY ModelVersion to score with, without activating it. ENSEMBLE takes "lgb=<version>,lstm=<version>". |
 
 
 ### `sweep_etf_rotation_lstm`

@@ -195,7 +195,10 @@ class BacktestConfig:
     end_date: date
     model_type: str = 'RULE'
     rebalance_frequency: str = 'MONTHLY'
-    max_positions: int = 5
+    # Read from settings as the single source, like every other cost/identity knob here.
+    # Default 3 aligns the engine with the production reference row (``p3``) and the §7.7
+    # holdout book; see ``rotation_engine.DEFAULT_MAX_POSITIONS`` for the honest caveat.
+    max_positions: int = field(default_factory=lambda: int(_setting('ETF_MAX_POSITIONS', 3)))
     momentum_lookback: int = 60
     absolute_momentum_filter: bool = True
     defensive_asset: str = field(default_factory=lambda: str(_setting('ETF_DEFENSIVE_ASSET', '511880.SH')))
@@ -1530,6 +1533,13 @@ def _sell(ctx: _Context, code: str, shares: int, session: date, *, weight: float
                 'pnl': float(realized),
                 'return_pct': float(return_pct) if return_pct is not None else None,
                 'holding_sessions': holding_sessions,
+                # Reader caution: before 0.1.23 this field carried commission only. Rows
+                # persisted then keep the old meaning (the reference row's 233 closed trades
+                # sum to 39,243.23; a rerun sums to 168,901.10 including closed-leg
+                # slippage). Compare across generations with the ``total_fees`` /
+                # ``total_slippage_cost`` metric columns instead. No backfill: the old
+                # field never stored the split, so inventing one would be worse than the
+                # documented break.
                 'position_fees_paid': float(lot.fees_paid),
                 'position_dividend_cash': float(lot.dividend_cash),
                 'position_cost_notional': float(lot.cost_notional),

@@ -390,7 +390,10 @@ function CreateCard({ onCreated }: { onCreated: (run: EtfBacktestDto) => void })
     start_date: isoDaysAgo(365 * 3),
     end_date: isoDaysAgo(0),
     rebalance_frequency: 'MONTHLY',
-    max_positions: '5',
+    // Mirrors the backend default (``ETF_MAX_POSITIONS``). Both used to say 5, and the
+    // backend moved to 3 with the reference row, so a form left at 5 would launch a p5
+    // run the operator never chose.
+    max_positions: '3',
     momentum_lookback: '60',
     weighting: 'score',
     absolute_momentum_filter: true,

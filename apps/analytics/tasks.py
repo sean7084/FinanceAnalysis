@@ -1290,8 +1290,13 @@ def send_alert_notifications(event_id):
     event.save(update_fields=['dispatched_channels', 'notified_at', 'status'])
 
 
-def _feed_alert_channels():
-    """Channels available for a feed alert, derived from what this deployment configured."""
+def alert_notification_channels():
+    """Channels available for an asset-less alert, from what this deployment configured.
+
+    Public because the ETF forward-track report creates its own ``LIVE_DRIFT`` rule and must
+    derive the same channel list as the feed-health rule; two copies is how one of them ends
+    up silently emailing nobody.
+    """
     channels = ['websocket']
     if getattr(settings, 'ALERT_NOTIFY_EMAILS', []):
         channels.insert(0, 'email')
@@ -1311,7 +1316,7 @@ def _ensure_feed_stale_rule():
         name='ETF data feed health',
         condition_type=AlertRule.ConditionType.FEED_STALE,
         threshold=Decimal('0'),
-        channels=_feed_alert_channels(),
+        channels=alert_notification_channels(),
         cooldown_minutes=60,
         is_active=True,
     )
@@ -1350,6 +1355,11 @@ def check_alert_rules():
                     'diagnostics': stale.diagnostics,
                 },
             )
+        elif rule.condition_type == AlertRule.ConditionType.LIVE_DRIFT:
+            # Evaluated by ``report_etf_rotation_live_track`` on its own cadence. The price
+            # loop must not fall through to ``_evaluate_alert_rule``, which needs an asset
+            # this rule deliberately does not have.
+            continue
         else:
             should_trigger, current_value, current_label = _evaluate_alert_rule(rule)
             if not should_trigger:

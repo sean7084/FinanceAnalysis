@@ -157,7 +157,19 @@ jobs:
       # signal with its own pnl, a continued holding is carried rather than reopened,
       # regeneration preserves closed history, cumulative pnl is summable from closed
       # rows alone, and the ledger task never reads a bar or signal after its mark date.
-      MIN_TEST_COUNT: "650"
+      # 650 -> 685: Phases 6-11. Capital-base sizing (whole lots, zero-base compatibility,
+      # carried size kept), queued Kelly/cash-yield columns, CPCV fold plan + guards + block
+      # facets, max_positions alignment, shadow-book isolation, and the read-only forward
+      # track report with its LIVE_DRIFT wiring.
+      # 685 -> 689: gap closure. Share-sum invariant, no-shares pnl=None, a real --queue
+      # sized-book run, and "CPCV writes no row and activates nothing".
+      # 689 -> 701: the 10a entry point. Pinned-version loaders (inactive artifact loads,
+      # is_active never flips, unknown/non-READY versions refused), ML arms require and
+      # carry --model-version, single runs reject it, and rank IC matches a hand-computed
+      # Spearman while refusing an unscorable sample.
+      # 701 -> 704: the as-of date travels with a predictor frame, per-block rebalances are
+      # attributed by signal_date, and a CPCV arm can be scored without a date column.
+      MIN_TEST_COUNT: "704"
 
     steps:
       - uses: actions/checkout@v4
@@ -306,8 +318,10 @@ jobs:
       # asset-less FEED_STALE event instead of rendering a null asset. 76 -> 77:
       # the live ledger card sums realised pnl from closed rows, shows the closed
       # trade table and the latest signals, and leaves realised pnl blank when no
-      # closed row carries a priced pnl.
-      MIN_TEST_COUNT: "77"
+      # closed row carries a priced pnl. 77 -> 79: the workbench form launches with the
+      # backend's ``max_positions=3`` default, and the ledger card renders ``--`` (not
+      # 0.00) when every closed row lacks a share count.
+      MIN_TEST_COUNT: "79"
 
     steps:
       - uses: actions/checkout@v4
