@@ -434,7 +434,7 @@ embargo 5，15 个切分全部审计通过；每个块被 hold out 5 次。**一
 因此不改默认值。** 这条记录的价值不在"p3 更好"，而在"更高的中位 Sharpe 是用一致性换来的"；
 单看中位数会把 p5 误读成升级。
 
-### 7.11 Phase 10-10a：ML 复赛（CV 腿）
+### 7.11 Phase 10-10a：ML 复赛（CV leg）
 
 **入口已建。** `train_lightgbm.load_predictor_for_version` /
 `train_lstm.load_predictor_for_version` 按版本号加载 READY 工件，**不看 `is_active`**；
@@ -492,11 +492,11 @@ embargo 5，15 个切分全部审计通过；每个块被 hold out 5 次。**一
 | LSTM | 0.1238 | 66.67% | 15.93% | Sharpe 负、正收益块负、maxDD 胜 → **三项未全胜** |
 | LightGBM | 2.4839 | 100% | 7.56% | 全部内样本 → **不可裁决** |
 
-**CV 腿未通过。** LSTM 在带内样本优势的情况下仍输掉 Sharpe 与一致性两条；唯一胜出的
-maxDD 不足以构成“CV 腿通过”。**没有任何 `ModelVersion` 被激活。**
+**CV leg未通过。** LSTM 在带内样本优势的情况下仍输掉 Sharpe 与一致性两条；唯一胜出的
+maxDD 不足以构成“CV leg通过”。**没有任何 `ModelVersion` 被激活。**
 
 完整闸门的另一半是 10b：影子账本需要累积至少 20 次调仓（数月），本轮不可能满足；
-所以即使 CV 腿通过也不会激活，何况它没有通过。
+所以即使 CV leg通过也不会激活，何况它没有通过。
 
 **关于 Phase D 的旧 LSTM 数字。** row 209 也走 `_call_predictor`，丢掉了 `date`；LSTM 因此对
 每个历史 session 都按“最新 eligible 快照”取尾部窗口，而它的分数只依赖那个快照日——
@@ -527,3 +527,59 @@ LightGBM 臂的分布只能当上限读。已记入 BACKLOG。
 - 后端 **685 → 704**；后端下限抬到 **704**；前端 **77 → 79**，下限抬到 79。
 - `manage.py check`、`makemigrations --check`、`export_documentation_facts --check` 均通过。
 - 仍无人工浏览器点击；UI 结论止于 vitest、类型检查与静态基线。
+
+---
+
+## 8. holdout 释放记录（2026-10-25）
+
+**决策**：`2024-01-01..2026-10-20` 这个锁定 holdout 正式释放进训练池，同时封存"2026-10-25 起"的前向窗口作为此后唯一诚实的样本外来源。
+
+**为什么释放**：该窗口已被读过两次——§7.7 的 weighting 裁决，以及 Phase D 的单发闸门。被看过的数据不可能再当干净测试集；把它挡在训练池外买不到任何东西，只是丢掉最近 2.7 年、也正是最该让模型知道的那段行情。
+
+**代价（必须同时接受）**：从此不可能再做出任何"干净的历史样本外"声明。已有的 §7.7 与 Phase D 记录仍是历史事实，但不能再被当作可复现的样本外证据。唯一诚实的前向证据是实时账本。
+
+**四个条件**：
+
+1. **记录在案**：本节的释放日期与释放窗口即记录；任何工件都能据此标注"含释放后数据"。
+2. **封存前向窗口**：起点 `2026-10-25`；起点起 6 个月内不得据账本结果改任何默认参数。
+3. **不重裁旧决定**：不用释放后的数据重跑 Phase D 式闸门并当作新证据，也不重做 §7.7 的 weighting 裁决。
+4. **工件独立标签**：释放后重训的工件带 `post-release` 标签，不与释放前工件混在同一张对比表里。
+
+**边界**：释放**不会改变** row 256 的不稳定结论。那个发现来自调优窗口自身（walk-forward + CPCV），与 holdout 无关。
+
+**代码影响**（本版落地）：
+
+- `run_etf_rotation_backtest` 的 `LOCKED_HOLDOUT_START` → `RELEASED_HOLDOUT_START` + `HOLDOUT_RELEASED_ON`；2024+ 窗口从"拒绝"改为"标注"，reading rule 行重复标注。
+- `sweep_etf_rotation_lstm` 同构改造；`--allow-holdout-overlap` 旗标退役（不再需要逃生口）。`TUNING_WINDOW_END` 保留为默认值，使不带 `--end` 的调用逐位复现 2026-10 那次 sweep。
+- `train_etf_rotation_model --no-activate`：该命令的 trainer 默认 `activate=True`，释放后第一次重训会静默接管 serving——这是闸门明确禁止的状态。
+- `scripts/_check_migrations.sh`：迁移未 apply 时启动即失败（2026-10-25 的告警根因：测试库由迁移新建，永远一致，dev 库落后四个迁移，前端只显示"加载 ETF 轮动数据失败"）。
+
+**释放后的工件**（均 `is_active=False`，尚无有效样本外证据，仅作 serving 候选）：
+
+| 模型 | 版本 | 面板 | pooled rank IC | 正 IC 折 |
+| :--- | :--- | :--- | ---: | ---: |
+| LightGBM | `etf-lgb-20d-lambdarank-2026-09-17-post-release` | 2016-01-29..2026-10-23 | 0.0648 | 5/6 |
+| LSTM | `etf-lstm-2026-09-17-post-release` | 2016-03-03..2026-10-23 | 0.0318 | 4/6 |
+
+这两个折内 IC 是**面板内 walk-forward**，其验证块包含 2024-2026——属于调优窗口读数，不是样本外证据。
+
+**本轮已执行的操作员动作（2026-10-25）**：
+
+- `generate_etf_rotation_signal` 已按最新 session（2026-10-23）重跑：写入 1 条 MONTHLY 信号 + 3 条持仓（159887.SZ 373,000 股 / 510230.SH 287,600 股 / 515300.SH 75,800 股，均整手），权重和 1.0，`max_positions=3`，陈旧告警随之清除。
+- `ETF_LIVE_REFERENCE_BACKTEST_ID=256` 已写入 `.env`：`report_etf_rotation_live_track` 现在能对照 row 256（233 笔已平仓，胜率 45.06%，均值 +1.13%）。实时簿 0 笔已平仓，drift 读数仍为 `n/a`（样本不足），符合设计。
+- **影子账本仍未开启**：按决策等按折重训结论。§11.5/§11.6 的两个否决臂结论相反，所以现在开影子只会得到一个不可解释的对照组。
+
+---
+
+## 9. Phase 17 闸门（预登记，2026-10-25）
+
+**唯一允许改生产的选择规则：**
+
+1. **CV leg**：某个 ML 臂在按折重训复赛里通过 R3'（Sharpe 中位数 > RULE、正收益块 ≥ RULE、maxDD 中位数 ≤ RULE + 2pp）。截至本轮，只有"RULE 选股 + LightGBM 否决"通过，且 LSTM 否决的相反结果说明它未获独立复现（报告 §11.5-§11.6）。
+2. **forward leg**：该臂以影子账本形式累积 ≥20 次调仓，且胜率与均值收益都不劣于 row 256 的对照读数（`report_etf_rotation_live_track --alert`）。
+3. 两条 leg**同时**成立，才允许一次单发激活：写入新 `ModelVersion`、切换 `ETF_ML_SHADOW_MODEL`、保留一条回滚路径（旧的 RULE 路径不变，激活是加一个可随时撤掉的选择器）。
+4. 通过后仍先当一轮影子（再 ≥20 次调仓）才动生产。
+
+**闸门未满足时的唯一动作是记录"再次不敌"**，不是调参重试。参数一旦为了过闸而调整，CV leg就不再是预登记的检验。
+
+**当前状态**：无任何 `ETF_*` 模型被激活；`max_positions=3`；生产选择器仍是 RULE；影子账本未开启。

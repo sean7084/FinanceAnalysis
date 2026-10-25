@@ -22,6 +22,12 @@ fi
 
 "$PYTHON_BIN" -c "import celery, django, psycopg2, redis, talib; print('Python dependencies: ok')"
 "$PYTHON_BIN" manage.py check
+# A committed-but-unapplied migration is a startup failure, not a footnote: on 2026-10-25
+# four migrations were merged and never applied, every test passed (the test database is
+# built from them), and the SPA showed a generic "ETF data failed to load" banner.
+if ! bash "$PROJECT_ROOT/scripts/_check_migrations.sh"; then
+  status=1
+fi
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/_stack_probe.py" settings
 
 exit "$status"

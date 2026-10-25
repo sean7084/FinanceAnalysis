@@ -43,7 +43,14 @@ from apps.prediction.artifact_store import get_artifact_store, to_store_key
 from apps.prediction.models import ModelVersion
 
 from .models import ETFFeatureSnapshot
-from .walk_forward import WalkForwardError, audit_folds, expanding_folds, train_dates_for_fold
+from .walk_forward import (
+    WalkForwardError,
+    audit_folds,
+    expanding_folds,
+    train_dates_for_any_fold,
+    train_dates_for_fold,
+    validation_blocks_for_any_fold,
+)
 
 try:  # Guarded so --dry-run and --report work in an environment without the wheel.
     import lightgbm as lgb
@@ -722,7 +729,7 @@ def registered_versions(model_type_labels=('ETF_LIGHTGBM', 'ETF_LSTM', 'ETF_ENSE
 # -----------------------------------------------------------------------------
 # Walk-forward driver
 # -----------------------------------------------------------------------------
-def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_days):
+def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_days, folds=None):
     """Shared read + plan path for :func:`plan_walk_forward` and :func:`train_walk_forward`.
 
     Returns ``(base, frame, counts, folds, panel_dates)``. A ``base['status']`` other than
@@ -766,10 +773,16 @@ def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_d
             'row_counts': counts,
         }, frame, counts, [], [])
 
-    folds = expanding_folds(
-        panel_dates[0], panel_dates[-1], int(n_folds),
-        horizon_days=horizon_days, min_train_days=int(min_train_days), trade_dates=panel_dates,
-    )
+    if folds is None:
+        folds = expanding_folds(
+            panel_dates[0], panel_dates[-1], int(n_folds),
+            horizon_days=horizon_days, min_train_days=int(min_train_days), trade_dates=panel_dates,
+        )
+    else:
+        # A caller-supplied plan (CPCV) is taken as-is: its training dates are an explicit
+        # purged/embargoed set, not a range, and rebuilding them from expanding steps would
+        # silently measure a different split than the one the caller audited.
+        folds = list(folds)
     base = {
         'status': 'ok',
         'start_date': start.isoformat(),
@@ -811,6 +824,67 @@ def _pool_stats(frame) -> dict:
         'pool_mean_per_date': float(sizes.mean()),
         'pool_min_per_date': int(sizes.min()),
         'pool_max_per_date': int(sizes.max()),
+    }
+
+
+def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days=None,
+                         objective=None, num_boost_round=None, params=None) -> dict:
+    """Fit one booster per fold on exactly its training dates; register nothing.
+
+    This is the CPCV rematch's engine (plan Phase 14). ``train_walk_forward`` ships a refit
+    over *every* labelled date -- the right artifact to serve and the wrong one to measure:
+    reusing it is how the pinned-artifact run scored its own training set and reported
+    Sharpe 2.5. Here each fold's booster is built from ``fold.train_dates`` only and stays in
+    memory, so no ``ModelVersion`` row, no artifact directory and no activation state changes.
+    """
+    if not folds:
+        raise ValueError('train_fold_predictors needs at least one fold.')
+    objective = objective or DEFAULT_OBJECTIVE
+    base, frame, _counts, _folds, panel_dates = _prepare(
+        start_date, end_date, len(folds), horizon_days, objective, 1, folds=list(folds),
+    )
+    if base.get('status') != 'ok':
+        return base
+    horizon = int(base['horizon_days'])
+    feature_columns = base['feature_columns']
+    resolved = resolve_params(objective, params)
+    rounds = int(
+        num_boost_round if num_boost_round is not None
+        else _setting_int('ETF_LGB_NUM_BOOST_ROUND', 200)
+    )
+    predictors, reports = {}, []
+    for fold in folds:
+        kept, _dropped = train_dates_for_any_fold(fold, panel_dates, horizon)
+        blocks = validation_blocks_for_any_fold(fold)
+        train_frame = frame[frame['date'].isin(kept)]
+        report = {
+            'fold_index': fold.fold_index,
+            'train_dates': len(kept),
+            'train_rows': int(len(train_frame)),
+            'validation_blocks': [[start.isoformat(), end.isoformat()] for start, end in blocks],
+        }
+        if train_frame.empty:
+            reports.append({**report, 'status': 'skipped', 'reason': 'no rows after the purge'})
+            continue
+        matrix, labels, group, group_dates = build_rank_matrix(
+            train_frame, feature_columns, objective=objective,
+        )
+        booster = lgb.train(
+            resolved,
+            lgb.Dataset(matrix, label=labels, group=group, free_raw_data=False),
+            num_boost_round=rounds,
+        )
+        predictors[fold.fold_index] = _booster_scorer(
+            booster, feature_columns, label=f'fold-{fold.fold_index}',
+        )
+        reports.append({**report, 'status': 'trained', 'train_groups': len(group_dates)})
+    return {
+        'status': 'ok',
+        'panel_start': base['panel_start'],
+        'panel_end': base['panel_end'],
+        'feature_count': base['feature_count'],
+        'folds': reports,
+        'fold_predictors': predictors,
     }
 
 
@@ -1167,6 +1241,42 @@ def load_predictor_for_version(version: str):
     return predictor
 
 
+def _booster_scorer(booster, feature_columns, *, label=''):
+    """The scoring contract every ETF LightGBM callable must satisfy.
+
+    One implementation for the serving loader and for the per-fold CPCV models: two copies
+    is how the ranking contract drifts between "the model we measured" and "the model we
+    serve". Missing features are scored as NaN (LightGBM's missing-value branch), never
+    zero-filled; a frame with *no* known feature raises instead of scoring noise.
+    """
+
+    def score(snapshots_df) -> pd.DataFrame:
+        if snapshots_df is None or len(snapshots_df) == 0:
+            return pd.DataFrame({'ts_code': [], 'score': []})
+        absent = [name for name in feature_columns if name not in snapshots_df.columns]
+        if len(absent) == len(feature_columns):
+            raise ValueError(
+                f'Scoring frame has none of the {len(feature_columns)} features model '
+                f'{label or "(fold model)"} was trained on (first few: {feature_columns[:5]}).'
+            )
+        if absent:
+            logger.warning(
+                '%d of %d training features are absent from the scoring frame (%s); they are '
+                'scored as NaN, which shifts the ranking distribution.',
+                len(absent), len(feature_columns), ', '.join(absent[:5]),
+            )
+        matrix = snapshots_df.reindex(columns=feature_columns).apply(pd.to_numeric, errors='coerce')
+        if 'ts_code' in snapshots_df.columns:
+            codes = snapshots_df['ts_code']
+        elif 'etf__ts_code' in snapshots_df.columns:
+            codes = snapshots_df['etf__ts_code']
+        else:
+            codes = pd.Series([''] * len(snapshots_df), index=snapshots_df.index)
+        return pd.DataFrame({'ts_code': list(codes), 'score': np.asarray(booster.predict(matrix), dtype=float)})
+
+    return score
+
+
 def _predictor_from_version(version):
     """The scoring callable for one registry row. No lookup, no activation, no writes."""
     artifacts = _load_artifacts(version.artifact_path)
@@ -1183,30 +1293,7 @@ def _predictor_from_version(version):
         )
         return None
     booster = artifacts['model']
-
-    def score(snapshots_df) -> pd.DataFrame:
-        if snapshots_df is None or len(snapshots_df) == 0:
-            return pd.DataFrame({'ts_code': [], 'score': []})
-        absent = [name for name in feature_columns if name not in snapshots_df.columns]
-        if len(absent) == len(feature_columns):
-            raise ValueError(
-                f'Scoring frame has none of the {len(feature_columns)} features model '
-                f'{version.version} was trained on (first few: {feature_columns[:5]}).'
-            )
-        if absent:
-            logger.warning(
-                '%d of %d training features are absent from the scoring frame (%s); they are '
-                'scored as NaN, which shifts the ranking distribution.',
-                len(absent), len(feature_columns), ', '.join(absent[:5]),
-            )
-        matrix = snapshots_df.reindex(columns=feature_columns).apply(pd.to_numeric, errors='coerce')
-        if 'ts_code' in snapshots_df.columns:
-            codes = snapshots_df['ts_code']
-        elif 'etf__ts_code' in snapshots_df.columns:
-            codes = snapshots_df['etf__ts_code']
-        else:
-            codes = pd.Series([''] * len(snapshots_df), index=snapshots_df.index)
-        return pd.DataFrame({'ts_code': list(codes), 'score': np.asarray(booster.predict(matrix), dtype=float)})
+    score = _booster_scorer(booster, feature_columns, label=str(version.version))
 
     # Registry identity travels with the callable so a backtest report can name the exact
     # version that scored it; re-querying "the active row" later could name a newer one.
@@ -1237,7 +1324,7 @@ def engine_weights(weights: dict) -> dict:
     }
 
 
-def register_ensemble_version(version_tag: str = '') -> dict:
+def register_ensemble_version(version_tag: str = '', activate: bool = True) -> dict:
     """Rank-IC-weighted ``ETF_ENSEMBLE`` row over the active ETF members. Writes no artifact file.
 
     Weights come from each member's pooled *holdout* rank IC, clamped at zero. Negative IC
@@ -1304,6 +1391,7 @@ def register_ensemble_version(version_tag: str = '') -> dict:
     _register_model_version(
         model_type_label='ETF_ENSEMBLE',
         version=version,
+        activate=activate,
         training_start=None,
         training_end=end_date,
         metrics={**weights, 'weight_basis': basis, 'member_count': len(members)},

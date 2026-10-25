@@ -3359,7 +3359,7 @@ def _sweep_options(**overrides):
     options = {
         'start': None, 'end': None, 'folds': 6, 'horizon': None, 'min_train_days': None,
         'sequence_length': 20, 'limit': None, 'top': 10, 'force': False, 'plan': False,
-        'dry_run': False, 'allow_holdout_overlap': False,
+        'dry_run': False,
     }
     options.update(overrides)
     return options
@@ -3399,10 +3399,17 @@ class LstmSweepGridTests(SimpleTestCase):
         self.assertEqual({train_lstm.LOSS_BCE, train_lstm.LOSS_PAIRWISE},
                          set(sweep_cmd.SWEEP_LOSSES))
 
-    def test_the_tuning_window_ends_the_day_before_the_locked_holdout(self):
+    def test_the_default_tuning_end_still_precedes_the_released_window(self):
+        """The release moved the guard, not the default: an unflagged sweep is unchanged."""
         self.assertEqual(sweep_cmd.TUNING_WINDOW_END, date(2023, 12, 31))
-        self.assertEqual(sweep_cmd.LOCKED_HOLDOUT_START, date(2024, 1, 1))
-        self.assertLess(sweep_cmd.TUNING_WINDOW_END, sweep_cmd.LOCKED_HOLDOUT_START)
+        self.assertEqual(sweep_cmd.RELEASED_HOLDOUT_START, date(2024, 1, 1))
+        self.assertEqual(sweep_cmd.HOLDOUT_RELEASED_ON, date(2026, 10, 25))
+        self.assertLess(sweep_cmd.TUNING_WINDOW_END, sweep_cmd.RELEASED_HOLDOUT_START)
+
+    def test_the_holdout_overlap_escape_hatch_is_gone(self):
+        """Retired with the release; a flag nobody needs must not creep back in silently."""
+        source = inspect.getsource(sweep_cmd.Command.add_arguments)
+        self.assertNotIn('allow-holdout-overlap', source)
 
     def test_trial_names_show_the_whole_configuration_and_carry_the_prefix(self):
         combos = sweep_cmd.sweep_combinations()
@@ -3484,26 +3491,28 @@ class LstmSweepGridTests(SimpleTestCase):
                          'aggregate.mean_rank_ic, then aggregate.folds_with_positive_ic')
         self.assertIn('Not evidence about live performance', report['note'])
 
-    def test_resolve_window_defaults_to_the_locked_tuning_end_and_refuses_the_holdout(self):
+    def test_resolve_window_defaults_to_the_tuning_end_and_accepts_the_released_window(self):
         cases = {
             'default end': (_sweep_options(start='2016-01-29'),
                             {'tuning_start': '2016-01-29', 'tuning_end': '2023-12-31'}),
-            'explicit end before the holdout': (
+            'explicit end before the released window': (
                 _sweep_options(start='2016-01-29', end='2022-12-30'),
                 {'tuning_start': '2016-01-29', 'tuning_end': '2022-12-30'}),
-            'overlap authorised': (
-                _sweep_options(start='2016-01-29', end='2024-06-28', allow_holdout_overlap=True),
+            'end inside the released window': (
+                _sweep_options(start='2016-01-29', end='2024-06-28'),
                 {'tuning_start': '2016-01-29', 'tuning_end': '2024-06-28'}),
+            'end at the released window start': (
+                _sweep_options(start='2016-01-29', end='2024-01-01'),
+                {'tuning_start': '2016-01-29', 'tuning_end': '2024-01-01'}),
+            'end deep inside the released window': (
+                _sweep_options(start='2016-01-29', end='2026-10-20'),
+                {'tuning_start': '2016-01-29', 'tuning_end': '2026-10-20'}),
         }
         for label, (options, expected) in cases.items():
             with self.subTest(case=label):
                 self.assertEqual(sweep_cmd.resolve_window(options), expected)
 
         refusals = {
-            'end deep inside the holdout': (_sweep_options(start='2016-01-29', end='2026-10-20'),
-                                            'locked holdout'),
-            'end exactly at the holdout start': (
-                _sweep_options(start='2016-01-29', end='2024-01-01'), 'locked holdout'),
             'end before start': (_sweep_options(start='2020-01-01', end='2019-01-01'),
                                  'is before the panel start'),
             'malformed start': (_sweep_options(start='29/01/2016'), 'ISO format'),
@@ -3880,20 +3889,16 @@ class LstmSweepCommandTests(TestCase):
         self.assertEqual(stub.calls, [])
         self.assertEqual(ETFRotationBacktest.objects.count(), 0)
 
-    def test_an_end_inside_the_locked_holdout_is_refused_before_anything_is_trained(self):
+    def test_an_end_inside_the_released_window_runs_and_is_labelled(self):
+        """The release removed the refusal; what replaces it is a label on every path."""
         stub = _SweepStubTrainer()
 
-        message, _ = self._run_expect_error(stub, end='2024-01-01')
+        output = self._run(stub, end='2024-01-01')
 
-        self.assertIn('locked holdout', message)
-        self.assertEqual(stub.calls, [])
-        self.assertEqual(ETFRotationBacktest.objects.count(), 0)
-
-        authorised = _SweepStubTrainer()
-        self._run(authorised, end='2024-01-01', allow_holdout_overlap=True)
-
-        self.assertEqual(len(authorised.calls), self.LIMIT,
-                         'the flag is the documented escape hatch once the holdout is spent')
+        self.assertEqual(len(stub.calls), self.LIMIT)
+        self.assertEqual(len(self._rows()), self.LIMIT)
+        self.assertIn('released into the training pool', output)
+        self.assertIn('not out-of-sample evidence', output)
 
     def test_the_default_start_is_the_earliest_eligible_snapshot(self):
         etf = _seed_etf('512880.SH')
@@ -4791,11 +4796,6 @@ class CpcvCommandGuardTests(SimpleTestCase):
         options.update(overrides)
         call_command('run_etf_rotation_backtest', **options, stdout=io.StringIO())
 
-    def test_a_window_reaching_the_locked_holdout_is_refused(self):
-        with self.assertRaises(CommandError) as caught:
-            self._invoke(end='2024-01-02')
-        self.assertIn('holdout', str(caught.exception).lower())
-
     def test_grid_and_queue_modes_are_refused(self):
         for extra in ({'grid': True}, {'queue': True}, {'backtest_id': 1}):
             with self.subTest(extra=extra), self.assertRaises(CommandError):
@@ -4904,6 +4904,33 @@ class CpcvWritesNothingTests(TestCase):
         # ``name=None`` is what tells the engine not to persist; pin it here so a later
         # refactor cannot quietly start writing measurement rows.
         self.assertIsNone(measured.call_args.kwargs['run_kwargs']['name'])
+
+    def test_a_window_inside_the_released_holdout_is_labelled_not_refused(self):
+        """The 2024+ refusal became a label when the holdout was released into training."""
+        session_dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(12)]
+        points = [
+            {'date': day.isoformat(), 'equity': 100.0 + offset}
+            for offset, day in enumerate(session_dates)
+        ]
+
+        with patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''), \
+                patch.object(backtest_cmd, 'CachedDataSource') as cached, \
+                patch.object(
+                    backtest_cmd.Command, '_call',
+                    return_value={'equity_curve': points},
+                ):
+            cached.return_value.sessions.return_value = session_dates
+            stdout = io.StringIO()
+            call_command(
+                'run_etf_rotation_backtest',
+                start=session_dates[0].isoformat(), end=session_dates[-1].isoformat(),
+                cpcv_blocks=4, cpcv_test_blocks=1, cpcv_embargo=1, stdout=stdout,
+            )
+
+        text = stdout.getvalue()
+        self.assertIn('released into the training pool', text)
+        self.assertIn('not out-of-sample evidence', text)
+        self.assertEqual(ETFRotationBacktest.objects.count(), 0)
 
 
 class PredictorFrameContractTests(SimpleTestCase):
@@ -5083,6 +5110,218 @@ class RankIcTests(_PanelSeedMixin, TestCase):
     def test_a_missing_predictor_is_refused(self):
         with self.assertRaises(ValueError):
             rank_ic.block_rank_ic(None, block_start=self.pool_date, block_end=self.pool_date)
+
+
+class FoldShapeHelperTests(SimpleTestCase):
+    """Phase 14: one seam reads dates from either fold shape."""
+
+    def test_a_combinatorial_fold_returns_its_own_dates(self):
+        fold = walk_forward.CombinatorialFold(
+            fold_index=0,
+            train_dates=(date(2020, 1, 2), date(2020, 1, 3)),
+            validation_blocks=((date(2021, 1, 4), date(2021, 1, 8)),),
+            purged_train_dates=0, embargoed_train_dates=0,
+        )
+
+        kept, dropped = walk_forward.train_dates_for_any_fold(fold, [date(2020, 1, 2)], 1)
+
+        self.assertEqual(kept, [date(2020, 1, 2), date(2020, 1, 3)])
+        self.assertEqual(dropped, [])
+        self.assertEqual(
+            walk_forward.validation_blocks_for_any_fold(fold),
+            [(date(2021, 1, 4), date(2021, 1, 8))],
+        )
+
+    def test_an_expanding_fold_still_uses_the_purge_rule(self):
+        fold = walk_forward.Fold(
+            fold_index=0, train_start=date(2020, 1, 2), train_end=date(2020, 1, 10),
+            valid_start=date(2020, 1, 13), valid_end=date(2020, 1, 17), purged_train_dates=0,
+        )
+        panel = [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6), date(2020, 1, 13)]
+
+        # The contract is delegation: an expanding fold must produce exactly what the original
+        # helper produces, purge included, rather than a second implementation of it.
+        self.assertEqual(
+            walk_forward.train_dates_for_any_fold(fold, panel, 5),
+            walk_forward.train_dates_for_fold(fold, panel, 5),
+        )
+        self.assertEqual(
+            walk_forward.validation_blocks_for_any_fold(fold),
+            [(date(2020, 1, 13), date(2020, 1, 17))],
+        )
+
+
+class CpcvRetrainModeTests(TestCase):
+    """Phase 14: score each block with a model trained on its complement."""
+
+    SESSIONS = 12
+
+    def _session_dates(self, start=date(2016, 1, 4)):
+        return [start + timedelta(days=offset) for offset in range(self.SESSIONS)]
+
+    def _invoke(self, **overrides):
+        options = {'start': '2016-01-04', 'end': '2016-01-15', 'cpcv_blocks': 4,
+                   'cpcv_test_blocks': 1, 'cpcv_embargo': 1}
+        options.update(overrides)
+        call_command('run_etf_rotation_backtest', stdout=io.StringIO(), **options)
+
+    def _retrain(self, **overrides):
+        """Run the retrain path with a stubbed trainer and a stubbed engine call."""
+        sentinel = object()
+        session_dates = self._session_dates()
+        calls = []
+
+        def fake_call(cmd, run_kwargs, predictors, data_source=None):
+            calls.append({'run_kwargs': run_kwargs, 'predictors': predictors})
+            return {
+                'metrics': {'total_return': 0.01, 'max_drawdown': 0.02, 'sharpe_ratio': 0.3},
+                'report': {'counters': {'rebalances': 25}},
+                'equity_curve': [],
+            }
+
+        options = {'model': 'LIGHTGBM', 'start': '2016-01-04', 'end': '2016-01-15',
+                   'cpcv_blocks': 4, 'cpcv_test_blocks': 1,
+                   'cpcv_embargo': 1, 'cpcv_retrain': True}
+        options.update(overrides)
+        stdout = io.StringIO()
+        with patch.object(backtest_cmd.Command, '_fold_predictor', return_value=sentinel), \
+                patch.object(backtest_cmd.Command, '_call', fake_call), \
+                patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''), \
+                patch.object(backtest_cmd, 'CachedDataSource') as cached:
+            cached.return_value.sessions.return_value = session_dates
+            call_command('run_etf_rotation_backtest', stdout=stdout, **options)
+        return calls, stdout.getvalue(), sentinel
+
+    def test_each_block_is_run_alone_with_the_fold_predictor(self):
+        calls, output, sentinel = self._retrain()
+
+        self.assertEqual(len(calls), 4)
+        blocks = {(call['run_kwargs']['start_date'], call['run_kwargs']['end_date'])
+                  for call in calls}
+        self.assertEqual(len(blocks), 4, 'one standalone run per held-out block')
+        for call in calls:
+            self.assertEqual(call['predictors'], {'lgb_predictor': sentinel})
+            self.assertIsNone(call['run_kwargs']['name'])
+            self.assertEqual(call['run_kwargs']['model_type'], 'LIGHTGBM')
+        self.assertIn('CPCV retrain', output)
+        self.assertIn('no ETFRotationBacktest row', output)
+        self.assertEqual(ETFRotationBacktest.objects.count(), 0)
+
+    def test_a_pinned_arm_cannot_be_combined_with_retraining(self):
+        with self.assertRaises(CommandError) as caught:
+            self._invoke(model='LIGHTGBM', cpcv_retrain=True, model_version='etf-lgb-x')
+        self.assertIn('mutually exclusive', str(caught.exception))
+
+    def test_rule_runs_per_block_without_a_model(self):
+        """The baseline must be measured the same way as the ML arms, so RULE is allowed."""
+        calls, output, _sentinel = self._retrain(model='RULE')
+
+        self.assertEqual(len(calls), 4)
+        for call in calls:
+            self.assertEqual(call['predictors'], {})
+            self.assertEqual(call['run_kwargs']['model_type'], 'RULE')
+        self.assertIn('(RULE, 4 fold(s))', output)
+
+    def test_two_held_out_blocks_per_split_are_refused(self):
+        with self.assertRaises(CommandError) as caught:
+            self._invoke(model='LIGHTGBM', cpcv_retrain=True, cpcv_test_blocks=2)
+        self.assertIn('cpcv-test-blocks 1', str(caught.exception))
+
+    def test_a_hybrid_arm_selects_with_rule_and_vetoes_with_the_model(self):
+        calls, output, sentinel = self._retrain(model='LIGHTGBM', cpcv_hybrid=True)
+
+        self.assertEqual(len(calls), 4)
+        for call in calls:
+            self.assertEqual(call['run_kwargs']['model_type'], 'RULE')
+            self.assertEqual(call['predictors'], {'veto_predictor': sentinel})
+            self.assertEqual(call['run_kwargs']['config_overrides']['ml_veto_quantile'], 0.2)
+        self.assertIn('RULE selects, LIGHTGBM vetoes bottom 20%', output)
+
+    def test_a_hybrid_arm_without_an_ml_model_is_refused(self):
+        with self.assertRaises(CommandError) as caught:
+            self._invoke(model=None, cpcv_retrain=True, cpcv_hybrid=True)
+        self.assertIn('needs an ML --model', str(caught.exception))
+
+    def test_a_leaky_fold_is_refused_before_any_training(self):
+        leaky = walk_forward.CombinatorialFold(
+            fold_index=0,
+            train_dates=(date(2016, 1, 4), date(2016, 1, 8)),
+            validation_blocks=((date(2016, 1, 4), date(2016, 1, 8)),),
+            purged_train_dates=0, embargoed_train_dates=0,
+        )
+        source = SimpleNamespace(sessions=lambda *a: self._session_dates())
+        options = {
+            'frequency': None, 'max_positions': None, 'momentum_lookback': None,
+            'absolute_momentum_filter': None, 'defensive_asset': None,
+            'initial_capital': None, 'commission_rate': None, 'min_commission': None,
+            'slippage': None, 'liquidity_floor_multiple': None,
+            'min_trade_notional_fraction': None, 'drift_band_fraction': None,
+            'liquidity_mode': None, 'adv_participation_cap': None, 'weighting': None,
+            'kelly_fraction': None, 'kelly_cap': None, 'kelly_floor': None,
+            'kelly_lookback_trades': None, 'cash_yield_annual': None,
+            'dedup_track_index': None, 'max_per_category': None,
+            'objective': None, 'boost_rounds': None,
+        }
+
+        with patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''), \
+                patch.object(backtest_cmd.Command, '_fold_predictor') as trainer:
+            with self.assertRaises(CommandError) as caught:
+                backtest_cmd.Command()._handle_cpcv_retrain(
+                    model_type='LIGHTGBM', folds=[leaky], options=options, source=source,
+                    panel_start=date(2016, 1, 4), panel_end=date(2016, 1, 15),
+                    released_window=False,
+                )
+
+        self.assertIn('inside its own held-out block', str(caught.exception))
+        trainer.assert_not_called()
+
+
+class MlVetoArmTests(SimpleTestCase):
+    """RULE selects; the ML score only removes the names it likes least."""
+
+    def _plan(self, quantile, with_scores=True):
+        scored = pd.DataFrame([
+            {'ts_code': code, 'score': 0.9 - index * 0.1}
+            for index, code in enumerate(['A.SH', 'B.SH', 'C.SH', 'D.SH', 'E.SH', 'F.SH'])
+        ])
+        snapshots = scored.copy()
+        snapshots['name'] = list('ABCDEF')
+        snapshots['category'] = ['x'] * 6
+        snapshots['mom_60d'] = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+        if with_scores:
+            # The model dislikes exactly the names RULE likes most: E and F go first.
+            snapshots['__ml_score'] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        return rotation_engine.build_rotation_plan(
+            scored, snapshots,
+            rotation_engine.RotationConfig(
+                max_positions=4, momentum_lookback=60, absolute_momentum_filter=False,
+                weighting='equal', dedup_track_index=False, max_per_category=0,
+                ml_veto_quantile=quantile,
+            ),
+        )
+
+    def test_the_bottom_quantile_is_removed_before_selection(self):
+        plan = self._plan(0.34)
+
+        chosen = {leg.ts_code for leg in plan.legs}
+        self.assertNotIn('A.SH', chosen)
+        self.assertNotIn('B.SH', chosen)
+        self.assertEqual(plan.metadata['ml_veto_excluded_count'], 2)
+        self.assertEqual(plan.metadata['ml_veto_quantile'], 0.34)
+
+    def test_a_zero_quantile_leaves_every_plan_bit_identical(self):
+        with_scores = self._plan(0.0)
+        without = self._plan(0.0, with_scores=False)
+
+        self.assertEqual([leg.ts_code for leg in with_scores.legs],
+                         [leg.ts_code for leg in without.legs])
+        # Disabled means no veto key at all, which reads as zero exclusions.
+        self.assertEqual(with_scores.metadata.get('ml_veto_excluded_count', 0), 0)
+
+    def test_a_quantile_outside_the_unit_interval_is_refused(self):
+        for value in (-0.1, 1.0):
+            with self.subTest(value=value), self.assertRaises(rotation_engine.RotationEngineError):
+                self._plan(value)
 
 
 class CpcvBlockFacetTests(SimpleTestCase):
@@ -5381,6 +5620,74 @@ class BlindCrossSectionGuardTests(_PanelSeedMixin, TestCase):
             trade_date=self.pool_date, model_type='RULE', dry_run=True,
         )
         self.assertGreater(summary['scored_size'], 0)
+
+
+class PinnedShadowSignalTests(_PanelSeedMixin, TestCase):
+    """16.3: a shadow arm must run an artifact that is deliberately NOT active.
+
+    Before this, the only way to score a candidate was to make it the serving model, which
+    is exactly what the activation gate forbids -- so "start a shadow" and "pass the gate"
+    were the same action and neither could happen first.
+    """
+
+    PINNED = 'etf-lstm-pinned-test'
+
+    def _scorer(self, frame):
+        return pd.DataFrame({'ts_code': list(frame['ts_code']), 'score': [0.5] * len(frame)})
+
+    def test_a_pinned_version_scores_the_shadow_and_is_recorded(self):
+        self.seed()
+        self.compute_at_pool_date()
+
+        with patch('apps.etf_rotation.train_lstm.load_predictor_for_version',
+                   return_value=self._scorer):
+            summary = rotation_signals.generate_rotation_signal(
+                trade_date=self.pool_date, model_type='LSTM', signal_type='SHADOW',
+                model_version=self.PINNED,
+            )
+
+        self.assertEqual(summary['model_version'], self.PINNED)
+        row = ETFRotationSignal.objects.get(date=self.pool_date, signal_type='SHADOW')
+        self.assertEqual(row.model_type, 'LSTM')
+        self.assertEqual(row.metadata['model_versions'], {'ETF_LSTM': self.PINNED})
+        # Pinning is not activating: no row anywhere became the serving model.
+        self.assertFalse(ModelVersion.objects.filter(is_active=True).exists())
+
+    def test_an_unknown_version_is_refused_with_the_registry_reason(self):
+        self.seed()
+        self.compute_at_pool_date()
+
+        with patch('apps.etf_rotation.train_lstm.load_predictor_for_version',
+                   side_effect=ValueError('no READY ETF_LSTM ModelVersion with version nope')):
+            with self.assertRaises(rotation_signals.SignalGenerationError) as caught:
+                rotation_signals.generate_rotation_signal(
+                    trade_date=self.pool_date, model_type='LSTM', signal_type='SHADOW',
+                    model_version='nope', dry_run=True,
+                )
+
+        self.assertEqual(caught.exception.reason_code, 'model_registry_missing')
+        self.assertFalse(ETFRotationSignal.objects.filter(signal_type='SHADOW').exists())
+
+    def test_pinning_is_refused_for_rule_and_for_the_ensemble(self):
+        self.seed()
+        self.compute_at_pool_date()
+        for model_type in ('RULE', 'ENSEMBLE'):
+            with self.subTest(model_type=model_type), self.assertRaises(
+                rotation_signals.SignalGenerationError
+            ):
+                rotation_signals.generate_rotation_signal(
+                    trade_date=self.pool_date, model_type=model_type, signal_type='SHADOW',
+                    model_version='whatever', dry_run=True,
+                )
+
+    def test_the_shadow_task_passes_a_pinned_version_when_the_setting_carries_one(self):
+        with override_settings(ETF_ML_SHADOW_MODEL='LSTM:etf-lstm-x'), \
+                patch('django.core.management.call_command') as command:
+            etf_tasks.generate_etf_rotation_shadow_signal()
+        command.assert_called_once_with(
+            'generate_etf_rotation_signal', signal_type='SHADOW', model_type='LSTM',
+            verbosity=0, model_version='etf-lstm-x',
+        )
 
 
 class SignalRunLedgerTests(_PanelSeedMixin, TestCase):
@@ -6075,11 +6382,17 @@ class LivePositionLedgerTests(_PanelSeedMixin, TestCase):
         aggregate = closed.aggregate(total=Sum('pnl'))['total']
         self.assertAlmostEqual(aggregate, summary['realised_pnl_total'], places=6)
 
-    def test_the_ledger_task_never_queries_the_holdout_window(self):
+    def test_the_ledger_task_never_reads_a_backtest_or_hardcodes_a_window(self):
+        """The ledger records the live book; it must not consult backtests or a fixed window.
+
+        Renamed when the 2024-2026 holdout was released into the training pool: the invariant
+        that still matters is not "never query the holdout" but that the forward record stays
+        independent of the backtest table and of any hardcoded date boundary.
+        """
         source = inspect.getsource(position_ledger) + inspect.getsource(ledger_cmd)
         for forbidden in (
             'ETFRotationBacktest', 'run_rotation_backtest',
-            'LOCKED_HOLDOUT_START', '2024-01-01',
+            'RELEASED_HOLDOUT_START', '2024-01-01',
         ):
             self.assertNotIn(forbidden, source)
         # The no-future-bar guarantee is a query bound, not a convention.
@@ -6248,6 +6561,13 @@ class LiveTrackReportTests(TestCase):
             report={'closed_trades': [{'return_pct': value} for value in returns]},
         )
 
+    def test_the_report_names_the_sealed_forward_window(self):
+        """Display only, but it is the line that separates live evidence from the release."""
+        stdout = io.StringIO()
+        call_command('report_etf_rotation_live_track', reference_backtest_id=0, stdout=stdout)
+
+        self.assertIn('forward window: sealed from 2026-10-25', stdout.getvalue())
+
     def test_without_a_reference_the_report_makes_no_drift_claim(self):
         for value in (0.05, -0.02, 0.03):
             self._closed(value, pnl=100.0)
@@ -6351,5 +6671,54 @@ class LiveTrackReportTests(TestCase):
         check_alert_rules()
 
         self.assertEqual(AlertEvent.objects.filter(alert_rule__condition_type='LIVE_DRIFT').count(), 0)
+
+
+class TrainCommandActivationTests(SimpleTestCase):
+    """``--no-activate`` must reach the trainer: the default takes over serving.
+
+    A post-release retrain is the first time this command is used after the holdout release,
+    and its trainer defaults to ``activate=True``. Without the flag the retrain would silently
+    become the serving model, which is the one thing the activation gate forbids.
+    """
+
+    def _run(self, **overrides):
+        from apps.etf_rotation.management.commands import train_etf_rotation_model as train_cmd
+
+        captured = {}
+
+        def fake_train(**kwargs):
+            captured.update(kwargs)
+            return {
+                'status': 'success', 'metrics': {}, 'folds': [],
+                'aggregate': {
+                    'folds_trained': 1, 'folds_skipped': 0, 'folds_with_positive_ic': 1,
+                    'mean_rank_ic': 0.05, 'total_purged_train_dates': 0,
+                },
+                'model_version': 'v-test', 'artifact_path': 'models/etf_rotation/test',
+            }
+
+        stdout = io.StringIO()
+        options = {'type': 'lightgbm', 'start': '2016-01-29', 'end': '2023-12-29'}
+        options.update(overrides)
+        with patch.object(train_cmd, 'train_walk_forward', side_effect=fake_train):
+            call_command('train_etf_rotation_model', stdout=stdout, **options)
+        return captured, stdout.getvalue()
+
+    def test_no_activate_reaches_the_trainer_and_says_so(self):
+        captured, output = self._run(no_activate=True)
+
+        self.assertIs(captured['activate'], False)
+        self.assertIn('inactive (--no-activate)', output)
+
+    def test_activation_remains_the_explicit_default(self):
+        captured, output = self._run()
+
+        self.assertIs(captured['activate'], True)
+        self.assertIn('ACTIVE', output)
+
+    def test_the_flag_exists_on_the_parser(self):
+        from apps.etf_rotation.management.commands import train_etf_rotation_model as train_cmd
+
+        self.assertIn('--no-activate', inspect.getsource(train_cmd.Command.add_arguments))
 
 

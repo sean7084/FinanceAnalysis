@@ -80,6 +80,7 @@ from apps.etf_rotation.walk_forward import (
     audit_combinatorial_folds,
     combinatorial_purged_folds,
     expanding_folds,
+    validation_blocks_for_any_fold,
 )
 
 # ``CELERY_TASK_ROUTES`` puts ``apps.etf_rotation.tasks.run_etf_rotation_backtest`` on this
@@ -130,10 +131,17 @@ CPCV_DEFAULT_EMBARGO_SESSIONS = 5
 #: reading. A fitted model measuring the same splits should use its model horizon.
 CPCV_LABEL_HORIZON = 1
 
-#: The locked holdout (``docs/plans/etf-rotation-selection-sizing-2026-10-23.md`` §7.7) was
-#: spent once and must not be queried again. CPCV is a tuning-window measurement, so a
-#: window that reaches this date is refused rather than silently producing a second look.
-LOCKED_HOLDOUT_START = date(2024, 1, 1)
+#: Start of the window that used to be the locked holdout
+#: (``docs/plans/etf-rotation-selection-sizing-2026-10-23.md`` §7.7) and was **released into
+#: the training pool** on ``HOLDOUT_RELEASED_ON``: it had already been read twice, so it could
+#: no longer serve as a clean test set, and keeping it out of training bought nothing. The
+#: guard became a label rather than a refusal because refusing the dates would hide the one
+#: thing a reader must know -- a measurement covering them is a tuning number, not
+#: out-of-sample evidence. From the release onward the only honest out-of-sample source is the
+#: sealed forward window (the live ledger). See
+#: ``docs/plans/etf-rotation-next-phases-2026-10-24.md`` §8.
+RELEASED_HOLDOUT_START = date(2024, 1, 1)
+HOLDOUT_RELEASED_ON = date(2026, 10, 25)
 
 #: The production reference (``ETFRotationBacktest`` row 256), used only to report how
 #: often the walk-forward selection lands on it. Changing a default is NOT part of this.
@@ -515,12 +523,26 @@ class Command(BaseCommand):
         parser.add_argument('--cpcv-blocks', type=int, default=None, metavar='N',
                             help='Combinatorial purged cross-validation: cut the window into N contiguous '
                                  'blocks and measure the named configuration on every held-out block. '
-                                 'Ephemeral, and it will not accept a window reaching 2024-01-01.')
+                                 'Ephemeral. A window reaching 2024-01-01 is allowed but labelled '
+                                 'tuning-only: that holdout was released into the training pool.')
         parser.add_argument('--cpcv-test-blocks', type=int, default=CPCV_DEFAULT_TEST_BLOCKS, metavar='K',
                             help=f'Blocks held out per split (default {CPCV_DEFAULT_TEST_BLOCKS}); blocks the '
                                  'other blocks train on after a label-window purge and an embargo.')
         parser.add_argument('--cpcv-embargo', type=int, default=CPCV_DEFAULT_EMBARGO_SESSIONS, metavar='D',
                             help=f'Sessions excluded after each held-out block (default {CPCV_DEFAULT_EMBARGO_SESSIONS}).')
+        parser.add_argument('--cpcv-hybrid', action='store_true',
+                            help='With --cpcv-retrain and an ML --model: RULE selects, the fold '
+                                 'model only vetoes. Implements the \'ML as a filter\' arm: the '
+                                 'names the model likes least (bottom --ml-veto-quantile) are '
+                                 'removed before selection. Fixed quantile, no tuning.')
+        parser.add_argument('--ml-veto-quantile', type=float, default=0.2,
+                            help='Bottom share of the ML score distribution vetoed by '
+                                 '--cpcv-hybrid (default 0.2). Fixed for the whole run.')
+        parser.add_argument('--cpcv-retrain', action='store_true',
+                            help='With --cpcv-blocks and an ML --model: train one model per held-out '
+                                 'block on that block\'s complement (purged/embargoed) and score the '
+                                 'block with it. In-memory only: no ModelVersion row, no artifact, no '
+                                 'activation. Needs --cpcv-test-blocks 1.')
         parser.add_argument('--model-version', default=None, metavar='VERSION',
                             help='With --cpcv-blocks and an ML --model: pin the READY ModelVersion to score '
                                  'with, without activating it. ENSEMBLE takes "lgb=<version>,lstm=<version>".')
@@ -1270,8 +1292,9 @@ class Command(BaseCommand):
         artifact, and the per-block rank IC is printed next to the portfolio metrics. This
         is the 10a entry point, not a deployment path.
 
-        Two constraints are enforced rather than documented: the window may not reach the
-        locked holdout (``2024-01-01``), and the command refuses to rank configurations --
+        Two constraints are enforced rather than documented: a window reaching the released
+        holdout (``2024-01-01``) is labelled a tuning measurement instead of being refused, and
+        the command refuses to rank configurations --
         it measures whatever configuration the flags describe, and the caller must not run
         it per-configuration and pick the best block reading. That would turn the tuning
         window into a second holdout, which is exactly what §7.7 closed.
@@ -1292,13 +1315,41 @@ class Command(BaseCommand):
             # ML is allowed only with a pinned version: resolving "the active model" would
             # make the report name whatever happens to be active when it re-runs, and the
             # gate forbids activating a candidate just to measure it.
-            if not pinned_version:
+            if not pinned_version and not options['cpcv_retrain']:
+                # --cpcv-retrain is the other legitimate way to name the model: a fresh fit per
+                # block. Resolving "the active one" stays refused in both cases.
                 raise CommandError(
                     f'--model {model_type} needs --model-version: an ML rematch must pin the '
                     'READY artifact it scores with, not resolve "the currently active one".'
                 )
         elif pinned_version:
             raise CommandError('--model-version only applies to an ML --model with --cpcv-blocks.')
+        if options['cpcv_hybrid']:
+            if not options['cpcv_retrain']:
+                raise CommandError('--cpcv-hybrid is a --cpcv-retrain mode; pass both.')
+            if model_type == 'RULE':
+                raise CommandError(
+                    '--cpcv-hybrid needs an ML --model: the model is the filter. RULE alone is '
+                    'the plain baseline.'
+                )
+            if not 0.0 < float(options['ml_veto_quantile']) < 1.0:
+                raise CommandError('--ml-veto-quantile must be in (0, 1).')
+        if options['cpcv_retrain']:
+            # RULE is allowed here even though it fits nothing: it is the baseline the ML arms
+            # are compared against, and it has to be measured the same way -- one standalone
+            # run per block from initial capital -- or the comparison mixes two methods.
+            if pinned_version:
+                raise CommandError(
+                    '--cpcv-retrain and --model-version are mutually exclusive: one trains a fresh '
+                    'model per block, the other reuses one artifact (and risks scoring its own '
+                    'training set).'
+                )
+            if int(options['cpcv_test_blocks']) != 1:
+                raise CommandError(
+                    '--cpcv-retrain needs --cpcv-test-blocks 1 so each held-out block is scored by '
+                    'exactly one model. With more blocks per split a block is scored by several '
+                    'models, which is a different (and much more expensive) measurement.'
+                )
         if options['name']:
             raise CommandError('--cpcv-blocks is ephemeral; drop --name.')
         if not options['start'] or not options['end']:
@@ -1307,12 +1358,19 @@ class Command(BaseCommand):
         end = parse_iso_date(options['end'], '--end')
         if end < start:
             raise CommandError('--end must be on or after --start.')
-        if end >= LOCKED_HOLDOUT_START:
-            raise CommandError(
-                f'--cpcv-blocks refuses a window reaching {LOCKED_HOLDOUT_START}: the holdout was spent '
-                'once (plan §7.7) and is closed to further queries.'
-            )
-        pinned_predictors = self._pinned_predictors(model_type, pinned_version, self.stdout)
+        released_window = end >= RELEASED_HOLDOUT_START
+        if released_window:
+            self.stdout.write(self.style.WARNING(
+                f'the window reaches {RELEASED_HOLDOUT_START}, inside the holdout released into '
+                f'the training pool on {HOLDOUT_RELEASED_ON}: every block reading below is a '
+                'tuning-window measurement, not out-of-sample evidence.'
+            ))
+        # Nothing to pin means nothing to load: --cpcv-retrain fits its own models per block,
+        # and a RULE arm has none at all.
+        pinned_predictors = (
+            self._pinned_predictors(model_type, pinned_version, self.stdout)
+            if pinned_version else {}
+        )
 
         n_blocks = int(options['cpcv_blocks'])
         test_blocks = int(options['cpcv_test_blocks'])
@@ -1360,33 +1418,14 @@ class Command(BaseCommand):
         if len(audit) > 3:
             self.stdout.write(f'  ... {len(audit) - 3} more split(s) audited')
 
-        knobs = {
-            'model_type': model_type,
-            'rebalance_frequency': options['frequency'],
-            'max_positions': options['max_positions'],
-            'momentum_lookback': options['momentum_lookback'],
-            'absolute_momentum_filter': options['absolute_momentum_filter'],
-            'defensive_asset': options['defensive_asset'],
-            'initial_capital': options['initial_capital'],
-            'commission_rate': options['commission_rate'],
-            'min_commission': options['min_commission'],
-            'slippage': options['slippage'],
-            'liquidity_floor_multiple': options['liquidity_floor_multiple'],
-            'min_trade_notional_fraction': options['min_trade_notional_fraction'],
-            'drift_band_fraction': options['drift_band_fraction'],
-            'liquidity_mode': options['liquidity_mode'],
-            'adv_participation_cap': options['adv_participation_cap'],
-        }
-        overrides = {
-            key: options[key]
-            for key in ('weighting', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
-                        'kelly_lookback_trades', 'cash_yield_annual')
-            if options.get(key) is not None
-        }
-        if options['dedup_track_index'] is not None:
-            overrides['dedup_track_index'] = bool(options['dedup_track_index'])
-        if options['max_per_category'] is not None:
-            overrides['max_per_category'] = int(options['max_per_category'])
+        if options['cpcv_retrain']:
+            self._handle_cpcv_retrain(
+                model_type=model_type, folds=folds, options=options, source=source,
+                panel_start=panel_start, panel_end=panel_end, released_window=released_window,
+            )
+            return
+
+        knobs, overrides = self._cpcv_config_knobs(options, model_type)
         sleeve = str(knobs['defensive_asset'] or default_defensive_asset()).strip().upper()
         sleeve_problem = defensive_asset_problem(sleeve, start_date=start, end_date=end)
         if sleeve_problem:
@@ -1495,11 +1534,213 @@ class Command(BaseCommand):
             'reading rule: this is a distribution of block readings for ONE configuration, not a '
             'ranking. Do not run it per configuration and pick the best block -- that spends the '
             'tuning window like a holdout.'
+            + (
+                f' The panel includes the released holdout ({RELEASED_HOLDOUT_START}+), so none '
+                'of these readings is out-of-sample evidence.'
+                if released_window else ''
+            )
         )
         self.stdout.write(
             f'CPCV measured {len(facets)} block(s) in {time.monotonic() - started:.1f}s; '
             'no ETFRotationBacktest row was written and no ModelVersion was activated.'
         )
+
+    @staticmethod
+    def _cpcv_config_knobs(options, model_type):
+        """Cost/identity knobs plus rotation overrides for a CPCV measurement."""
+        knobs = {
+            'model_type': model_type,
+            'rebalance_frequency': options['frequency'],
+            'max_positions': options['max_positions'],
+            'momentum_lookback': options['momentum_lookback'],
+            'absolute_momentum_filter': options['absolute_momentum_filter'],
+            'defensive_asset': options['defensive_asset'],
+            'initial_capital': options['initial_capital'],
+            'commission_rate': options['commission_rate'],
+            'min_commission': options['min_commission'],
+            'slippage': options['slippage'],
+            'liquidity_floor_multiple': options['liquidity_floor_multiple'],
+            'min_trade_notional_fraction': options['min_trade_notional_fraction'],
+            'drift_band_fraction': options['drift_band_fraction'],
+            'liquidity_mode': options['liquidity_mode'],
+            'adv_participation_cap': options['adv_participation_cap'],
+        }
+        overrides = {
+            key: options[key]
+            for key in ('weighting', 'kelly_fraction', 'kelly_cap', 'kelly_floor',
+                        'kelly_lookback_trades', 'cash_yield_annual')
+            if options.get(key) is not None
+        }
+        if options['dedup_track_index'] is not None:
+            overrides['dedup_track_index'] = bool(options['dedup_track_index'])
+        if options['max_per_category'] is not None:
+            overrides['max_per_category'] = int(options['max_per_category'])
+        return knobs, overrides
+
+    def _handle_cpcv_retrain(self, *, model_type, folds, options, source,
+                             panel_start, panel_end, released_window):
+        """Score each held-out block with a model trained on that block's complement.
+
+        Every block is a standalone run from initial capital, because a different model scores
+        each one -- there is no single continuous curve to slice. That makes these numbers
+        incomparable with the continuous-run table a pinned or RULE arm produces; compare only
+        against an arm measured this way.
+
+        Nothing is registered: the fold models live in this process and are discarded. The
+        leak check runs before any training -- a plan whose training dates touch its own block
+        is a bug, not a result.
+        """
+        hybrid = bool(options.get('cpcv_hybrid'))
+        # A hybrid arm selects with RULE and vetoes with the fold model, so the *engine's*
+        # model type stays RULE; the trained scorer travels as the veto predictor.
+        knobs, overrides = self._cpcv_config_knobs(
+            options, 'RULE' if hybrid else model_type,
+        )
+        if hybrid:
+            overrides['ml_veto_quantile'] = float(options['ml_veto_quantile'])
+        sleeve = str(knobs['defensive_asset'] or default_defensive_asset()).strip().upper()
+        sleeve_problem = defensive_asset_problem(sleeve, start_date=panel_start, end_date=panel_end)
+        if sleeve_problem:
+            raise CommandError(sleeve_problem)
+        knobs['defensive_asset'] = sleeve
+
+        label = (
+            f'RULE selects, {model_type} vetoes bottom {float(options["ml_veto_quantile"]):.0%}'
+            if hybrid else model_type
+        )
+        self.stdout.write(self.style.SUCCESS(
+            f'--- CPCV retrain: each block scored by a model trained on its complement '
+            f'({label}, {len(folds)} fold(s)) ---'
+        ))
+        self.stdout.write(
+            '  block  start        end          train  rebal  return     maxDD      sharpe    ic'
+        )
+        rows = []
+        started = time.monotonic()
+        for ordinal, fold in enumerate(folds, start=1):
+            blocks = validation_blocks_for_any_fold(fold)
+            if len(blocks) != 1:
+                raise CommandError(
+                    f'fold {fold.fold_index}: --cpcv-retrain expects one held-out block per fold.'
+                )
+            block_start, block_end = blocks[0]
+            train_dates = set(fold.train_dates)
+            inside = sorted(
+                day for day in train_dates if block_start <= day <= block_end
+            )
+            if inside:
+                raise CommandError(
+                    f'fold {fold.fold_index}: {len(inside)} training date(s) fall inside its own '
+                    f'held-out block ({inside[0]}..{inside[-1]}); refusing to train on a leaky split.'
+                )
+            if model_type == 'RULE':
+                predictor, predictors = None, {}
+            else:
+                predictor = self._fold_predictor(
+                    fold, model_type=model_type, options=options,
+                    panel_start=panel_start, panel_end=panel_end,
+                )
+                if hybrid:
+                    predictors = {'veto_predictor': predictor}
+                else:
+                    predictors = (
+                        {'lgb_predictor': predictor} if model_type == 'LIGHTGBM'
+                        else {'lstm_predictor': predictor}
+                    )
+            result = self._call(
+                run_kwargs={
+                    'start_date': block_start, 'end_date': block_end,
+                    'name': None, **knobs, 'config_overrides': overrides,
+                },
+                predictors=predictors,
+                data_source=source,
+            )
+            metrics = result.get('metrics') or {}
+            counters = (result.get('report') or {}).get('counters') or {}
+            ic = (
+                {'mean_ic': None} if predictor is None
+                else rank_ic.block_rank_ic(predictor, block_start=block_start, block_end=block_end)
+            )
+            rows.append({
+                'fold_index': fold.fold_index,
+                'start': block_start.isoformat(), 'end': block_end.isoformat(),
+                'train_dates': len(train_dates),
+                'rebalances': int(counters.get('rebalances') or 0),
+                'total_return': metrics.get('total_return'),
+                'max_drawdown': metrics.get('max_drawdown'),
+                'sharpe_ratio': metrics.get('sharpe_ratio'),
+                'mean_ic': ic.get('mean_ic'),
+            })
+            self.stdout.write(
+                f"  {ordinal:<5}  {rows[-1]['start']}  {rows[-1]['end']}  "
+                f"{rows[-1]['train_dates']:>5}  {rows[-1]['rebalances']:>5}  "
+                f"{_pct(rows[-1]['total_return']):>9}  "
+                f"{_pct(rows[-1]['max_drawdown'], signed=False):>8}  "
+                f"{_num(rows[-1]['sharpe_ratio']):>7}  {_num(rows[-1]['mean_ic'])}"
+            )
+        sharpe_dist = _distribution([row['sharpe_ratio'] for row in rows])
+        return_dist = _distribution([row['total_return'] for row in rows])
+        drawdown_dist = _distribution([row['max_drawdown'] for row in rows])
+        self.stdout.write(
+            f"  sharpe  min={_num(sharpe_dist.get('min'))} q1={_num(sharpe_dist.get('q1'))} "
+            f"median={_num(sharpe_dist.get('median'))} q3={_num(sharpe_dist.get('q3'))} "
+            f"max={_num(sharpe_dist.get('max'))} positive={_pct(sharpe_dist.get('positive_share'))}"
+        )
+        self.stdout.write(
+            f"  return  min={_pct(return_dist.get('min'))} q1={_pct(return_dist.get('q1'))} "
+            f"median={_pct(return_dist.get('median'))} q3={_pct(return_dist.get('q3'))} "
+            f"max={_pct(return_dist.get('max'))}"
+        )
+        self.stdout.write(
+            f"  maxDD   min={_pct(drawdown_dist.get('min'), signed=False)} "
+            f"median={_pct(drawdown_dist.get('median'), signed=False)} "
+            f"max={_pct(drawdown_dist.get('max'), signed=False)}"
+        )
+        thin = [row['fold_index'] + 1 for row in rows
+                if row['rebalances'] < WALK_FORWARD_MIN_FOLD_REBALANCES]
+        if thin:
+            self.stdout.write(self.style.WARNING(
+                f'guardrail: block(s) {thin} fall below {WALK_FORWARD_MIN_FOLD_REBALANCES} '
+                'rebalances; their readings are thin.'
+            ))
+        self.stdout.write(
+            'reading rule: each row is a standalone run from initial capital scored by a model '
+            'that never saw the block. Compare only with arms measured the same way; the '
+            'continuous-run distribution is a different measurement.'
+        )
+        self.stdout.write(
+            f'CPCV retrain measured {len(rows)} block(s) in {time.monotonic() - started:.1f}s; '
+            'no ETFRotationBacktest row, no artifact and no ModelVersion was written.'
+        )
+
+    @staticmethod
+    def _fold_predictor(fold, *, model_type, options, panel_start, panel_end):
+        """Train one in-memory model on ``fold.train_dates`` and return its scorer."""
+        if model_type == 'LIGHTGBM':
+            from apps.etf_rotation import train_lightgbm
+
+            result = train_lightgbm.train_fold_predictors(
+                folds=[fold], start_date=panel_start, end_date=panel_end,
+                # Training-only knobs are absent from this command's option set; a missing
+                # key means "use the trainer's default", not a crash.
+                objective=options.get('objective') or None,
+                num_boost_round=options.get('boost_rounds') or None,
+            )
+        else:
+            from apps.etf_rotation import train_lstm
+
+            result = train_lstm.train_walk_forward(
+                folds=[fold], capture_fold_predictors=True,
+                start_date=panel_start, end_date=panel_end,
+            )
+        predictor = (result.get('fold_predictors') or {}).get(fold.fold_index)
+        if predictor is None:
+            detail = result.get('reason') or result.get('status') or 'no predictor returned'
+            raise CommandError(
+                f'fold {fold.fold_index}: could not train a {model_type} model on its training '
+                f'dates ({detail}).'
+            )
+        return predictor
 
     @staticmethod
     def _cpcv_block_facet(points, block_start, block_end, ordinal: int, rebalances=None):

@@ -58,6 +58,9 @@ class Command(BaseCommand):
         parser.add_argument('--min-train-days', type=int,
                             help='Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS (250).')
         parser.add_argument('--version-tag', default='', help='Suffix appended to the ModelVersion key.')
+        parser.add_argument('--no-activate', action='store_true',
+                            help='Register the trained row inactive and leave the serving model alone. '
+                                 'Required for a post-release retrain: this command activates by default.')
         parser.add_argument('--dry-run', action='store_true',
                             help='Build the frames and fold plan, print sample/group counts, train nothing, write nothing.')
         parser.add_argument('--report', action='store_true',
@@ -86,15 +89,22 @@ class Command(BaseCommand):
             return
 
         targets = ['lightgbm', 'lstm', 'ensemble'] if options['type'] == 'all' else [options['type']]
+        activate = not options['no_activate']
         failures = []
         for target in targets:
             if target == 'ensemble':
-                result = register_ensemble_version(version_tag=options['version_tag'])
+                result = register_ensemble_version(
+                    version_tag=options['version_tag'], activate=activate,
+                )
                 self._render_ensemble(result)
                 if result['status'] != 'success':
                     failures.append(f'ensemble: {result.get("reason", result["status"])}')
                 continue
             train_kwargs = dict(common)
+            # Explicit in both directions: the trainer's default is ``activate=True``, and a
+            # post-release retrain that silently took over serving would be the exact mistake
+            # the activation gate exists to prevent.
+            train_kwargs['activate'] = activate
             if options['boost_rounds'] is not None:
                 train_kwargs['num_boost_round'] = options['boost_rounds']
             if options['version_tag']:
@@ -104,7 +114,7 @@ class Command(BaseCommand):
                 result = self._train_lstm(train_kwargs)
             else:
                 result = train_walk_forward(model_type_label='ETF_LIGHTGBM', **train_kwargs)
-            self._render_training(target, result)
+            self._render_training(target, result, activate=activate)
             if result.get('status') != 'success':
                 failures.append(f'{target}: {result.get("reason", result.get("status"))}')
         if failures:
@@ -210,7 +220,7 @@ class Command(BaseCommand):
         if plan.get('would_write'):
             self.stdout.write(f"dry-run: would write {plan['would_write']}")
 
-    def _render_training(self, target, result):
+    def _render_training(self, target, result, activate=True):
         status = result.get('status')
         if status != 'success':
             self.stdout.write(self.style.WARNING(f'{target}: {status} - {result.get("reason", "")}'))
@@ -222,6 +232,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"{target}: registered {result['model_version']} (artifact {result['artifact_path']})"
         ))
+        self.stdout.write(
+            'activation: '
+            + ('ACTIVE (this row now serves signals)' if activate else 'inactive (--no-activate)')
+        )
         if result.get('device'):
             self.stdout.write(
                 f"train device: {result['device']} "

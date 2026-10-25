@@ -187,6 +187,14 @@ def _fold_api():
     )
 
 
+def _fold_api_any():
+    """Helpers that work for both fold shapes (expanding ``Fold`` and CPCV)."""
+    return (
+        _import_symbol('apps.etf_rotation.walk_forward', 'train_dates_for_any_fold', 'select a fold\'s training dates'),
+        _import_symbol('apps.etf_rotation.walk_forward', 'validation_blocks_for_any_fold', 'list held-out blocks'),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
@@ -674,6 +682,20 @@ def _holdout_metrics(scored, top_n):
 # ---------------------------------------------------------------------------
 
 def _fold_valid_dates(fold, calendar_dates):
+    """Held-out dates of either fold shape, plus its first and last date.
+
+    A combinatorial fold carries blocks, not a range: its holdout is the union of those
+    blocks, and the scaler/purge rules still only ever see ``train_dates``.
+    """
+    blocks = getattr(fold, 'validation_blocks', None)
+    if blocks:
+        valid_start = _as_date(min(start for start, _end in blocks))
+        valid_end = _as_date(max(end for _start, end in blocks))
+        dates = sorted(
+            day for day in calendar_dates
+            if any(_as_date(start) <= day <= _as_date(end) for start, end in blocks)
+        )
+        return dates, valid_start, valid_end
     valid_start = _as_date(fold.valid_start)
     valid_end = _as_date(fold.valid_end)
     return sorted(day for day in calendar_dates if valid_start <= day <= valid_end), valid_start, valid_end
@@ -762,14 +784,27 @@ def _train_fold(*, fold, panel, config, device, purge):
     """
     calendar_dates = panel['calendar_dates']
     kept, dropped = purge
-    train_start, train_end = _as_date(fold.train_start), _as_date(fold.train_end)
+    if hasattr(fold, 'train_start'):
+        train_start, train_end = _as_date(fold.train_start), _as_date(fold.train_end)
+    else:
+        # A combinatorial fold's training dates are an explicit set; its range is their span.
+        if not kept:
+            return {**{'fold_index': int(getattr(fold, 'fold_index', 0))},
+                    'status': 'skipped', 'reason': 'empty training date set'}, None
+        train_start, train_end = min(kept), max(kept)
     valid_dates, valid_start, valid_end = _fold_valid_dates(fold, calendar_dates)
 
     # Defence in depth, not a re-implementation of the purge: even a fold plan that
-    # handed back a date inside its own validation block cannot train on it.
-    train_dates = sorted(
-        day for day in kept if train_start <= day <= train_end and day < valid_start
-    )
+    # handed back a date inside its own validation block cannot train on it. A combinatorial
+    # fold keeps dates *after* the held-out block on purpose (the plan embargoed them), so the
+    # "before the block" clause applies to expanding folds only -- applying it here would throw
+    # away most of the training set and quietly turn a CPCV fold into a prefix fit.
+    if hasattr(fold, 'train_start'):
+        train_dates = sorted(
+            day for day in kept if train_start <= day <= train_end and day < valid_start
+        )
+    else:
+        train_dates = sorted(day for day in kept if train_start <= day <= train_end)
     position_of = {day: index for index, day in enumerate(calendar_dates)}
 
     report = {
@@ -822,7 +857,11 @@ def _train_fold(*, fold, panel, config, device, purge):
     mean, scale = _row_statistics(panel['X'][train_row_mask])
 
     guards = _validate_temporal_split(panel, train_positions, valid_positions, train_dates, valid_dates)
-    if not guards['train_max_date'] < valid_start:
+    if hasattr(fold, 'train_start') and not guards['train_max_date'] < valid_start:
+        # Expanding folds train strictly before their holdout. A combinatorial fold keeps
+        # post-block dates on purpose, and the plan's embargo is what makes that safe: the
+        # caller must pass an embargo >= sequence_length, or the sequence windows of those
+        # dates reach back into the block (the guard in _validate_temporal_split catches it).
         raise ETFRotationLSTMTrainingError('a training target date is not before the holdout start.')
 
     train_loader = DataLoader(
@@ -1252,7 +1291,7 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
                        num_layers=2, dropout=0.2, epochs=50, batch_size=256, learning_rate=1e-3,
                        patience=5, device=None, params=None, objective=None,
                        num_boost_round=None, min_train_days=None, version_tag='', activate=True,
-                       sweep=None):
+                       sweep=None, folds=None, capture_fold_predictors=False):
     """Expanding-window walk-forward LSTM training for the ETF rotation pool.
 
     Returns the same envelope shape as ``apps.etf_rotation.train_lightgbm.train_walk_forward``
@@ -1308,6 +1347,7 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
     base_feature_names = _feature_columns()
     config['base_feature_names'] = base_feature_names
     expanding_folds, train_dates_for_fold, audit_folds = _fold_api()
+    any_train_dates, any_validation_blocks = _fold_api_any()
 
     start, end = _resolve_window(config['start_date'], config['end_date'])
     base = {
@@ -1354,11 +1394,17 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
     # planning to the raw panel tail would put the final fold's holdout inside the
     # horizon_days of dates whose forward returns have not happened yet.
     panel_dates = sorted({calendar[pos] for pos in np.unique(panel['target_date_pos'])})
-    folds = expanding_folds(
-        panel_dates[0], panel_dates[-1], int(config['n_folds']),
-        horizon_days=int(config['horizon_days']), min_train_days=int(config['min_train_days']),
-        trade_dates=panel_dates,
-    )
+    supplied_folds = folds is not None
+    if supplied_folds:
+        # A caller-supplied plan (CPCV) is taken as-is: its training dates are an explicit
+        # purged/embargoed set, not a range.
+        folds = list(folds)
+    else:
+        folds = expanding_folds(
+            panel_dates[0], panel_dates[-1], int(config['n_folds']),
+            horizon_days=int(config['horizon_days']), min_train_days=int(config['min_train_days']),
+            trade_dates=panel_dates,
+        )
     base.update({
         'panel_start': panel_dates[0].isoformat(), 'panel_end': panel_dates[-1].isoformat(),
         'panel_dates': len(panel_dates), 'n_folds_built': len(folds),
@@ -1380,12 +1426,17 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
     # Re-audit the plan against this panel: a declared purge count that disagrees with
     # the applied one means plan and fit drifted apart, and every fold metric after
     # that point would be measuring the answer key.
-    trail = {item['fold_index']: item for item in audit_folds(folds, panel_dates, int(config['horizon_days']))}
+    trail = (
+        {}
+        if supplied_folds
+        else {item['fold_index']: item for item in audit_folds(folds, panel_dates, int(config['horizon_days']))}
+    )
 
     reports, payloads, scored_blocks = [], [], []
+    predictors = {}
     for fold in folds:
-        kept, dropped = train_dates_for_fold(fold, panel_dates, int(config['horizon_days']))
-        if len(dropped) != int(fold.purged_train_dates):
+        kept, dropped = any_train_dates(fold, panel_dates, int(config['horizon_days']))
+        if not supplied_folds and len(dropped) != int(fold.purged_train_dates):
             raise ETFRotationLSTMTrainingError(
                 f'Fold {fold.fold_index}: the purge removed {len(dropped)} dates but the plan declared '
                 f'{fold.purged_train_dates}; refusing to train on an unaudited split.'
@@ -1398,6 +1449,22 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
         if payload is not None:
             payloads.append(payload)
             scored_blocks.append(payload['scored'])
+            if capture_fold_predictors:
+                predictors[report['fold_index']] = _predictor_from_parts(
+                    model=payload['model'], mean=payload['mean'], scale=payload['scale'],
+                    sequence_length=int(config['sequence_length']),
+                    base_feature_names=list(config['base_feature_names']),
+                    feature_names=list(panel['feature_names']),
+                    device=resolved_device, label=f'fold-{report["fold_index"]}',
+                )
+    if capture_fold_predictors:
+        # Return the fold models and stop: no pooled metrics, no refit, no registry row.
+        return {
+            'status': 'ok',
+            'panel_start': base['panel_start'], 'panel_end': base['panel_end'],
+            'folds': [_registry_fold_report(report) for report in reports],
+            'fold_predictors': predictors,
+        }
 
     fold_reports = [_registry_fold_report(report) for report in reports]
     trained = [report for report in reports if report.get('status') == 'trained']
@@ -1578,20 +1645,10 @@ def load_predictor_for_version(version, device=None, model_type_label=MODEL_TYPE
     return predictor
 
 
-def _predictor_from_version(version_row, device=None):
-    """The scoring callable for one registry row. No lookup, no activation, no writes."""
+def _predictor_from_parts(*, model, mean, scale, sequence_length, base_feature_names,
+                          feature_names, device=None, label=''):
+    """Scoring callable built from in-memory fold weights. No lookup, no writes."""
     resolved_device = _resolve_device(device)
-    artifact = _load_artifact(version_row, resolved_device)
-    if artifact is None:
-        logger.warning('Active ETF LSTM ModelVersion %s has no readable artifact at %s.',
-                       version_row.version, version_row.artifact_path)
-        return None
-
-    model = artifact['model']
-    mean, scale = artifact['mean'], artifact['scale']
-    sequence_length = int(artifact['sequence_length'])
-    base_feature_names = list(artifact['base_feature_names'])
-    feature_names = list(artifact['feature_names'])
 
     def score(snapshots_df, *, as_of=None):
         if snapshots_df is None or len(snapshots_df) == 0:
@@ -1649,7 +1706,7 @@ def _predictor_from_version(version_row, device=None):
         if panel['feature_names'] != feature_names:
             raise ETFRotationLSTMTrainingError(
                 f'the scoring panel has {len(panel["feature_names"])} columns but model '
-                f'{version_row.version} was trained on {len(feature_names)}; FEATURE_COLUMNS changed '
+                f'{label or '(fold model)'} was trained on {len(feature_names)}; FEATURE_COLUMNS changed '
                 'under a registered model. Retrain before scoring.'
             )
 
@@ -1679,6 +1736,29 @@ def _predictor_from_version(version_row, device=None):
             'score': [by_target.get((code, day), np.nan) for code, day in zip(codes, row_dates)],
         })
 
+    return score
+
+
+def _predictor_from_version(version_row, device=None):
+    """The scoring callable for one registry row. No lookup, no activation, no writes."""
+    resolved_device = _resolve_device(device)
+    artifact = _load_artifact(version_row, resolved_device)
+    if artifact is None:
+        logger.warning('Active ETF LSTM ModelVersion %s has no readable artifact at %s.',
+                       version_row.version, version_row.artifact_path)
+        return None
+
+    model = artifact['model']
+    mean, scale = artifact['mean'], artifact['scale']
+    sequence_length = int(artifact['sequence_length'])
+    base_feature_names = list(artifact['base_feature_names'])
+    feature_names = list(artifact['feature_names'])
+
+    score = _predictor_from_parts(
+        model=model, mean=mean, scale=scale, sequence_length=sequence_length,
+        base_feature_names=base_feature_names, feature_names=feature_names,
+        device=resolved_device, label=str(version_row.version),
+    )
     # Same contract as the LightGBM loader: the report reads the version off the callable.
     score.model_version = {
         'id': int(version_row.pk),

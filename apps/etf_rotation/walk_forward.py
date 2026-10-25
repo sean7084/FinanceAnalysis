@@ -48,7 +48,9 @@ __all__ = [
     'combinatorial_purged_folds',
     'expanding_folds',
     'purge_train_dates',
+    'train_dates_for_any_fold',
     'train_dates_for_fold',
+    'validation_blocks_for_any_fold',
 ]
 
 #: Refuse plans so thin that every fold would be noise; the caller gets
@@ -198,6 +200,30 @@ def train_dates_for_fold(fold: Fold, all_dates, horizon_days: int):
                    if fold.train_start <= value <= fold.train_end]
     kept, dropped = purge_train_dates(train_dates, fold.valid_start, horizon_days, all_dates=all_dates)
     return kept, dropped
+
+
+def train_dates_for_any_fold(fold, all_dates, horizon_days: int):
+    """``(kept, dropped)`` training dates for either fold shape.
+
+    A :class:`Fold` is a contiguous expanding window, so its dates come from the panel plus
+    the purge rule. A :class:`CombinatorialFold` already carries its purged, embargoed date
+    set -- recomputing it from a range would be wrong, because its training dates are not a
+    range. Both shapes return the same pair, so a trainer's bookkeeping does not branch.
+    """
+    if isinstance(fold, CombinatorialFold):
+        if not fold.train_dates:
+            raise WalkForwardError(
+                f'Fold {fold.fold_index}: the combinatorial plan carries no training dates.'
+            )
+        return list(fold.train_dates), []
+    return train_dates_for_fold(fold, all_dates, horizon_days)
+
+
+def validation_blocks_for_any_fold(fold):
+    """The held-out ``(start, end)`` blocks of either fold shape, in date order."""
+    if isinstance(fold, CombinatorialFold):
+        return sorted(fold.validation_blocks)
+    return [(fold.valid_start, fold.valid_end)]
 
 
 def expanding_folds(first_date, last_date, n_folds: int = 6, *,

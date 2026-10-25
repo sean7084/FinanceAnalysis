@@ -172,6 +172,48 @@ def rule_model_version(config) -> str:
     )[:50]
 
 
+def pinned_predictors(model_type: str, model_version: str) -> tuple[str, dict, dict[str, str]]:
+    """Load a *named* READY artifact without activating it.
+
+    ``resolve_model_version`` answers "which model is serving", and by design that is the
+    active one. A shadow arm has the opposite requirement: it must run an artifact that is
+    deliberately **not** active, or the only way to measure a candidate would be to make it
+    the production model -- the one thing the activation gate forbids.
+
+    Returns ``(version label for the row, scorer kwargs, registry versions)``.
+    """
+    label = str(model_version or '').strip()
+    if not label:
+        raise SignalGenerationError('model_version is empty.', reason_code='bad_arguments')
+    if model_type == 'ENSEMBLE':
+        raise SignalGenerationError(
+            'pinning an ENSEMBLE version is not supported: pin its members instead '
+            '(train them, then request LIGHTGBM or LSTM with --model-version).',
+            reason_code='bad_arguments',
+        )
+    try:
+        if model_type == 'LIGHTGBM':
+            from . import train_lightgbm as trainer
+            predictor = trainer.load_predictor_for_version(label)
+            kwargs = {'lgb_predictor': predictor}
+        else:
+            from . import train_lstm as trainer
+            predictor = trainer.load_predictor_for_version(label)
+            kwargs = {'lstm_predictor': predictor}
+    except (ValueError, RuntimeError) as exc:
+        raise SignalGenerationError(
+            f'no READY {model_type} ModelVersion {label!r} could be loaded ({exc}); '
+            'train it or check the version key.',
+            reason_code='model_registry_missing',
+        ) from exc
+    if predictor is None:
+        raise SignalGenerationError(
+            f'no READY {model_type} ModelVersion {label!r} could be loaded; train it first.',
+            reason_code='model_registry_missing',
+        )
+    return label, kwargs, {REGISTRY_LABELS.get(model_type, model_type): label}
+
+
 def resolve_model_version(model_type: str, config=None) -> tuple[str, dict[str, str]]:
     """``(model_version for the row, every registry version resolved)``.
 
@@ -451,7 +493,7 @@ def _whole_pool_unscorable(snapshots, scored, model_type: str, day) -> str:
 
 def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 'RULE',
                              trade_date=None, max_positions=None, momentum_lookback=None,
-                             dry_run: bool = False) -> dict:
+                             dry_run: bool = False, model_version: str | None = None) -> dict:
     """Rank one session's pool, persist the plan, and return a summary dict.
 
     The one date's pipeline: resolve the date -> read the point-in-time cross-section ->
@@ -459,6 +501,11 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     incumbents) -> verify the book is whole -> persist ``ETFRotationSignal`` and its
     ``ETFRotationPosition`` rows. ``dry_run`` runs everything up to and including the weight
     check and writes nothing.
+
+    ``model_version`` pins one READY artifact instead of resolving the active one. That is how
+    a shadow arm measures a candidate without activating it (see :func:`pinned_predictors`);
+    the pinned key is recorded in ``metadata['model_versions']`` so the row names exactly what
+    scored it.
     """
     signal_type = str(signal_type or '').strip().upper()
     model_type = str(model_type or '').strip().upper()
@@ -477,12 +524,22 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     day = resolve_trade_date(trade_date, source=source)
     snapshots = load_snapshots(day, source=source)
     config = build_config(max_positions=max_positions, momentum_lookback=momentum_lookback)
-    model_version, model_versions = resolve_model_version(model_type, config)
+    pinned = {}
+    if model_version:
+        if model_type == 'RULE':
+            raise SignalGenerationError(
+                'model_version does not apply to RULE: the rule blend has no artifact.',
+                reason_code='bad_arguments',
+            )
+        model_version, pinned, model_versions = pinned_predictors(model_type, model_version)
+    else:
+        model_version, model_versions = resolve_model_version(model_type, config)
     current_weights = previous_book(signal_type, day)
 
     try:
         scored = engine.score_snapshots(
             snapshots, model_type=model_type, momentum_lookback=config.momentum_lookback,
+            **pinned,
         )
         blind_reason = _whole_pool_unscorable(snapshots, scored, model_type, day)
         if blind_reason:

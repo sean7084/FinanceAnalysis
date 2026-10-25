@@ -3,11 +3,15 @@
 CLI-only by design (Phase C): this command is how a sweep is *run*, not how one is
 presented, so it writes no serializer-facing table and needs no new endpoint.
 
-**Protocol.** Tuning window = data through **2023-12-31** (``--end`` defaults to it and a
-later value is refused unless ``--allow-holdout-overlap`` says you know what you are doing).
-The locked holdout 2024-01-01..2026-10-20 is where a candidate is finally judged, and the
-RULE grid winner was already selected there, so a sweep that read those dates would be
-selecting on the evidence it is supposed to be scored by. Fold construction, the purge, and
+**Protocol.** Tuning window = data through **2023-12-31** by default (``--end``). The window
+that used to be the locked holdout (2024-01-01..2026-10-20) was **released into the training
+pool on 2026-10-25**: it had already been read twice (the §7.7 weighting adjudication and the
+Phase D gate), so it could no longer serve as a clean test set and keeping it out of training
+bought nothing. ``--end`` may now reach it, and the command labels such a run instead of
+refusing it. What the release does not buy back is an out-of-sample claim: a trial scored on
+dates its own selection read is a tuning number, and the only honest out-of-sample evidence
+from here on is the sealed forward window (the live ledger, accruing from 2026-10-25). Fold
+construction, the purge, and
 the fold audit all come from ``apps.etf_rotation.walk_forward`` through
 ``train_lstm.train_walk_forward`` -- reimplemented here in none of its parts.
 
@@ -63,9 +67,15 @@ from apps.etf_rotation.models import ETFFeatureSnapshot, ETFRotationBacktest
 #: torch, where importing ``train_lstm`` for ``MODEL_TYPE_LABEL`` would fail.
 MODEL_TYPE_LABEL = 'ETF_LSTM'
 
-#: Last date the sweep may look at. The holdout starts the day after.
+#: Default last date a sweep looks at. Kept at the pre-release tuning end so an invocation
+#: without ``--end`` reproduces the 2026-10 sweep exactly; ``--end`` may now go further.
 TUNING_WINDOW_END = date(2023, 12, 31)
-LOCKED_HOLDOUT_START = date(2024, 1, 1)
+#: Start of the window that was the locked holdout and was released into the training pool on
+#: ``HOLDOUT_RELEASED_ON`` (``docs/plans/etf-rotation-next-phases-2026-10-24.md`` §8). Kept for
+#: labelling, not refusal: a run whose window reaches it produces tuning numbers, and the
+#: sealed forward window is the only out-of-sample evidence left.
+RELEASED_HOLDOUT_START = date(2024, 1, 1)
+HOLDOUT_RELEASED_ON = date(2026, 10, 25)
 
 #: Prefix that marks every row this command writes, as ``grid-rule-`` marks the RULE sweep.
 TUNE_NAME_PREFIX = 'tune-lstm-'
@@ -230,12 +240,9 @@ def resolve_window(options: dict[str, Any]) -> dict[str, str]:
         )
     if end < start:
         raise CommandError(f'--end {end} is before the panel start {start}.')
-    if end >= LOCKED_HOLDOUT_START and not options['allow_holdout_overlap']:
-        raise CommandError(
-            f'--end {end} reaches into the locked holdout that starts {LOCKED_HOLDOUT_START}. '
-            'Selecting on it is the contamination this protocol exists to avoid; pass '
-            '--allow-holdout-overlap only if the holdout has already been spent deliberately.'
-        )
+    # No refusal for the released window: it is training data now. The keys of this dict feed
+    # the trial fingerprint, so nothing is added here -- a post-release run is self-describing
+    # through ``metadata['sweep']['tuning_window']``, and a new key would re-run all 32 trials.
     return {'tuning_start': start.isoformat(), 'tuning_end': end.isoformat()}
 
 
@@ -262,12 +269,11 @@ class Command(BaseCommand):
                             help='Print every configuration, name and fingerprint; write nothing.')
         parser.add_argument('--dry-run', action='store_true',
                             help='Resolve the window, report the ledger state, train nothing, write nothing.')
-        parser.add_argument('--allow-holdout-overlap', action='store_true',
-                            help=f'Let --end reach past {LOCKED_HOLDOUT_START} (it is refused otherwise).')
 
     def handle(self, *args, **options):
         combos = sweep_combinations()
         knobs = protocol_knobs(options)
+        self._label_released_window(options)
         if options['limit'] and options['limit'] < len(combos):
             requested = options['limit']
             combos = combos[:requested]
@@ -283,6 +289,25 @@ class Command(BaseCommand):
             self._render_dry_run(combos, knobs, options)
             return
         self._run_sweep(combos, knobs, options)
+
+    def _label_released_window(self, options) -> None:
+        """Say out loud when a sweep reaches into the released holdout.
+
+        Printed on every path -- plan, dry-run and a real sweep -- because the one thing a
+        reader must not miss is that these are tuning numbers. A malformed ``--end`` is
+        ``resolve_window``'s refusal to raise, not this label's, so it is skipped here.
+        """
+        end_label = str(options.get('end') or TUNING_WINDOW_END.isoformat())
+        try:
+            reaches_release = date.fromisoformat(end_label) >= RELEASED_HOLDOUT_START
+        except ValueError:
+            return
+        if reaches_release:
+            self.stdout.write(self.style.WARNING(
+                f'the window reaches {RELEASED_HOLDOUT_START}, inside the holdout released into '
+                f'the training pool on {HOLDOUT_RELEASED_ON}: every number this sweep prints is a '
+                'tuning number, not out-of-sample evidence.'
+            ))
 
     # -- read-only branches ---------------------------------------------------
     def _render_plan(self, combos, knobs, options) -> None:
@@ -302,8 +327,7 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             f'tuning window: --start {options["start"] or "(earliest eligible snapshot)"} .. '
-            f'--end {options["end"] or TUNING_WINDOW_END.isoformat()}; the locked holdout from '
-            f'{LOCKED_HOLDOUT_START.isoformat()} is never read by a trial.'
+            f'--end {options["end"] or TUNING_WINDOW_END.isoformat()}'
         )
         self.stdout.write(
             'fold plan: built inside train_lstm.train_walk_forward over label-complete dates '
@@ -593,10 +617,11 @@ class Command(BaseCommand):
             '--- Phase D single-shot retrain (paste; omit sweep= so this row may carry pooled_holdout) ---')
         combo = winner['combo']
         self.stdout.write(
-            'The training window must stop at the locked holdout start: a model fitted through '
-            f'{LOCKED_HOLDOUT_START.isoformat()} cannot be scored on it. This is the '
-            'training-window/benchmark-window overlap that produced the +513.76% row that had to be '
-            'relabelled INSAMPLE-.'
+            f'Training through {RELEASED_HOLDOUT_START.isoformat()}+ is allowed now that the '
+            f'holdout was released ({HOLDOUT_RELEASED_ON.isoformat()}), but a model fitted through '
+            'those dates cannot be *scored* on them and called out of sample -- judge it on the '
+            'sealed forward window instead. This is the same training-window/benchmark-window '
+            'overlap that produced the +513.76% row that had to be relabelled INSAMPLE-.'
         )
         self.stdout.write(
             'DJANGO_READ_DOT_ENV_FILE=True python manage.py shell -c "'

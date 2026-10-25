@@ -223,6 +223,10 @@ class BacktestConfig:
     dedup_track_index: bool = True
     max_per_category: int = 2
 
+    # Bottom-share of the ML score distribution vetoed before selection. ``0`` disables it,
+    # reproducing every run before the knob existed. Set with an ML ``veto_predictor``.
+    ml_veto_quantile: float = 0.0
+
     # Yield credited to cash that the liquidity floor forced out of the defensive sleeve.
     # Default 0.0 keeps every run before this knob byte-for-byte reproducible.
     cash_yield_annual: float = 0.0
@@ -1247,6 +1251,14 @@ def _build_plan(ctx: _Context, session: date, execute_session: date) -> None:
     """Rank, select, liquidity-screen, and queue one plan for execution next session."""
     config = ctx.config
     snapshots = _snapshot_frame_for_ranking(ctx, session)
+    veto = ctx.predictors.get('veto')
+    if veto is not None and float(config.ml_veto_quantile) > 0 and not snapshots.empty:
+        # One call per session, on the same cross-section the selector sees. The predictor
+        # returns ``ts_code``/``score``; a model that cannot score a date leaves the column
+        # absent for it, and the plan builder then vetoes nobody on that date.
+        veto_frame = veto(snapshots)
+        mapping = dict(zip(veto_frame['ts_code'], veto_frame['score']))
+        snapshots = snapshots.assign(__ml_score=snapshots['ts_code'].map(mapping))
     scored = _validated_scored_frame(
         ctx.module.score_snapshots(
             snapshots,
@@ -1272,6 +1284,7 @@ def _build_plan(ctx: _Context, session: date, execute_session: date) -> None:
         min_positions_for_risk_on=min(int(config.min_positions_for_risk_on), int(config.max_positions)),
         dedup_track_index=bool(config.dedup_track_index),
         max_per_category=int(config.max_per_category),
+        ml_veto_quantile=float(config.ml_veto_quantile),
     )
     governor = kelly_exposure_scale(config, _closed_returns_before(ctx.state, session))
     if governor.get('enabled'):
@@ -2597,6 +2610,7 @@ def run_rotation_backtest(
     benchmark_code: str | None = None,
     lgb_predictor: Any = None,
     lstm_predictor: Any = None,
+    veto_predictor: Any = None,
     persist_to: Any = None,
     name: str | None = None,
     data_source: Any = None,
@@ -2682,7 +2696,7 @@ def run_rotation_backtest(
             module=module,
             book=book,
             source=source,
-            predictors={'lgb': lgb_predictor, 'lstm': lstm_predictor},
+            predictors={'lgb': lgb_predictor, 'lstm': lstm_predictor, 'veto': veto_predictor},
             calendar=calendar,
             signal_sessions=signal_sessions(run_sessions, config.rebalance_frequency),
         )
