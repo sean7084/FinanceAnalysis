@@ -83,6 +83,19 @@ def signal_type_of(position: ETFRotationPosition) -> str:
     return str(position.signal.signal_type) if position.signal_id else ''
 
 
+def arm_of(position: ETFRotationPosition) -> str:
+    """Which candidate book a leg belongs to; ``''`` is the production book.
+
+    Same two-step read as :func:`signal_type_of` (metadata first, then the signal row) so a
+    position written before the column existed still lands in the right book.
+    """
+    metadata = position.metadata if isinstance(position.metadata, dict) else {}
+    value = metadata.get('arm')
+    if value:
+        return str(value)
+    return str(position.signal.arm) if position.signal_id else ''
+
+
 def _selected_codes(signal: ETFRotationSignal) -> set[str]:
     return {
         str(item.get('ts_code')) for item in (signal.selected_etfs or [])
@@ -187,14 +200,17 @@ def mark_positions(trade_date=None) -> dict[str, Any]:
         .filter(status=ETFRotationPosition.Status.OPEN)
     )
     closes = _latest_closes({position.etf_id for position in open_positions}, mark_date)
-    types = {kind for kind in (signal_type_of(position) for position in open_positions) if kind}
+    groups = {
+        (signal_type_of(position), arm_of(position)) for position in open_positions
+    }
     latest_signals = {
         # A backdated mark must not learn from a signal published after it. The beat runs
         # on the newest session, where this bound is a no-op, but ``--date`` replays a past
         # session and there the future signal is exactly the leak the price bound avoids.
-        kind: ETFRotationSignal.objects.filter(signal_type=kind, date__lte=mark_date)
-        .order_by('-date', '-created_at').first()
-        for kind in sorted(types)
+        key: ETFRotationSignal.objects.filter(
+            signal_type=key[0], arm=key[1], date__lte=mark_date,
+        ).order_by('-date', '-created_at').first()
+        for key in sorted(groups) if key[0]
     }
 
     closed: list[dict[str, Any]] = []
@@ -207,8 +223,7 @@ def mark_positions(trade_date=None) -> dict[str, Any]:
             skipped.append(position.etf.ts_code)
             continue
         price_date, close = bar
-        signal_type = signal_type_of(position)
-        latest = latest_signals.get(signal_type)
+        latest = latest_signals.get((signal_type_of(position), arm_of(position)))
         entry_signal_date = position.signal.date if position.signal_id else None
         displaced = (
             latest is not None
@@ -233,8 +248,11 @@ def mark_positions(trade_date=None) -> dict[str, Any]:
         'closed': closed,
         'skipped_no_price': skipped,
         'latest_signals': {
-            kind: (signal.date.isoformat() if signal is not None else None)
-            for kind, signal in latest_signals.items()
+            # Readable key: ``MONTHLY`` for the production book, ``SHADOW:lgb-veto`` for an arm.
+            (f'{kind}:{arm}' if arm else kind): (
+                signal.date.isoformat() if signal is not None else None
+            )
+            for (kind, arm), signal in latest_signals.items()
         },
         'realised_pnl_total': float(realised) if realised is not None else 0.0,
     }

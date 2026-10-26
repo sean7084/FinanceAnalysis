@@ -62,6 +62,11 @@ class Command(BaseCommand):
             help='Rebalance cadence the row is stored under (default MONTHLY).',
         )
         parser.add_argument(
+            '--arm', default='',
+            help='Book discriminator. Empty is the production book; two arms may publish on the '
+                 'same date and cadence because the uniqueness key includes it.',
+        )
+        parser.add_argument(
             '--model-type', default=ETFRotationSignal.ModelType.RULE, choices=list(MODEL_TYPES),
             help='Scorer: the rule blend, a trained LIGHTGBM/LSTM, or their ensemble. An ML type '
                  'with no active ModelVersion fails instead of quietly falling back to RULE.',
@@ -95,6 +100,7 @@ class Command(BaseCommand):
                 momentum_lookback=options['momentum_lookback'],
                 dry_run=options['dry_run'],
                 model_version=options['model_version'],
+                arm=options['arm'],
             )
         except signals.SignalGenerationError as error:
             self._record(options, ETFRotationSignalRun.Outcome.REFUSED, started, error=error)

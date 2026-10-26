@@ -105,9 +105,15 @@ PIT_SNAPSHOT_FEATURE_COLUMNS = (
     'rank_pct_20d', 'rank_pct_60d',
     'rsi_14', 'ma5_ratio', 'ma20_ratio', 'ma60_ratio', 'bollinger_pos',
     'drawdown_from_high_60d', 'avg_amount_20d', 'volume_ratio_5d_20d',
+    'share_growth_5d', 'share_growth_20d', 'flow_x_mom', 'has_share_flow',
 )
 #: Mirror of the label block, excluded from every ranker input.
-LABEL_COLUMNS = ('fwd_return', 'label_rank_pct', 'label_top_bucket', 'label_horizon_days')
+LABEL_COLUMNS = (
+    'fwd_return', 'label_rank_pct', 'label_top_bucket', 'label_horizon_days',
+    # Downside labels are look-only too: a scoring frame that carried them would let a
+    # run see its own outcome even though nothing fits here.
+    'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
+)
 
 
 class RotationEngineUnavailable(RuntimeError):
@@ -222,6 +228,14 @@ class BacktestConfig:
     min_positions_for_risk_on: int = 3
     dedup_track_index: bool = True
     max_per_category: int = 2
+
+    # Macro regime gate. ``macro_gate_pmi = 0`` disables it, so every run before the knob is
+    # bit-identical. When set, risk-on exposure is multiplied by ``macro_gate_scale`` while the
+    # latest *published* manufacturing PMI sits below the threshold. Macroeconomics enters the
+    # portfolio here and nowhere else: a date-level series cannot rank funds, so it must not
+    # become a model feature (a test enforces that).
+    macro_gate_pmi: float = 0.0
+    macro_gate_scale: float = 0.5
 
     # Bottom-share of the ML score distribution vetoed before selection. ``0`` disables it,
     # reproducing every run before the knob existed. Set with an ML ``veto_predictor``.
@@ -843,6 +857,7 @@ class EngineState:
     uninvested_defensive_notional_yuan: float = 0.0
     total_cash_yield_yuan: float = 0.0
     kelly_history: list[dict[str, Any]] = field(default_factory=list)
+    macro_history: list[dict[str, Any]] = field(default_factory=list)
     stale_marks: int = 0
     skipped_fills: int = 0
     sub_minimum_deltas: int = 0
@@ -1204,6 +1219,34 @@ def _closed_returns_before(state, session: date) -> list[float]:
     return returns
 
 
+#: A monthly macro observation dated at the start of a month is published in the following
+#: month, so it is only usable ``35`` days later. Conservative on purpose: using it earlier is
+#: a look-ahead that would flatter every gated run.
+MACRO_PUBLICATION_LAG_DAYS = 35
+
+
+def macro_risk_gate(config: BacktestConfig, session: date) -> dict[str, Any]:
+    """Risk-on multiplier from the latest published manufacturing PMI.
+
+    Returns ``{'enabled': False, 'scale': 1.0}`` when the gate is off, so a configuration
+    without it behaves exactly as before the knob existed.
+    """
+    from apps.macro.models import MacroSnapshot
+
+    if not config.macro_gate_pmi:
+        return {'enabled': False, 'scale': 1.0}
+    as_of = session - timedelta(days=MACRO_PUBLICATION_LAG_DAYS)
+    row = MacroSnapshot.objects.filter(date__lte=as_of).order_by('-date').first()
+    if row is None or row.pmi_manufacturing is None:
+        return {'enabled': True, 'scale': 1.0, 'reason': 'no published PMI'}
+    level = float(row.pmi_manufacturing)
+    scale = float(config.macro_gate_scale) if level < float(config.macro_gate_pmi) else 1.0
+    return {
+        'enabled': True, 'scale': scale, 'pmi': level,
+        'threshold': float(config.macro_gate_pmi), 'as_of': row.date.isoformat(),
+    }
+
+
 def kelly_exposure_scale(config: BacktestConfig, closed_returns: list[float]) -> dict[str, Any]:
     """Fractional-Kelly cap on risk-on exposure from realised trades only.
 
@@ -1289,12 +1332,15 @@ def _build_plan(ctx: _Context, session: date, execute_session: date) -> None:
     governor = kelly_exposure_scale(config, _closed_returns_before(ctx.state, session))
     if governor.get('enabled'):
         ctx.state.kelly_history.append({'signal_date': session.isoformat(), **governor})
+    gate = macro_risk_gate(config, session)
+    if gate.get('enabled'):
+        ctx.state.macro_history.append({'signal_date': session.isoformat(), **gate})
     plan = ctx.module.build_rotation_plan(
         scored,
         snapshots,
         rotation_config,
         current_weights=_current_weights(ctx),
-        exposure_scale=float(governor.get('scale', 1.0)),
+        exposure_scale=float(governor.get('scale', 1.0)) * float(gate.get('scale', 1.0)),
     )
     weights, diagnostics = _plan_to_target_weights(ctx.module, plan, config)
     weights, rejected = _apply_liquidity_floor(ctx, weights, session)
@@ -2347,6 +2393,7 @@ def _runtime_payload(ctx: _Context, cursor: int) -> dict[str, Any]:
         'uninvested_defensive_notional_yuan': float(state.uninvested_defensive_notional_yuan),
         'total_cash_yield_yuan': float(state.total_cash_yield_yuan),
         'kelly_history': list(state.kelly_history),
+        'macro_history': list(state.macro_history),
         'skipped_fills': int(state.skipped_fills),
         'stale_marks': int(state.stale_marks),
         'sub_minimum_deltas': int(state.sub_minimum_deltas),

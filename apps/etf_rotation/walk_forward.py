@@ -5,8 +5,9 @@ window and then reports ``np.mean(y_pred == y_train)`` measured on the matrix it
 fitted, so it cannot answer the only question that matters: would this ranking have
 worked on data the fit never saw. Nothing resembling a rolling retrain exists anywhere
 in the repo (``walk_forward`` -> 0 hits, no ``TimeSeriesSplit``, no purge, no holdout),
-so this module supplies the framework: validation blocks that advance through time, a
-training window that only ever grows, and a purge that is enforced rather than assumed.
+so this module supplies the framework: validation blocks that advance through time, two
+training-window shapes (expanding, which only ever grows, and rolling, which slides with a
+fixed length), and a purge that is enforced rather than assumed.
 
 The leak this exists to prevent
 ------------------------------
@@ -48,6 +49,7 @@ __all__ = [
     'combinatorial_purged_folds',
     'expanding_folds',
     'purge_train_dates',
+    'rolling_folds',
     'train_dates_for_any_fold',
     'train_dates_for_fold',
     'validation_blocks_for_any_fold',
@@ -332,6 +334,70 @@ def expanding_folds(first_date, last_date, n_folds: int = 6, *,
     return folds
 
 
+def rolling_folds(first_date, last_date, n_folds: int = 6, *, train_days: int = 750,
+                  horizon_days: int = 20, min_train_days: int = None,
+                  trade_dates=None) -> list:
+    """Expanding folds with a *fixed-length* training window that slides forward.
+
+    The validation blocks are exactly the ones :func:`expanding_folds` would build, so a
+    rolling reading and an expanding reading of the same panel differ in one thing only: how
+    much history the model is allowed to see. Expanding assumes old data stays useful;
+    rolling assumes it stops being so, which is the question concept drift poses.
+
+    ``train_days`` is the window length in sessions, ``min_train_days`` where validation
+    starts (defaults to ``train_days``, so the first fold has a full window). No embargo
+    parameter: every training date here is *before* its validation block, so the post-block
+    rule that :func:`combinatorial_purged_folds` needs cannot apply.
+
+    Purge counts are recomputed per fold rather than copied from the expanding plan, because
+    the window start moved and the purge is relative to the validation block.
+    """
+    train_days = int(train_days)
+    horizon_days = int(horizon_days)
+    if train_days < 2:
+        raise WalkForwardError(f'train_days must be >= 2, got {train_days}.')
+    if horizon_days < 1:
+        raise WalkForwardError(f'horizon_days must be >= 1, got {horizon_days}.')
+    layout_min = train_days if min_train_days is None else int(min_train_days)
+    if layout_min < train_days:
+        raise WalkForwardError(
+            f'min_train_days ({layout_min}) cannot be shorter than the rolling window '
+            f'({train_days}); the first fold would validate before it could train.'
+        )
+
+    base = expanding_folds(
+        first_date, last_date, n_folds, horizon_days=horizon_days,
+        min_train_days=layout_min, trade_dates=trade_dates,
+    )
+    if not base:
+        return []
+    panel = _panel_for(first_date, last_date, trade_dates)
+    positions = {value: index for index, value in enumerate(panel)}
+
+    folds = []
+    for fold in base:
+        end_index = positions[fold.train_end]
+        start_index = max(0, end_index - train_days + 1)
+        candidate = Fold(
+            fold_index=fold.fold_index,
+            train_start=panel[start_index],
+            train_end=fold.train_end,
+            valid_start=fold.valid_start,
+            valid_end=fold.valid_end,
+            purged_train_dates=0,
+        )
+        _kept, dropped = train_dates_for_fold(candidate, panel, horizon_days)
+        folds.append(Fold(
+            fold_index=candidate.fold_index,
+            train_start=candidate.train_start,
+            train_end=candidate.train_end,
+            valid_start=candidate.valid_start,
+            valid_end=candidate.valid_end,
+            purged_train_dates=len(dropped),
+        ))
+    return folds
+
+
 def audit_folds(folds, all_dates, horizon_days: int) -> list:
     """Re-verify a plan against the panel and return a per-fold audit trail.
 
@@ -450,12 +516,17 @@ def _trim_train_dates(panel, positions, validation_blocks, horizon_days, embargo
 
 def combinatorial_purged_folds(first_date, last_date, n_blocks: int = 6,
                                test_blocks: int = 2, *, horizon_days: int = 20,
-                               embargo_days: int = 0, trade_dates=None) -> list:
+                               embargo_days: int = 0, trade_dates=None,
+                               panel_tail_days: int = None) -> list:
     """Build combinatorial purged CV splits over a panel.
 
     The usable panel is everything except the trailing ``horizon_days`` dates (a
     validation date needs a *realised* label, the same reserve :func:`expanding_folds`
-    keeps). It is cut into ``n_blocks`` contiguous blocks and every combination of
+    keeps). ``panel_tail_days`` overrides that tail without changing the purge: block
+    boundaries then depend only on the label window, so two arms measured with different
+    purges still land on the *same* blocks. Without it, changing the purge would silently
+    re-partition the panel and make the readings incomparable. It is cut into ``n_blocks``
+    contiguous blocks and every combination of
     ``test_blocks`` blocks becomes one fold's validation set; the rest of the panel, after
     purging label-window overlaps and embargoing the sessions after each block, is its
     training set.
@@ -481,10 +552,14 @@ def combinatorial_purged_folds(first_date, last_date, n_blocks: int = 6,
     if embargo_days < 0:
         raise WalkForwardError(f'embargo_days must be >= 0, got {embargo_days}.')
 
+    tail_days = horizon_days if panel_tail_days is None else int(panel_tail_days)
+    if tail_days < 0:
+        raise WalkForwardError(f'panel_tail_days must be >= 0, got {tail_days}.')
+
     panel = _panel_for(first_date, last_date, trade_dates)
     if not panel:
         return []
-    usable = len(panel) - horizon_days
+    usable = len(panel) - tail_days
     if usable < n_blocks:
         raise WalkForwardError(
             f'Panel has {len(panel)} dates; {n_blocks} blocks plus a {horizon_days}-date '
@@ -520,7 +595,8 @@ def combinatorial_purged_folds(first_date, last_date, n_blocks: int = 6,
     return folds
 
 
-def audit_combinatorial_folds(folds, all_dates, horizon_days: int, embargo_days: int = 0) -> list:
+def audit_combinatorial_folds(folds, all_dates, horizon_days: int, embargo_days: int = 0,
+                              panel_tail_days: int = None) -> list:
     """Re-verify a combinatorial plan against the panel and return a per-fold trail.
 
     Recomputes the training set from the declared blocks rather than trusting the stored
@@ -533,7 +609,8 @@ def audit_combinatorial_folds(folds, all_dates, horizon_days: int, embargo_days:
     positions = {value: index for index, value in enumerate(panel)}
     horizon_days = int(horizon_days)
     embargo_days = int(embargo_days)
-    usable = len(panel) - horizon_days
+    tail_days = horizon_days if panel_tail_days is None else int(panel_tail_days)
+    usable = len(panel) - tail_days
     trail = []
     for fold in folds:
         for block_start, block_end in fold.validation_blocks:
@@ -545,7 +622,7 @@ def audit_combinatorial_folds(folds, all_dates, horizon_days: int, embargo_days:
             if positions[block_end] >= usable:
                 raise WalkForwardError(
                     f'Fold {fold.fold_index}: validation block ends {block_end}, inside the '
-                    f'{horizon_days}-date label tail; its labels are not realised.'
+                    f'{tail_days}-date label tail; its labels are not realised.'
                 )
         kept, purged, embargoed = _trim_train_dates(
             panel[:usable], positions, fold.validation_blocks, horizon_days, embargo_days,

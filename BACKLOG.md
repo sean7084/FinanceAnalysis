@@ -192,15 +192,108 @@ Items here have no commitment attached. When something is done, move it to
 
 ---
 
+## Open — feature expansion
+
+- **Index valuation is blocked by data coverage, not by code.** `index_dailybasic` covers six
+  broad indices (12.1% of the pool), so the feature family is switched off by design
+  (report section 14). Re-open it only with a source that covers thematic indices (CSIndex
+  downloads or Wind), and re-check the 70% coverage floor first.
+- **P30 (constituent breadth) is terminated on coverage, like P28.** The data layer is built
+  (`IndexWeightSnapshot`, `sync_index_weight`, `attach_index_breadth`, migration 0020's four
+  columns) but TuShare's `index_weight` has no 2016-2017 monthly snapshots for most thematic
+  indices: only **53.2% of eligible rows** carry breadth, against a 70% floor. On the covered
+  rows `idx_share_above_ma60` is 0.83-correlated with `ma60_ratio`, and the one orthogonal
+  feature (`idx_mom_consistency`) has ICIR 0.13. Reopen only with a source that has monthly
+  weights back to 2016, or accept a post-2020 measurement window (which invalidates every
+  reading since P18). The sync itself resumes with `--only-missing`.
+- **P31 (share flows) is done and measured**: 95.8% eligible coverage, features enabled, and
+  no increment in either arm (report section 19).
+- **P32 (macro regime) is done**: the gate uses a 35-day publication lag instead of a new
+  release-date column; yields remain NULL because `yc_cb` is not permitted on this token.
+
+## Open — measurement infrastructure
+
+- **The instrument is noisier than the effect (report section 16.1).** RULE has no learned
+  parameters, yet its median block Sharpe reads 0.0791 / 0.4460 / -0.5284 across three panel
+  starts -- roughly one Sharpe of swing from block placement alone. Six blocks of ~20
+  rebalances cannot resolve a 0.1-0.5 effect. Until the block layout changes (more blocks, or
+  coarser blocks with 60+ rebalances, and a fixed 4-5 start set declared in the
+  pre-registration), no arm's single-point win is adjudicable and P35 stays no-go.
+- **P25 (label horizon) is measured, and the answer is "20 days stays".** The table shape
+  still holds one label horizon per row, so the sweep recomputes the label from `ETFDaily`
+  instead of re-backfilling: ICIR falls 0.59 -> 0.40 from 20 to 60 sessions (report section
+  21). A training-label change is not justified, and the sweep is reusable via
+  `--horizons 20,40,60`.
+- **P22 is built; P38 stays deferred.** `ETFRotationSignal.arm` (migration 0018) plus the
+  per-arm ledger/report/task plumbing means two candidate books can accumulate in parallel
+  without displacing each other. Nothing is observing forward because no arm passed the
+  tightened gate (report section 17.2): the machinery exists for the next qualifying arm.
+- **P39 (single-shot activation runbook) has nothing to activate yet.** Writing step numbers
+  for a model that failed replication would be ceremony; the runbook belongs with the first
+  arm that clears both legs.
+
+- **Purge and block layout are now coupled correctly, but the §11 readings are superseded.**
+  Report §12 replaces them. Any future rematch must carry `--cpcv-retrain` plus the default
+  ML purge; a run at `--cpcv-purge` below the label horizon is refused by the command.
+- **The sensitivity harness and the ledger are built.** `measure_etf_rotation_sensitivity`
+  refuses any cell not declared in the pre-registration file and records its hash; the ledger
+  counts how often a context has been read. The open item is no longer tooling but block
+  layout (first bullet).
+- **Rolling vs expanding is measured** (report sections 15-16): the same RULE arm swings
+  ~1 Sharpe between plans, so the fold shape is a measurement variable, not a strategy knob.
+  An LSTM arm on rolling folds is still unmeasured and would need the per-fold retrain path
+  extended to that model.
+
 ## Open — ML rematch
 
-- **The "ML as a filter" arm needs a sensitivity test before it means anything.** With a
-  fixed 20% veto quantile and the same six blocks, LightGBM vetoes and the median Sharpe
-  rises to 0.2906 (vs RULE 0.2227) while LSTM vetoes and it falls to 0.1515. Two models,
-  opposite answers: the hypothesis is not replicated. The next round should hold the
-  quantile fixed and vary only the veto model and the panel start (release-inclusive), then
-  record all readings in one table — not tune the quantile on this panel. Report:
-  `docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §11.5-§11.6.
+- **The "ML as a filter" arm has had its sensitivity test, and it does not replicate.** This
+  entry used to quote 0.2906 (LightGBM veto) against 0.2227 (RULE) from report §11.5-§11.6 and
+  ask for a sensitivity round; both are now done and the numbers are superseded. Those readings
+  came from `purge=1`, i.e. a fold model trained on bars inside its own held-out block (§12).
+  At the label-window purge (20) the same six blocks read 0.5400 for the LightGBM veto against
+  RULE's 0.1881, and the pre-registered three-start grid
+  (`docs/reports/sensitivity/sensitivity-veto-2026-10-25-604e01283f7c.md`, ledger ids
+  `22c886be1a53`/`6a3be427e12c`/`c850d4c52216` and the 2017/2018 rows listed in §17.1) gives
+  `lgb-veto` **2/3** and `lstm-veto` **1/3**, the LightGBM arm failing at the 2018 start
+  (−0.4900 against RULE 0.2306). Under the gate tightened in plan §9 — replication across ≥2
+  veto models or ≥2 panel starts — the arm does not qualify for forward observation, so P38
+  stays closed. What is still open is not the veto hypothesis but the instrument: see "the
+  instrument is noisier than the effect" above.
+
+## Open — research programme: what P18-P37 did not finish
+
+Every item below is a measurement or verification gap rather than a code defect, and each has
+an issue. None of it changes a production default, activates a model, or blocks the machinery
+that is already merged; together they are the reason no arm is admissible under the gate in
+plan §9 yet.
+
+- **#65 (P27/P29)** — mapping coverage was computed on the 1,715-name rankable pool instead of
+  the pre-registered ADV-eligible pool (~490 names) and the set of names that ever entered a
+  book, and the coverage-bias measurement — the one that decides whether a data-rich subset is
+  masquerading as alpha — was never run.
+- **#66 (P28)** — `IndexValuationDaily` has no `validate_data_quality` coverage, no filed
+  quality report and no public spot check of the rows that did come back; the interface
+  permission probe is not a reusable command.
+- **#67 (P31)** — the four share-flow columns are in `FEATURE_COLUMNS` without the
+  `fund_adj`/`fund_div` cross-check that separates a split or dividend from a real
+  creation/redemption flow, without a regime-segmented reading, and without a backfill quality
+  report. They were enabled on a null reading.
+- **#68 (P32)** — the macro gate lags PMI by a constant 35 days instead of a release calendar;
+  none of the five declared macro features exists; there is no per-regime attribution of RULE
+  against the ML arms; the `yc_cb`/`shibor`/`monetary_policy` probe was never run, so
+  `MacroSnapshot` yields are still all NULL.
+- **#69 (P34/P35)** — seed averaging (0.5400 -> 0.3372 at seeds=5) has no variance table in the
+  report and artifacts carry no `n_seeds`; the P35 no-go was argued from replication across
+  panel starts rather than from the pre-registered per-fold IC >= 0.06 / ICIR >= 0.5.
+- **#70 (P19/P33)** — the 2016-2026 rolling run recorded a median Sharpe but no per-fold IC and
+  no ledger row; the rolling-vs-expanding verdict used the three Sharpe legs instead of the
+  pre-registered ICIR and positive-IC-fold share; LSTM on rolling folds is unmeasured.
+- **#71 (P24/P26)** — only `rank_pct` and `dd_rank` labels exist (`top_bucket` and
+  `downside_rank` do not); the per-label IC evidence is one ledger row rather than a report
+  table; the ablation matrix has no feature-set axis and no IC/ICIR columns.
+- **#72 (P23)** — only `--cpcv-retrain` writes a ledger row, so the walk-forward and
+  pinned-artifact paths cannot produce gate-admissible evidence; the 29 rows already in the
+  ledger carry no pre-registration hash because nothing passed one.
 
 ## Open — correctness
 

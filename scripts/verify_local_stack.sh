@@ -25,7 +25,10 @@ fi
 # A committed-but-unapplied migration is a startup failure, not a footnote: on 2026-10-25
 # four migrations were merged and never applied, every test passed (the test database is
 # built from them), and the SPA showed a generic "ETF data failed to load" banner.
-if ! bash "$PROJECT_ROOT/scripts/_check_migrations.sh"; then
+# ``_native_env.sh`` sets these in this shell; the migration check is a child process,
+# so it only sees them when they are passed explicitly.
+if ! PYTHON_BIN="$PYTHON_BIN" PROJECT_ROOT="$PROJECT_ROOT" \
+    bash "$PROJECT_ROOT/scripts/_check_migrations.sh"; then
   status=1
 fi
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/_stack_probe.py" settings

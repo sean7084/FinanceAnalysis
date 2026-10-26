@@ -337,6 +337,11 @@ ETF_SIM_CAPITAL_BASE = env.int('ETF_SIM_CAPITAL_BASE', default=1_000_000)
 # shadow can never quietly become a RULE book. Do not set this until a candidate has passed
 # the Phase 10 gate -- activating one is what makes it runnable.
 ETF_ML_SHADOW_MODEL = env('ETF_ML_SHADOW_MODEL', default='')
+# Several arms of the same shadow book, as a JSON list of
+# ``{"arm", "model_type", "model_version"}``. Each arm publishes under its own
+# ``ETFRotationSignal.arm`` and is fail-closed on its own: a missing artifact refuses that arm
+# and leaves the others (and production) alone. Empty keeps the single-arm path above.
+ETF_ML_SHADOW_ARMS = env.json('ETF_ML_SHADOW_ARMS', default=[])
 # Forward-track monitor (plan Phase 11). The live book is the only honest out-of-sample
 # evidence left after the holdout was spent, so drift is measured against a *declared*
 # reference row rather than an inferred expectation. 0 means no reference: the report is
@@ -355,6 +360,27 @@ ETF_BENCHMARK_CODE = env('ETF_BENCHMARK_CODE', default='H00905.CSI')
 ETF_SECONDARY_BENCHMARK_CODES = env.list('ETF_SECONDARY_BENCHMARK_CODES', default=['000905.SH'])
 # Forward-return window the label builder and the models both predict.
 ETF_LABEL_HORIZON_DAYS = env.int('ETF_LABEL_HORIZON_DAYS', default=20)
+
+# LightGBM threads. ``DEFAULT_LGB_PARAMS`` pins 4, which leaves most of a 16-core host idle
+# during a sensitivity grid or a seed-averaged retrain. The engine is CPU-only unless the
+# installed wheel carries GPU support, so this is the main lever on wall-clock time.
+ETF_LGB_NUM_THREADS = env.int(
+    'ETF_LGB_NUM_THREADS',
+    default=max(1, min(16, (os.cpu_count() or 4) - 2)),
+)
+# LSTM capacity and optimiser knobs. These used to be hard-coded in ``train_lstm``'s
+# signature, so a run could only change them by editing code or passing model params -- and
+# the sweep command was the only caller that could. The defaults reproduce the previous
+# behaviour bit for bit (hidden 64 / 2 layers / dropout 0.2 / 20 sessions / 50 epochs /
+# batch 256 / lr 1e-3 / patience 5).
+ETF_LSTM_SEQUENCE_LENGTH = env.int('ETF_LSTM_SEQUENCE_LENGTH', default=20)
+ETF_LSTM_HIDDEN_SIZE = env.int('ETF_LSTM_HIDDEN_SIZE', default=64)
+ETF_LSTM_NUM_LAYERS = env.int('ETF_LSTM_NUM_LAYERS', default=2)
+ETF_LSTM_DROPOUT = env.float('ETF_LSTM_DROPOUT', default=0.2)
+ETF_LSTM_EPOCHS = env.int('ETF_LSTM_EPOCHS', default=50)
+ETF_LSTM_BATCH_SIZE = env.int('ETF_LSTM_BATCH_SIZE', default=256)
+ETF_LSTM_LEARNING_RATE = env.float('ETF_LSTM_LEARNING_RATE', default=0.001)
+ETF_LSTM_PATIENCE = env.int('ETF_LSTM_PATIENCE', default=5)
 # Per-side transaction costs charged to the backtest's simulated fills.
 ETF_COMMISSION_RATE = env.float('ETF_COMMISSION_RATE', default=0.0003)
 # YUAN commission floor per order; it dominates the rate term on small legs.
