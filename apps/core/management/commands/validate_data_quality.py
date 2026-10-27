@@ -58,6 +58,8 @@ from apps.markets.models import (
     PointInTimeBenchmarkDaily,
 )
 from apps.sentiment.models import SentimentScore
+from apps.etf_rotation import valuation_qc
+from apps.etf_rotation.models import ETFIndexMapping, IndexValuationDaily
 
 
 DEFAULT_TECHNICAL_INDICATORS = (
@@ -124,6 +126,7 @@ REPORT_DESCRIPTIONS = {
     'benchmark_index_daily_gaps.csv': 'Missing official benchmark daily rows on PIT-required trading dates.',
     'pit_benchmark_daily_gaps.csv': 'Missing PIT benchmark daily rows on PIT-required trading dates.',
     'macro_snapshot_gaps.csv': 'Missing or NULL macro snapshot and market-context rows relative to required trade-date context rows.',
+    'etf_index_valuation_quality.csv': 'IndexValuationDaily quality rules (#66): PE/PB null rate, per-index date gaps, index coverage against the mapped universe, and staleness.',
     'factor_score_gaps.csv': 'Missing FactorScore rows relative to existing OHLCV-backed asset dates.',
     'sentiment_score_gaps.csv': 'Missing SentimentScore rows relative to existing OHLCV-backed asset dates.',
     'ohlcv_continuity_gaps.csv': 'Missing OHLCV on official exchange open days after listing and before delisting, excluding suspend_d-covered dates.',
@@ -313,6 +316,11 @@ class ReportWriter:
                 'expected_trade_dates_count', 'gap_start', 'gap_end', 'gap_missing_count', 'details',
             ],
             'macro_snapshot_gaps': dependency_gap_fieldnames,
+            'etf_index_valuation_quality': [
+                'metric_family', 'metric_name', 'rule_name', 'report_scope',
+                'issue_type', 'severity', 'index_code', 'field', 'date', 'value',
+                'expected', 'details',
+            ],
             'factor_score_gaps': dependency_gap_fieldnames,
             'sentiment_score_gaps': dependency_gap_fieldnames,
             'ohlcv_continuity_gaps': [
@@ -593,6 +601,15 @@ class Command(BaseCommand):
                 table_counters,
                 field_counters,
             )
+            self._validate_etf_index_valuation(
+                trading_dates,
+                start_date,
+                end_date,
+                writer,
+                counters,
+                table_counters,
+                field_counters,
+            )
 
             for asset in assets:
                 actual_rows = list(
@@ -854,6 +871,50 @@ class Command(BaseCommand):
                     issue_type='overlapping_market_context', severity='critical', table='market_context',
                     field='', trading_date=trading_date, details=f'{len(matching_contexts)} active ranges cover trading date.'
                 )
+
+    def _validate_etf_index_valuation(self, trading_dates, start_date, end_date, writer, counters, table_counters, field_counters):
+        """#66: exactly four rules, plus the spot-check rows that justify the verdict."""
+        rows = list(
+            IndexValuationDaily.objects
+            .filter(date__gte=start_date, date__lte=end_date)
+            .order_by('index_code', 'date')
+            .values('index_code', 'date', 'pe_ttm', 'pb', 'turnover_rate')
+        )
+        mapped = set(ETFIndexMapping.objects.values_list('index_code', flat=True))
+        expected = [day for day in trading_dates if start_date <= day <= end_date]
+        report = valuation_qc.quality_report(
+            rows, mapped_indices=mapped,
+            expected_dates_by_index={code: expected for code in mapped},
+            as_of=end_date,
+        )
+        for issue in report['issues']:
+            issue_type = issue['issue_type']
+            severity = issue['severity']
+            field = issue.get('field') or ''
+            self._increment(counters, issue_type, severity, 1)
+            table_counters[('etf_index_valuation', severity, issue_type)] += 1
+            field_counters[('etf_index_valuation', field, issue_type, severity)] += 1
+            writer.write_detail('etf_index_valuation_quality', {
+                **self._metric_columns(
+                    'etf_index_valuation', field or 'index_code', issue_type, 'index',
+                ),
+                'issue_type': issue_type,
+                'severity': severity,
+                'index_code': issue.get('index_code', ''),
+                'field': field,
+                'date': report['staleness']['latest'],
+                'details': issue['details'],
+            })
+        coverage = report['coverage']
+        self.stdout.write(
+            f"  ETF valuation: {report['total']} row(s), index coverage "
+            f"{coverage['covered']}/{coverage['mapped']}, {len(report['issues'])} issue(s)"
+        )
+        for row in report['spot_check']:
+            self.stdout.write(
+                f"    spot {row['index_code']} {row['date']} pe={row['pe_ttm']} "
+                f"pb={row['pb']} plausible={'yes' if row['plausible'] else 'no'}"
+            )
 
     def _validate_index_and_benchmark_history(self, trading_dates, writer, counters, table_counters, field_counters):
         required_trade_dates_by_code = self._required_index_trade_dates_by_code(trading_dates)

@@ -1,5 +1,23 @@
 # Changelog
 
+### version 0.1.44
+
+#### Added:
+
+- **IndexValuationDaily quality rules (#66).** `apps/etf_rotation/valuation_qc.py` runs exactly
+  four checks -- PE/PB null rate, per-index date gaps against the ETF calendar, index coverage
+  against the mapped universe, and staleness -- plus a spot-check table with a published
+  plausibility range. `validate_data_quality` writes the findings to
+  `etf_index_valuation_quality.csv`; `report_etf_index_valuation_quality` files the archivable
+  report at `docs/reports/etf-index-valuation-quality-2026-10-27.md`.
+- **Measured result:** 17,168 rows, 0 null PE/PB, 2 indices with date gaps, but only **6 of 299
+  mapped indices** have valuation rows (2.01%). The values are plausible; the coverage is not.
+  That is the checked reason the valuation family was terminated, not a remembered one.
+
+#### Verified:
+
+- Backend 834 -> 836 tests; frontend unchanged at 79.
+
 ### version 0.1.43
 
 #### Added:

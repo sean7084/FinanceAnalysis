@@ -2280,3 +2280,57 @@ class MacroFreshnessTests(TestCase):
         snapshot = MacroSnapshot.objects.create(date=date(2026, 9, 1), pmi_manufacturing=50.2)
         self.assertIsNone(snapshot.cn10y_yield)
         self.assertIsNone(snapshot.metadata.get('yield_sources', {}).get('cn10y_yield'))
+
+
+class EtfIndexValuationQualityTests(TestCase):
+    """#66: four rules over the valuation table, and a filed spot-check table."""
+
+    def test_an_empty_valuation_table_reports_a_coverage_failure_not_silence(self):
+        from datetime import date
+
+        from apps.etf_rotation import valuation_qc
+
+        report = valuation_qc.quality_report(
+            [], mapped_indices={'000300.SH'},
+            expected_dates_by_index={'000300.SH': []}, as_of=date(2026, 10, 27),
+        )
+
+        self.assertTrue(report['empty'])
+        self.assertEqual(report['coverage']['ratio'], 0.0)
+        self.assertEqual(
+            [issue['issue_type'] for issue in report['issues']],
+            ['etf_index_valuation_empty'],
+        )
+
+    def test_the_filed_report_carries_the_spot_check_that_justifies_terminating_the_family(self):
+        from datetime import date
+
+        from apps.etf_rotation import valuation_qc
+        from apps.etf_rotation.management.commands.report_etf_index_valuation_quality import _render
+
+        rows = [
+            {
+                'index_code': '000300.SH', 'date': date(2026, 1, 2),
+                'pe_ttm': 12.0, 'pb': 1.2, 'turnover_rate': 0.5,
+            },
+            {
+                'index_code': '000300.SH', 'date': date(2026, 1, 5),
+                'pe_ttm': None, 'pb': 1.3, 'turnover_rate': 0.6,
+            },
+        ]
+        report = valuation_qc.quality_report(
+            rows, mapped_indices={'000300.SH', '000905.SH'},
+            expected_dates_by_index={
+                '000300.SH': [date(2026, 1, 2), date(2026, 1, 5)],
+            },
+            as_of=date(2026, 1, 6),
+        )
+
+        text = _render(
+            report, start=date(2026, 1, 1), end=date(2026, 1, 31), as_of=date(2026, 1, 6),
+        )
+
+        self.assertIn('## Spot check', text)
+        self.assertIn('000300.SH', text)
+        self.assertIn('1/2', text)
+        self.assertIn('Why the family was terminated', text)
