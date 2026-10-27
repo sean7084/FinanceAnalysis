@@ -7454,9 +7454,70 @@ class PreregistrationWiringTests(SimpleTestCase):
         for kwargs in captured:
             self.assertEqual(kwargs['preregistration'], self.path)
 
+    def test_the_ablation_table_reads_mean_ic_from_rows_that_already_store_it(self):
+        context = {'panel_start': '2016-01-29', 'panel_end': '2023-12-31', 'purge': 20,
+                   'fold_plan': 'cpcv', 'model_type': 'LIGHTGBM', 'label': 'rank_pct'}
+        evidence.record_measurement(
+            context=context,
+            results={
+                'sharpe': {'median': 0.5},
+                'blocks': [{'mean_ic': 0.1}, {'mean_ic': 0.2}],
+            },
+        )
+        stdout = io.StringIO()
+
+        call_command('report_etf_rotation_evidence', '--ablation-table', stdout=stdout)
+
+        text = stdout.getvalue()
+        self.assertIn('arm x label x features', text)
+        self.assertIn('0.1500', text, 'mean IC comes from the stored per-block readings')
+        self.assertIn('3.0000', text, 'ICIR = mean / population sd = 0.15 / 0.05')
+
 
 class DownsideLabelTests(SimpleTestCase):
     """P24: risk labels, so a model can be trained to predict drawdown instead of return."""
+
+    def test_the_downside_rank_label_orders_the_least_dangerous_name_first(self):
+        zeros = pd.DataFrame({'AAA': [0.0], 'BBB': [0.0]})
+        frames = {f'mom_{sessions}d': zeros.copy() for sessions in (5, 10, 20, 60, 120, 250)}
+        frames['fwd_return'] = zeros.copy()
+        frames['fwd_max_drawdown'] = zeros.copy()
+        frames['fwd_downside_deviation'] = pd.DataFrame({'AAA': [0.01], 'BBB': [0.05]})
+        eligibility = pd.DataFrame({'AAA': [True], 'BBB': [True]})
+
+        ranks = features.build_cross_sectional_ranks(frames, eligibility)
+
+        self.assertEqual(ranks['label_downside_rank'].loc[0, 'AAA'], 1.0)
+        self.assertEqual(ranks['label_downside_rank'].loc[0, 'BBB'], 0.5)
+
+    def test_a_label_set_change_moves_the_label_schema_version_and_not_the_feature_one(self):
+        import hashlib
+
+        self.assertIn('label_downside_rank', features.LABEL_COLUMNS)
+        without_new_label = [
+            column for column in features.LABEL_COLUMNS if column != 'label_downside_rank'
+        ]
+        old = hashlib.sha1('|'.join(without_new_label).encode('utf-8')).hexdigest()[:12]
+        self.assertNotEqual(features.LABEL_SCHEMA_VERSION, old)
+        self.assertEqual(
+            train_lightgbm.feature_schema_version(features.FEATURE_COLUMNS),
+            train_lightgbm.feature_schema_version(tuple(features.FEATURE_COLUMNS)),
+            'the feature schema is a function of the feature list, not of the labels',
+        )
+
+    def test_a_feature_subset_gets_its_own_schema_hash_so_two_schemas_never_share_a_table(self):
+        full = train_lightgbm.feature_schema_version(features.FEATURE_COLUMNS)
+        subset = train_lightgbm.feature_schema_version(features.resolve_feature_set('no_flow'))
+
+        self.assertNotEqual(full, subset)
+        self.assertNotIn('share_growth_5d', features.resolve_feature_set('no_flow'))
+        with self.assertRaises(ValueError):
+            features.resolve_feature_set('no_such_set')
+
+    def test_an_artifact_without_n_seeds_in_its_metadata_is_a_bug(self):
+        source = inspect.getsource(train_lightgbm.train_walk_forward)
+        self.assertIn("'n_seeds'", source)
+        self.assertIn("'label_schema_version'", source)
 
     def _prices(self):
         # 6 sessions: rise, then a 20% fall, then flat.

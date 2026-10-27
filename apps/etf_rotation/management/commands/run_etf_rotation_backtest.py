@@ -425,6 +425,9 @@ def measurement_context(*, panel_start, panel_end, fold_plan, purge, label_horiz
         'label': str(label or 'none'), 'seeds': int(seeds or 1),
         'ic_horizons': [int(horizon) for horizon in ic_horizons],
         'feature_schema_version': feature_schema_version(feature_columns or features.FEATURE_COLUMNS),
+        # The ablation axis. Today every run trains on the full set, so this is 'all';
+        # a subset would arrive with its own schema hash and therefore its own key.
+        'feature_set': 'all',
     }
     if execution is not None:
         context['execution'] = execution
@@ -679,7 +682,7 @@ class Command(BaseCommand):
         parser.add_argument('--seeds', type=int, default=1, metavar='N',
                             help='Fit N boosters per fold with different seeds and average their '
                                  'scores (default 1). Variance reduction, not a bigger model.')
-        parser.add_argument('--label', default='rank_pct', choices=['rank_pct', 'dd_rank'],
+        parser.add_argument('--label', default='rank_pct', choices=['rank_pct', 'dd_rank', 'top_bucket', 'downside_rank'],
                             help='Label a re-trained ML arm fits (default rank_pct). dd_rank is '
                                  'the safety rank: lowest forward drawdown ranks highest, so a veto '
                                  'still drops the bottom share of the score.')

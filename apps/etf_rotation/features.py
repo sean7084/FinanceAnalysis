@@ -17,6 +17,7 @@ precisely so a fund is not mistaken for a stock -- so those wrappers cannot see 
 ``ETFDaily`` row and the TA-Lib calls are made directly here (0.6.8).
 """
 
+import hashlib
 import logging
 import math
 import time
@@ -118,12 +119,41 @@ LABEL_COLUMNS: tuple[str, ...] = (
     # next hypothesis is that the score belongs in a *filter* that predicts risk rather than
     # in a selector that predicts return.
     'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
+    # Regression target for the downside hypothesis: the same safety ordering as
+    # ``label_dd_rank`` but built from downside deviation, so a regression objective
+    # can learn it without LightGBM's ranker.
+    'label_downside_rank',
 )
 # ``label_top_bucket`` is derived from ``label_rank_pct`` at assembly time, so these are the
 # label columns that exist as frames in the computed feature dictionary.
 LABEL_FRAME_COLUMNS: tuple[str, ...] = (
     'fwd_return', 'label_rank_pct', 'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
+    'label_downside_rank',
 )
+
+#: Identity of the label set. A label change invalidates cross-version comparisons, so the
+#: value travels in artifact metadata and in the ledger context; unlike the feature schema it
+#: cannot be derived from a training frame because labels are look-only columns.
+LABEL_SCHEMA_VERSION = hashlib.sha1('|'.join(LABEL_COLUMNS).encode('utf-8')).hexdigest()[:12]
+
+#: Named feature subsets for the ablation axis. Each subset's schema hash is its own column
+#: list (``train_lightgbm.feature_schema_version``), so a subset can never share a table with
+#: the full set. ``no_valuation``/``no_breadth`` are deliberately absent: those columns are not
+#: in ``FEATURE_COLUMNS`` today, so the subsets would be aliases of ``all`` and would fake an
+#: axis that does not exist.
+FEATURE_SETS: dict[str, tuple[str, ...]] = {
+    'all': FEATURE_COLUMNS,
+    'no_flow': tuple(column for column in FEATURE_COLUMNS if column not in SHARE_FLOW_COLUMNS),
+}
+
+
+def resolve_feature_set(name: str | None) -> tuple[str, ...]:
+    """The named subset, or the full list; an unknown name is refused by name."""
+    key = str(name or 'all')
+    if key not in FEATURE_SETS:
+        raise ValueError(f'unknown feature set {key!r}; known: {sorted(FEATURE_SETS)}')
+    return FEATURE_SETS[key]
+
 
 LABEL_HORIZON_DAYS_DEFAULT = 20
 MIN_LISTING_AGE_DAYS_DEFAULT = 183
@@ -539,6 +569,12 @@ def build_cross_sectional_ranks(
     # Safety rank: the *smallest* drawdown ranks 1.0, so every label keeps the engine's
     # convention that a higher score is better and a veto can keep dropping the bottom share.
     ranks['label_dd_rank'] = (-features['fwd_max_drawdown']).where(eligibility).rank(axis=1, pct=True)
+    if 'fwd_downside_deviation' in features:
+        # Guarded only so reduced fixtures can still call this builder; ``compute_features``
+        # always produces the column before the ranks are added.
+        ranks['label_downside_rank'] = (
+            (-features['fwd_downside_deviation']).where(eligibility).rank(axis=1, pct=True)
+        )
     return ranks
 
 

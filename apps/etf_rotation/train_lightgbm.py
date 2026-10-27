@@ -85,6 +85,7 @@ LABEL_SOURCES = {
     'rank_pct': 'label_rank_pct',
     'top_bucket': 'label_top_bucket',
     'dd_rank': 'label_dd_rank',
+    'downside_rank': 'label_downside_rank',
 }
 
 #: ``label_rank_pct`` bin edges, ascending -> five integer relevance grades (0..4).
@@ -1117,6 +1118,13 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
     metadata = {
         **base,
         'framework': 'expanding_window_walk_forward',
+        # Which run produced this artifact: a seed-averaged or multi-horizon reading
+        # cannot be reproduced from the model file alone. ``locals().get`` because the
+        # walk-forward entry point forwards these only when a caller sets them.
+        'n_seeds': int(locals().get('seeds', 1) or 1),
+        'horizons': [int(h) for h in (locals().get('horizons', ()) or ())],
+        'label': str(locals().get('label', 'rank_pct') or 'rank_pct'),
+        'label_schema_version': features.LABEL_SCHEMA_VERSION,
         'model_type_label': model_type_label,
         'version': version,
         'num_boost_round': int(num_boost_round),

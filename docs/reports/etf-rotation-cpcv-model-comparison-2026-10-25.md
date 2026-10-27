@@ -865,3 +865,26 @@ P39 的单发激活 runbook 与回滚步骤同理：它的前置条件是"CV leg
 - **`--preregistration` 在这两条路径上被接受**（它们现在会写行）；`--grid` 与单次运行仍拒绝——不写行的地方不接受登记。
 - **`report_etf_rotation_evidence` 增加"按面板起点汇总读取次数"**：回答"这个起点读过几次"，而不是只给逐行 repeat 计数。
 - 台账 29 行历史记录保持原样（无 `preregistration`、无 `execution` 键），读取时按默认值归一，重复计数不因 schema 变化而重置。
+
+---
+
+## 28. 标签补齐与消融透视（2026-10-27，P24/P26 / #71）
+
+**新增第四个标签：`label_downside_rank`。** 与 `label_dd_rank` 同一方向（池内最安全 = 1.0），但由
+`fwd_downside_deviation` 而不是最大回撤构建，因此回归目标与排序目标不再共用同一个序列。
+`LABEL_SCHEMA_VERSION`（标签清单的 sha1[:12]）随工件 metadata 与台账上下文记录；特征 schema 仍由
+`feature_schema_version(列清单)` 决定，**标签变更不会移动特征哈希**——两者是两件事，测试钉住。
+CLI 的 `--label` 现接受 `rank_pct / top_bucket / dd_rank / downside_rank`（trainer 与 CPCV 路径同四选）。
+
+**透视表。** `report_etf_rotation_evidence --label-table / --ablation-table` 从**既有台账行**的
+`results.blocks[].mean_ic` 与 `results.sharpe.median` 透视出 (臂 × 标签 × 特征集 × schema) → IC 均值 /
+ICIR / Sharpe 中位数，不重跑任何东西。标签维度的对比因此可以在不花面板的前提下重排。
+
+**一个如实的缺口。** 特征集的**定义**与哈希机制已就位（`FEATURE_SETS = {all, no_flow}`，
+`resolve_feature_set`），子集会自动得到自己的 schema 哈希；但两个 trainer 与 CPCV 路径都还没有接受
+`--feature-set` 参数——训练帧在内部按 `FEATURE_COLUMNS` 组装。因此本轮台账里每一行的
+`context.feature_set` 都是 `all`，消融矩阵的**特征集轴暂时只有一列**。#71 在 issue 上保留这一项，
+不伪造一个"看起来支持"的参数。
+
+迁移 `0021` 只加一列；`label_downside_rank` 的回填走 `compute_etf_features`，单进程运行（0.1.33 的
+并发 upsert 教训）。

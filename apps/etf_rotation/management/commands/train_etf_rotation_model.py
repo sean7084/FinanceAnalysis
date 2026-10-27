@@ -49,7 +49,7 @@ class Command(BaseCommand):
         parser.add_argument('--end', help='Last snapshot date to consider (ISO). Default: latest eligible row.')
         parser.add_argument('--folds', type=int, default=6,
                             help='Number of expanding-window validation steps (default 6).')
-        parser.add_argument('--label', default='rank_pct', choices=['rank_pct', 'dd_rank'],
+        parser.add_argument('--label', default='rank_pct', choices=['rank_pct', 'dd_rank', 'top_bucket', 'downside_rank'],
                             help='Which stored label the model fits (default rank_pct). dd_rank '
                                  'trains on the safety rank (smallest forward drawdown ranks '
                                  'highest); LightGBM only, the LSTM has its own multi-horizon '

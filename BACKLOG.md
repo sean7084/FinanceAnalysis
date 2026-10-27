@@ -288,9 +288,11 @@ plan §9 yet.
 - **#70 (P19/P33)** — the 2016-2026 rolling run recorded a median Sharpe but no per-fold IC and
   no ledger row; the rolling-vs-expanding verdict used the three Sharpe legs instead of the
   pre-registered ICIR and positive-IC-fold share; LSTM on rolling folds is unmeasured.
-- **#71 (P24/P26)** — only `rank_pct` and `dd_rank` labels exist (`top_bucket` and
-  `downside_rank` do not); the per-label IC evidence is one ledger row rather than a report
-  table; the ablation matrix has no feature-set axis and no IC/ICIR columns.
+- **#71 (P24/P26) — partly closed.** All four labels now exist (`rank_pct`, `top_bucket`,
+  `dd_rank`, `downside_rank`), `LABEL_SCHEMA_VERSION` travels with the artifact, and the
+  label/ablation pivots read per-block IC from the ledger instead of re-running anything.
+  Still open: the trainers do not accept `--feature-set`, so the ablation matrix's feature-set
+  axis has one column (`all`) until that wiring lands.
 
 ## Open — correctness
 

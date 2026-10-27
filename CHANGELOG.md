@@ -1,5 +1,36 @@
 # Changelog
 
+### version 0.1.38
+
+#### Added:
+
+- **Fourth label: `label_downside_rank`.** Same safety ordering as `label_dd_rank` (least
+  downside risk ranks 1.0) but built from `fwd_downside_deviation`, so a regression objective
+  and a ranker no longer share one series. Migration `0021`; `--label` now accepts
+  `rank_pct / top_bucket / dd_rank / downside_rank` on both the trainer and the CPCV path.
+- **`LABEL_SCHEMA_VERSION`** joins artifact metadata and the ledger context. A label change
+  moves it; the feature schema (a hash of the column list) does not move, and a test pins that
+  the two are independent.
+- **Ablation and label pivots.** `report_etf_rotation_evidence --label-table / --ablation-table`
+  read `results.blocks[].mean_ic` and `results.sharpe.median` from ledger rows that already
+  exist and print mean IC, ICIR and median Sharpe grouped by arm, label, feature set and
+  schema. No run is repeated.
+- Feature-set definitions (`FEATURE_SETS = {all, no_flow}`, `resolve_feature_set`): a subset
+  gets its own schema hash automatically, so it can never share a table with the full set.
+
+#### Known gap:
+
+- The trainers and the CPCV path do **not** accept `--feature-set` yet -- training frames are
+  assembled from `FEATURE_COLUMNS` internally -- so every ledger row carries
+  `feature_set: 'all'` and the ablation matrix's feature-set axis has one column for now.
+  #71 stays open for that wiring rather than shipping a flag that records but does not apply.
+
+#### Verified:
+
+- Backend 799 -> 813 tests; frontend unchanged at 79. Migration applied to the dev database;
+  `makemigrations --check` clean. No curve changed: the new label is look-only and the pivots
+  read existing rows.
+
 ### version 0.1.37
 
 #### Fixed:

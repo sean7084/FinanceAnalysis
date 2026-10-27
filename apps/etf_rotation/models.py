@@ -410,6 +410,11 @@ class ETFFeatureSnapshot(models.Model):
         help_text=_('LOOK-ONLY FOR LABELS. Per-date percentile of -fwd_max_drawdown: the '
                     'safest fund in the pool ranks 1.0.'),
     )
+    label_downside_rank = models.FloatField(
+        _('Label Downside Rank Pct'), null=True, blank=True,
+        help_text=_('LOOK-ONLY FOR LABELS. Per-date percentile of -fwd_downside_deviation: '
+                    'the fund with the least downside risk in the pool ranks 1.0.'),
+    )
     label_top_bucket = models.BooleanField(_('Label Top Bucket'), null=True, blank=True,
                                            help_text=_('LOOK-ONLY FOR LABELS. Forward return landed in the top 30%.'))
 
