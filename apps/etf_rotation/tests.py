@@ -7319,15 +7319,105 @@ class PreregistrationWiringTests(SimpleTestCase):
 
         self.assertIn('--cpcv-retrain', str(caught.exception))
 
-    def test_the_walk_forward_path_refuses_a_registration_it_cannot_record(self):
-        with self.assertRaises(CommandError) as caught:
+    def _walk_forward_ledger_row(self, preregistration=True):
+        """Run the walk-forward path with two fake combos and return its ledger row."""
+        sessions = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(600)]
+        combos = [
+            {'rebalance_frequency': 'MONTHLY', 'max_positions': 3, 'absolute_momentum_filter': True,
+             'momentum_lookback': 20, 'weighting': 'score'},
+            {'rebalance_frequency': 'WEEKLY', 'max_positions': 5, 'absolute_momentum_filter': False,
+             'momentum_lookback': 60, 'weighting': 'equal'},
+        ]
+
+        def fake_run(**kwargs):
+            return {
+                'metrics': {'sharpe_ratio': 0.5, 'turnover_annual': 2.0, 'total_return': 0.1,
+                            'annualized_return': 0.05, 'max_drawdown': 0.02,
+                            'alpha_vs_benchmark': 0.01},
+                'report': {'counters': {'rebalances': 8}},
+            }
+
+        ledger = os.path.join(self.tmp.name, 'wf-ledger.jsonl')
+        inner = MagicMock()
+        inner.sessions.return_value = sessions
+        options = ['--grid', '--walk-forward-steps', '2',
+                   '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat()]
+        if preregistration:
+            options += ['--preregistration', self.path]
+        with override_settings(ETF_EVIDENCE_PATH=ledger), \
+                patch.object(backtest_cmd, 'DatabaseDataSource', return_value=inner), \
+                patch.object(backtest_cmd, 'run_rotation_backtest', side_effect=fake_run), \
+                patch.object(backtest_cmd, 'grid_combinations', return_value=combos):
+            call_command('run_etf_rotation_backtest', *options, stdout=io.StringIO())
+            rows = evidence.read_measurements()
+        self.assertEqual(len(rows), 1)
+        return rows[0]
+
+    def test_the_walk_forward_path_records_a_row_and_its_registration_digest(self):
+        row = self._walk_forward_ledger_row()
+
+        digest = backtest_cmd.resolve_preregistration(self.path, records_a_row=True)
+        self.assertEqual(row['preregistration'], digest)
+        self.assertEqual(row['context']['fold_plan'], 'expanding')
+        self.assertEqual(row['context']['model_version'], 'rule-grid-selection')
+        self.assertEqual(row['context']['execution']['mode'], 'grid-selection')
+        self.assertEqual(len(row['results']['folds']), 2)
+
+    def test_a_rule_walk_forward_row_says_its_ic_is_unmeasurable_rather_than_zero(self):
+        """RULE fits no scorer; a null IC is the honest record, zero would be a fake reading."""
+        row = self._walk_forward_ledger_row(preregistration=False)
+
+        self.assertEqual(row['results']['ic_by_fold'], [None, None])
+        self.assertIn('unmeasurable', row['verdict'])
+        self.assertEqual(row['preregistration'], '')
+
+    def test_the_pinned_cpcv_path_records_its_blocks(self):
+        sessions = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(600)]
+        points = [
+            {'date': session.isoformat(), 'equity': 1_000_000.0 + index * 100.0}
+            for index, session in enumerate(sessions)
+        ]
+        fake_result = {
+            'metrics': {'sharpe_ratio': 0.4}, 'equity_curve': points,
+            'report': {'rebalances': []},
+        }
+        ledger = os.path.join(self.tmp.name, 'cpcv-ledger.jsonl')
+        inner = MagicMock()
+        inner.sessions.return_value = sessions
+        with override_settings(ETF_EVIDENCE_PATH=ledger), \
+                patch.object(backtest_cmd, 'DatabaseDataSource', return_value=inner), \
+                patch.object(backtest_cmd.Command, '_call', return_value=fake_result), \
+                patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''):
             call_command(
-                'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
-                '--start', '2016-01-29', '--end', '2023-12-31',
+                'run_etf_rotation_backtest', '--cpcv-blocks', '4', '--model', 'RULE',
+                '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat(),
                 '--preregistration', self.path, stdout=io.StringIO(),
             )
+            rows = evidence.read_measurements()
 
-        self.assertIn('writes no evidence-ledger row', str(caught.exception))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['context']['model_type'], 'RULE')
+        self.assertEqual(len(rows[0]['results']['blocks']), 4)
+        self.assertEqual(rows[0]['results']['ic'], [], 'RULE has no scorer to correlate')
+        self.assertEqual(
+            rows[0]['preregistration'],
+            backtest_cmd.resolve_preregistration(self.path, records_a_row=True),
+        )
+
+    def test_the_report_can_count_reads_per_panel_start(self):
+        ledger = os.path.join(self.tmp.name, 'report-ledger.jsonl')
+        with override_settings(ETF_EVIDENCE_PATH=ledger):
+            evidence.record_measurement(context={'panel_start': '2016-01-29', 'panel_end': '2023-12-29'}, results={})
+            evidence.record_measurement(context={'panel_start': '2016-01-29', 'panel_end': '2023-12-29'}, results={})
+            evidence.record_measurement(context={'panel_start': '2018-01-02', 'panel_end': '2023-12-29'}, results={})
+            stdout = io.StringIO()
+
+            call_command('report_etf_rotation_evidence', stdout=stdout)
+
+        text = stdout.getvalue()
+        self.assertIn('reads per panel', text)
+        self.assertIn('2016-01-29..2023-12-29  2 read(s)', text)
+        self.assertIn('2018-01-02..2023-12-29  1 read(s)', text)
 
     def test_the_grid_and_single_run_paths_refuse_it_too(self):
         """Accepting it silently would let a run look registered while nothing was recorded."""

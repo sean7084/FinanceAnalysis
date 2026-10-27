@@ -854,3 +854,14 @@ P39 的单发激活 runbook 与回滚步骤同理：它的前置条件是"CV leg
 **研究缺口。** 计划里属于"还要再跑一轮"的八项已建 issue #65-#72，并在 BACKLOG 的
 "research programme: what P18-P37 did not finish" 逐条列出。它们是测量与核对工作，不是代码
 缺陷；生产侧结论不变：RULE 保持、不激活、不开影子。
+
+---
+
+## 27. 台账覆盖收口（2026-10-27，P23 / #72）
+
+三条测量路径现在**都**写台账行：`--cpcv-retrain`（此前唯一）、pinned-artifact CPCV、以及 `--walk-forward-steps`。共用一个 `measurement_context()` 构造器，三条路径的上下文不再各写一套。
+
+- **walk-forward 的逐折 IC 恒为 `null`，不是零。** 该路径只跑 RULE（`--walk-forward-steps sweeps RULE only`），RULE 不拟合 scorer，没有可相关的东西；台账行在 `results.ic_by_fold` 里如实写 `[null, ...]`，verdict 注明"unmeasurable on this path"。#70 要的逐折 IC 只能走 `--cpcv-retrain --fold-plan rolling`（那条路径在 `mean_ic` 里已有）。
+- **`--preregistration` 在这两条路径上被接受**（它们现在会写行）；`--grid` 与单次运行仍拒绝——不写行的地方不接受登记。
+- **`report_etf_rotation_evidence` 增加"按面板起点汇总读取次数"**：回答"这个起点读过几次"，而不是只给逐行 repeat 计数。
+- 台账 29 行历史记录保持原样（无 `preregistration`、无 `execution` 键），读取时按默认值归一，重复计数不因 schema 变化而重置。

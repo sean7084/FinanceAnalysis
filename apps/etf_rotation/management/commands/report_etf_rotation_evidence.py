@@ -50,6 +50,14 @@ class Command(BaseCommand):
                 f"{seen[signature]}"
             )
         repeats = sum(1 for count in seen.values() if count > 1)
+        panels = {}
+        for record in records:
+            context = record.get('context') or {}
+            key = f"{context.get('panel_start')}..{context.get('panel_end')}"
+            panels[key] = panels.get(key, 0) + 1
+        self.stdout.write('reads per panel:')
+        for panel, count in sorted(panels.items()):
+            self.stdout.write(f'  {panel}  {count} read(s)')
         unregistered = sum(1 for record in records if not record.get('preregistration'))
         if repeats:
             self.stdout.write(self.style.WARNING(

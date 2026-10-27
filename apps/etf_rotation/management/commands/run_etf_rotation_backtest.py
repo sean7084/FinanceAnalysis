@@ -402,6 +402,35 @@ def default_execution_context(start, end) -> dict[str, Any]:
     return execution_context({}, {}, start=start, end=end)
 
 
+def measurement_context(*, panel_start, panel_end, fold_plan, purge, label_horizon, embargo,
+                        model_type, hybrid, ml_veto_quantile=None,
+                        model_version='retrain-per-fold', label='rank_pct', seeds=1,
+                        ic_horizons=(), execution=None, feature_columns=None) -> dict[str, Any]:
+    """The context every measuring path records on its ledger row.
+
+    One builder on purpose: three paths writing three slightly different dicts would make the
+    repeat counter compare apples to oranges, and the counter is the only thing that shows how
+    often this finite panel has been read. ``execution`` is optional because a walk-forward
+    grid has no single configuration -- its handler passes a description of the grid instead.
+    """
+    from apps.etf_rotation import features
+    from apps.etf_rotation.train_lightgbm import feature_schema_version
+
+    context = {
+        'panel_start': panel_start.isoformat(), 'panel_end': panel_end.isoformat(),
+        'fold_plan': str(fold_plan), 'purge': int(purge or 0),
+        'label_horizon': int(label_horizon or 0), 'embargo': int(embargo or 0),
+        'model_type': model_type, 'hybrid': bool(hybrid),
+        'ml_veto_quantile': ml_veto_quantile, 'model_version': model_version,
+        'label': str(label or 'none'), 'seeds': int(seeds or 1),
+        'ic_horizons': [int(horizon) for horizon in ic_horizons],
+        'feature_schema_version': feature_schema_version(feature_columns or features.FEATURE_COLUMNS),
+    }
+    if execution is not None:
+        context['execution'] = execution
+    return context
+
+
 def resolve_preregistration(path, *, records_a_row: bool) -> str:
     """sha256 of the pre-registration file, or ``''`` when the run had none.
 
@@ -1311,7 +1340,9 @@ class Command(BaseCommand):
                 '--walk-forward-steps has no combinatorial split; --fold-plan takes expanding '
                 '(the default here) or rolling on this path.'
             )
-        refuse_unrecorded_preregistration('walk-forward', options)
+        preregistration = resolve_preregistration(
+            options.get('preregistration'), records_a_row=True,
+        )
 
         source = CachedDataSource(DatabaseDataSource())
         try:
@@ -1440,6 +1471,40 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 f'guardrail: every fold has at least {WALK_FORWARD_MIN_FOLD_REBALANCES} rebalances.'
             ))
+        # The panel is finite, and this path reads it 144 times per fold. Record the read.
+        # RULE fits no scorer, so per-fold IC is not measurable here -- null, not zero.
+        panel_start, panel_end = folds[0].train_start, folds[-1].valid_end
+        base = default_execution_context(panel_start, panel_end)
+        execution = {
+            key: base[key] for key in (
+                'defensive_asset', 'initial_capital', 'commission_rate', 'min_commission',
+                'slippage', 'liquidity_floor_multiple', 'min_trade_notional_fraction',
+            )
+        }
+        execution.update({
+            'mode': 'grid-selection', 'combinations': len(combos),
+            'criterion': 'sharpe_then_turnover',
+        })
+        context = measurement_context(
+            panel_start=panel_start, panel_end=panel_end, fold_plan=fold_plan,
+            purge=WALK_FORWARD_LABEL_HORIZON, label_horizon=WALK_FORWARD_LABEL_HORIZON,
+            embargo=0, model_type='RULE', hybrid=False, ml_veto_quantile=None,
+            model_version='rule-grid-selection', label='none', seeds=1, ic_horizons=(),
+            execution=execution,
+        )
+        record = evidence.record_measurement(
+            context=context,
+            results={
+                'folds': outcomes, 'reference_hits': hits,
+                'ic_by_fold': [None] * len(outcomes),
+            },
+            preregistration=preregistration,
+            verdict=(
+                f'{len(outcomes)} fold(s); reference selected {hits}/{len(outcomes)}; '
+                'per-fold IC unmeasurable on this path (RULE fits no scorer)'
+            ),
+        )
+        self.stdout.write(f'evidence {record["id"]}: appended to the measurement ledger.')
         self.stdout.write(
             f'walk-forward executed {len(folds)} fold(s) in {time.monotonic() - started:.1f}s; '
             'no ETFRotationBacktest row was written.'
@@ -1525,7 +1590,7 @@ class Command(BaseCommand):
             raise CommandError('--horizons needs an ML --model: RULE fits nothing, so there is no '
                                'scorer whose IC could decay.')
         preregistration = resolve_preregistration(
-            options.get('preregistration'), records_a_row=bool(options['cpcv_retrain']),
+            options.get('preregistration'), records_a_row=True,
         )
         # purge = the label window of whatever is being measured. This is the difference between
         # a held-out block and a block whose answers leaked into training.
@@ -1716,12 +1781,13 @@ class Command(BaseCommand):
             f"median={_pct(drawdown_dist.get('median'), signed=False)} "
             f"max={_pct(drawdown_dist.get('max'), signed=False)}"
         )
+        ic_rows: list = []
+        ic_dist: dict = {}
         if model_type in ('LIGHTGBM', 'LSTM'):
             ic_predictor = (
                 pinned_predictors.get('lgb_predictor')
                 or pinned_predictors.get('lstm_predictor')
             )
-            ic_rows = []
             self.stdout.write('  rank IC (signal quality, not alpha):')
             for ordinal, (block_start, block_end) in enumerate(blocks, start=1):
                 try:
@@ -1758,6 +1824,35 @@ class Command(BaseCommand):
                 'of these readings is out-of-sample evidence.'
                 if released_window else ''
             )
+        )
+        context = measurement_context(
+            panel_start=panel_start, panel_end=panel_end, fold_plan=fold_plan,
+            purge=purge, label_horizon=label_horizon, embargo=embargo,
+            model_type=model_type, hybrid=False, ml_veto_quantile=None,
+            model_version=pinned_version or model_type, label=str(options.get('label') or 'rank_pct'),
+            seeds=1, ic_horizons=(),
+            execution=execution_context(knobs, overrides, start=panel_start, end=panel_end),
+        )
+        repeats = evidence.context_repeats(
+            evidence.read_measurements(), context,
+            execution_defaults=default_execution_context(panel_start, panel_end),
+        )
+        record = evidence.record_measurement(
+            context=context,
+            results={
+                'blocks': facets,
+                'ic': [{'block': ordinal, **ic} for ordinal, ic in ic_rows],
+                'ic_dist': ic_dist,
+            },
+            preregistration=preregistration,
+            verdict=(
+                f'fixed configuration {pinned_version or model_type}: median sharpe '
+                f'{_num(sharpe_dist.get("median"))} over {len(facets)} block(s); '
+                f'this context has been read {repeats + 1} time(s)'
+            ),
+        )
+        self.stdout.write(
+            f'evidence {record["id"]}: context read {repeats + 1} time(s).'
         )
         self.stdout.write(
             f'CPCV measured {len(facets)} block(s) in {time.monotonic() - started:.1f}s; '
@@ -1967,25 +2062,18 @@ class Command(BaseCommand):
                 f"blocks={horizon_summary[str(horizon)]['blocks']}"
             )
         # The panel is a finite resource: record what was read so a repeat is visible later.
-        from apps.etf_rotation import features
-        from apps.etf_rotation.train_lightgbm import feature_schema_version
-
-        context = {
-            'panel_start': panel_start.isoformat(), 'panel_end': panel_end.isoformat(),
-            'fold_plan': str(fold_plan), 'purge': int(purge or 0),
-            'label_horizon': int(label_horizon or 0),
-            'embargo': int(options.get('cpcv_embargo') or 0),
-            'model_type': model_type, 'hybrid': bool(options.get('cpcv_hybrid')),
-            'ml_veto_quantile': float(options['ml_veto_quantile']) if options.get('cpcv_hybrid') else None,
-            'model_version': 'retrain-per-fold',
-            'label': str(options.get('label') or 'rank_pct'),
-            'seeds': int(options.get('seeds') or 1),
-            'ic_horizons': [int(horizon) for horizon in horizons],
-            'feature_schema_version': feature_schema_version(features.FEATURE_COLUMNS),
-            # Every knob that moves the curve. Without these a gated run and an ungated one
-            # share a context and the repeat counter reports a re-read that did not happen.
-            'execution': execution_context(knobs, overrides, start=panel_start, end=panel_end),
-        }
+        context = measurement_context(
+            panel_start=panel_start, panel_end=panel_end, fold_plan=fold_plan,
+            purge=purge, label_horizon=label_horizon,
+            embargo=int(options.get('cpcv_embargo') or 0),
+            model_type=model_type, hybrid=bool(options.get('cpcv_hybrid')),
+            ml_veto_quantile=(
+                float(options['ml_veto_quantile']) if options.get('cpcv_hybrid') else None
+            ),
+            model_version='retrain-per-fold', label=str(options.get('label') or 'rank_pct'),
+            seeds=int(options.get('seeds') or 1), ic_horizons=horizons,
+            execution=execution_context(knobs, overrides, start=panel_start, end=panel_end),
+        )
         # Count repeats *before* appending, or the record counts itself. Rows written before
         # ``execution`` existed carry no such key, and all of them ran the defaults.
         repeats = evidence.context_repeats(

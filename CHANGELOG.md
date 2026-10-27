@@ -1,5 +1,24 @@
 # Changelog
 
+### version 0.1.37
+
+#### Fixed:
+
+- **Every measurement path appends a ledger row.** The walk-forward and pinned-artifact CPCV
+  paths wrote none, so they could not produce gate-admissible evidence and refused
+  `--preregistration`. Both now build their context through one `measurement_context()` helper,
+  record their blocks/folds, and accept a registration; `--grid` and single runs still refuse
+  one because they still write nothing.
+- A RULE walk-forward row records `ic_by_fold: [null, ...]` and says the IC is unmeasurable on
+  that path. RULE fits no scorer, so zero would have been a fabricated reading.
+- `report_etf_rotation_evidence` prints reads per panel start, so "how often has this panel been
+  read" is answerable without counting rows by hand.
+
+#### Verified:
+
+- Backend 795 -> 799 tests; frontend unchanged at 79. No curve changed: this version only adds
+  bookkeeping and makes `--preregistration` admissible where a row exists.
+
 ### version 0.1.36
 
 研究计划收尾修正：台账接线、arm 隔离、折计划覆盖面，以及 §17.1 的可追溯性。

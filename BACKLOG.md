@@ -291,9 +291,6 @@ plan §9 yet.
 - **#71 (P24/P26)** — only `rank_pct` and `dd_rank` labels exist (`top_bucket` and
   `downside_rank` do not); the per-label IC evidence is one ledger row rather than a report
   table; the ablation matrix has no feature-set axis and no IC/ICIR columns.
-- **#72 (P23)** — only `--cpcv-retrain` writes a ledger row, so the walk-forward and
-  pinned-artifact paths cannot produce gate-admissible evidence; the 29 rows already in the
-  ledger carry no pre-registration hash because nothing passed one.
 
 ## Open — correctness
 
