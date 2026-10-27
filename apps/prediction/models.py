@@ -45,6 +45,13 @@ class ModelVersion(models.Model):
             models.Index(fields=['model_type', 'is_active']),
         ]
 
+    def save(self, *args, **kwargs):
+        if self.is_active and self.status != self.Status.ARCHIVED:
+            from apps.prediction.activation import validate_activation_metrics
+
+            validate_activation_metrics(self.metrics)
+        super().save(*args, **kwargs)
+
 
 class PredictionResult(models.Model):
     class Horizon(models.IntegerChoices):

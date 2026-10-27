@@ -1,5 +1,23 @@
 # Changelog
 
+### version 0.1.46
+
+#### Added:
+
+- **Activation sanity bound (#5).** `ModelVersion.save()` refuses `is_active=True` when a
+  reported direction accuracy exceeds **0.75** or an IC exceeds **0.30**, naming the metric,
+  the reading and the bound. Stock and ETF arms share the registry, so one guard covers both.
+- **Archived artifacts cannot be pinned.** ETF `load_predictor_for_version` (LightGBM and
+  LSTM) now refuses an `ARCHIVED` version with that word in the error, rather than the
+  misleading "no READY row".
+- **Migration `prediction.0007`** archives `lgb-3d-2026-04-11` (accuracy 0.9497) and
+  `lgb-7d-2026-04-11` (0.8829). Both were `READY` but not active, so the serving set is
+  unchanged: 3 LIGHTGBM + 1 LSTM + 1 ENSEMBLE.
+
+#### Verified:
+
+- Backend 841 -> 844 tests; frontend unchanged at 79.
+
 ### version 0.1.45
 
 #### Added:

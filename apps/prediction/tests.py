@@ -1865,3 +1865,35 @@ class LstmTrainingRegistryTests(TestCase):
         resolved = _resolve_lstm_model_version(timezone.now().date())
 
         self.assertEqual(resolved.id, trained.id)
+
+
+class ActivationBoundTests(TestCase):
+    """#5: an implausible metric cannot carry is_active=True, and the bound is stated."""
+
+    def test_an_implausible_accuracy_cannot_be_activated(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.prediction.models import ModelVersion
+
+        row = ModelVersion(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='leaky-test-artifact',
+            status=ModelVersion.Status.READY,
+            is_active=True,
+            metrics={'accuracy': 0.9497},
+        )
+
+        with self.assertRaises(ValidationError):
+            row.save()
+
+    def test_the_bound_is_stated_in_the_error_not_just_a_refusal(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.prediction.activation import validate_activation_metrics
+
+        with self.assertRaisesMessage(ValidationError, '0.75'):
+            validate_activation_metrics({'accuracy': 0.95})
+        with self.assertRaisesMessage(ValidationError, '0.30'):
+            validate_activation_metrics({'mean_ic': 0.85})
+        # A plausible metric activates; the guard is a bound, not a ban.
+        validate_activation_metrics({'accuracy': 0.55, 'mean_ic': 0.04})

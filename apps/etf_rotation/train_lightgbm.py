@@ -1295,6 +1295,15 @@ def load_predictor_for_version(version: str):
             status=ModelVersion.Status.READY,
         )[:2]
     )
+    if ModelVersion.objects.filter(
+        version=str(version),
+        model_type=_model_type('ETF_LIGHTGBM'),
+        status=ModelVersion.Status.ARCHIVED,
+    ).exists():
+        raise ValueError(
+            f'ETF_LIGHTGBM ModelVersion {version!r} is ARCHIVED; an archived artifact cannot '
+            'be pinned for a shadow or any other arm. Retrain it under a new version.'
+        )
     if not rows:
         raise ValueError(f'no READY ETF_LIGHTGBM ModelVersion with version {version!r}.')
     if len(rows) > 1:

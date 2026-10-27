@@ -1686,6 +1686,15 @@ def load_predictor_for_version(version, device=None, model_type_label=MODEL_TYPE
             status=ModelVersion.Status.READY,
         )[:2]
     )
+    if ModelVersion.objects.filter(
+        version=str(version),
+        model_type=str(model_type_label or MODEL_TYPE_LABEL),
+        status=ModelVersion.Status.ARCHIVED,
+    ).exists():
+        raise ValueError(
+            f'ETF_LSTM ModelVersion {version!r} is ARCHIVED; an archived artifact cannot be '
+            'pinned for a shadow or any other arm. Retrain it under a new version.'
+        )
     if not rows:
         raise ValueError(f'no READY ETF_LSTM ModelVersion with version {version!r}.')
     if len(rows) > 1:
