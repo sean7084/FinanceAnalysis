@@ -73,6 +73,25 @@ __all__ = [
     'train_walk_forward',
 ]
 
+#: The packages whose versions decide whether an artifact reproduces. The pins live in
+#: ``requirements/base.txt``; this tuple is what the artifact records so a reader can tell
+#: which resolved set produced it.
+LIBRARY_VERSION_PACKAGES = ('lightgbm', 'torch', 'numpy', 'scikit-learn')
+
+
+def library_versions() -> dict[str, str]:
+    """Resolved versions of the modelling stack, or ``'missing'`` for an absent package."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    resolved = {}
+    for name in LIBRARY_VERSION_PACKAGES:
+        try:
+            resolved[name] = version(name)
+        except PackageNotFoundError:
+            resolved[name] = 'missing'
+    return resolved
+
+
 OBJECTIVES = ('lambdarank', 'binary', 'regression')
 DEFAULT_OBJECTIVE = 'lambdarank'
 
@@ -1125,6 +1144,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
         'horizons': [int(h) for h in (locals().get('horizons', ()) or ())],
         'label': str(locals().get('label', 'rank_pct') or 'rank_pct'),
         'label_schema_version': features.LABEL_SCHEMA_VERSION,
+        'library_versions': library_versions(),
         'model_type_label': model_type_label,
         'version': version,
         'num_boost_round': int(num_boost_round),

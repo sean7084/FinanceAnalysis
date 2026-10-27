@@ -414,7 +414,7 @@ def measurement_context(*, panel_start, panel_end, fold_plan, purge, label_horiz
     grid has no single configuration -- its handler passes a description of the grid instead.
     """
     from apps.etf_rotation import features
-    from apps.etf_rotation.train_lightgbm import feature_schema_version
+    from apps.etf_rotation.train_lightgbm import feature_schema_version, library_versions
 
     context = {
         'panel_start': panel_start.isoformat(), 'panel_end': panel_end.isoformat(),
@@ -428,6 +428,9 @@ def measurement_context(*, panel_start, panel_end, fold_plan, purge, label_horiz
         # The ablation axis. Today every run trains on the full set, so this is 'all';
         # a subset would arrive with its own schema hash and therefore its own key.
         'feature_set': 'all',
+        # Which resolved modelling stack produced this reading. A measurement whose
+        # library set is unknown cannot be compared with one whose set is pinned.
+        'library_versions': library_versions(),
     }
     if execution is not None:
         context['execution'] = execution

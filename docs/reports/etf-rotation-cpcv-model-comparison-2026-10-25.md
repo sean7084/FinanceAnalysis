@@ -931,3 +931,20 @@ ICIR / Sharpe 中位数，不重跑任何东西。标签维度的对比因此可
 
 RULE 没有 scorer，它不出现在 IC 表里；它也不是这个闸门的对象（闸门问的是"要不要加第三个
 模型家族"）。生产侧结论不变：RULE 保持、不激活、不开影子。
+
+---
+
+## 30. 运行时锁定（2026-10-27，#13）
+
+`requirements/base.txt` 里九个包本来就是**精确锁版本**的（lightgbm 4.6.0 / torch 2.12.0 /
+scikit-learn 1.8.0 / numpy 2.4.6 / mlflow 3.12.0 / akshare 1.18.63 / tushare 1.4.29 /
+TA-Lib 0.6.8 / django-celery-beat 2.9.0），所以 #13 的剩余工作不是"去锁"，而是**让锁定可验证、
+让工件记得自己是谁产的**：
+
+- `library_versions()` 写进 LightGBM 与 LSTM 工件 metadata，也写进每条台账行的上下文。
+- `PinnedRuntimeTests` 把 `requirements/base.txt` 的 pin 与 venv 的实测版本逐项比对，不一致
+  就失败——重建后的环境若漂移，测试先叫，而不是等某个读数对不上再猜。
+- 加速器如实记录（`docs/reference/ml-runtime.md`）：LightGBM wheel 无 OpenCL，GPU 关闭；
+  本 WSL2 venv 的 torch 是 **CPU-only**（`torch.cuda.is_available()` 为 false），LSTM 在此
+  机器上按 CPU 训练。此前"LSTM 跑在 cuda 上"的说法属于另一台主机，任何计时结论旁边都应
+  注明加速器。

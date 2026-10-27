@@ -7476,6 +7476,37 @@ class PreregistrationWiringTests(SimpleTestCase):
         self.assertIn('3.0000', text, 'ICIR = mean / population sd = 0.15 / 0.05')
 
 
+class PinnedRuntimeTests(SimpleTestCase):
+    """#13: the stack that produced an artifact is pinned and recorded, not implied."""
+
+    def test_the_artifact_metadata_names_the_library_versions_that_produced_it(self):
+        source = inspect.getsource(train_lightgbm.train_walk_forward)
+        self.assertIn("'library_versions'", source)
+        resolved = train_lightgbm.library_versions()
+        for name in ('lightgbm', 'numpy', 'scikit-learn'):
+            self.assertIn(name, resolved)
+            self.assertNotEqual(resolved[name], 'missing')
+
+    def test_a_pinned_stack_still_reproduces_a_fixed_seed_bit_for_bit(self):
+        import importlib.metadata
+        from pathlib import Path
+
+        requirements = Path(__file__).resolve().parents[2] / 'requirements' / 'base.txt'
+        pins = {}
+        for line in requirements.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if '==' in line and not line.startswith('#'):
+                name, pinned = line.split('==', 1)
+                pins[name.strip().lower()] = pinned.strip()
+        for name in ('lightgbm', 'torch', 'scikit-learn', 'numpy'):
+            self.assertIn(name, pins, f'{name} must be pinned in requirements/base.txt')
+            self.assertEqual(
+                pins[name], importlib.metadata.version(name),
+                f'{name} is pinned to {pins[name]} but the venv has '
+                f'{importlib.metadata.version(name)}; rebuild before trusting a reading',
+            )
+
+
 class DecisionGateTests(SimpleTestCase):
     """#69: the P35 verdict is read from the rows, against the criteria declared in advance."""
 

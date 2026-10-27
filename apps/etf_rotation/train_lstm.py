@@ -1134,6 +1134,7 @@ def _register_model_version(*, version, config, artifact_relative_path, fold_rep
         defaults={
             'status': ModelVersion.Status.READY,
             'artifact_path': artifact_relative_path,
+            'library_versions': library_versions(),
             'metrics': headline,
             'feature_schema': list(panel['feature_names']),
             'training_window_start': training_start,

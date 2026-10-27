@@ -1,5 +1,25 @@
 # Changelog
 
+### version 0.1.40
+
+#### Added:
+
+- **Artifacts record the stack that produced them.** `library_versions()` writes lightgbm,
+  torch, numpy and scikit-learn versions into the LightGBM and LSTM artifact metadata, and
+  every measurement ledger context carries the same block. A reading whose stack is unknown
+  can no longer be compared with one whose stack is pinned by accident.
+- `PinnedRuntimeTests` compares each pin in `requirements/base.txt` with the installed
+  version and fails on a mismatch, so a rebuilt environment cannot drift silently.
+- `docs/reference/ml-runtime.md` records the pinned set and the accelerator reality:
+  LightGBM has no OpenCL device here; torch in this WSL2 venv is CPU-only, so the LSTM trains
+  on CPU on this host.
+
+#### Verified:
+
+- The nine ML/data packages were already pinned at the versions the venv resolves; this
+  version makes that verifiable rather than assumed. Seed reproducibility and the 4-vs-14
+  thread comparison still pass. Backend 816 -> 818 tests; frontend unchanged at 79.
+
 ### version 0.1.39
 
 #### Added:
