@@ -1,5 +1,22 @@
 # Changelog
 
+### version 0.1.42
+
+#### Added:
+
+- **Share-jump quality control.** `share_flow_qc` classifies each share change as `split`
+  (adjustment factor moved), `unexplained` (no adjustment but >50% change) or `flow`.
+  `ETF_SHARE_FLOW_ADJUST_FOR_SPLITS` (default **False**) drops split dates from the share
+  history before the features are computed; with it off the features are bit-identical.
+- **`report_etf_share_flow_quality`** files `docs/reports/etf-share-flow-quality.md`:
+  854,170 rows across 811 funds, split **48**, unexplained **1,041** (0.12%), 169
+  bar-without-share pairs, plus the per-month coverage table and empty-month list.
+
+#### Verified:
+
+- Backend 826 -> 830 tests; frontend unchanged at 79. The dividend channel (`fund_div` is now
+  known to be available) is not wired yet; the issue stays open for that and the regime split.
+
 ### version 0.1.41
 
 #### Added:

@@ -357,6 +357,10 @@ ETF_ML_SHADOW_MODEL = env('ETF_ML_SHADOW_MODEL', default='')
 # ``ETFRotationSignal.arm`` and is fail-closed on its own: a missing artifact refuses that arm
 # and leaves the others (and production) alone. Empty keeps the single-arm path above.
 ETF_ML_SHADOW_ARMS = env.json('ETF_ML_SHADOW_ARMS', default=[])
+#: Drop share observations that coincide with an adjustment-factor re-basing (splits and
+#: large distributions) before the share-flow features are computed. Off by default: with it
+#: off the features are bit-identical to the previous release.
+ETF_SHARE_FLOW_ADJUST_FOR_SPLITS = env.bool('ETF_SHARE_FLOW_ADJUST_FOR_SPLITS', default=False)
 # Forward-track monitor (plan Phase 11). The live book is the only honest out-of-sample
 # evidence left after the holdout was spent, so drift is measured against a *declared*
 # reference row rather than an inferred expectation. 0 means no reference: the report is

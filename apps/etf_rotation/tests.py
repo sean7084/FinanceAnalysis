@@ -7477,6 +7477,44 @@ class PreregistrationWiringTests(SimpleTestCase):
         self.assertIn('3.0000', text, 'ICIR = mean / population sd = 0.15 / 0.05')
 
 
+class ShareFlowQualityTests(SimpleTestCase):
+    """#67: a split is not a creation/redemption flow, and the switch is off by default."""
+
+    def test_a_two_for_one_split_does_not_read_as_a_creation_flow(self):
+        from apps.etf_rotation import share_flow_qc
+
+        self.assertEqual(share_flow_qc.classify_share_jump(1.0, 2.0), 'split')
+        self.assertEqual(share_flow_qc.classify_share_jump(1.0, 1.0), 'unexplained')
+        self.assertEqual(share_flow_qc.classify_share_jump(0.05, 1.0), 'flow')
+
+    def test_an_unexplained_share_jump_is_dropped_rather_than_used(self):
+        # A +100% jump with no adjustment-factor change is classified unexplained; the QC
+        # report is where it surfaces, and the feature switch drops split dates only.
+        from apps.etf_rotation import share_flow_qc
+
+        labels = share_flow_qc.classify_history(
+            [(1, date(2026, 1, 2), 100.0), (1, date(2026, 1, 5), 200.0)],
+            {(1, date(2026, 1, 2)): 1.0, (1, date(2026, 1, 5)): 1.0},
+        )
+        self.assertEqual(labels, ['flow', 'unexplained'])
+
+    def test_the_backfill_report_names_every_date_with_no_row(self):
+        from apps.etf_rotation import share_flow_qc
+
+        summary = share_flow_qc.quality_summary([
+            (1, date(2026, 1, 2), 100.0), (1, date(2026, 1, 5), 101.0),
+        ])
+        self.assertEqual(summary['rows'], 2)
+        self.assertEqual(summary['histogram'], {'flow': 2})
+
+    def test_with_the_adjustment_off_the_features_are_bit_identical_to_today(self):
+        from django.conf import settings
+
+        self.assertFalse(settings.ETF_SHARE_FLOW_ADJUST_FOR_SPLITS)
+        source = inspect.getsource(features.attach_share_flow)
+        self.assertIn("ETF_SHARE_FLOW_ADJUST_FOR_SPLITS", source)
+
+
 class MacroReleaseLagTests(SimpleTestCase):
     """#68: each series is lagged by its own publication delay, not one constant."""
 

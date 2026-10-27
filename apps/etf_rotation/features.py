@@ -759,6 +759,11 @@ def attach_share_flow(block: pd.DataFrame) -> pd.DataFrame:
         etf_id__in=etf_ids, date__lte=dates[-1],
     ).values('etf_id', 'date', 'shares')
     history = pd.DataFrame(list(frames))
+    if (not history.empty
+            and getattr(settings, 'ETF_SHARE_FLOW_ADJUST_FOR_SPLITS', False)):
+        from apps.etf_rotation.share_flow_qc import drop_mechanical_jumps
+
+        history = drop_mechanical_jumps(history, etf_ids)
     if history.empty:
         block['share_growth_5d'] = np.nan
         block['share_growth_20d'] = np.nan

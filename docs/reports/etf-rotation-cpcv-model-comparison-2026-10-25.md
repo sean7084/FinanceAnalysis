@@ -986,3 +986,22 @@ NULL**，Phase 12 的 regime 定义因此只用 PMI/CPI/基准趋势。
 
 未做：`validate_data_quality` 的宏观段落集成（该文件是一个单体、无注册表，接入需要动它的
 writer 规格；本轮以 helper + 测试 + 命令落档代替，BACKLOG 保留该集成项）。
+
+---
+
+## 33. 份额流拆分核对与回填质量（2026-10-27，#67a/c）
+
+`fund_div` 在权限探测中**可用**（22 行），但本轮核对走 `ETFDaily.adj_factor`：复权因子跳变本身就是
+拆分/大比例分配的记录，且已在库。`share_flow_qc.classify_share_jump` 把每个份额变化分成
+`split`（复权因子偏离 1 超过 1%）、`unexplained`（无复权变化但份额变化超过 50%）与 `flow`；
+`ETF_SHARE_FLOW_ADJUST_FOR_SPLITS`（默认 **False**）打开时，`attach_share_flow` 会把这些
+`split` 日期从历史里剔除，窗口跨过缺口计算，而不是把机械跳变当资金流。
+
+**回填质量报告**（`report_etf_share_flow_quality` →
+`docs/reports/etf-share-flow-quality.md`）：854,170 行 / 811 只基金；split **48**、
+flow 853,081、unexplained **1,041**（0.1219%）；有 bar 但无份额行的 (fund, session) 对 169 个。
+月度覆盖表与"无数据的月份"清单一并落档。
+
+**默认关闭的回归证明**：开关为 False 时 `attach_share_flow` 的代码路径不变（测试断言默认值与
+开关出现在函数里）；分红通道本轮未接入（`fund_div` 虽可得，但存储与核对需要新表），
+issue #67 的 (b) regime 分段读数留在 Phase 12 的预登记批次里。
