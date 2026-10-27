@@ -63,10 +63,10 @@ def _max_retries():
 
 
 def _tushare_pro():
-    token = getattr(settings, 'TUSHARE_TOKEN', None)
-    if not token:
-        raise ValueError('TUSHARE_TOKEN is not configured.')
-    return ts.pro_api(token)
+    """The shared client seam; this module only keeps its own retry/sleep policy."""
+    from apps.core import tushare_client
+
+    return tushare_client.pro()
 
 
 def _call_tushare_with_retry(fn, label):

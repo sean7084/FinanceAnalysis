@@ -2211,3 +2211,72 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
         self.assertTrue(SentimentScore.objects.filter(date=self.new_date).exists())
         self.assertFalse(ConceptHeat.objects.filter(date=self.old_date).exists())
         self.assertTrue(ConceptHeat.objects.filter(date=self.new_date).exists())
+
+class TushareEntitlementProbeTests(TestCase):
+    """#68d: entitlement is recorded as denied, not as an empty frame."""
+
+    def test_a_denied_interface_is_recorded_as_denied_not_as_empty(self):
+        from apps.core.management.commands import probe_tushare_entitlement as probe_cmd
+
+        class Denied:
+            def fund_div(self, **kwargs):
+                raise Exception('抱歉，您没有访问该接口的权限')
+
+        results = probe_cmd.probe(Denied(), ['fund_div'], start='20260101', end='20260110')
+
+        self.assertEqual(results[0]['status'], 'denied')
+        self.assertIn('权限', results[0]['message'])
+
+    def test_the_probe_never_writes_a_row(self):
+        import io
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from django.core.management import call_command
+        from apps.etf_rotation.models import ETFRotationBacktest
+        from apps.prediction.models import ModelVersion
+        from apps.core.management.commands import probe_tushare_entitlement as probe_cmd
+
+        class Fake:
+            def fund_share(self, **kwargs):
+                import pandas as pd
+
+                return pd.DataFrame({'ts_code': ['510300.SH']})
+
+        before = (ETFRotationBacktest.objects.count(), ModelVersion.objects.count())
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(probe_cmd.tushare_client, 'pro', return_value=Fake()):
+            call_command(
+                'probe_tushare_entitlement', '--interfaces', 'fund_share',
+                '--out', os.path.join(tmp, 'probe.md'), stdout=io.StringIO(),
+            )
+            self.assertTrue(os.path.exists(os.path.join(tmp, 'probe.md')))
+        after = (ETFRotationBacktest.objects.count(), ModelVersion.objects.count())
+        self.assertEqual(before, after)
+
+
+class MacroFreshnessTests(TestCase):
+    """#51: a snapshot that stopped moving is reported with its age, not silently consumed."""
+
+    def test_a_stale_macro_snapshot_is_reported_with_its_age_not_ignored(self):
+        from datetime import date, timedelta
+
+        from apps.macro.models import MacroSnapshot, macro_freshness
+
+        MacroSnapshot.objects.create(date=date(2026, 6, 1), pmi_manufacturing=49.5)
+        report = macro_freshness(as_of=date(2026, 10, 27), max_age_days=45)
+
+        self.assertEqual(report['latest'], '2026-06-01')
+        self.assertEqual(report['age_days'], (date(2026, 10, 27) - date(2026, 6, 1)).days)
+        self.assertTrue(report['stale'])
+
+    def test_a_denied_yield_source_is_recorded_as_denied_and_left_null(self):
+        # The probe report is the record; this pins the consequence: no fabricated yields.
+        from datetime import date
+
+        from apps.macro.models import MacroSnapshot
+
+        snapshot = MacroSnapshot.objects.create(date=date(2026, 9, 1), pmi_manufacturing=50.2)
+        self.assertIsNone(snapshot.cn10y_yield)
+        self.assertIsNone(snapshot.metadata.get('yield_sources', {}).get('cn10y_yield'))

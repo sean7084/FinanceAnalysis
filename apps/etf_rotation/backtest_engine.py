@@ -348,6 +348,12 @@ class BacktestConfig:
         payload['end_date'] = self.end_date.isoformat()
         payload['secondary_benchmark_codes'] = list(self.secondary_benchmark_codes)
         payload['fee_model'] = fee_model_summary(self)
+        # The resolved lag is part of what a run measured: two runs with different
+        # publication lags are different measurements of the same gate.
+        from apps.macro.models import release_lag_days
+        payload['macro_release_lag_days'] = {
+            'pmi_manufacturing': release_lag_days('pmi_manufacturing'),
+        }
         payload['pit_snapshot_feature_columns'] = list(PIT_SNAPSHOT_FEATURE_COLUMNS)
         payload['excluded_label_columns'] = list(LABEL_COLUMNS)
         return payload
@@ -1234,8 +1240,11 @@ def macro_risk_gate(config: BacktestConfig, session: date) -> dict[str, Any]:
     from apps.macro.models import MacroSnapshot
 
     if not config.macro_gate_pmi:
-        return {'enabled': False, 'scale': 1.0}
-    as_of = session - timedelta(days=MACRO_PUBLICATION_LAG_DAYS)
+        return {'lag_days': lag_days, 'enabled': False, 'scale': 1.0}
+    from apps.macro.models import release_lag_days
+
+    lag_days = release_lag_days('pmi_manufacturing')
+    as_of = session - timedelta(days=lag_days)
     row = MacroSnapshot.objects.filter(date__lte=as_of).order_by('-date').first()
     if row is None or row.pmi_manufacturing is None:
         return {'enabled': True, 'scale': 1.0, 'reason': 'no published PMI'}

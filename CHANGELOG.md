@@ -1,5 +1,30 @@
 # Changelog
 
+### version 0.1.41
+
+#### Added:
+
+- **Per-series macro publication lag.** `MACRO_RELEASE_LAG_DAYS` (PMI 1d, CPI/PPI 9d, FX 1d,
+  yields 2d) replaces the single 35-day constant in `macro_risk_gate`; an unknown series falls
+  back to `MACRO_PUBLICATION_LAG_DAYS_FALLBACK=35`, which can only be too slow. The resolved
+  lag is part of `to_parameters()`, so **the resume fingerprint changes** and old PAUSED rows
+  restart; every `macro_history` entry carries `lag_days`.
+- **A reusable TuShare entitlement probe.** `probe_tushare_entitlement` calls one tiny query
+  per interface, classifies ok / ok-empty / denied / rate-limited / error, and writes a dated
+  sheet. The 2026-10-27 run found `fund_div` and `shibor` available but **`yc_cb` and
+  `monetary_policy` denied**, so bond yields stay NULL and no substitute is fabricated.
+- **`macro_freshness()` and `sync_macro_rates`.** The helper reports the newest snapshot's age
+  and whether it is stale (the dataset sat still for four months with no warning); the command
+  writes the available SHIBOR fixings into `MacroSnapshot.metadata['shibor']` without adding
+  fabricated yield columns.
+- The shared `apps/core/tushare_client.py` now owns the client/retry seam; the ETF task keeps
+  only its app-specific retry policy.
+
+#### Verified:
+
+- Backend 818 -> 826 tests; frontend unchanged at 79. Entitlement sheet:
+  `docs/reports/tushare-entitlement-2026-10-27.md`. No database row is written by the probe.
+
 ### version 0.1.40
 
 #### Added:

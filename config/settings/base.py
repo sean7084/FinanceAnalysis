@@ -283,6 +283,21 @@ HISTORICAL_DATA_FLOOR = env('HISTORICAL_DATA_FLOOR', default='2010-01-01')
 MACRO_SYNC_PRIMARY_PROVIDER = env('MACRO_SYNC_PRIMARY_PROVIDER', default='tushare')
 MACRO_SYNC_FALLBACK_PROVIDER = env('MACRO_SYNC_FALLBACK_PROVIDER', default='akshare')
 MACRO_SYNC_PROVIDER_SLEEP_SECONDS = env.float('MACRO_SYNC_PROVIDER_SLEEP_SECONDS', default=0.2)
+#: Publication lag per macro series, in calendar days. NBS publishes the PMI on the last day
+#: of the month (so the period is readable the next day); CPI/PPI land around the 9th; FX is
+#: daily; ChinaBond yield curves are readable the next business day. The gate lags each
+#: series by its own value; a field missing here falls back to the old 35-day constant.
+MACRO_PUBLICATION_LAG_DAYS_FALLBACK = env.int('MACRO_PUBLICATION_LAG_DAYS_FALLBACK', default=35)
+MACRO_RELEASE_LAG_DAYS = env.json('MACRO_RELEASE_LAG_DAYS', default={
+    'pmi_manufacturing': 1,
+    'pmi_non_manufacturing': 1,
+    'cpi_yoy': 9,
+    'ppi_yoy': 9,
+    'dxy': 1,
+    'cny_usd': 1,
+    'cn10y_yield': 2,
+    'cn3y_yield': 2,
+})
 MACRO_YIELD_BACKFILL_WINDOW_MONTHS = env.int('MACRO_YIELD_BACKFILL_WINDOW_MONTHS', default=36)
 MACRO_YIELD_BACKFILL_MAX_RETRIES = env.int('MACRO_YIELD_BACKFILL_MAX_RETRIES', default=3)
 MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS = env.float('MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS', default=65.0)

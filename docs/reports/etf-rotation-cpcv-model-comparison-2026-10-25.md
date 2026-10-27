@@ -948,3 +948,41 @@ TA-Lib 0.6.8 / django-celery-beat 2.9.0），所以 #13 的剩余工作不是"�
   本 WSL2 venv 的 torch **可用 CUDA**（`torch.cuda.is_available()` 为 true，
   `torch.version.cuda` = 13.0），LSTM 可走 GPU。任何计时结论旁边都应注明加速器：同一配置的
   CPU 与 CUDA 运行不是可互换的证据。
+
+
+---
+
+## 31. 宏观发布滞后与权限探测（2026-10-27，#68a/d）
+
+**按序列的发布滞后。** `MACRO_RELEASE_LAG_DAYS` 把每个序列的滞后写成配置（PMI 1 天、CPI/PPI 9 天、
+FX 1 天、收益率 2 天），`macro_risk_gate` 读 PMI 时用自己的 1 天而不是旧的 35 天常数；未知序列回落
+到 `MACRO_PUBLICATION_LAG_DAYS_FALLBACK`（35 天），只会更慢、不会更快。解析出的滞后进
+`BacktestConfig.to_parameters()`，因此**续跑指纹改变**，旧 PAUSED 行从头重跑；`macro_history` 每条
+也带 `lag_days`。
+
+**权限探测（2026-10-27，真实调用）。**
+
+| 接口 | 结果 | 备注 |
+| :--- | :--- | :--- |
+| fund_adj | ok | 6 行 |
+| fund_div | **ok** | 22 行 —— 分红核对可以做 |
+| fund_share | ok | 6 行 |
+| index_dailybasic | ok | 6 行 |
+| index_weight | ok-empty | 近 10 日无权重快照（月频，预期） |
+| shibor | **ok** | 6 行 —— 利率类可用 |
+| yc_cb | **denied** | 无接口权限 |
+| monetary_policy | **denied** | 无接口权限 |
+
+报告落档：`docs/reports/tushare-entitlement-2026-10-27.md`。结论与 §14 一致：**债券收益率仍不可得，
+不造数**；SHIBOR 可得，是下一步唯一能补的利率序列。
+
+## 32. 宏观快照新鲜度（2026-10-27，#51）
+
+`macro_freshness(as_of, max_age_days=45)` 返回最新快照日期、滞后天数与 `stale`；`MacroSnapshot`
+在 2026-06 之后停滞 4 个月没有任何提示，这个函数是让"停滞"可见的最小机制（有测试）。新增
+`sync_macro_rates`：把可得的 SHIBOR 定盘价写进对应月份快照的 `metadata['shibor']`，不新增收益率列、
+不伪造 `yc_cb` 数据。`yc_cb` 与 `monetary_policy` 的拒绝记录在 §31 的探测表中——**收益率列保持
+NULL**，Phase 12 的 regime 定义因此只用 PMI/CPI/基准趋势。
+
+未做：`validate_data_quality` 的宏观段落集成（该文件是一个单体、无注册表，接入需要动它的
+writer 规格；本轮以 helper + 测试 + 命令落档代替，BACKLOG 保留该集成项）。

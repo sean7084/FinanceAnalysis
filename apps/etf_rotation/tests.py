@@ -86,6 +86,7 @@ from apps.etf_rotation.management.commands import mark_etf_rotation_positions_da
 from apps.etf_rotation.management.commands import measure_etf_rotation_sensitivity as measure_cmd
 from apps.etf_rotation.management.commands import run_etf_rotation_backtest as backtest_cmd
 from apps.etf_rotation.management.commands import sweep_etf_rotation_lstm as sweep_cmd
+from apps.macro.models import release_lag_days
 from apps.etf_rotation.models import (
     ETFShareDaily,
     ETFIndexMapping,
@@ -7474,6 +7475,30 @@ class PreregistrationWiringTests(SimpleTestCase):
         self.assertIn('arm x label x features', text)
         self.assertIn('0.1500', text, 'mean IC comes from the stored per-block readings')
         self.assertIn('3.0000', text, 'ICIR = mean / population sd = 0.15 / 0.05')
+
+
+class MacroReleaseLagTests(SimpleTestCase):
+    """#68: each series is lagged by its own publication delay, not one constant."""
+
+    def test_a_series_is_lagged_by_its_own_release_delay_not_one_constant(self):
+        with override_settings(MACRO_RELEASE_LAG_DAYS={'pmi_manufacturing': 1, 'cpi_yoy': 9}):
+            self.assertEqual(release_lag_days('pmi_manufacturing'), 1)
+            self.assertEqual(release_lag_days('cpi_yoy'), 9)
+
+    def test_a_missing_lag_entry_falls_back_to_the_conservative_constant(self):
+        with override_settings(MACRO_RELEASE_LAG_DAYS={},
+                               MACRO_PUBLICATION_LAG_DAYS_FALLBACK=35):
+            self.assertEqual(release_lag_days('pmi_manufacturing'), 35)
+
+    def test_the_resolved_lag_joins_the_resume_fingerprint(self):
+        config = backtest_engine.BacktestConfig(
+            start_date=date(2016, 1, 29), end_date=date(2023, 12, 29),
+        )
+        payload = config.to_parameters()
+        self.assertEqual(
+            payload['macro_release_lag_days']['pmi_manufacturing'],
+            release_lag_days('pmi_manufacturing'),
+        )
 
 
 class PinnedRuntimeTests(SimpleTestCase):

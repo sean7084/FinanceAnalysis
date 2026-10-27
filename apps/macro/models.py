@@ -74,3 +74,37 @@ class EventImpactStat(models.Model):
         verbose_name_plural = _('Event Impact Statistics')
         ordering = ['event_tag', 'sector', 'horizon_days']
         unique_together = ('event_tag', 'sector', 'horizon_days')
+
+
+def release_lag_days(field: str) -> int:
+    """Calendar-day publication lag for one macro series, or the conservative fallback.
+
+    The fallback exists so a new field cannot silently become "published today": an unknown
+    series gets the old 35-day lag, which is too slow but never too fast.
+    """
+    from django.conf import settings
+
+    configured = getattr(settings, 'MACRO_RELEASE_LAG_DAYS', {}) or {}
+    try:
+        return int(configured.get(field, settings.MACRO_PUBLICATION_LAG_DAYS_FALLBACK))
+    except (TypeError, ValueError):
+        return int(settings.MACRO_PUBLICATION_LAG_DAYS_FALLBACK)
+
+
+def macro_freshness(as_of=None, *, max_age_days: int = 45) -> dict:
+    """The newest snapshot's date, its age, and whether it is too old to trust.
+
+    The dataset sat still from 2026-06 to 2026-10 while every consumer kept reading it;
+    this helper is what a check or a page calls to make that visible instead of silent.
+    """
+    from datetime import date
+
+    newest = MacroSnapshot.objects.order_by('-date').values_list('date', flat=True).first()
+    today = as_of or date.today()
+    if newest is None:
+        return {'latest': None, 'age_days': None, 'stale': True, 'max_age_days': max_age_days}
+    age_days = (today - newest).days
+    return {
+        'latest': newest.isoformat(), 'age_days': age_days,
+        'stale': age_days > max_age_days, 'max_age_days': max_age_days,
+    }
