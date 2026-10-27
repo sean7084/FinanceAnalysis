@@ -945,6 +945,6 @@ TA-Lib 0.6.8 / django-celery-beat 2.9.0），所以 #13 的剩余工作不是"�
 - `PinnedRuntimeTests` 把 `requirements/base.txt` 的 pin 与 venv 的实测版本逐项比对，不一致
   就失败——重建后的环境若漂移，测试先叫，而不是等某个读数对不上再猜。
 - 加速器如实记录（`docs/reference/ml-runtime.md`）：LightGBM wheel 无 OpenCL，GPU 关闭；
-  本 WSL2 venv 的 torch 是 **CPU-only**（`torch.cuda.is_available()` 为 false），LSTM 在此
-  机器上按 CPU 训练。此前"LSTM 跑在 cuda 上"的说法属于另一台主机，任何计时结论旁边都应
-  注明加速器。
+  本 WSL2 venv 的 torch **可用 CUDA**（`torch.cuda.is_available()` 为 true，
+  `torch.version.cuda` = 13.0），LSTM 可走 GPU。任何计时结论旁边都应注明加速器：同一配置的
+  CPU 与 CUDA 运行不是可互换的证据。

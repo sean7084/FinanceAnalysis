@@ -11,8 +11,9 @@
 - `PinnedRuntimeTests` compares each pin in `requirements/base.txt` with the installed
   version and fails on a mismatch, so a rebuilt environment cannot drift silently.
 - `docs/reference/ml-runtime.md` records the pinned set and the accelerator reality:
-  LightGBM has no OpenCL device here; torch in this WSL2 venv is CPU-only, so the LSTM trains
-  on CPU on this host.
+  LightGBM has no OpenCL device here (CPU only); torch in this WSL2 venv **has CUDA**
+  (`torch.cuda.is_available()` is true, CUDA 13.0), so the LSTM can train on the GPU. A timing
+  claim must name the accelerator it was measured on.
 
 #### Verified:
 

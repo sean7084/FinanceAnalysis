@@ -34,6 +34,7 @@ compared with one whose stack is pinned; the field makes that visible instead of
 - **LightGBM stays on CPU.** The installed wheel has no OpenCL device, so `device=gpu`
   errors; `ETF_LGB_PARAMS` can still select it on a machine that has one. Thread count is
   `ETF_LGB_NUM_THREADS` (default `min(16, cpu_count - 2)`).
-- **PyTorch sees no CUDA device in this WSL2 venv** (`torch.cuda.is_available()` is false;
-  the wheel is CPU-only). The LSTM trains on CPU here. The earlier "runs on cuda" note
-  referred to a different host; record the accelerator next to any timing claim.
+- **PyTorch sees a CUDA device in this WSL2 venv.** `torch.cuda.is_available()` is true and
+  `torch.version.cuda` is 13.0, so the LSTM can train on the GPU. Record the accelerator next
+  to any timing claim: a CPU run and a CUDA run of the same configuration are not
+  interchangeable evidence.
