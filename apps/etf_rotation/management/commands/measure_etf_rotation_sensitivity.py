@@ -45,6 +45,17 @@ ARMS = {
     'lgb-select-rolling': {
         'model': 'LIGHTGBM', 'hybrid': False, 'embargo': 5, 'fold_plan': 'rolling',
     },
+    'lstm-select-rolling': {
+        'model': 'LSTM', 'hybrid': False, 'embargo': 20, 'fold_plan': 'rolling',
+    },
+    # Expanding counterparts, so a fold-shape comparison differs in one thing only.
+    'rule-expanding': {'model': 'RULE', 'hybrid': False, 'embargo': 5, 'fold_plan': 'expanding'},
+    'lgb-select-expanding': {
+        'model': 'LIGHTGBM', 'hybrid': False, 'embargo': 5, 'fold_plan': 'expanding',
+    },
+    'lstm-select-expanding': {
+        'model': 'LSTM', 'hybrid': False, 'embargo': 20, 'fold_plan': 'expanding',
+    },
 }
 
 #: A drawdown median within this margin of the baseline still counts as "not worse".

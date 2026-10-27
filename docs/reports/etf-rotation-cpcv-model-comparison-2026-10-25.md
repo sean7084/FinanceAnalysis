@@ -1054,3 +1054,79 @@ issue #67 的 (b) regime 分段读数留在 Phase 12 的预登记批次里。
 而 2,615,553 条特征快照中只有 434,798 条（16.6%）带估值旗标——与 §34 的合格池口径 14.5%
 一致。横截面模型会把"没有估值"当成未覆盖标的的系统性特征，这不是调参能解决的，故终止该族。
 
+---
+
+## 36. 注册表激活护栏与存档工件拒绝（2026-10-27，#5）
+
+**共用护栏。** `ModelVersion.save()` 在 `is_active=True` 且状态不是 `ARCHIVED` 时校验指标：
+方向准确率 > **0.75** 或 IC > **0.30** 即抛 `ValidationError`，错误串写明指标、读数与上限。
+个股与 ETF 走同一条通路；`EnsembleWeightSnapshot` 的 `lightgbm_accuracy` 基期复核为
+正常区间，无需改动。
+
+**两条历史工件改判。** 迁移 `prediction.0007` 把 `lgb-3d-2026-04-11`（accuracy 0.9497）与
+`lgb-7d-2026-04-11`（accuracy 0.8829）置为 `ARCHIVED`、`is_active=False`。两条此前都是
+`READY` 但**未激活**，所以生产服务路径逐位不变：激活集仍是 3 个 LIGHTGBM + 1 个 LSTM +
+1 个 ENSEMBLE。ETF 的 `load_predictor_for_version`（LGB 与 LSTM）现在对 ARCHIVED 版本给出
+显式拒绝，而不是含糊的 "no READY row"。
+
+---
+
+## 37. #70 折形状、#68(b)(c) regime 归因与 #67(b) 收口（2026-10-27）
+
+**预登记**：`docs/reports/preregistration/fold-shape-icir-2026-10-27.md`（sha256
+`7c7bb491bffb`）。6 个 cell，面板 2016-01-29..2023-12-31，6 块，purge 1（RULE）/ 20（ML），
+embargo 5（LGB）/ 20（LSTM）。判据运行前写死：**逐折 ICIR ≥ 0.5**、**正 IC 折占比 ≥ 2/3**；
+不使用组合 Sharpe 裁决。面板不触及 2024–2026，因此不是调优读数；但这些配置是在同一面板上
+选出的，读数仍不能支持任何 go 决策。
+
+### 37.1 #70 折形状（按预登记判据）
+
+| 臂 | 折计划 | 块数 | IC 均值 | **ICIR** | 正 IC 折占比 | 判定 |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- |
+| LIGHTGBM 选择 | rolling | 6 | −0.0143 | **−0.1919** | 66.67% | fail（icir） |
+| LIGHTGBM 选择 | expanding | 6 | −0.0214 | −0.3451 | 50.00% | fail（icir, 正占比） |
+| LSTM 选择 | rolling | 6 | −0.0249 | −0.2925 | 50.00% | fail（icir, 正占比） |
+| LSTM 选择 | expanding | 6 | −0.0019 | −0.0253 | 50.00% | fail（icir, 正占比） |
+
+**裁决。** LGB 家族：rolling 胜（ICIR 更高）。LSTM 家族：expanding 胜（−0.0253 对 −0.2925，
+两者都接近零且为负——"胜者"只是相对不差）。**没有任何臂通过主判据**；正 IC 折占比最多
+2/3，恰好压线。折形状不能把负 IC 救成正 IC，这回答了 #70 的问题：**rolling/expanding 的
+差别小于判据要求的效应量，二者都不合格**。组合 Sharpe（RULE 0.0791；LGB −0.0970/−0.5497；
+LSTM −0.4626/−0.4626）仅作上下文，**未参与裁决**，与预登记一致。
+
+### 37.2 #68(c) regime 归因（描述性，不参与 gate）
+
+按预登记批次的每个 cell 的 6 个块切片；某 regime < 20 次调仓判"不可判定"。本批所有 regime
+均 ≥ 62 次调仓，**全部可判定**。数值是"该 regime 覆盖的块的总收益均值"，不是年化、也不是
+逐次调仓收益：
+
+| 臂（折计划） | risk_off：块/调仓/均值收益 | risk_on：块/调仓/均值收益 |
+| :--- | :--- | :--- |
+| RULE（rolling = expanding） | 3 / 65 / −4.31% | 3 / 64 / +29.49% |
+| LGB 选择（rolling） | 3 / 64 / −16.40% | 3 / 62 / +10.81% |
+| LGB 选择（expanding） | 3 / 64 / −14.60% | 3 / 62 / +14.49% |
+| LSTM 选择（rolling） | 3 / 64 / +0.58% | 3 / 62 / +11.12% |
+| LSTM 选择（expanding） | 3 / 64 / −7.01% | 3 / 62 / +14.21% |
+
+**读法。** RULE 与 LGB 在 risk_off 块里明显更差，LSTM rolling 在 risk_off 块里接近零；
+三者在 risk_on 块里都为正。这是**对既有读数的切片**，不是新证据，也不改变任何裁决。
+`macro_regime_inputs` 只用 PMI 水平/3 月变化、CPI-PPI 剪刀差与 FX 趋势；`yield_slope`
+因 `yc_cb` 无权限而返回 `None` 并标注 `unavailable: yc_cb denied`，**没有伪造衰退/滞胀
+标签**。五个宏观输入与 `MacroSnapshot` 字段名都有守卫测试，永不进入 `FEATURE_COLUMNS`。
+
+### 37.3 #67(b) 份额流 regime 分段：不运行，附论证
+
+本批 6 个 cell 的预算已全部用于 #70；#67(b) 的 `lgb-veto@no_flow` 对照**未运行**。前置证据已
+足够回答它要回答的问题：§34 的廉价测量显示 `has_share_flow` 的前向收益差为 **−0.096%**、
+为正的日期占 **51%**——份额流对收益没有可测效应。把一个零效应再按 regime 切三段，不会改变
+任何决策，反而会把同一面板的读取次数再抬 3 次。因此 #67(b) 以"前置证据表明不可辨别"关闭，
+不补运行；若未来份额流出现非零 IC，再按预登记补测。
+
+### 37.4 批次完整性与生产不变性
+
+- 台账：6 行，全部带 `preregistration=7c7bb491bffb`；同一面板读取次数 6。
+- `ModelVersion` 激活集逐位不变（3 LIGHTGBM / 1 LSTM / 1 ENSEMBLE）；`ETFRotationBacktest`
+  仍为 **353 COMPLETED / 1 FAILED**；无新工件目录。
+- 未改任何生产默认值、未开影子、未激活任何 ETF 模型。
+
+

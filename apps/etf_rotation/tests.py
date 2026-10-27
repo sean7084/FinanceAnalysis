@@ -7538,6 +7538,15 @@ class MacroReleaseLagTests(SimpleTestCase):
             release_lag_days('pmi_manufacturing'),
         )
 
+    def test_the_gate_off_path_never_resolves_a_lag_and_stays_neutral(self):
+        config = backtest_engine.BacktestConfig(
+            start_date=date(2016, 1, 29), end_date=date(2023, 12, 29),
+        )
+        self.assertEqual(
+            backtest_engine.macro_risk_gate(config, date(2016, 2, 1)),
+            {'enabled': False, 'scale': 1.0},
+        )
+
 
 class CoverageBiasTests(_PanelSeedMixin, TestCase):
     """#65: the coverage denominator is the pre-registered one, and flags are bias-tested."""
@@ -7671,6 +7680,97 @@ class DecisionGateTests(SimpleTestCase):
         self.assertEqual(len(table), 1)
         self.assertAlmostEqual(table[0]['sharpe_mean'], 0.4)
         self.assertAlmostEqual(table[0]['sharpe_sd'], 0.1)
+
+
+class FoldShapeAndRegimeTests(SimpleTestCase):
+    """#70 #68: fold shape is judged on ICIR; regimes use only the available series."""
+
+    @staticmethod
+    def _row(ics, *, plan, model='LIGHTGBM', hybrid=False):
+        return {
+            'context': {
+                'model_type': model, 'hybrid': hybrid, 'label': 'rank_pct',
+                'feature_set': 'all', 'fold_plan': plan,
+                'panel_start': '2016-01-29', 'panel_end': '2023-12-31',
+                'feature_schema_version': 'test-schema',
+            },
+            'results': {
+                'sharpe': {'median': 9.9},
+                'blocks': [
+                    {
+                        'start': '2016-01-04', 'end': '2016-01-05', 'rebalances': 1,
+                        'total_return': value, 'mean_ic': value,
+                    }
+                    for value in ics
+                ],
+            },
+        }
+
+    def test_the_fold_shape_verdict_is_icir_and_positive_ic_fold_share(self):
+        from apps.etf_rotation import gate
+
+        rows = [
+            self._row([0.10, 0.12, 0.14], plan='rolling'),
+            self._row([0.10, -0.20, 0.05], plan='expanding'),
+        ]
+
+        verdict = gate.fold_shape_verdict(rows)
+
+        cells = {cell['fold_plan']: cell for cell in verdict['cells']}
+        self.assertEqual(cells['rolling']['positive_share'], 1.0)
+        self.assertEqual(cells['rolling']['failed'], [])
+        self.assertEqual(cells['expanding']['failed'], ['icir'])
+        self.assertEqual(verdict['comparisons'][0]['winner'], 'rolling')
+
+    def test_the_gate_summary_attributes_rule_and_ml_arms_per_regime(self):
+        from apps.etf_rotation import regime
+
+        rows = [
+            self._row([0.01], plan='cpcv', model='RULE'),
+            self._row([0.02], plan='cpcv', model='LIGHTGBM', hybrid=True),
+        ]
+        labels = {'2016-01-04': 'risk_off', '2016-01-05': 'risk_off'}
+
+        with patch.object(regime, 'session_labels', return_value=labels), patch.object(
+            regime, '_session_range', side_effect=lambda *a, **k: iter(sorted(labels)),
+        ):
+            table = regime.regime_table(rows, snapshots=[])
+
+        self.assertEqual([entry['arm'] for entry in table], ['RULE', 'LIGHTGBM+hybrid'])
+        for entry in table:
+            self.assertEqual(entry['regimes'][0]['regime'], 'risk_off')
+            self.assertEqual(entry['regimes'][0]['facets'], 1)
+            self.assertEqual(entry['regimes'][0]['rebalances'], 1)
+            self.assertFalse(entry['regimes'][0]['decidable'])
+
+    def test_a_regime_that_needs_yields_is_reported_as_unavailable_not_as_recovery(self):
+        from apps.etf_rotation import regime
+
+        rows = [
+            {
+                'date': date(2024, month, 1), 'pmi_manufacturing': 49.0 + month * 0.1,
+                'cpi_yoy': 2.0, 'ppi_yoy': -1.0, 'dxy': 100.0, 'cny_usd': 7.0,
+                'cn10y_yield': None, 'cn3y_yield': None,
+            }
+            for month in (1, 2, 3, 4)
+        ]
+
+        inputs = regime.macro_regime_inputs(date(2024, 5, 1), rows=rows)
+        label = regime.regime_label(inputs)
+
+        self.assertIsNone(inputs['yield_slope'])
+        self.assertIn('unavailable', inputs['yield_slope_status'])
+        self.assertEqual(label, 'neutral')
+        self.assertNotIn(label, {'RECOVERY', 'OVERHEAT', 'STAGFLATION', 'RECESSION'})
+
+    def test_the_five_macro_series_are_gate_inputs_and_never_ranking_features(self):
+        from apps.etf_rotation import features, regime
+        from apps.macro.models import MacroSnapshot
+
+        snapshot_fields = {field.name for field in MacroSnapshot._meta.get_fields()}
+        forbidden = set(regime.REGIME_INPUT_NAMES) | snapshot_fields
+
+        self.assertFalse(forbidden & set(features.FEATURE_COLUMNS))
 
 
 class DownsideLabelTests(SimpleTestCase):
@@ -8185,3 +8285,21 @@ class ArmDiscriminatorTests(TestCase):
         self.assertTrue(results[0].get('ok'))
         self.assertIn('error', results[1])
         self.assertTrue(results[2].get('ok'), 'one arm failing must not stop the rest')
+
+
+class ArchivedArtifactTests(TestCase):
+    """#5: a pinned (shadow) arm may not load an archived artifact."""
+
+    def test_a_pinned_predictor_refuses_an_archived_artifact(self):
+        from apps.prediction.models import ModelVersion
+
+        ModelVersion.objects.create(
+            model_type=ModelVersion.ModelType.ETF_LIGHTGBM,
+            version='archived-test-artifact',
+            status=ModelVersion.Status.ARCHIVED,
+            metrics={'accuracy': 0.95},
+        )
+        from apps.etf_rotation import train_lightgbm
+
+        with self.assertRaisesMessage(ValueError, 'ARCHIVED'):
+            train_lightgbm.load_predictor_for_version('archived-test-artifact')

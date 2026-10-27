@@ -1237,12 +1237,10 @@ def macro_risk_gate(config: BacktestConfig, session: date) -> dict[str, Any]:
     Returns ``{'enabled': False, 'scale': 1.0}`` when the gate is off, so a configuration
     without it behaves exactly as before the knob existed.
     """
-    from apps.macro.models import MacroSnapshot
+    from apps.macro.models import MacroSnapshot, release_lag_days
 
     if not config.macro_gate_pmi:
-        return {'lag_days': lag_days, 'enabled': False, 'scale': 1.0}
-    from apps.macro.models import release_lag_days
-
+        return {'enabled': False, 'scale': 1.0}
     lag_days = release_lag_days('pmi_manufacturing')
     as_of = session - timedelta(days=lag_days)
     row = MacroSnapshot.objects.filter(date__lte=as_of).order_by('-date').first()

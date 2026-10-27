@@ -26,9 +26,23 @@ class Command(BaseCommand):
         parser.add_argument('--ablation-table', action='store_true',
                             help='Pivot the same rows by (arm, label, feature set, schema) -- the '
                                  'ablation matrix, from measurements that already exist.')
+        parser.add_argument('--fold-shape', action='store_true',
+                            help='Adjudicate rolling vs expanding fold shape on per-fold ICIR and '
+                                 'the positive-IC fold share (the #70 pre-registration).')
+        parser.add_argument('--regime-table', action='store_true',
+                            help='Attribute each row\'s fold blocks to the macro regime that '
+                                 'covered most of their sessions; <20 rebalances is undecidable.')
+        parser.add_argument('--preregistration', default=None, metavar='DIGEST',
+                            help='Only rows whose pre-registration digest starts with DIGEST.')
 
     def handle(self, *args, **options):
         records = evidence.read_measurements()
+        if options.get('preregistration'):
+            prefix = str(options['preregistration'])
+            records = [
+                record for record in records
+                if str(record.get('preregistration') or '').startswith(prefix)
+            ]
         if not records:
             self.stdout.write('no measurements recorded yet')
             return
@@ -112,6 +126,59 @@ class Command(BaseCommand):
                     f'{_num(row["sharpe_mean"]):>11} {_num(row["sharpe_sd"]):>9} '
                     f'{_num(row["ic_mean"]):>9} {_num(row["ic_sd"]):>8}'
                 )
+            return
+        if options.get('fold_shape'):
+            from apps.etf_rotation import gate
+
+            verdict = gate.fold_shape_verdict(records)
+            if not verdict['cells']:
+                self.stdout.write('no row stores two or more per-fold IC values; nothing to judge.')
+            else:
+                self.stdout.write(
+                    'fold shape (pre-registered: ICIR >= 0.5, positive-IC fold share >= 2/3)'
+                )
+                self.stdout.write(
+                    f'{"arm":<18} {"label":<11} {"plan":<10} {"blocks":>6} {"ic_mean":>9} '
+                    f'{"icir":>7} {"pos":>6} {"verdict":>8} failed'
+                )
+                for cell in verdict['cells']:
+                    icir = 'n/a' if cell['icir'] is None else f"{cell['icir']:.4f}"
+                    self.stdout.write(
+                        f'{cell["arm"]:<18} {cell["label"]:<11} {cell["fold_plan"]:<10} '
+                        f'{cell["blocks"]:>6} {cell["ic_mean"]:>9.4f} {icir:>7} '
+                        f'{cell["positive_share"]:>6.2f} '
+                        f'{("pass" if cell["passed"] else "fail"):>8} '
+                        f'{",".join(cell["failed"]) or "-"}'
+                    )
+                for comparison in verdict['comparisons']:
+                    self.stdout.write(
+                        f'  {comparison["arm"]} | {comparison["label"]} | '
+                        f'{comparison["feature_set"]}: winner = {comparison["winner"]} '
+                        f'({", ".join(comparison["plans"])})'
+                    )
+            if not options.get('regime_table'):
+                return
+        if options.get('regime_table'):
+            from apps.etf_rotation import regime
+
+            table = regime.regime_table(records)
+            if not table:
+                self.stdout.write('no row stores fold blocks; regime attribution needs them.')
+                return
+            self.stdout.write('regime attribution (a regime with < 20 rebalances is undecidable)')
+            for entry in table:
+                self.stdout.write(
+                    f'{entry["id"]}  {entry["arm"]}  {entry["fold_plan"]}  {entry["panel"]}'
+                )
+                for cell in entry['regimes']:
+                    mean_return = (
+                        'n/a' if cell['mean_return'] is None else f"{cell['mean_return']:.4f}"
+                    )
+                    self.stdout.write(
+                        f'  {cell["regime"]:<8} facets={cell["facets"]:<3} '
+                        f'rebalances={cell["rebalances"]:<4} mean_return={mean_return:<9} '
+                        f'{"decidable" if cell["decidable"] else "undecidable"}'
+                    )
             return
         if options.get('label_table') or options.get('ablation_table'):
             rows = measurement_pivot(records)

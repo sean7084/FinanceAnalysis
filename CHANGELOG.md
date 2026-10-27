@@ -1,5 +1,34 @@
 # Changelog
 
+### version 0.1.45
+
+#### Added:
+
+- **Pre-registered fold-shape adjudication (#70).** `gate.fold_shape_verdict` reads the
+  per-fold ICs the ledger already stores, computes ICIR and the positive-IC fold share, and
+  names the plan winner without using portfolio Sharpe. The six-cell batch (RULE/LGB/LSTM x
+  rolling/expanding, panel 2016-01-29..2023-12-31, digest `7c7bb491bffb`) is in the ledger.
+  Result: no ML arm passes ICIR >= 0.5; LGB prefers rolling, LSTM prefers expanding, and the
+  difference between plans is smaller than the required effect.
+- **Regime attribution (#68c).** `regime.py` builds the five declared macro inputs from the
+  published snapshot with per-series lags, labels sessions with a data-available regime, and
+  slices each measurement's fold blocks by regime. Yields stay `None` with
+  `unavailable: yc_cb denied`; no recession/stagflation label is fabricated. All regimes in
+  this batch hold >= 62 rebalances, so all are decidable; the numbers are descriptive only.
+- **`report_etf_rotation_evidence --fold-shape --regime-table --preregistration`** render both
+  tables from ledger rows; no panel run is repeated.
+
+#### Changed:
+
+- **`macro_risk_gate` gate-off path fixed.** The disabled branch referenced `lag_days` before
+  assignment (introduced with the per-series lag change); it now returns the neutral
+  `{'enabled': False, 'scale': 1.0}` unconditionally, with a regression test.
+
+#### Verified:
+
+- Backend 836 -> 841 tests; frontend unchanged at 79. Six linked ledger rows; active model set
+  unchanged; `ETFRotationBacktest` 353 COMPLETED / 1 FAILED.
+
 ### version 0.1.44
 
 #### Added:

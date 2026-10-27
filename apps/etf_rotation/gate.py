@@ -90,3 +90,84 @@ def seed_variance_table(rows) -> list[dict]:
             'ic_sd': pstdev(cell['ics']) if len(cell['ics']) > 1 else 0.0,
         })
     return table
+
+
+FOLD_SHAPE_MIN_ICIR = 0.5
+FOLD_SHAPE_MIN_POSITIVE_SHARE = 2 / 3
+FOLD_SHAPE_TIE_MARGIN = 0.01
+
+
+def fold_shape_verdict(rows, *, min_icir: float = FOLD_SHAPE_MIN_ICIR,
+                       min_positive_share: float = FOLD_SHAPE_MIN_POSITIVE_SHARE,
+                       tie_margin: float = FOLD_SHAPE_TIE_MARGIN) -> dict:
+    """#70: adjudicate fold shape on per-fold ICIR and the positive-IC fold share.
+
+    The pre-registration deliberately excludes portfolio Sharpe: fold shape is a property of
+    the measurement instrument, not of the strategy. Rows are pooled per (arm, label, feature
+    set, schema, panel start, fold plan); a plan whose folds all carry the same IC has no
+    spread, so its ICIR is ``None`` and it fails the main criterion rather than passing by
+    division by zero.
+    """
+    grouped: dict[tuple, list[float]] = {}
+    for record in rows:
+        ics = _block_ics(record)
+        if len(ics) < 2:
+            continue
+        context = record.get('context') or {}
+        arm = f"{context.get('model_type', '?')}{'+hybrid' if context.get('hybrid') else ''}"
+        key = (
+            arm, str(context.get('label') or '-'), str(context.get('feature_set') or 'all'),
+            str(context.get('feature_schema_version') or '-'),
+            f"{context.get('panel_start')}..{context.get('panel_end')}",
+            str(context.get('fold_plan') or '?'),
+        )
+        grouped.setdefault(key, []).extend(ics)
+
+    cells = []
+    for key, ics in sorted(grouped.items()):
+        ic_mean = mean(ics)
+        spread = pstdev(ics)
+        icir = (ic_mean / spread) if spread else None
+        positive_share = sum(1 for value in ics if value > 0) / len(ics)
+        failed = []
+        if icir is None or icir < min_icir:
+            failed.append('icir')
+        if positive_share < min_positive_share:
+            failed.append('positive_ic_fold_share')
+        cells.append({
+            'arm': key[0], 'label': key[1], 'feature_set': key[2], 'schema': key[3],
+            'panel': key[4], 'fold_plan': key[5], 'blocks': len(ics),
+            'ic_mean': ic_mean, 'icir': icir, 'positive_share': positive_share,
+            'passed': not failed, 'failed': failed,
+        })
+
+    comparisons = []
+    families: dict[tuple, dict] = {}
+    for cell in cells:
+        family = (
+            cell['arm'], cell['label'], cell['feature_set'], cell['schema'], cell['panel'],
+        )
+        families.setdefault(family, {})[cell['fold_plan']] = cell
+    for family, plans in sorted(families.items()):
+        if len(plans) < 2:
+            continue
+        first, second = sorted(plans.values(), key=lambda item: item['fold_plan'])[:2]
+        if first['icir'] is None or second['icir'] is None:
+            winner = 'undecidable'
+        elif abs(first['icir'] - second['icir']) < tie_margin:
+            if first['positive_share'] == second['positive_share']:
+                winner = 'tie'
+            else:
+                winner = (
+                    first['fold_plan']
+                    if first['positive_share'] > second['positive_share']
+                    else second['fold_plan']
+                )
+        else:
+            winner = first['fold_plan'] if first['icir'] > second['icir'] else second['fold_plan']
+        comparisons.append({
+            'arm': family[0], 'label': family[1], 'feature_set': family[2],
+            'schema': family[3], 'panel': family[4], 'plans': sorted(plans),
+            'winner': winner,
+        })
+    return {'cells': cells, 'comparisons': comparisons}
