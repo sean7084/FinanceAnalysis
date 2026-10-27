@@ -1,5 +1,25 @@
 # Changelog
 
+### version 0.1.43
+
+#### Added:
+
+- **Three coverage denominators.** `build_etf_index_mapping` now reports coverage against
+  (i) the ever-eligible pool (`is_eligible` snapshots -- the pre-registered denominator and the
+  only one the 70% floor judges), (ii) names that ever entered a book (positions + signal
+  selections), and (iii) today's rankable pool for continuity.
+- **`measure_etf_coverage_bias`** measures the forward-return spread between funds that have
+  each data flag and funds that do not, per date, and writes one evidence-ledger row plus
+  `docs/reports/etf-coverage-bias.md`. On 2016-2023 (144,164 eligible snapshots): share-flow
+  coverage 89.7% with a -0.10% spread on 51% of dates; valuation 14.5% / +0.02% / 53%;
+  breadth 53.1% / +0.13% / 52% -- no systematic coverage bias, so the flow columns' null
+  result is not an artefact of who has the data.
+
+#### Verified:
+
+- Backend 830 -> 834 tests; frontend unchanged at 79. One ledger row
+  (`4f632932db70`); no model, backtest row or artifact written.
+
 ### version 0.1.42
 
 #### Added:

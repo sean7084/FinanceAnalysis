@@ -7539,6 +7539,65 @@ class MacroReleaseLagTests(SimpleTestCase):
         )
 
 
+class CoverageBiasTests(_PanelSeedMixin, TestCase):
+    """#65: the coverage denominator is the pre-registered one, and flags are bias-tested."""
+
+    def test_coverage_is_reported_against_the_preregistered_denominator_not_the_convenient_one(self):
+        from apps.etf_rotation.coverage_bias import coverage_counts
+
+        counts = coverage_counts(
+            mapped={'A', 'B'}, eligible={'A', 'B', 'C'}, book={'B', 'C', 'D'},
+            rankable={'A', 'C'},
+        )
+
+        self.assertEqual(counts['eligible']['ratio'], 2 / 3)
+        self.assertEqual(counts['book']['ratio'], 1 / 3)
+        self.assertEqual(counts['rankable']['ratio'], 1 / 2)
+
+    def test_a_name_that_ever_entered_a_book_is_in_the_denominator(self):
+        from apps.etf_rotation.coverage_bias import book_fill_rate
+
+        self.assertEqual(book_fill_rate({'A', 'B'}, {'B'}), {'total': 2, 'covered': 1, 'ratio': 0.5})
+
+    def test_a_flag_that_predicts_returns_is_reported_as_bias_not_as_alpha(self):
+        from apps.etf_rotation.coverage_bias import flag_bias
+
+        rows = [
+            {'date': date(2026, 1, 2), 'fwd_return': 0.10, 'has_share_flow': 1},
+            {'date': date(2026, 1, 2), 'fwd_return': 0.00, 'has_share_flow': 0},
+            {'date': date(2026, 1, 5), 'fwd_return': 0.20, 'has_share_flow': 1},
+            {'date': date(2026, 1, 5), 'fwd_return': 0.10, 'has_share_flow': 0},
+        ]
+        result = flag_bias(rows, 'has_share_flow')
+
+        self.assertEqual(result['dates'], 2)
+        self.assertGreater(result['mean_spread'], 0)
+        self.assertEqual(result['positive_share'], 1.0)
+
+    def test_the_bias_measurement_writes_one_ledger_row(self):
+        import tempfile
+
+        from apps.etf_rotation import evidence
+
+        etf = _seed_etf('510300.SH', name='沪深300ETF', category=next(iter(ETFCategory)))
+        ETFFeatureSnapshot.objects.create(
+            etf=etf, date=date(2026, 1, 5), is_eligible=True,
+            has_share_flow=True, fwd_return=0.01,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = os.path.join(tmp, 'bias.jsonl')
+            with override_settings(ETF_EVIDENCE_PATH=ledger):
+                call_command(
+                    'measure_etf_coverage_bias', '--start', '2026-01-01', '--end', '2026-01-31',
+                    '--out', os.path.join(tmp, 'bias.md'), stdout=io.StringIO(),
+                )
+                rows = evidence.read_measurements()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['context']['measurement'], 'coverage_bias')
+        self.assertIn('book_fill', rows[0]['results'])
+
+
 class PinnedRuntimeTests(SimpleTestCase):
     """#13: the stack that produced an artifact is pinned and recorded, not implied."""
 

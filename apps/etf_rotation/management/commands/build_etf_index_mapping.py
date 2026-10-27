@@ -21,6 +21,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from apps.etf_rotation.coverage_bias import coverage_counts
 from apps.etf_rotation.models import ETFIndexMapping, ETFUniverse
 
 #: Strips the decorations funds put around an index name in their benchmark line.
@@ -123,20 +124,41 @@ class Command(BaseCommand):
                         },
                     )
 
-        pool = ETFUniverse.objects.filter(is_active=True, is_rankable=True)
-        pool_codes = set(pool.values_list('ts_code', flat=True))
-        pool_total = len(pool_codes)
-        # Count only pool members: ``resolved`` also covers universe ETFs that never pass the
-        # liquidity screen, and counting those would report coverage above 100%.
-        mapped_pool = len({code for code, *_rest in resolved if code in pool_codes})
+        rankable_codes = set(
+            ETFUniverse.objects.filter(is_active=True, is_rankable=True)
+            .values_list('ts_code', flat=True)
+        )
+        eligible_codes = set(
+            ETFFeatureSnapshot.objects.filter(is_eligible=True)
+            .values_list('etf__ts_code', flat=True).distinct()
+        )
+        book_codes = set(ETFRotationPosition.objects.values_list('etf__ts_code', flat=True))
+        for selected in ETFRotationSignal.objects.values_list('selected_etfs', flat=True):
+            for item in selected or []:
+                if isinstance(item, dict) and item.get('ts_code'):
+                    book_codes.add(str(item['ts_code']))
+        mapped_codes = {code for code, *_rest in resolved}
+        counts = coverage_counts(
+            mapped=mapped_codes, eligible=eligible_codes,
+            book=book_codes, rankable=rankable_codes,
+        )
+        pool_total = counts['eligible']['total']
+        mapped_pool = counts['eligible']['mapped']
         lines = [
             '# ETF → 跟踪指数映射覆盖率',
             '',
             f'- 指数目录：{len(catalogue)} 个名称；ETF benchmark：{len(benchmarks)} 行。',
             f'- 在 ETFUniverse 内可匹配：{len(resolved)}（exact {exact} / partial {len(resolved) - exact}）。',
             f'- 未匹配：{len(unresolved)}。',
-            f'- 可选池（is_active & is_rankable）：{pool_total}，其中已映射 **{mapped_pool}**'
-            f'（{mapped_pool / pool_total:.1%}）。' if pool_total else '- 可选池为空。',
+            '- 分母 (i) 曾 ADV-合格（预登记判定）：'
+            + (f'{counts["eligible"]["mapped"]}/{pool_total} = {counts["eligible"]["ratio"]:.1%}'
+               if pool_total else 'n/a'),
+            '- 分母 (ii) 曾进过持仓书：'
+            + (f'{counts["book"]["mapped"]}/{counts["book"]["total"]} = {counts["book"]["ratio"]:.1%}'
+               if counts['book']['total'] else 'n/a'),
+            '- 分母 (iii) 当前 rankable（仅作对照，不作判定）：'
+            + (f'{counts["rankable"]["mapped"]}/{counts["rankable"]["total"]} = '
+               f'{counts["rankable"]["ratio"]:.1%}' if counts['rankable']['total'] else 'n/a'),
             '',
             '## 未匹配样例（前 20 条）',
             '',
