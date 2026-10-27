@@ -29,7 +29,7 @@ from apps.etf_rotation.models import (
     ETFRotationBacktest,
     ETFRotationPosition,
 )
-from apps.etf_rotation.position_ledger import signal_type_of
+from apps.etf_rotation.position_ledger import arm_of, signal_type_of
 
 __all__ = ['build_live_track', 'dispatch_drift_alert']
 
@@ -188,7 +188,11 @@ def build_live_track(*, reference_backtest_id: int | None = None,
     reference = _reference_expectation(reference_backtest_id)
     grouped: dict[str, list] = {}
     for position in ETFRotationPosition.objects.select_related('etf', 'signal').all():
-        grouped.setdefault(signal_type_of(position) or 'UNKNOWN', []).append(position)
+        kind = signal_type_of(position) or 'UNKNOWN'
+        arm = arm_of(position)
+        # ``SHADOW:lgb-veto`` reads as one book; a production leg keeps the bare signal type so
+        # every report written before arms existed keeps its key.
+        grouped.setdefault(f'{kind}:{arm}' if arm else kind, []).append(position)
 
     books = {}
     for signal_type, positions in sorted(grouped.items()):

@@ -67,12 +67,63 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     'drawdown_from_high_60d',
     'avg_amount_20d',
     'volume_ratio_5d_20d',
+    # Creation/redemption flow, joined from ``ETFShareDaily``: 95.8% of eligible rows have it,
+    # so unlike the index-valuation columns these belong in the model input.
+    'share_growth_5d',
+    'share_growth_20d',
+    'flow_x_mom',
+    'has_share_flow',
 )
 
-LABEL_COLUMNS: tuple[str, ...] = ('fwd_return', 'label_rank_pct', 'label_top_bucket')
+#: Index-valuation columns: computed and stored, but **not** part of ``FEATURE_COLUMNS``.
+#: TuShare's ``index_dailybasic`` only covers six broad indices, which reaches 12% of the
+#: eligible pool -- far below the 70% pre-registered floor -- so a model trained on them
+#: would learn "this fund has a broad-benchmark mapping" rather than a valuation signal.
+#: The plumbing stays (mapping table, valuation table, :func:`attach_index_valuation`) so a
+#: source with real coverage can switch them on by moving these names into the tuple above.
+INDEX_VALUATION_COLUMNS: tuple[str, ...] = (
+    'idx_pe_pct_3y', 'idx_pb_pct_3y', 'idx_turnover_z', 'has_index_valuation',
+)
+
+#: Constituent-breadth columns (P30), attached from ``IndexWeightSnapshot`` + ``markets.OHLCV``.
+#: Independent of ``FEATURE_COLUMNS`` for the same reason as the valuation family: whether a
+#: model may use them is a coverage question measured after the backfill, not an assumption.
+INDEX_BREADTH_COLUMNS: tuple[str, ...] = (
+    'idx_share_above_ma60', 'idx_ret_dispersion_20d', 'idx_mom_consistency',
+    'has_index_breadth',
+)
+
+#: Columns produced by an attach function after :func:`assemble_rows`, not by the price
+#: builders. They still have to reach the snapshot row, so both the model builder and the
+#: upsert's ``update_fields`` read this tuple.
+ATTACHED_FEATURE_COLUMNS: tuple[str, ...] = (
+    *INDEX_VALUATION_COLUMNS, *INDEX_BREADTH_COLUMNS,
+)
+
+#: Share-flow columns. Attached after the price builders from ``ETFShareDaily`` rather than
+#: derived from the price panel, and part of ``FEATURE_COLUMNS`` because the backfill covers
+#: 95.8% of eligible rows.
+SHARE_FLOW_COLUMNS: tuple[str, ...] = (
+    'share_growth_5d', 'share_growth_20d', 'flow_x_mom', 'has_share_flow',
+)
+#: Columns in the tuple above that are attached after the price builders rather than derived
+#: from them. Kept separate from ``SHARE_FLOW_COLUMNS`` only to make the exemption lists read
+#: clearly; today they are the same four names.
+SHARE_FLOW_ATTACHED = SHARE_FLOW_COLUMNS
+
+
+LABEL_COLUMNS: tuple[str, ...] = (
+    'fwd_return', 'label_rank_pct', 'label_top_bucket',
+    # Downside labels. The selector arms lost on return while winning on drawdown, so the
+    # next hypothesis is that the score belongs in a *filter* that predicts risk rather than
+    # in a selector that predicts return.
+    'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
+)
 # ``label_top_bucket`` is derived from ``label_rank_pct`` at assembly time, so these are the
 # label columns that exist as frames in the computed feature dictionary.
-LABEL_FRAME_COLUMNS: tuple[str, ...] = ('fwd_return', 'label_rank_pct')
+LABEL_FRAME_COLUMNS: tuple[str, ...] = (
+    'fwd_return', 'label_rank_pct', 'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
+)
 
 LABEL_HORIZON_DAYS_DEFAULT = 20
 MIN_LISTING_AGE_DAYS_DEFAULT = 183
@@ -185,6 +236,43 @@ def build_forward_return(prices: pd.DataFrame, label_horizon_days: int) -> pd.Da
     later session, never zeroed.
     """
     return prices.shift(-int(label_horizon_days)) / prices - 1.0
+
+
+def build_forward_drawdown(prices: pd.DataFrame, label_horizon_days: int) -> pd.DataFrame:
+    """Largest peak-to-trough fall over the ``N`` sessions *after* each date, as a magnitude.
+
+    ``md(D) = max_k (peak(D..D+k) - P(D+k)) / peak(D..D+k)`` for ``k`` in ``1..N``, with the
+    peak starting at ``D`` itself. Positive numbers: 0.05 means the fund fell 5 percent from
+    its running high somewhere inside the horizon. FORWARD-LOOKING, like
+    :func:`build_forward_return`, and NaN where the window is incomplete.
+    """
+    horizon = int(label_horizon_days)
+    peak = prices.copy()
+    drawdown = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    for offset in range(1, horizon + 1):
+        path = prices.shift(-offset)
+        peak = peak.where(peak >= path, path)
+        fall = (peak - path) / peak
+        drawdown = drawdown.where(drawdown >= fall, fall)
+    return drawdown.where(prices.shift(-horizon).notna())
+
+
+def build_forward_downside_deviation(prices: pd.DataFrame, label_horizon_days: int) -> pd.DataFrame:
+    """Root-mean-square of the *negative* forward daily returns over the horizon.
+
+    Upside days contribute zero, so this measures how violently the fund lost, not how much
+    it moved. Same forward-window rule and NaN policy as :func:`build_forward_drawdown`.
+    """
+    horizon = int(label_horizon_days)
+    # ``fill_method=None``: padding a missing bar into a 0% return would invent an
+    # observation, and a downside label built from invented mild days understates the risk.
+    returns = prices.pct_change(fill_method=None)
+    total = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    for offset in range(1, horizon + 1):
+        falling = returns.shift(-offset).clip(upper=0.0)
+        total = total.add(falling.fillna(0.0) ** 2)
+    deviation = np.sqrt(total / float(horizon))
+    return deviation.where(prices.shift(-horizon).notna())
 
 
 def build_momentum_features(prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -366,6 +454,10 @@ def build_feature_frame(
     features.update(build_liquidity_features(amounts, volumes))
     features['drawdown_from_high_60d'] = build_drawdown_feature(prices, highs)
     features['fwd_return'] = build_forward_return(prices, label_horizon_days)
+    features['fwd_max_drawdown'] = build_forward_drawdown(prices, label_horizon_days)
+    features['fwd_downside_deviation'] = build_forward_downside_deviation(
+        prices, label_horizon_days,
+    )
     return features
 
 
@@ -444,6 +536,9 @@ def build_cross_sectional_ranks(
         for sessions in RANK_SESSIONS
     }
     ranks['label_rank_pct'] = features['fwd_return'].where(eligibility).rank(axis=1, pct=True)
+    # Safety rank: the *smallest* drawdown ranks 1.0, so every label keeps the engine's
+    # convention that a higher score is better and a veto can keep dropping the bottom share.
+    ranks['label_dd_rank'] = (-features['fwd_max_drawdown']).where(eligibility).rank(axis=1, pct=True)
     return ranks
 
 
@@ -453,8 +548,16 @@ def _require_complete_feature_set(features: dict[str, pd.DataFrame]) -> None:
     A silently missing column would be written as NULL, which in a training frame looks
     like "this fund was flat that month" rather than "nobody implemented the feature".
     """
-    built = set(features) - set(LABEL_FRAME_COLUMNS)
-    missing = [name for name in FEATURE_COLUMNS if name not in built]
+    built = (
+        set(features) - set(LABEL_FRAME_COLUMNS)
+        - set(INDEX_VALUATION_COLUMNS) - set(SHARE_FLOW_COLUMNS)
+    )
+    missing = [
+        name for name in FEATURE_COLUMNS
+        if name not in built
+        and name not in INDEX_VALUATION_COLUMNS
+        and name not in SHARE_FLOW_COLUMNS
+    ]
     unexpected = sorted(built - set(FEATURE_COLUMNS))
     if missing or unexpected:
         raise ValueError(f'feature frame does not match FEATURE_COLUMNS: missing={missing} unexpected={unexpected}')
@@ -494,7 +597,11 @@ def assemble_rows(
     rows.insert(0, 'etf_id', traded.columns.to_numpy()[column_positions])
     rows.insert(1, 'date', np.asarray(traded.index, dtype=object)[row_positions])
 
+    # Index-valuation columns are attached per block from `IndexValuationDaily`; they are
+    # not in the price-derived `features` dict, so the assembly skips them here.
     for name in (*FEATURE_COLUMNS, *LABEL_FRAME_COLUMNS):
+        if name in INDEX_VALUATION_COLUMNS or name in SHARE_FLOW_COLUMNS:
+            continue
         rows[name] = features[name].to_numpy(dtype='float64').ravel(order='F')[keep]
     rows['is_eligible'] = eligibility.to_numpy().ravel(order='F')[keep]
 
@@ -528,6 +635,9 @@ def _none_if_na(values: np.ndarray) -> np.ndarray:
 def build_snapshot_models(rows: pd.DataFrame, *, metadata: dict) -> list[ETFFeatureSnapshot]:
     """Convert an assembled block into unsaved ``ETFFeatureSnapshot`` instances."""
     feature_cells = list(zip(*[_none_if_na(rows[name].to_numpy()) for name in FEATURE_COLUMNS]))
+    attached_cells = list(
+        zip(*[_none_if_na(rows[name].to_numpy()) for name in ATTACHED_FEATURE_COLUMNS])
+    )
     label_cells = list(zip(*[_none_if_na(rows[name].to_numpy()) for name in LABEL_COLUMNS]))
     etf_ids = rows['etf_id'].to_numpy()
     sessions = rows['date'].to_numpy()
@@ -545,6 +655,7 @@ def build_snapshot_models(rows: pd.DataFrame, *, metadata: dict) -> list[ETFFeat
                 # Keyword expansion straight off FEATURE_COLUMNS is the only path from the
                 # frame into the model, so feature membership is declared, never inferred.
                 **dict(zip(FEATURE_COLUMNS, feature_cells[position])),
+                **dict(zip(ATTACHED_FEATURE_COLUMNS, attached_cells[position])),
                 is_eligible=bool(eligible[position]),
                 label_horizon_days=(int(horizons[position]) if horizons[position] is not None else None),
                 **dict(zip(LABEL_COLUMNS, label_cells[position])),
@@ -571,7 +682,10 @@ def _upsert(snapshots: Sequence[ETFFeatureSnapshot], *, batch_size: int, update_
 
 
 def _full_update_fields() -> list[str]:
-    return [*FEATURE_COLUMNS, 'is_eligible', 'label_horizon_days', *LABEL_COLUMNS, 'metadata']
+    return [
+        *FEATURE_COLUMNS, *ATTACHED_FEATURE_COLUMNS,
+        'is_eligible', 'label_horizon_days', *LABEL_COLUMNS, 'metadata',
+    ]
 
 
 def _labels_update_fields() -> list[str]:
@@ -582,6 +696,262 @@ def _labels_update_fields() -> list[str]:
 
 def _plain_date(value) -> date:
     return value.date() if isinstance(value, datetime) else value
+
+
+def attach_share_flow(block: pd.DataFrame) -> pd.DataFrame:
+    """Creation/redemption flow features from ``ETFShareDaily``, as of the previous session.
+
+    ETF shares change when authorised participants create or redeem, so the change *is* the
+    flow -- unlike a stock's share count, which only moves on issuance. ``fund_share`` is
+    published with a one-session lag, so every row is shifted to the next session before it is
+    joined.
+
+    Two traps this function exists to avoid, both silent on a small sample:
+
+    * The block's session list is sparse, so many history dates map onto one session. The join
+      therefore keeps only the **latest** row per (fund, session) -- otherwise it is a
+      many-to-many merge and the block comes back with thousands of duplicated rows.
+    * A fund with no history keeps NaN and ``has_share_flow=0``; zeroing it would read as
+      "no creations or redemptions", which is a different statement.
+    """
+    from apps.etf_rotation.models import ETFShareDaily
+
+    block = block.copy()
+    etf_ids = sorted(set(int(value) for value in block['etf_id'].tolist()))
+    dates = sorted(set(block['date'].tolist()))
+    frames = ETFShareDaily.objects.filter(
+        etf_id__in=etf_ids, date__lte=dates[-1],
+    ).values('etf_id', 'date', 'shares')
+    history = pd.DataFrame(list(frames))
+    if history.empty:
+        block['share_growth_5d'] = np.nan
+        block['share_growth_20d'] = np.nan
+        block['flow_x_mom'] = np.nan
+        block['has_share_flow'] = False
+        return block
+
+    history['date'] = pd.to_datetime(history['date']).dt.date
+    history = history.sort_values(['etf_id', 'date'])
+    grouped = history.groupby('etf_id', sort=False)['shares']
+    history['share_growth_5d'] = grouped.pct_change(5)
+    history['share_growth_20d'] = grouped.pct_change(20)
+
+    session_index = block['date'].drop_duplicates().sort_values().reset_index(drop=True)
+    sessions = session_index.to_numpy()
+    positions = np.searchsorted(sessions, history['date'].to_numpy(), side='right')
+    usable = positions < len(sessions)
+    history = history.loc[usable].copy()
+    history['session'] = sessions[positions[usable]]
+    # One row per (fund, session): the last publication strictly before that session.
+    history = history.drop_duplicates(subset=['etf_id', 'session'], keep='last')
+
+    history['date_key'] = pd.to_datetime(history['session']).dt.strftime('%Y-%m-%d')
+    block['date_key'] = pd.to_datetime(block['date']).dt.strftime('%Y-%m-%d')
+    merged = block.merge(
+        history[['etf_id', 'date_key', 'share_growth_5d', 'share_growth_20d']],
+        on=['etf_id', 'date_key'], how='left', validate='many_to_one',
+    ).drop(columns=['date_key'])
+    if len(merged) != len(block):  # pragma: no cover - the right side is deduped above
+        raise ValueError('share-flow join multiplied the block; the right side was not unique')
+    momentum = pd.to_numeric(merged.get('mom_20d'), errors='coerce')
+    merged['flow_x_mom'] = merged['share_growth_20d'] * momentum
+    merged['has_share_flow'] = merged['share_growth_20d'].notna()
+    return merged
+
+
+def attach_index_valuation(block: pd.DataFrame) -> pd.DataFrame:
+    """Add the index-valuation columns to an assembled block, as of the previous session.
+
+    ``index_dailybasic`` is published after the close, so every value is shifted one session
+    before it is joined: a signal generated on D must not use D's own valuation. Percentiles
+    run over each index's trailing 750 rows and the turnover z-score over 250, all computed
+    on that index's own history rather than across indices -- an ETF tracking a 40x-PE
+    sector is not expensive relative to a 10x bank index.
+
+    A fund with no mapping, or a date before its index's valuation history starts, keeps NaN
+    and ``has_index_valuation=0``. That flag exists so the coverage bias can be measured
+    later instead of being silently mixed into the feature.
+    """
+    from apps.etf_rotation.models import ETFIndexMapping, IndexValuationDaily
+
+    mapping = dict(ETFIndexMapping.objects.values_list('etf_id', 'index_code'))
+    block = block.copy()
+    if not mapping:
+        block['idx_pe_pct_3y'] = np.nan
+        block['idx_pb_pct_3y'] = np.nan
+        block['idx_turnover_z'] = np.nan
+        block['has_index_valuation'] = False
+        return block
+
+    dates = sorted(set(block['date'].tolist()))
+    session_index = block['date'].drop_duplicates().sort_values().reset_index(drop=True)
+    frames = IndexValuationDaily.objects.filter(
+        index_code__in=set(mapping.values()), date__lte=dates[-1],
+    ).values('index_code', 'date', 'pe_ttm', 'pb', 'turnover_rate')
+    valuation = pd.DataFrame(list(frames))
+    if valuation.empty:
+        block['idx_pe_pct_3y'] = np.nan
+        block['idx_pb_pct_3y'] = np.nan
+        block['idx_turnover_z'] = np.nan
+        block['has_index_valuation'] = False
+        return block
+
+    valuation['date'] = pd.to_datetime(valuation['date']).dt.date
+    valuation = valuation.sort_values(['index_code', 'date'])
+    grouped = valuation.groupby('index_code', sort=False)
+    # ``rolling.rank(pct=True)`` is the C path; a Python lambda over 750-row windows would
+    # take minutes on this panel.
+    valuation['idx_pe_pct_3y'] = grouped['pe_ttm'].transform(
+        lambda series: series.rolling(750, min_periods=250).rank(pct=True)
+    )
+    valuation['idx_pb_pct_3y'] = grouped['pb'].transform(
+        lambda series: series.rolling(750, min_periods=250).rank(pct=True)
+    )
+    turnover = grouped['turnover_rate']
+    mean = turnover.transform(lambda series: series.rolling(250, min_periods=120).mean())
+    std = turnover.transform(lambda series: series.rolling(250, min_periods=120).std())
+    valuation['idx_turnover_z'] = (valuation['turnover_rate'] - mean) / std.replace(0.0, np.nan)
+    # PIT: the row published on D is only usable from D+1. ``searchsorted`` keeps this O(n).
+    sessions = session_index.to_numpy()
+    positions = np.searchsorted(sessions, valuation['date'].to_numpy(), side='right')
+    usable = positions < len(sessions)
+    valuation = valuation.loc[usable].copy()
+    valuation['session'] = sessions[positions[usable]]
+    # One row per (index, session): the block's session list is sparse, so many valuation
+    # dates map onto one session. Without this the merge is many-to-many and the block comes
+    # back with duplicated (etf, date) keys.
+    valuation = valuation.drop_duplicates(subset=['index_code', 'session'], keep='last')
+    valuation['date_key'] = pd.to_datetime(valuation['session']).dt.strftime('%Y-%m-%d')
+    # Join on the *index*, not on a reversed etf map: 170 ETFs can track one index, and a
+    # ``{index_code: etf}`` dict keeps only one of them.
+    merged = block.assign(
+        index_code=block['etf_id'].map(mapping),
+        date_key=pd.to_datetime(block['date']).dt.strftime('%Y-%m-%d'),
+    ).merge(
+        valuation[['index_code', 'date_key', 'idx_pe_pct_3y', 'idx_pb_pct_3y', 'idx_turnover_z']],
+        on=['index_code', 'date_key'], how='left', validate='many_to_one',
+    ).drop(columns=['date_key', 'index_code'])
+    if len(merged) != len(block):  # pragma: no cover - guarded by the dedupe above
+        raise ValueError('index-valuation join multiplied the block; right side not unique')
+    merged['has_index_valuation'] = merged['idx_pe_pct_3y'].notna()
+    return merged
+
+
+def attach_index_breadth(block: pd.DataFrame) -> pd.DataFrame:
+    """Constituent breadth of the tracked index, computed as of the previous session.
+
+    Three facts no fund-level feature can see: how much of the index sits above its own
+    60-session mean, how dispersed constituent returns are, and whether the constituents
+    agree with the index's direction. Weights come from the latest ``index_weight``
+    publication at or before **D-1** (monthly, published after the close), and every price
+    series is shifted one session for the same reason as the valuation family.
+
+    A fund whose index has no weights, or a session where less than half the index weight has
+    usable prices, keeps NaN with ``has_index_breadth=0``: a breadth number computed from a
+    fifth of an index is not the index's breadth, and quietly mixing it in is how a coverage
+    artefact starts looking like a signal.
+    """
+    from apps.etf_rotation.models import ETFIndexMapping, IndexWeightSnapshot
+    from apps.markets.models import Asset, OHLCV
+
+    block = block.copy()
+    empty = {
+        'idx_share_above_ma60': np.nan, 'idx_ret_dispersion_20d': np.nan,
+        'idx_mom_consistency': np.nan, 'has_index_breadth': False,
+    }
+    mapping = dict(ETFIndexMapping.objects.values_list('etf_id', 'index_code'))
+    if not mapping:
+        return block.assign(**empty)
+    block['index_code'] = block['etf_id'].map(mapping)
+    wanted = sorted({code for code in block['index_code'].dropna().unique() if code})
+    if not wanted:
+        return block.assign(**empty).drop(columns=['index_code'])
+
+    sessions = pd.Index(sorted(block['date'].unique()))
+    start, end = sessions.min(), sessions.max()
+    # Only the snapshots that can be the "latest publication at or before D" are loaded: one
+    # year back covers the monthly cadence with room for a missed publication, and the whole
+    # history (millions of rows) would be re-read once per chunk for no additional answer.
+    weights = pd.DataFrame(list(
+        IndexWeightSnapshot.objects.filter(
+            index_code__in=wanted,
+            trade_date__gte=start - timedelta(days=400),
+            trade_date__lte=end,
+        ).values('index_code', 'con_code', 'trade_date', 'weight')
+    ))
+    if weights.empty:
+        return block.assign(**empty).drop(columns=['index_code'])
+    weights = weights.dropna(subset=['weight'])
+    weights['trade_date'] = pd.to_datetime(weights['trade_date']).dt.date
+
+    warm_start = start - timedelta(days=sessions_to_calendar_days(120))
+    asset_ids = dict(
+        Asset.objects.filter(ts_code__in=set(weights['con_code'])).values_list('ts_code', 'id')
+    )
+    bars = pd.DataFrame(list(
+        OHLCV.objects.filter(
+            asset_id__in=set(asset_ids.values()), date__gte=warm_start, date__lte=end,
+        ).values('asset_id', 'date', 'adj_close')
+    ))
+    if bars.empty:
+        return block.assign(**empty).drop(columns=['index_code'])
+    bars['adj_close'] = pd.to_numeric(bars['adj_close'], errors='coerce').astype('float64')
+    prices = (
+        bars.pivot_table(index='date', columns='asset_id', values='adj_close', aggfunc='last')
+        .sort_index()
+    )
+    prices = prices.where(prices > 0)
+    # PIT: every input a session D uses is D-1's bar, so the price itself is shifted too --
+    # comparing D's close against D-1's mean would leak the session being priced.
+    asof = prices.shift(1)
+    ma60 = asof.rolling(60, min_periods=40).mean()
+    ret20 = asof / asof.shift(20) - 1.0
+
+    panels = []
+    weights['asset_id'] = weights['con_code'].map(asset_ids)
+    weights = weights.dropna(subset=['asset_id'])
+    weights['asset_id'] = weights['asset_id'].astype('int64')
+    for code in wanted:
+        subset = weights[weights['index_code'] == code]
+        if subset.empty:
+            continue
+        weight_frame = subset.pivot_table(
+            index='trade_date', columns='asset_id', values='weight', aggfunc='last',
+        ).sort_index()
+        # A monthly snapshot published on T is usable from T+1; ffill then shift one session.
+        weight_frame = weight_frame.reindex(index=prices.index, method='ffill').shift(1)
+        columns = [column for column in weight_frame.columns if column in prices.columns]
+        if not columns:
+            continue
+        weight_frame = weight_frame[columns]
+        price_frame, mean_frame, return_frame = asof[columns], ma60[columns], ret20[columns]
+        mask = weight_frame.notna() & price_frame.notna() & mean_frame.notna() & return_frame.notna()
+        weight_sum = weight_frame.where(mask).sum(axis=1)
+        # Less than half the index weight priced is not the index's breadth.
+        usable = weight_sum > 0.5
+        share = ((price_frame > mean_frame) & mask).mul(weight_frame).sum(axis=1) / weight_sum
+        mean_return = (return_frame.where(mask) * weight_frame).sum(axis=1) / weight_sum
+        variance = (
+            (return_frame.sub(mean_return, axis=0) ** 2).where(mask) * weight_frame
+        ).sum(axis=1) / weight_sum
+        agrees = (return_frame.gt(0) == mean_return.gt(0).to_numpy()[:, None]) & mask
+        consistency = agrees.mul(weight_frame).sum(axis=1) / weight_sum
+        frame = pd.DataFrame({
+            'idx_share_above_ma60': share.where(usable),
+            'idx_ret_dispersion_20d': np.sqrt(variance.where(usable)),
+            'idx_mom_consistency': consistency.where(usable),
+        }).reindex(sessions).rename_axis('date').reset_index()
+        frame['index_code'] = code
+        panels.append(frame)
+
+    if not panels:
+        return block.assign(**empty).drop(columns=['index_code'])
+    panel = pd.concat(panels, ignore_index=True)
+    merged = block.merge(panel, on=['index_code', 'date'], how='left', validate='many_to_one')
+    if len(merged) != len(block):  # pragma: no cover - guarded by the per-index uniqueness
+        raise ValueError('index-breadth join multiplied the block; right side not unique')
+    merged['has_index_breadth'] = merged['idx_share_above_ma60'].notna()
+    return merged.drop(columns=['index_code'])
 
 
 def _load_master() -> pd.DataFrame:
@@ -866,6 +1236,10 @@ def compute_features(
             dates_seen.update(block['date'].unique().tolist())
             funds_seen.update(int(fund) for fund in block['etf_id'].unique().tolist())
             chunk_written += len(block)
+            # Both feature families live in their own tables and are joined per block.
+            block = attach_index_valuation(block)
+            block = attach_share_flow(block)
+            block = attach_index_breadth(block)
             if not dry_run:
                 _upsert(
                     build_snapshot_models(block, metadata=metadata),

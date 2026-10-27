@@ -78,6 +78,15 @@ DEFAULT_OBJECTIVE = 'lambdarank'
 
 MODELS_RELATIVE_PREFIX = os.path.join('models', 'etf_rotation', 'lightgbm')
 
+#: Which stored label an objective trains on. ``dd_rank`` is the safety rank: the smallest
+#: forward drawdown ranks 1.0, so lambdarank on it learns "least risky first" and the veto
+#: keeps dropping the bottom share of the score.
+LABEL_SOURCES = {
+    'rank_pct': 'label_rank_pct',
+    'top_bucket': 'label_top_bucket',
+    'dd_rank': 'label_dd_rank',
+}
+
 #: ``label_rank_pct`` bin edges, ascending -> five integer relevance grades (0..4).
 #: Deliberately coarse: LightGBM's default gain curve runs to 32 levels, and a 40-document
 #: query cannot populate them, so most of the DCG would sit on positions no ETF can reach.
@@ -93,6 +102,9 @@ NATIVE_PARAM_NAMES = frozenset({
     'objective', 'num_leaves', 'learning_rate', 'feature_fraction', 'bagging_fraction',
     'bagging_freq', 'lambda_l1', 'lambda_l2', 'min_data_in_leaf', 'min_sum_hessian_in_leaf',
     'max_depth', 'num_threads', 'seed', 'deterministic', 'verbose', 'verbose_v2',
+    # GPU knobs, allow-listed so a host whose wheel carries GPU support can switch with
+    # ETF_LGB_PARAMS={'device': 'gpu'} instead of a code edit. The default stays CPU.
+    'device', 'device_type', 'gpu_use_dp', 'gpu_platform_id', 'gpu_device_id',
     'label_gain', 'max_position', 'lambdarank_truncation_level', 'metric', 'metric_freq',
     'first_metric_only', 'force_row_wise', 'boost_from_average', 'num_class',
 })
@@ -119,10 +131,14 @@ DEFAULT_LGB_PARAMS = {
 FORBIDDEN_FEATURE_NAMES = frozenset({
     'ts_code', 'etf', 'etf_id', 'etf__ts_code', 'date',
     'fwd_return', 'label_rank_pct', 'label_top_bucket', 'label_horizon_days',
+    'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
     'is_eligible', 'metadata',
 })
 
-LABEL_COLUMNS = ('fwd_return', 'label_rank_pct', 'label_top_bucket', 'label_horizon_days')
+LABEL_COLUMNS = (
+    'fwd_return', 'label_rank_pct', 'label_top_bucket', 'label_horizon_days',
+    'fwd_max_drawdown', 'fwd_downside_deviation', 'label_dd_rank',
+)
 
 #: A one-document query group carries no ordering information and contributes zero gradient
 #: to lambdarank, so such dates are dropped from a ranking fit instead of inflating the
@@ -177,6 +193,11 @@ def resolve_params(objective: str, overrides: dict = None) -> dict:
     if objective not in OBJECTIVES:
         raise ValueError(f'objective must be one of {OBJECTIVES}, got {objective!r}.')
     params = dict(DEFAULT_LGB_PARAMS)
+    threads = getattr(settings, 'ETF_LGB_NUM_THREADS', None)
+    if threads is not None:
+        # Settings beat the dataclass literal; ETF_LGB_PARAMS still beats settings, so an
+        # explicit per-run override keeps its meaning.
+        params['num_threads'] = int(threads)
     params.update(dict(getattr(settings, 'ETF_LGB_PARAMS', None) or {}))
     params.update(dict(overrides or {}))
     params['objective'] = objective
@@ -318,7 +339,8 @@ def relevance_grade(rank_pct):
                      index=getattr(rank_pct, 'index', None), dtype=int)
 
 
-def build_training_frame(snapshots_df, *, feature_columns, horizon_days: int, objective: str) -> tuple:
+def build_training_frame(snapshots_df, *, feature_columns, horizon_days: int, objective: str,
+                        label: str = 'rank_pct') -> tuple:
     """Raw snapshot rows -> clean, date-sorted, single-horizon frame.
 
     Pure: no ORM, no files, no LightGBM, so it can be checked against a synthetic panel.
@@ -362,7 +384,13 @@ def build_training_frame(snapshots_df, *, feature_columns, horizon_days: int, ob
     counts['missing_fwd_return'] = int(frame['fwd_return'].isna().sum())
     frame = frame[frame['fwd_return'].notna()]
 
-    label_source = 'label_top_bucket' if objective == 'binary' else 'label_rank_pct'
+    if label not in LABEL_SOURCES:
+        raise ValueError(f'label must be one of {sorted(LABEL_SOURCES)}, got {label!r}.')
+    if objective == 'binary' and label != 'top_bucket':
+        raise ValueError(
+            "objective 'binary' needs label 'top_bucket'; a continuous label has no bucket."
+        )
+    label_source = LABEL_SOURCES[label]
     counts['missing_label'] = int(frame[label_source].isna().sum())
     # copy() before adding _label: the masks above leave _is_copy set on the frame, and
     # writing a column through a mask result is exactly the chained-assignment pattern
@@ -729,7 +757,8 @@ def registered_versions(model_type_labels=('ETF_LIGHTGBM', 'ETF_LSTM', 'ETF_ENSE
 # -----------------------------------------------------------------------------
 # Walk-forward driver
 # -----------------------------------------------------------------------------
-def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_days, folds=None):
+def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_days, folds=None,
+             label='rank_pct'):
     """Shared read + plan path for :func:`plan_walk_forward` and :func:`train_walk_forward`.
 
     Returns ``(base, frame, counts, folds, panel_dates)``. A ``base['status']`` other than
@@ -760,7 +789,8 @@ def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_d
 
     horizon_days = resolve_horizon_days(horizon_days)
     frame, counts = build_training_frame(
-        snapshots_df, feature_columns=feature_columns, horizon_days=horizon_days, objective=objective,
+        snapshots_df, feature_columns=feature_columns, horizon_days=horizon_days,
+        objective=objective, label=label,
     )
     panel_dates = sorted(frame['date'].unique().tolist())
     if not panel_dates:
@@ -793,6 +823,7 @@ def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_d
         'horizon_days': int(horizon_days),
         'min_train_days': int(min_train_days),
         'objective': objective,
+        'label': str(label),
         'n_folds_requested': int(n_folds),
         'n_folds_built': len(folds),
         'feature_columns': feature_columns,
@@ -828,7 +859,8 @@ def _pool_stats(frame) -> dict:
 
 
 def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days=None,
-                         objective=None, num_boost_round=None, params=None) -> dict:
+                         objective=None, num_boost_round=None, params=None,
+                         label: str = 'rank_pct', seeds: int = 1) -> dict:
     """Fit one booster per fold on exactly its training dates; register nothing.
 
     This is the CPCV rematch's engine (plan Phase 14). ``train_walk_forward`` ships a refit
@@ -842,6 +874,7 @@ def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days
     objective = objective or DEFAULT_OBJECTIVE
     base, frame, _counts, _folds, panel_dates = _prepare(
         start_date, end_date, len(folds), horizon_days, objective, 1, folds=list(folds),
+        label=label,
     )
     if base.get('status') != 'ok':
         return base
@@ -852,6 +885,7 @@ def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days
         num_boost_round if num_boost_round is not None
         else _setting_int('ETF_LGB_NUM_BOOST_ROUND', 200)
     )
+    seeds = max(1, int(seeds))
     predictors, reports = {}, []
     for fold in folds:
         kept, _dropped = train_dates_for_any_fold(fold, panel_dates, horizon)
@@ -869,15 +903,22 @@ def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days
         matrix, labels, group, group_dates = build_rank_matrix(
             train_frame, feature_columns, objective=objective,
         )
-        booster = lgb.train(
-            resolved,
-            lgb.Dataset(matrix, label=labels, group=group, free_raw_data=False),
-            num_boost_round=rounds,
-        )
-        predictors[fold.fold_index] = _booster_scorer(
-            booster, feature_columns, label=f'fold-{fold.fold_index}',
-        )
-        reports.append({**report, 'status': 'trained', 'train_groups': len(group_dates)})
+        dataset = lgb.Dataset(matrix, label=labels, group=group, free_raw_data=False)
+        scorers = []
+        for offset in range(seeds):
+            # One booster per seed; the fold's score is their mean. Averaging the *score*
+            # rather than the prediction target keeps the ranking contract: a name's rank
+            # depends on how many models liked it, not on one model's lucky split.
+            seed_params = dict(resolved)
+            seed_params['seed'] = int(resolved.get('seed', 42)) + offset
+            booster = lgb.train(seed_params, dataset, num_boost_round=rounds)
+            scorers.append(_booster_scorer(
+                booster, feature_columns, label=f'fold-{fold.fold_index}-seed{offset}',
+            ))
+        predictors[fold.fold_index] = _mean_scorer(scorers)
+        reports.append({
+            **report, 'status': 'trained', 'train_groups': len(group_dates), 'seeds': seeds,
+        })
     return {
         'status': 'ok',
         'panel_start': base['panel_start'],
@@ -890,7 +931,7 @@ def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days
 
 def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horizon_days=None,
                       objective: str = DEFAULT_OBJECTIVE, min_train_days: int = None,
-                      version_tag: str = '') -> dict:
+                      version_tag: str = '', label: str = 'rank_pct') -> dict:
     """Build the frames and the fold plan, count samples and groups, train nothing, write nothing.
 
     This is ``--dry-run``: every query is a SELECT, no directory is created and no
@@ -902,7 +943,7 @@ def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horiz
         _setting_int('ETF_MIN_TRAIN_DAYS', 250) if min_train_days is None else int(min_train_days)
     )
     base, frame, _counts, folds, panel_dates = _prepare(
-        start_date, end_date, n_folds, horizon_days, objective, min_train_days,
+        start_date, end_date, n_folds, horizon_days, objective, min_train_days, label=label,
     )
     if base['status'] != 'ok':
         return {**base, 'lightgbm_available': lgb is not None}
@@ -942,7 +983,8 @@ def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horiz
 def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=None, end_date=None,
                        n_folds: int = 6, horizon_days=None, objective: str = DEFAULT_OBJECTIVE,
                        num_boost_round: int = None, params: dict = None,
-                       min_train_days: int = None, version_tag: str = '', activate: bool = True) -> dict:
+                       min_train_days: int = None, version_tag: str = '', activate: bool = True,
+                       label: str = 'rank_pct') -> dict:
     """Expanding-window walk-forward fit with per-fold holdout metrics, then one registry row.
 
     Each fold trains on its purged window and is scored on the block that follows it. The
@@ -973,7 +1015,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
         raise ValueError(f'num_boost_round must be >= 1, got {num_boost_round}.')
 
     base, frame, counts, folds, panel_dates = _prepare(
-        start_date, end_date, n_folds, horizon_days, objective, min_train_days,
+        start_date, end_date, n_folds, horizon_days, objective, min_train_days, label=label,
     )
     if base['status'] != 'ok':
         return {**base, 'model_type_label': model_type_label}
@@ -1239,6 +1281,22 @@ def load_predictor_for_version(version: str):
             f'{rows[0].artifact_path}.'
         )
     return predictor
+
+
+def _mean_scorer(scorers):
+    """Average the ``score`` column of several scorers; one scorer passes straight through."""
+    if len(scorers) == 1:
+        return scorers[0]
+
+    def score(snapshots_df) -> pd.DataFrame:
+        frames = [scorer(snapshots_df) for scorer in scorers]
+        merged = frames[0][['ts_code']].copy()
+        merged['score'] = np.mean(
+            [frame['score'].to_numpy(dtype=float) for frame in frames], axis=0,
+        )
+        return merged
+
+    return score
 
 
 def _booster_scorer(booster, feature_columns, *, label=''):

@@ -137,6 +137,118 @@ class ETFUniverse(models.Model):
         return self.list_date or self.first_trade_date
 
 
+class ETFIndexMapping(models.Model):
+    """Which index an ETF tracks, and how confidently that was resolved.
+
+    ``ETFUniverse.track_index_key`` is free text lifted from the fund's own prospectus
+    (``沪深300指数+中信标普全债``), so it cannot be joined to ``index_dailybasic``. This table
+    holds the resolved code together with the evidence: the benchmark string that was
+    matched, whether the match covers the whole benchmark or only its equity leg, and the
+    source that produced it. A missing row means "not resolved", never "no index".
+    """
+
+    class Confidence(models.TextChoices):
+        EXACT = 'exact', _('Exact')
+        PARTIAL = 'partial', _('Partial')
+
+    etf = models.OneToOneField(
+        ETFUniverse, on_delete=models.CASCADE, related_name='index_mapping', verbose_name=_('ETF'),
+    )
+    index_code = models.CharField(_('Index Code'), max_length=20, db_index=True)
+    index_name = models.CharField(_('Index Name'), max_length=100, blank=True)
+    confidence = models.CharField(
+        _('Confidence'), max_length=16, choices=Confidence.choices, default=Confidence.EXACT,
+    )
+    benchmark_text = models.TextField(_('Benchmark Text'), blank=True)
+    source = models.CharField(_('Source'), max_length=40, blank=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('ETF Index Mapping')
+        verbose_name_plural = _('ETF Index Mappings')
+
+    def __str__(self):
+        return f'{self.etf_id} -> {self.index_code} ({self.confidence})'
+
+
+class IndexValuationDaily(models.Model):
+    """Daily valuation of an index an ETF tracks (TuShare ``index_dailybasic``).
+
+    Published after the close, so a feature built from it may only use **D-1** and earlier.
+    Only ``pe_ttm``, ``pb``, ``turnover_rate`` and the market-value columns are available
+    here; TuShare does not publish a dividend yield on this endpoint, which is why the
+    feature set in ``features.py`` does not claim one.
+    """
+
+    index_code = models.CharField(_('Index Code'), max_length=20, db_index=True)
+    date = models.DateField(_('Date'), db_index=True)
+    pe_ttm = models.FloatField(_('PE TTM'), null=True, blank=True)
+    pb = models.FloatField(_('PB'), null=True, blank=True)
+    turnover_rate = models.FloatField(_('Turnover Rate'), null=True, blank=True)
+    total_mv = models.FloatField(_('Total Market Value'), null=True, blank=True)
+    float_mv = models.FloatField(_('Float Market Value'), null=True, blank=True)
+    source = models.CharField(_('Source'), max_length=40, blank=True, default='tushare:index_dailybasic')
+
+    class Meta:
+        verbose_name = _('Index Valuation Daily')
+        verbose_name_plural = _('Index Valuation Daily')
+        unique_together = ('index_code', 'date')
+        indexes = [models.Index(fields=['index_code', 'date'])]
+
+    def __str__(self):
+        return f'{self.index_code} {self.date}'
+
+
+class IndexWeightSnapshot(models.Model):
+    """Monthly constituent weights of an index (TuShare ``index_weight``).
+
+    The only constituent-level fact available for the mapped indices. Publication is monthly
+    and after the close, so a breadth feature reads the latest snapshot at or before **D-1**
+    and never a future one.
+    """
+
+    index_code = models.CharField(_('Index Code'), max_length=20, db_index=True)
+    con_code = models.CharField(_('Constituent Code'), max_length=20, db_index=True)
+    trade_date = models.DateField(_('Trade Date'), db_index=True)
+    weight = models.FloatField(_('Weight'), null=True, blank=True)
+    source = models.CharField(_('Source'), max_length=40, blank=True, default='tushare:index_weight')
+
+    class Meta:
+        verbose_name = _('Index Weight Snapshot')
+        verbose_name_plural = _('Index Weight Snapshots')
+        unique_together = ('index_code', 'con_code', 'trade_date')
+        indexes = [models.Index(fields=['index_code', 'trade_date'])]
+
+    def __str__(self):
+        return f'{self.index_code} {self.con_code} {self.trade_date}'
+
+
+class ETFShareDaily(models.Model):
+    """Daily fund shares outstanding (TuShare ``fund_share``), the basis of flow features.
+
+    ``ETFUniverse.shares_outstanding`` is a single period stamp, so a share *change* -- the
+    creation/redemption flow that is specific to ETFs -- needs this history. Published with a
+    one-session lag, so a feature may only use D-1.
+    """
+
+    etf = models.ForeignKey(
+        ETFUniverse, on_delete=models.CASCADE, related_name='share_history', verbose_name=_('ETF'),
+    )
+    date = models.DateField(_('Date'))
+    shares = models.FloatField(_('Shares'), null=True, blank=True,
+                               help_text=_('Fund shares outstanding, in 10k units as TuShare reports it.'))
+    source = models.CharField(_('Source'), max_length=40, blank=True, default='tushare:fund_share')
+
+    class Meta:
+        verbose_name = _('ETF Share Daily')
+        verbose_name_plural = _('ETF Share Daily')
+        unique_together = ('etf', 'date')
+        indexes = [models.Index(fields=['etf', 'date'])]
+
+    def __str__(self):
+        return f'{self.etf_id} {self.date}'
+
+
 class ETFDaily(models.Model):
     """Daily ETF bars from TuShare ``fund_daily`` plus ``fund_adj`` adjustment factors.
 
@@ -217,6 +329,58 @@ class ETFFeatureSnapshot(models.Model):
     bollinger_pos = models.FloatField(_('Bollinger Position'), null=True, blank=True)
     drawdown_from_high_60d = models.FloatField(_('Drawdown From 60D High'), null=True, blank=True)
 
+    idx_pe_pct_3y = models.FloatField(
+        _('Index PE Percentile 3Y'), null=True, blank=True,
+        help_text=_('Percentile of the tracked index PE(TTM) in its own 3-year history, as of D-1.'),
+    )
+    idx_pb_pct_3y = models.FloatField(
+        _('Index PB Percentile 3Y'), null=True, blank=True,
+        help_text=_('Percentile of the tracked index PB in its own 3-year history, as of D-1.'),
+    )
+    idx_turnover_z = models.FloatField(
+        _('Index Turnover Z'), null=True, blank=True,
+        help_text=_('Z-score of the tracked index turnover rate against its own 250-session mean.'),
+    )
+    share_growth_5d = models.FloatField(
+        _('Share Growth 5D'), null=True, blank=True,
+        help_text=_('Five-session change in fund shares outstanding, as of D-1.'),
+    )
+    share_growth_20d = models.FloatField(
+        _('Share Growth 20D'), null=True, blank=True,
+        help_text=_('Twenty-session change in fund shares outstanding, as of D-1.'),
+    )
+    flow_x_mom = models.FloatField(
+        _('Flow x Momentum'), null=True, blank=True,
+        help_text=_('Share growth over 20 sessions times the fund 20-session momentum.'),
+    )
+    has_share_flow = models.BooleanField(
+        _('Has Share Flow'), null=True, blank=True,
+        help_text=_('Whether share history existed for this fund on this date.'),
+    )
+    has_index_valuation = models.BooleanField(
+        _('Has Index Valuation'), null=True, blank=True,
+        help_text=_('Whether the ETF resolved to an index with valuation history on this date. '
+                    'Carried so coverage bias stays measurable.'),
+    )
+    idx_share_above_ma60 = models.FloatField(
+        _('Index Share Above MA60'), null=True, blank=True,
+        help_text=_('Weighted share of the tracked index constituents above their 60-session '
+                    'mean, as of D-1.'),
+    )
+    idx_ret_dispersion_20d = models.FloatField(
+        _('Index Return Dispersion 20D'), null=True, blank=True,
+        help_text=_('Weighted cross-sectional standard deviation of constituent 20-session '
+                    'returns, as of D-1.'),
+    )
+    idx_mom_consistency = models.FloatField(
+        _('Index Momentum Consistency'), null=True, blank=True,
+        help_text=_('Weighted share of constituents whose 20-session return has the same sign '
+                    'as the index mean, as of D-1.'),
+    )
+    has_index_breadth = models.BooleanField(
+        _('Has Index Breadth'), null=True, blank=True,
+        help_text=_('Whether the ETF resolved to an index with constituent breadth on this date.'),
+    )
     avg_amount_20d = models.FloatField(_('Avg Amount 20D'), null=True, blank=True,
                                        help_text=_('Mean daily turnover over 20 sessions, in 元.'))
     volume_ratio_5d_20d = models.FloatField(_('Volume Ratio 5D/20D'), null=True, blank=True)
@@ -231,6 +395,21 @@ class ETFFeatureSnapshot(models.Model):
                                    help_text=_('LOOK-ONLY FOR LABELS. Returns over label_horizon_days after date.'))
     label_rank_pct = models.FloatField(_('Label Rank Pct'), null=True, blank=True,
                                        help_text=_('LOOK-ONLY FOR LABELS. Forward return percentile within the pool.'))
+    fwd_max_drawdown = models.FloatField(
+        _('Forward Max Drawdown'), null=True, blank=True,
+        help_text=_('LOOK-ONLY FOR LABELS. Largest peak-to-trough fall over the horizon after '
+                    'date, as a positive magnitude.'),
+    )
+    fwd_downside_deviation = models.FloatField(
+        _('Forward Downside Deviation'), null=True, blank=True,
+        help_text=_('LOOK-ONLY FOR LABELS. Root-mean-square of negative forward daily returns '
+                    'over the horizon.'),
+    )
+    label_dd_rank = models.FloatField(
+        _('Label Drawdown Rank Pct'), null=True, blank=True,
+        help_text=_('LOOK-ONLY FOR LABELS. Per-date percentile of -fwd_max_drawdown: the '
+                    'safest fund in the pool ranks 1.0.'),
+    )
     label_top_bucket = models.BooleanField(_('Label Top Bucket'), null=True, blank=True,
                                            help_text=_('LOOK-ONLY FOR LABELS. Forward return landed in the top 30%.'))
 
@@ -273,6 +452,13 @@ class ETFRotationSignal(models.Model):
     # append, or "latest signal" becomes whichever duplicate row the ordering picked.
     date = models.DateField(_('Date'), db_index=True)
     signal_type = models.CharField(_('Signal Type'), max_length=10, choices=SignalType.choices, db_index=True)
+    arm = models.CharField(
+        _('Arm'), max_length=32, blank=True, default='', db_index=True,
+        help_text=_('Which candidate book this signal belongs to: empty for the production book, '
+                    'a short label ("lgb-veto") for a forward-observation arm. Two arms may '
+                    'publish on the same date and cadence because its uniqueness key includes '
+                    'this field.'),
+    )
     model_type = models.CharField(_('Model Type'), max_length=10, choices=ModelType.choices,
                                   default=ModelType.RULE, db_index=True)
     rankings = models.JSONField(_('Rankings'), default=list, blank=True,
@@ -297,10 +483,11 @@ class ETFRotationSignal(models.Model):
             models.Index(fields=['date', 'signal_type']),
             models.Index(fields=['model_type', 'date']),
         ]
-        unique_together = ('date', 'signal_type')
+        unique_together = ('date', 'signal_type', 'arm')
 
     def __str__(self):
-        return f"{self.get_signal_type_display()} {self.date}"
+        suffix = f' [{self.arm}]' if self.arm else ''
+        return f"{self.get_signal_type_display()} {self.date}{suffix}"
 
 
 class ETFRotationSignalRun(models.Model):

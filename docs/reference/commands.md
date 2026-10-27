@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-25T07:26:38Z_
+_Generated: 2026-10-26T15:19:25Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**43** project commands across **9** apps.
+**49** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -200,6 +200,17 @@ Validate historical data quality and write actionable reports under reports/ wit
 ## `apps.etf_rotation`
 
 
+### `build_etf_index_mapping`
+
+Resolve ETF -> tracked index codes from fund_basic + index_basic.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--dry-run` | flag | `False` |  | Resolve and report; write nothing. |
+| `--report` | value | `docs/reports/etf-index-mapping-coverage.md` |  | Coverage report path (default docs/reports/...). |
+| `--pause` | value | `0.3` |  | Seconds between TuShare calls (default 0.3). |
+
+
 ### `compute_etf_features`
 
 Compute point-in-time ETF features and labels into ETFFeatureSnapshot.
@@ -225,6 +236,7 @@ Rank the point-in-time ETF pool and write the rotation signal for one date.
 | --- | --- | --- | --- | --- |
 | `--date` | value | &mdash; |  | Trade date (YYYY-MM-DD). Default: newest session with a non-empty eligible cross-section. |
 | `--signal-type` | value | `MONTHLY` |  | Rebalance cadence the row is stored under (default MONTHLY). |
+| `--arm` | value | `""` |  | Book discriminator. Empty is the production book; two arms may publish on the same date and cadence because the uniqueness key includes it. |
 | `--model-type` | value | `RULE` |  | Scorer: the rule blend, a trained LIGHTGBM/LSTM, or their ensemble. An ML type with no active ModelVersion fails instead of quietly falling back to RULE. |
 | `--max-positions` | value | &mdash; |  | Slots in the book. Default: settings.ETF_MAX_POSITIONS (3). |
 | `--momentum-lookback` | value | &mdash; |  | Momentum horizon in sessions, e.g. 60 -> mom_60d. Default: 60; the nearest stored horizon is substituted and recorded in metadata when it is absent. |
@@ -239,6 +251,29 @@ Mark OPEN ETF rotation positions to the newest close and close legs displaced by
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--date` | value | &mdash; |  | Mark date (YYYY-MM-DD). Default: the newest ETFDaily session. |
+
+
+### `measure_etf_rotation_sensitivity`
+
+Run a pre-registered sensitivity grid over panel starts and arms.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--preregistration` | value | &mdash; | yes | Markdown file listing every context that may run, as "<arm>@<panel-start>". Its hash is recorded with the results. |
+| `--panel-starts` | value | &mdash; | yes | Comma-separated panel starts, e.g. 2016-01-29,2017-01-03. |
+| `--arms` | value | `rule,lgb-veto,lstm-veto` |  | Comma-separated arms from ['lgb-select', 'lgb-select-rolling', 'lgb-veto', 'lstm-select', 'lstm-veto', 'rule', 'rule-rolling']. |
+| `--baseline-arm` | value | `rule` |  | Arm every other arm is compared against (default rule). |
+| `--end` | value | `2023-12-31` |  | Panel end (ISO). |
+| `--blocks` | value | `6` |  | Blocks per split (default 6). |
+| `--rolling-train-days` | value | `750` |  | Training window for the rolling arms (default 750 sessions). |
+| `--out-dir` | value | &mdash; |  | Where to write the markdown table. Default: docs/reports/sensitivity. |
+
+
+### `report_etf_rotation_evidence`
+
+Render the ETF rotation measurement ledger, flagging repeated contexts.
+
+_No options._
 
 
 ### `report_etf_rotation_live_track`
@@ -301,6 +336,15 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | `--cpcv-blocks` | value | &mdash; |  | Combinatorial purged cross-validation: cut the window into N contiguous blocks and measure the named configuration on every held-out block. Ephemeral. A window reaching 2024-01-01 is allowed but labelled tuning-only: that holdout was released into the training pool. |
 | `--cpcv-test-blocks` | value | `2` |  | Blocks held out per split (default 2); blocks the other blocks train on after a label-window purge and an embargo. |
 | `--cpcv-embargo` | value | `5` |  | Sessions excluded after each held-out block (default 5). |
+| `--macro-gate-pmi` | value | &mdash; |  | Scale risk-on exposure by --macro-gate-scale while the latest published manufacturing PMI is below LEVEL (0 disables). Macro is a portfolio gate here, never a ranking feature. |
+| `--macro-gate-scale` | value | &mdash; |  | Exposure multiplier while the gate is open (default 0.5). |
+| `--seeds` | value | `1` |  | Fit N boosters per fold with different seeds and average their scores (default 1). Variance reduction, not a bigger model. |
+| `--label` | value | `rank_pct` |  | Label a re-trained ML arm fits (default rank_pct). dd_rank is the safety rank: lowest forward drawdown ranks highest, so a veto still drops the bottom share of the score. |
+| `--horizons` | value | `""` |  | With --cpcv-retrain and an ML --model: also report rank IC against price-based forward returns at these sessions-ahead horizons (e.g. 20,40,60). The model is unchanged -- this reads the same scores against a different label, so no extra training happens. |
+| `--fold-plan` | value | &mdash; |  | Split shape: combinatorial blocks (the default for --cpcv-blocks), a fixed-length rolling window, or an expanding window. Rolling and expanding share the same validation calendar, so the only difference between them is how much history the model sees. With --walk-forward-steps the default is expanding and cpcv is refused: that path has no combinatorial split. |
+| `--rolling-train-days` | value | `750` |  | Sessions in a rolling training window (default 750, about three years). Only used with --fold-plan rolling. |
+| `--preregistration` | value | &mdash; |  | Pre-registration file (markdown) declaring the arms and criteria of this measurement. Its sha256 is stored on the evidence-ledger row, which is what lets a verdict be tied back to criteria fixed before the run. Requires --cpcv-retrain: that is the only path that writes a ledger row. |
+| `--cpcv-purge` | value | &mdash; |  | Sessions excluded before each held-out block. Defaults to 1 for RULE and to ETF_LABEL_HORIZON_DAYS for an ML arm; an ML arm may raise it but not lower it. |
 | `--cpcv-hybrid` | flag | `False` |  | With --cpcv-retrain and an ML --model: RULE selects, the fold model only vetoes. Implements the 'ML as a filter' arm: the names the model likes least (bottom --ml-veto-quantile) are removed before selection. Fixed quantile, no tuning. |
 | `--ml-veto-quantile` | value | `0.2` |  | Bottom share of the ML score distribution vetoed by --cpcv-hybrid (default 0.2). Fixed for the whole run. |
 | `--cpcv-retrain` | flag | `False` |  | With --cpcv-blocks and an ML --model: train one model per held-out block on that block's complement (purged/embargoed) and score the block with it. In-memory only: no ModelVersion row, no artifact, no activation. Needs --cpcv-test-blocks 1. |
@@ -340,6 +384,19 @@ Sync TuShare ETF daily bars into ETFDaily over a date window or the trailing gap
 | `--dry-run` | flag | `False` |  | Print the planned dates and current counts; calls no provider and writes nothing. |
 
 
+### `sync_etf_share`
+
+Sync daily ETF shares outstanding for funds that have been eligible.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | `20160101` |  | Start date YYYYMMDD. |
+| `--end` | value | `""` |  | End date YYYYMMDD (default today). |
+| `--limit` | value | `0` |  | Only the first N funds. |
+| `--pause` | value | `1.1` |  | Seconds between calls. |
+| `--only-missing` | flag | `False` |  | Skip funds that already have share rows. |
+
+
 ### `sync_etf_universe`
 
 Refresh ETFUniverse from TuShare fund_basic(market="E").
@@ -349,6 +406,33 @@ Refresh ETFUniverse from TuShare fund_basic(market="E").
 | `--queue` | flag | `False` |  | Dispatch the sync to Celery instead of running inline. |
 | `--refresh-first-trade-dates` | flag | `False` |  | Only re-derive first_trade_date and repair blank list_date from stored bars; skip fund_basic. |
 | `--dry-run` | flag | `False` |  | Print the current universe counts; calls no provider and writes nothing. |
+
+
+### `sync_index_valuation`
+
+Sync index valuation history for every index mapped from an ETF.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | `20100101` |  | Start date YYYYMMDD. |
+| `--end` | value | `""` |  | End date YYYYMMDD (default today). |
+| `--limit` | value | `0` |  | Only the first N indices. |
+| `--pause` | value | `1.2` |  | Seconds between calls (default 1.2; the free tier throttles above roughly one call per second and then returns empty frames instead of an error). |
+| `--only-missing` | flag | `False` |  | Skip index codes that already have valuation rows. |
+
+
+### `sync_index_weight`
+
+Sync monthly index constituent weights for the indices the eligible pool tracks.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | `20160101` |  | Start date YYYYMMDD. |
+| `--end` | value | `""` |  | End date YYYYMMDD (default today). |
+| `--limit` | value | `0` |  | Only the first N indices. |
+| `--pause` | value | `0.35` |  | Seconds between calls. |
+| `--window-months` | value | `6` |  | Months per request (default 6; a year can hit the page limit). |
+| `--only-missing` | flag | `False` |  | Skip indices that already have weight rows. |
 
 
 ### `train_etf_rotation_model`
@@ -361,6 +445,7 @@ Walk-forward training and reporting for the ETF rotation models.
 | `--start` | value | &mdash; |  | First snapshot date to consider (ISO). Default: earliest eligible row. |
 | `--end` | value | &mdash; |  | Last snapshot date to consider (ISO). Default: latest eligible row. |
 | `--folds` | value | `6` |  | Number of expanding-window validation steps (default 6). |
+| `--label` | value | `rank_pct` |  | Which stored label the model fits (default rank_pct). dd_rank trains on the safety rank (smallest forward drawdown ranks highest); LightGBM only, the LSTM has its own multi-horizon labels. |
 | `--objective` | value | `lambdarank` |  | lambdarank on label_rank_pct grades (default), binary on label_top_bucket, or regression on label_rank_pct. |
 | `--boost-rounds` | value | &mdash; |  | Fixed lgb.train round count; no early stopping. |
 | `--horizon` | value | &mdash; |  | Label horizon in trading sessions. Default: settings.ETF_LABEL_HORIZON_DAYS (20). |

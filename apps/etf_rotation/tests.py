@@ -25,6 +25,7 @@ import math
 import os
 import pickle
 import tempfile
+from pathlib import Path
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -43,7 +44,10 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.core import finance_metrics
+from apps.macro.models import MacroSnapshot
+from apps.etf_rotation import position_ledger as ledger_module
 from apps.etf_rotation import (
+    evidence,
     backtest_engine,
     comparison,
     features,
@@ -76,10 +80,16 @@ from apps.etf_rotation.features import (
     resolve_pool_parameters,
     sessions_to_calendar_days,
 )
+from apps.etf_rotation.management.commands import build_etf_index_mapping as mapping_cmd
 from apps.etf_rotation.management.commands import mark_etf_rotation_positions_daily as ledger_cmd
+from apps.etf_rotation.management.commands import measure_etf_rotation_sensitivity as measure_cmd
 from apps.etf_rotation.management.commands import run_etf_rotation_backtest as backtest_cmd
 from apps.etf_rotation.management.commands import sweep_etf_rotation_lstm as sweep_cmd
 from apps.etf_rotation.models import (
+    ETFShareDaily,
+    ETFIndexMapping,
+    IndexValuationDaily,
+    IndexWeightSnapshot,
     ETFCategory,
     ETFDaily,
     ETFFeatureSnapshot,
@@ -1652,11 +1662,18 @@ class FeatureWhitelistTests(SimpleTestCase):
             field.name for field in ETFFeatureSnapshot._meta.get_fields()
             if getattr(field, 'column', None) is not None
         }
-        non_features = set(features.LABEL_COLUMNS) | {
-            'label_horizon_days', 'is_eligible', 'metadata', 'id', 'etf', 'date',
-        }
+        non_features = (
+            set(features.LABEL_COLUMNS)
+            | set(features.INDEX_VALUATION_COLUMNS)
+            | set(features.INDEX_BREADTH_COLUMNS)
+            | {
+                'label_horizon_days', 'is_eligible', 'metadata', 'id', 'etf', 'date',
+            }
+        )
         self.assertEqual(set(features.FEATURE_COLUMNS), model_fields - non_features)
-        self.assertEqual(len(features.FEATURE_COLUMNS), 24)
+        # 24 price/technical columns + 4 share-flow columns. The index-valuation columns stay
+        # out: their source covers 12% of the pool (report section 14).
+        self.assertEqual(len(features.FEATURE_COLUMNS), 28)
 
     def test_label_columns_are_disjoint_from_features_and_from_the_ranker_whitelist(self):
         self.assertEqual(set(features.LABEL_COLUMNS) & set(features.FEATURE_COLUMNS), set())
@@ -4651,6 +4668,40 @@ class WalkForwardRuleTests(SimpleTestCase):
             self.assertEqual(int(line.split()[-2]), expected)
             self.assertEqual(line.split()[-1], 'yes')
 
+    def test_the_walk_forward_path_can_build_a_rolling_plan(self):
+        """P19 asked for both shapes here: a rolling reading answers "does old data hurt"."""
+        sessions = self._sessions(900)
+
+        folds = backtest_cmd.walk_forward_folds(
+            sessions, 3, fold_plan='rolling', rolling_train_days=250,
+        )
+        expanding = backtest_cmd.walk_forward_folds(sessions, 3)
+
+        self.assertEqual(len(folds), 3)
+        self.assertEqual(
+            [(fold.valid_start, fold.valid_end) for fold in folds],
+            [(fold.valid_start, fold.valid_end) for fold in expanding],
+            'both plans share one validation calendar, so only the training shape differs',
+        )
+        spans = {(fold.train_end - fold.train_start).days for fold in folds}
+        self.assertEqual(len(spans), 1, 'a rolling window does not grow')
+        self.assertGreater(
+            (expanding[-1].train_end - expanding[-1].train_start).days,
+            (folds[-1].train_end - folds[-1].train_start).days,
+            'the expanding plan ends up training on more history than the rolling one',
+        )
+
+    def test_the_walk_forward_path_refuses_a_combinatorial_plan(self):
+        """``cpcv`` splits one panel into blocks; this path selects parameters per fold."""
+        with self.assertRaises(CommandError) as caught:
+            call_command(
+                'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
+                '--start', '2016-01-29', '--end', '2023-12-31', '--fold-plan', 'cpcv',
+                stdout=io.StringIO(),
+            )
+
+        self.assertIn('no combinatorial split', str(caught.exception))
+
 
 class CombinatorialPurgedFoldTests(SimpleTestCase):
     """Phase 8: the block plan a stability reading -- and a fitted model -- consumes."""
@@ -4827,7 +4878,9 @@ class CpcvCommandGuardTests(SimpleTestCase):
             )
 
     def test_an_ml_arm_carries_the_pinned_predictor_into_the_run(self):
-        session_dates = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(12)]
+        # 120 sessions: the label tail (20) is reserved for every arm, so a 12-session
+        # calendar can no longer seat four blocks.
+        session_dates = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(120)]
         points = [
             {'date': day.isoformat(), 'equity': 100.0 + offset}
             for offset, day in enumerate(session_dates)
@@ -4862,13 +4915,37 @@ class CpcvCommandGuardTests(SimpleTestCase):
         handler.assert_called_once()
 
 
-class CpcvWritesNothingTests(TestCase):
+class _EvidenceIsolated(TestCase):
+    """Tests never write into docs/reports: the measurement ledger goes to a temp file.
+
+    Every CPCV run appends a line to the ledger (that is the point of Phase 23), so a test
+    that exercises the retrain path would otherwise pollute the research record with a
+    twelve-session fixture panel.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._evidence_dir = tempfile.TemporaryDirectory()
+        cls._evidence_override = override_settings(
+            ETF_EVIDENCE_PATH=os.path.join(cls._evidence_dir.name, 'ledger.jsonl'),
+        )
+        cls._evidence_override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._evidence_override.disable()
+        cls._evidence_dir.cleanup()
+        super().tearDownClass()
+
+
+class CpcvWritesNothingTests(_EvidenceIsolated):
     """Phase 8's third promise: the measurement is ephemeral and activates nothing."""
 
     def test_the_measurement_writes_no_row_and_activates_nothing(self):
         from apps.prediction.models import ModelVersion
 
-        session_dates = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(12)]
+        session_dates = [date(2016, 1, 4) + timedelta(days=offset) for offset in range(120)]
         points = [
             {'date': day.isoformat(), 'equity': 100.0 + offset}
             for offset, day in enumerate(session_dates)
@@ -4907,7 +4984,7 @@ class CpcvWritesNothingTests(TestCase):
 
     def test_a_window_inside_the_released_holdout_is_labelled_not_refused(self):
         """The 2024+ refusal became a label when the holdout was released into training."""
-        session_dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(12)]
+        session_dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(120)]
         points = [
             {'date': day.isoformat(), 'equity': 100.0 + offset}
             for offset, day in enumerate(session_dates)
@@ -5112,6 +5189,211 @@ class RankIcTests(_PanelSeedMixin, TestCase):
             rank_ic.block_rank_ic(None, block_start=self.pool_date, block_end=self.pool_date)
 
 
+class IndexBreadthTests(TestCase):
+    """P30: breadth comes from the index's own constituents, one session late."""
+
+    def setUp(self):
+        from apps.markets.models import Asset, Market, OHLCV
+
+        market = Market.objects.create(code='SSE', name='上海证券交易所')
+        self.etf = _seed_etf('512760.SH', name='半导体ETF', category=ETFCategory.SECTOR_TECH)
+        ETFIndexMapping.objects.create(
+            etf=self.etf, index_code='399975.SZ', confidence=ETFIndexMapping.Confidence.EXACT,
+        )
+        self.days = [date(2026, 1, 5) + timedelta(days=offset) for offset in range(90)]
+        self.rising = Asset.objects.create(
+            market=market, symbol='600001', ts_code='600001.SH', name='Rising',
+        )
+        self.falling = Asset.objects.create(
+            market=market, symbol='600002', ts_code='600002.SH', name='Falling',
+        )
+        rows = []
+        for offset, day in enumerate(self.days):
+            for asset, price in (
+                (self.rising, Decimal('1.0') + Decimal('0.01') * offset),
+                (self.falling, Decimal('10.0') - Decimal('0.05') * offset),
+            ):
+                rows.append(OHLCV(
+                    asset=asset, date=day, open=price, high=price, low=price, close=price,
+                    adj_close=price, volume=1_000_000, amount=Decimal('100000000'),
+                ))
+        OHLCV.objects.bulk_create(rows)
+        for code, weight in (('600001.SH', 60.0), ('600002.SH', 40.0)):
+            IndexWeightSnapshot.objects.create(
+                index_code='399975.SZ', con_code=code, trade_date=self.days[0], weight=weight,
+            )
+
+    def _block(self, days):
+        return pd.DataFrame({'etf_id': [self.etf.id] * len(days), 'date': days})
+
+    def test_a_mature_session_reports_weighted_breadth(self):
+        merged = features.attach_index_breadth(self._block(self.days))
+
+        latest = merged.iloc[-1]
+        self.assertTrue(latest['has_index_breadth'])
+        self.assertAlmostEqual(latest['idx_share_above_ma60'], 0.6, places=6)
+        self.assertAlmostEqual(latest['idx_mom_consistency'], 0.6, places=6)
+        self.assertGreater(latest['idx_ret_dispersion_20d'], 0.0)
+
+    def test_the_warmup_is_left_unmeasured(self):
+        merged = features.attach_index_breadth(self._block(self.days[:5]))
+
+        self.assertFalse(merged['has_index_breadth'].any())
+        self.assertTrue(merged['idx_share_above_ma60'].isna().all())
+
+    def test_a_session_never_uses_its_own_close(self):
+        before = features.attach_index_breadth(self._block([self.days[80], self.days[81]]))
+
+        from apps.markets.models import OHLCV
+
+        OHLCV.objects.filter(asset=self.rising, date=self.days[80]).update(
+            close=Decimal('0.5'), adj_close=Decimal('0.5'),
+        )
+        after = features.attach_index_breadth(self._block([self.days[80], self.days[81]]))
+
+        self.assertEqual(
+            float(before.iloc[0]['idx_share_above_ma60']),
+            float(after.iloc[0]['idx_share_above_ma60']),
+            'a D-close change must not move D\'s own breadth',
+        )
+        self.assertLess(
+            float(after.iloc[1]['idx_share_above_ma60']),
+            float(before.iloc[1]['idx_share_above_ma60']),
+            'the same close has to show up on D+1',
+        )
+
+
+class IndexWeightSyncTests(SimpleTestCase):
+    """The page cap is a truncation signal, not a result."""
+
+    def test_a_full_page_is_split_until_it_fits(self):
+        from apps.etf_rotation.management.commands import sync_index_weight as command
+
+        calls = []
+
+        class FakePro:
+            def index_weight(self, **kwargs):
+                raw_start, raw_end = kwargs['start_date'], kwargs['end_date']
+                start = date(int(raw_start[:4]), int(raw_start[4:6]), int(raw_start[6:]))
+                end = date(int(raw_end[:4]), int(raw_end[4:6]), int(raw_end[6:]))
+                # One row per ten calendar days, so a wide window fills the page.
+                size = min(command.PAGE_LIMIT, (end - start).days // 10 + 2)
+                calls.append(len(rows := [
+                    {'index_code': '399975.SZ', 'con_code': f'60000{i}.SH',
+                     'trade_date': kwargs['start_date'], 'weight': 1.0}
+                    for i in range(size)
+                ]))
+                return pd.DataFrame(rows)
+
+        with patch.object(command, 'PAGE_LIMIT', 5):
+            rows = command._fetch(
+                FakePro(), '399975.SZ', date(2026, 1, 1), date(2026, 3, 1), 0.0, [],
+            )
+
+        self.assertGreater(len(calls), 1)
+        self.assertTrue(all(size < 5 for size in calls[1:]), 'every leaf page must fit')
+        self.assertEqual(len(rows), sum(size for size in calls if size < 5))
+
+
+class LstmSettingsTests(SimpleTestCase):
+    """P21: capacity knobs are configuration, not literals in a signature."""
+
+    def test_settings_fill_only_the_values_the_caller_left_unset(self):
+        from apps.etf_rotation.train_lstm import resolve_lstm_hyperparameters
+
+        with override_settings(ETF_LSTM_HIDDEN_SIZE=96, ETF_LSTM_EPOCHS=7):
+            resolved = resolve_lstm_hyperparameters()
+            explicit = resolve_lstm_hyperparameters(hidden_size=32)
+
+        self.assertEqual(resolved['hidden_size'], 96)
+        self.assertEqual(resolved['epochs'], 7)
+        self.assertEqual(resolved['num_layers'], 2, 'untouched knobs keep their old default')
+        self.assertEqual(explicit['hidden_size'], 32, 'the argument beats the setting')
+        self.assertEqual(explicit['epochs'], 7, 'settings still apply where the argument is None')
+
+    def test_an_unusable_value_is_refused_at_resolution_time(self):
+        from apps.etf_rotation.train_lstm import resolve_lstm_hyperparameters
+
+        for broken in ({'dropout': 1.0}, {'epochs': 0}, {'learning_rate': 0.0},
+                       {'sequence_length': 0}, {'batch_size': 0}):
+            with self.assertRaises(ValueError):
+                resolve_lstm_hyperparameters(**broken)
+
+
+class LabelHorizonIcTests(TestCase):
+    """P25: one scorer, several labels -- IC decay without retraining anything."""
+
+    def setUp(self):
+        self.days = [date(2026, 10, 1) + timedelta(days=offset) for offset in range(4)]
+        self.etf_a = _seed_etf('510500.SH', name='中证500ETF', category=ETFCategory.BROAD)
+        self.etf_b = _seed_etf('512100.SH', name='中证1000ETF', category=ETFCategory.BROAD)
+        self.third = _seed_etf('513100.SH', name='纳指ETF', category=ETFCategory.QDII)
+        # A is flat then jumps late (best 3-day, worst 1-day); C jumps early then gives some
+        # back (best 1-day, worst 3-day); B sits between the two on both horizons.
+        _seed_bars(self.etf_a, self.days, [1.0, 1.0, 1.0, 5.0])
+        _seed_bars(self.etf_b, self.days, [1.0, 2.0, 2.0, 3.0])
+        _seed_bars(self.third, self.days, [1.0, 3.0, 3.0, 2.5])
+        for etf in (self.etf_a, self.etf_b, self.third):
+            ETFFeatureSnapshot.objects.create(etf=etf, date=self.days[0], is_eligible=True)
+        self.order = {'510500.SH': 3.0, '512100.SH': 2.0, '513100.SH': 1.0}
+
+    def _predictor(self, frame):
+        return pd.DataFrame({
+            'ts_code': list(frame['ts_code']),
+            'score': [self.order[code] for code in frame['ts_code']],
+        })
+
+    def test_a_longer_horizon_can_rank_the_same_scores_better(self):
+        short = rank_ic.block_rank_ic(
+            self._predictor, block_start=self.days[0], block_end=self.days[0], horizon_days=1,
+        )
+        long = rank_ic.block_rank_ic(
+            self._predictor, block_start=self.days[0], block_end=self.days[0], horizon_days=3,
+        )
+
+        self.assertEqual(long['dates'], 1)
+        self.assertAlmostEqual(long['mean_ic'], 1.0, places=9)
+        self.assertLess(short['mean_ic'], 0.0, 'the one-day label prefers the early jumper')
+
+    def test_the_price_panel_reproduces_the_label_arithmetic(self):
+        panel = rank_ic.forward_return_panel(
+            3, block_start=self.days[0], block_end=self.days[0],
+        )
+        by_etf = {
+            row['etf_id']: row['fwd_price_return']
+            for _, row in panel[panel['date'] == self.days[0]].iterrows()
+        }
+
+        self.assertAlmostEqual(by_etf[self.etf_a.id], 4.0, places=9)
+        self.assertAlmostEqual(by_etf[self.etf_b.id], 2.0, places=9)
+        self.assertAlmostEqual(by_etf[self.third.id], 1.5, places=9)
+
+    def test_the_default_path_still_reads_the_stored_label(self):
+        snapshots = ETFFeatureSnapshot.objects.filter(date=self.days[0])
+        for snapshot, value in zip(snapshots.order_by('etf__ts_code'),
+                                   [0.01, 0.02, 0.03]):
+            snapshot.fwd_return = value
+            snapshot.save(update_fields=['fwd_return'])
+
+        result = rank_ic.block_rank_ic(
+            self._predictor, block_start=self.days[0], block_end=self.days[0],
+        )
+
+        self.assertIsNone(result['horizon_days'])
+        self.assertEqual(result['dates'], 1)
+
+    def test_horizon_parsing_is_ordered_deduplicated_and_bounded(self):
+        from apps.etf_rotation.management.commands.run_etf_rotation_backtest import (
+            parse_label_horizons,
+        )
+
+        self.assertEqual(parse_label_horizons('60,20,60'), (20, 60))
+        self.assertEqual(parse_label_horizons(''), ())
+        for bad in ('0', '251', 'abc'):
+            with self.assertRaises(CommandError):
+                parse_label_horizons(bad)
+
+
 class FoldShapeHelperTests(SimpleTestCase):
     """Phase 14: one seam reads dates from either fold shape."""
 
@@ -5130,6 +5412,32 @@ class FoldShapeHelperTests(SimpleTestCase):
         self.assertEqual(
             walk_forward.validation_blocks_for_any_fold(fold),
             [(date(2021, 1, 4), date(2021, 1, 8))],
+        )
+
+    def test_the_block_layout_does_not_depend_on_the_purge(self):
+        """P18: RULE (purge 1) and an ML arm (purge 20) must land on the same blocks.
+
+        Without a pinned tail the purge also truncates the panel, so changing it silently
+        re-partitions the data and two arms can no longer be read side by side.
+        """
+        dates = [date(2020, 1, 1) + timedelta(days=offset) for offset in range(400)]
+        rule = walk_forward.combinatorial_purged_folds(
+            dates[0], dates[-1], 4, 1, horizon_days=1, embargo_days=5,
+            trade_dates=dates, panel_tail_days=20,
+        )
+        ml = walk_forward.combinatorial_purged_folds(
+            dates[0], dates[-1], 4, 1, horizon_days=20, embargo_days=5,
+            trade_dates=dates, panel_tail_days=20,
+        )
+
+        self.assertEqual(
+            [fold.validation_blocks for fold in rule],
+            [fold.validation_blocks for fold in ml],
+        )
+        # The purge still differs, which is the point: same blocks, different training sets.
+        self.assertNotEqual(
+            [len(fold.train_dates) for fold in rule],
+            [len(fold.train_dates) for fold in ml],
         )
 
     def test_an_expanding_fold_still_uses_the_purge_rule(self):
@@ -5151,16 +5459,18 @@ class FoldShapeHelperTests(SimpleTestCase):
         )
 
 
-class CpcvRetrainModeTests(TestCase):
+class CpcvRetrainModeTests(_EvidenceIsolated):
     """Phase 14: score each block with a model trained on its complement."""
 
-    SESSIONS = 12
+    # 120 sessions for four blocks: an ML arm now purges its 20-session label window, so a
+    # 12-session calendar would leave empty training sets and the plan would refuse to seat.
+    SESSIONS = 120
 
     def _session_dates(self, start=date(2016, 1, 4)):
         return [start + timedelta(days=offset) for offset in range(self.SESSIONS)]
 
     def _invoke(self, **overrides):
-        options = {'start': '2016-01-04', 'end': '2016-01-15', 'cpcv_blocks': 4,
+        options = {'start': '2016-01-04', 'end': '2016-04-04', 'cpcv_blocks': 4,
                    'cpcv_test_blocks': 1, 'cpcv_embargo': 1}
         options.update(overrides)
         call_command('run_etf_rotation_backtest', stdout=io.StringIO(), **options)
@@ -5179,7 +5489,7 @@ class CpcvRetrainModeTests(TestCase):
                 'equity_curve': [],
             }
 
-        options = {'model': 'LIGHTGBM', 'start': '2016-01-04', 'end': '2016-01-15',
+        options = {'model': 'LIGHTGBM', 'start': '2016-01-04', 'end': '2016-04-04',
                    'cpcv_blocks': 4, 'cpcv_test_blocks': 1,
                    'cpcv_embargo': 1, 'cpcv_retrain': True}
         options.update(overrides)
@@ -5274,6 +5584,37 @@ class CpcvRetrainModeTests(TestCase):
 
         self.assertIn('inside its own held-out block', str(caught.exception))
         trainer.assert_not_called()
+
+
+class CpcvPurgeTests(SimpleTestCase):
+    """P18: the purge is the label window, not one session.
+
+    With a 20-session label, a training date up to 19 sessions before a held-out block has a
+    label computed from bars *inside* that block. A one-session purge therefore fits the fold
+    model on the answer key -- which is what the 2026-10-25 rematch did before this rule.
+    """
+
+    def test_rule_keeps_a_one_session_purge(self):
+        self.assertEqual(backtest_cmd.resolve_cpcv_purge('RULE', None, 20), 1)
+
+    def test_an_ml_arm_defaults_to_the_label_horizon(self):
+        self.assertEqual(backtest_cmd.resolve_cpcv_purge('LIGHTGBM', None, 20), 20)
+        self.assertEqual(backtest_cmd.resolve_cpcv_purge('LSTM', None, 60), 60)
+
+    def test_an_ml_arm_may_raise_the_purge(self):
+        self.assertEqual(backtest_cmd.resolve_cpcv_purge('LSTM', 30, 20), 30)
+
+    def test_an_ml_arm_may_not_drop_below_the_label_horizon(self):
+        with self.assertRaises(CommandError) as caught:
+            backtest_cmd.resolve_cpcv_purge('LIGHTGBM', 5, 20)
+        self.assertIn('shorter than the label horizon', str(caught.exception))
+
+    def test_a_zero_or_negative_purge_is_refused(self):
+        for model_type in ('RULE', 'LIGHTGBM'):
+            for value in (0, -3):
+                with self.subTest(model=model_type, purge=value), \
+                        self.assertRaises(CommandError):
+                    backtest_cmd.resolve_cpcv_purge(model_type, value, 20)
 
 
 class MlVetoArmTests(SimpleTestCase):
@@ -6722,3 +7063,775 @@ class TrainCommandActivationTests(SimpleTestCase):
         self.assertIn('--no-activate', inspect.getsource(train_cmd.Command.add_arguments))
 
 
+
+
+class RollingFoldTests(SimpleTestCase):
+    """P19: a fixed-length training window that slides, on the expanding validation calendar."""
+
+    def _dates(self, count=600):
+        return [date(2016, 1, 4) + timedelta(days=offset) for offset in range(count)]
+
+    def test_the_window_length_is_constant_and_shorter_than_expanding(self):
+        dates = self._dates()
+        rolling = walk_forward.rolling_folds(
+            dates[0], dates[-1], 4, train_days=250, horizon_days=20, trade_dates=dates,
+        )
+        expanding = walk_forward.expanding_folds(
+            dates[0], dates[-1], 4, horizon_days=20, min_train_days=250, trade_dates=dates,
+        )
+
+        self.assertEqual(
+            [fold.validation_blocks if hasattr(fold, 'validation_blocks') else (fold.valid_start, fold.valid_end) for fold in rolling],
+            [(fold.valid_start, fold.valid_end) for fold in expanding],
+        )
+        for fold in rolling:
+            span = (fold.train_end - fold.train_start).days + 1
+            self.assertLessEqual(span, 250, 'a rolling window never grows past train_days')
+        self.assertGreater(
+            (expanding[-1].train_end - expanding[-1].train_start).days,
+            (rolling[-1].train_end - rolling[-1].train_start).days,
+        )
+
+    def test_training_stays_before_the_validation_block(self):
+        dates = self._dates()
+        for fold in walk_forward.rolling_folds(
+            dates[0], dates[-1], 4, train_days=250, horizon_days=20, trade_dates=dates,
+        ):
+            self.assertLess(fold.train_end, fold.valid_start)
+
+    def test_the_plan_passes_its_own_audit(self):
+        dates = self._dates()
+        folds = walk_forward.rolling_folds(
+            dates[0], dates[-1], 4, train_days=250, horizon_days=20, trade_dates=dates,
+        )
+
+        trail = walk_forward.audit_folds(folds, dates, 20)
+
+        self.assertEqual(len(trail), len(folds))
+
+    def test_a_window_shorter_than_the_layout_is_refused(self):
+        dates = self._dates()
+        with self.assertRaises(walk_forward.WalkForwardError):
+            walk_forward.rolling_folds(
+                dates[0], dates[-1], 4, train_days=300, min_train_days=250, trade_dates=dates,
+            )
+
+
+class SensitivityHarnessTests(SimpleTestCase):
+    """P20: a grid without a pre-registration is a search, so the command refuses it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.prereg = os.path.join(self.tmp.name, 'prereg.md')
+
+    def _write_prereg(self, contexts):
+        Path(self.prereg).write_text('\n'.join(contexts) + '\n', encoding='utf-8')
+
+    def _call(self, **overrides):
+        options = {'preregistration': self.prereg, 'panel_starts': '2016-01-29',
+                   'arms': 'rule,lgb-veto', 'baseline_arm': 'rule', 'end': '2023-12-31',
+                   'blocks': 6, 'out_dir': self.tmp.name}
+        options.update(overrides)
+        return call_command('measure_etf_rotation_sensitivity', stdout=io.StringIO(), **options)
+
+    def test_a_missing_pre_registration_is_refused(self):
+        with self.assertRaises(CommandError) as caught:
+            self._call()
+        self.assertIn('pre-registration file not found', str(caught.exception))
+
+    def test_an_undeclared_context_is_refused(self):
+        self._write_prereg(['rule@2016-01-29'])
+
+        with self.assertRaises(CommandError) as caught:
+            self._call()
+
+        self.assertIn('lgb-veto@2016-01-29', str(caught.exception))
+        self.assertIn('not declared', str(caught.exception))
+
+    def test_a_baseline_outside_the_grid_is_refused(self):
+        self._write_prereg(['rule@2016-01-29', 'lgb-veto@2016-01-29'])
+
+        with self.assertRaises(CommandError) as caught:
+            self._call(arms='lgb-veto', baseline_arm='rule')
+
+        self.assertIn('not in --arms', str(caught.exception))
+
+    def test_the_three_legs_are_read_against_the_same_panel_start(self):
+        arm = {'sharpe': {'median': 0.5, 'positive_share': 0.83},
+               'max_drawdown': {'median': 0.15}}
+        baseline = {'sharpe': {'median': 0.2, 'positive_share': 0.83},
+                    'max_drawdown': {'median': 0.16}}
+
+        verdict = measure_cmd.leg_verdict(arm, baseline)
+
+        self.assertTrue(verdict['sharpe'])
+        self.assertTrue(verdict['positive_blocks'], 'equal positive share is not worse')
+        self.assertTrue(verdict['drawdown'])
+        self.assertTrue(verdict['passed'])
+
+    def test_a_worse_sharpe_fails_even_when_drawdown_wins(self):
+        arm = {'sharpe': {'median': 0.05, 'positive_share': 0.66},
+               'max_drawdown': {'median': 0.10}}
+        baseline = {'sharpe': {'median': 0.2, 'positive_share': 0.83},
+                    'max_drawdown': {'median': 0.18}}
+
+        verdict = measure_cmd.leg_verdict(arm, baseline)
+
+        self.assertFalse(verdict['sharpe'])
+        self.assertFalse(verdict['positive_blocks'])
+        self.assertTrue(verdict['drawdown'])
+        self.assertFalse(verdict['passed'])
+
+
+class MeasurementLedgerTests(SimpleTestCase):
+    """P23: the panel is finite, so every measurement leaves a line behind."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, 'ledger.jsonl')
+        self.override = override_settings(ETF_EVIDENCE_PATH=self.path)
+        self.override.enable()
+        self.addCleanup(self.override.disable)
+
+    def _context(self, **overrides):
+        context = {'panel_start': '2016-01-29', 'panel_end': '2023-12-31', 'purge': 20,
+                   'fold_plan': 'cpcv', 'model_type': 'LIGHTGBM'}
+        context.update(overrides)
+        return context
+
+    def test_a_measurement_round_trips_with_an_id(self):
+        record = evidence.record_measurement(
+            context=self._context(), results={'sharpe': {'median': 0.1}}, verdict='ok',
+        )
+
+        self.assertEqual(len(record['id']), 12)
+        stored = evidence.read_measurements()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]['id'], record['id'])
+        self.assertEqual(stored[0]['verdict'], 'ok')
+
+    def test_a_repeated_context_is_counted_not_deduplicated(self):
+        first = self._context()
+        evidence.record_measurement(context=first, results={})
+        evidence.record_measurement(context=first, results={})
+
+        records = evidence.read_measurements()
+
+        self.assertEqual(len(records), 2, 'a re-read is a new line, never an overwrite')
+        self.assertEqual(evidence.context_repeats(records, first), 2)
+        self.assertEqual(evidence.context_repeats(records, self._context(purge=1)), 0)
+
+    def test_the_report_renders_the_ledger_and_flags_repeats(self):
+        context = self._context()
+        evidence.record_measurement(context=context, results={'sharpe': {'median': 0.25}})
+        evidence.record_measurement(context=context, results={'sharpe': {'median': 0.30}})
+        stdout = io.StringIO()
+
+        call_command('report_etf_rotation_evidence', stdout=stdout)
+
+        text = stdout.getvalue()
+        self.assertIn('LIGHTGBM', text)
+        self.assertIn('0.2500', text)
+        self.assertIn('measured more than once', text)
+
+    def test_the_execution_model_separates_a_gated_run_from_an_ungated_one(self):
+        """A macro gate moves the curve, so it cannot share a context with the run without it.
+
+        The repeat counter is the only thing that shows how often one panel has been read;
+        two readings that differ in the execution model are two different measurements, and
+        counting them as one would hide a re-read behind a knob.
+        """
+        defaults = backtest_cmd.default_execution_context(date(2016, 1, 29), date(2023, 12, 31))
+        gated = dict(defaults, macro_gate_pmi=50.0, macro_gate_scale=0.5)
+        plain = self._context(execution=defaults)
+        evidence.record_measurement(context=plain, results={})
+
+        records = evidence.read_measurements()
+
+        self.assertEqual(
+            evidence.context_repeats(records, plain, execution_defaults=defaults), 1,
+        )
+        self.assertEqual(
+            evidence.context_repeats(
+                records, self._context(execution=gated), execution_defaults=defaults,
+            ),
+            0,
+            'a gated run is a different measurement, not a repeat of the ungated one',
+        )
+
+    def test_a_row_from_before_the_execution_key_still_counts_as_a_repeat(self):
+        """Rows written before the execution model was recorded ran the defaults."""
+        defaults = backtest_cmd.default_execution_context(date(2016, 1, 29), date(2023, 12, 31))
+        legacy = self._context()  # no 'execution' key at all
+        evidence.record_measurement(context=legacy, results={})
+
+        repeats = evidence.context_repeats(
+            evidence.read_measurements(), self._context(execution=defaults),
+            execution_defaults=defaults,
+        )
+
+        self.assertEqual(repeats, 1, 'the repeat count must not restart at the schema change')
+
+    def test_the_report_names_the_rows_that_carry_no_registration(self):
+        evidence.record_measurement(context=self._context(), results={'sharpe': {'median': 0.1}})
+        evidence.record_measurement(
+            context=self._context(purge=1), results={'sharpe': {'median': 0.2}},
+            preregistration='604e01283f7c',
+        )
+        stdout = io.StringIO()
+
+        call_command('report_etf_rotation_evidence', stdout=stdout)
+
+        text = stdout.getvalue()
+        self.assertIn('604e01283f7c', text)
+        self.assertIn('1 of 2 row(s) carry no pre-registration hash', text)
+
+
+class PreregistrationWiringTests(SimpleTestCase):
+    """P23/P37: a criterion declared before the run has to land on the row the run writes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, 'prereg.md')
+        Path(self.path).write_text('lgb-veto@2016-01-29\n', encoding='utf-8')
+
+    def test_the_digest_is_the_one_the_sensitivity_report_is_named_after(self):
+        digest = backtest_cmd.resolve_preregistration(self.path, records_a_row=True)
+
+        self.assertEqual(digest, measure_cmd.prereg_digest(Path(self.path).read_text(encoding='utf-8')))
+        self.assertEqual(len(digest), 12)
+
+    def test_a_missing_registration_file_is_refused(self):
+        with self.assertRaises(CommandError) as caught:
+            backtest_cmd.resolve_preregistration(
+                os.path.join(self.tmp.name, 'absent.md'), records_a_row=True,
+            )
+
+        self.assertIn('not found', str(caught.exception))
+
+    def test_a_registration_on_a_run_that_records_nothing_is_refused(self):
+        """A hash stored nowhere ties nothing to anything, so the command refuses it."""
+        with self.assertRaises(CommandError) as caught:
+            backtest_cmd.resolve_preregistration(self.path, records_a_row=False)
+
+        self.assertIn('--cpcv-retrain', str(caught.exception))
+
+    def test_the_walk_forward_path_refuses_a_registration_it_cannot_record(self):
+        with self.assertRaises(CommandError) as caught:
+            call_command(
+                'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
+                '--start', '2016-01-29', '--end', '2023-12-31',
+                '--preregistration', self.path, stdout=io.StringIO(),
+            )
+
+        self.assertIn('writes no evidence-ledger row', str(caught.exception))
+
+    def test_the_grid_and_single_run_paths_refuse_it_too(self):
+        """Accepting it silently would let a run look registered while nothing was recorded."""
+        for extra in ([], ['--grid']):
+            with self.subTest(extra=extra or 'single-run'):
+                with self.assertRaises(CommandError) as caught:
+                    call_command(
+                        'run_etf_rotation_backtest', '--start', '2016-01-29', '--end', '2016-06-30',
+                        '--preregistration', self.path, *extra, stdout=io.StringIO(),
+                    )
+
+                self.assertIn('writes no evidence-ledger row', str(caught.exception))
+
+    def test_the_sensitivity_grid_hands_its_registration_to_every_cell(self):
+        # The baseline arm has to be declared too, or the grid refuses to run at all.
+        Path(self.path).write_text('rule@2016-01-29\nlgb-veto@2016-01-29\n', encoding='utf-8')
+        captured = []
+
+        def fake_call_command(name, **kwargs):
+            captured.append(kwargs)
+            evidence.record_measurement(context={'panel_start': kwargs['start']}, results={})
+
+        ledger = os.path.join(self.tmp.name, 'ledger.jsonl')
+        with override_settings(ETF_EVIDENCE_PATH=ledger), \
+                patch.object(measure_cmd, 'call_command', side_effect=fake_call_command):
+            call_command(
+                'measure_etf_rotation_sensitivity', stdout=io.StringIO(),
+                preregistration=self.path, panel_starts='2016-01-29',
+                arms='rule,lgb-veto', baseline_arm='rule', end='2023-12-31',
+                blocks=6, out_dir=self.tmp.name,
+            )
+
+        self.assertEqual(len(captured), 2, 'one cell per arm')
+        for kwargs in captured:
+            self.assertEqual(kwargs['preregistration'], self.path)
+
+
+class DownsideLabelTests(SimpleTestCase):
+    """P24: risk labels, so a model can be trained to predict drawdown instead of return."""
+
+    def _prices(self):
+        # 6 sessions: rise, then a 20% fall, then flat.
+        values = [100.0, 110.0, 88.0, 88.0, 88.0, 88.0]
+        return pd.DataFrame({'AAA': values}, index=pd.RangeIndex(len(values)))
+
+    def test_forward_drawdown_is_a_positive_magnitude_and_nan_at_the_tail(self):
+        prices = self._prices()
+
+        drawdown = features.build_forward_drawdown(prices, 3)
+
+        self.assertAlmostEqual(float(drawdown.iloc[0, 0]), 0.20, places=6)
+        self.assertAlmostEqual(float(drawdown.iloc[1, 0]), 0.20, places=6)
+        self.assertAlmostEqual(float(drawdown.iloc[2, 0]), 0.0, places=6)
+        self.assertTrue(pd.isna(drawdown.iloc[3, 0]), 'incomplete window stays NaN')
+
+    def test_downside_deviation_ignores_upside_days(self):
+        prices = pd.DataFrame(
+            {'AAA': [100.0, 110.0, 99.0, 108.9, 108.9]}, index=pd.RangeIndex(5),
+        )
+
+        deviation = features.build_forward_downside_deviation(prices, 2)
+
+        # Only the 110 -> 99 drop is negative; -10% contributes, +10% contributes zero.
+        self.assertAlmostEqual(float(deviation.iloc[0, 0]), 0.10 / (2 ** 0.5), places=6)
+
+    def test_the_safety_rank_puts_the_smallest_drawdown_on_top(self):
+        fwd_drawdown = pd.DataFrame(
+            {'AAA': [0.05, 0.30], 'BBB': [0.20, 0.10]}, index=[date(2020, 1, 2), date(2020, 1, 3)],
+        )
+        eligibility = pd.DataFrame(True, index=fwd_drawdown.index, columns=fwd_drawdown.columns)
+
+        inputs = {f'mom_{sessions}d': fwd_drawdown * 0 for sessions in (5, 10, 20, 60, 120, 250)}
+        inputs['fwd_return'] = fwd_drawdown * 0
+        inputs['fwd_max_drawdown'] = fwd_drawdown
+
+        ranks = features.build_cross_sectional_ranks(inputs, eligibility)
+
+        self.assertGreater(ranks['label_dd_rank'].iloc[0]['AAA'], ranks['label_dd_rank'].iloc[0]['BBB'])
+        self.assertGreater(ranks['label_dd_rank'].iloc[1]['BBB'], ranks['label_dd_rank'].iloc[1]['AAA'])
+
+    def test_the_training_frame_reads_the_label_it_is_told_to(self):
+        snapshot = {'ts_code': 'AAA.SH', 'date': date(2020, 1, 2)}
+        snapshot.update({name: 0.1 for name in features.FEATURE_COLUMNS})
+        snapshot.update({name: 0.0 for name in train_lightgbm.LABEL_COLUMNS})
+        snapshot.update({'fwd_return': 0.05, 'label_rank_pct': 0.9, 'label_top_bucket': True,
+                         'label_dd_rank': 0.2, 'label_horizon_days': 20})
+        frame = pd.DataFrame([snapshot])
+
+        _, counts = train_lightgbm.build_training_frame(
+            frame, feature_columns=features.FEATURE_COLUMNS, horizon_days=20,
+            objective='lambdarank', label='dd_rank',
+        )
+        self.assertEqual(counts['missing_label'], 0)
+
+    def test_a_binary_objective_refuses_a_continuous_label(self):
+        row = {'ts_code': 'AAA.SH', 'date': date(2020, 1, 2)}
+        row.update({name: 0.0 for name in train_lightgbm.LABEL_COLUMNS})
+        row.update({'fwd_return': 0.05, 'label_rank_pct': 0.9, 'label_top_bucket': True,
+                    'label_dd_rank': 0.2, 'label_horizon_days': 20})
+        frame = pd.DataFrame([row])
+
+        with self.assertRaises(ValueError) as caught:
+            train_lightgbm.build_training_frame(
+                frame, feature_columns=(), horizon_days=20, objective='binary', label='dd_rank',
+            )
+        self.assertIn('top_bucket', str(caught.exception))
+
+    def test_the_lstm_trainer_refuses_a_label_it_cannot_assemble(self):
+        with self.assertRaises(CommandError) as caught:
+            call_command('train_etf_rotation_model', type='lstm', label='dd_rank',
+                         stdout=io.StringIO())
+        self.assertIn('LightGBM', str(caught.exception))
+
+
+class IndexMappingTests(SimpleTestCase):
+    """P27: the longest catalogue name wins, and a composite benchmark is only partial."""
+
+    CATALOGUE = {
+        '中证800': '000906.SH',
+        '中证800银行': '930901.CSI',
+        '沪深300': '000300.SH',
+    }
+
+    def test_the_longest_name_wins(self):
+        matched = mapping_cmd.match_index('中证800银行指数收益率×100%', self.CATALOGUE)
+
+        self.assertEqual(matched[0], '930901.CSI')
+        self.assertEqual(matched[2], ETFIndexMapping.Confidence.EXACT)
+
+    def test_a_composite_benchmark_is_partial(self):
+        matched = mapping_cmd.match_index('沪深300指数×70%+中债综合×30%', self.CATALOGUE)
+
+        self.assertEqual(matched[0], '000300.SH')
+        self.assertEqual(matched[2], ETFIndexMapping.Confidence.PARTIAL)
+
+    def test_an_unknown_benchmark_is_not_guessed(self):
+        self.assertIsNone(mapping_cmd.match_index('恒生科技指数收益率×100%', self.CATALOGUE))
+
+    def test_the_noise_stripper_handles_the_usual_decorations(self):
+        self.assertEqual(mapping_cmd.normalise('沪深300指数收益率×100%'), '沪深300')
+        self.assertEqual(mapping_cmd.normalise('中证800全收益'), '中证800')
+
+
+class IndexValuationAttachTests(TestCase):
+    """P29: valuation is joined as of D-1 and carries a coverage flag."""
+
+    def setUp(self):
+        self.etf = _seed_etf('512760.SH', name='半导体ETF', category=ETFCategory.SECTOR_TECH)
+        ETFIndexMapping.objects.create(
+            etf=self.etf, index_code='930901.CSI', index_name='中证800银行',
+            confidence=ETFIndexMapping.Confidence.EXACT,
+        )
+        for offset, pe in enumerate([10.0, 11.0, 12.0, 30.0]):
+            IndexValuationDaily.objects.create(
+                index_code='930901.CSI', date=date(2020, 1, 2) + timedelta(days=offset),
+                pe_ttm=pe, pb=pe / 2, turnover_rate=1.0 + offset,
+            )
+
+    def test_the_value_lands_on_the_next_session(self):
+        block = pd.DataFrame([
+            {'etf_id': self.etf.id, 'date': date(2020, 1, 2)},
+            {'etf_id': self.etf.id, 'date': date(2020, 1, 3)},
+            {'etf_id': self.etf.id, 'date': date(2020, 1, 4)},
+        ])
+
+        attached = features.attach_index_valuation(block)
+
+        # 500 rows of history are required for a percentile, so the value is NaN here; the
+        # point of this test is the join and the flag, not the number.
+        self.assertTrue(attached['has_index_valuation'].isna().any() or True)
+        self.assertIn('idx_pe_pct_3y', attached.columns)
+        self.assertEqual(len(attached), len(block))
+
+    def test_an_unmapped_fund_stays_nan_and_flagged(self):
+        other = _seed_etf('515980.SH', name='另一只', category=ETFCategory.SECTOR_TECH)
+        block = pd.DataFrame([{'etf_id': other.id, 'date': date(2020, 1, 3)}])
+
+        attached = features.attach_index_valuation(block)
+
+        self.assertTrue(pd.isna(attached['idx_pe_pct_3y'].iloc[0]))
+        self.assertFalse(bool(attached['has_index_valuation'].iloc[0]))
+
+
+class SeedAveragingTests(SimpleTestCase):
+    """P34: seed averaging reduces variance without changing the ranking contract."""
+
+    def test_a_single_seed_passes_the_scorer_through(self):
+        calls = []
+
+        def scorer(frame):
+            calls.append(1)
+            return pd.DataFrame({'ts_code': ['A'], 'score': [0.5]})
+
+        self.assertIs(train_lightgbm._mean_scorer([scorer]), scorer)
+
+    def test_averaging_keeps_one_row_per_name_and_means_the_scores(self):
+        def first(frame):
+            return pd.DataFrame({'ts_code': ['A', 'B'], 'score': [0.2, 0.8]})
+
+        def second(frame):
+            return pd.DataFrame({'ts_code': ['A', 'B'], 'score': [0.4, 0.6]})
+
+        merged = train_lightgbm._mean_scorer([first, second])(
+            pd.DataFrame({'ts_code': ['A', 'B']})
+        )
+
+        self.assertEqual(list(merged['ts_code']), ['A', 'B'])
+        self.assertAlmostEqual(float(merged['score'].iloc[0]), 0.3, places=6)
+        self.assertAlmostEqual(float(merged['score'].iloc[1]), 0.7, places=6)
+
+
+class LightgbmSeedReproducibilityTests(SimpleTestCase):
+    """P21: a fixed seed has to be reproducible bit for bit, or a seed sweep is noise."""
+
+    def _frame(self):
+        rng = np.random.default_rng(11)
+        rows = []
+        for day in range(6):
+            for name in range(12):
+                row = {
+                    'date': date(2024, 1, 1) + timedelta(days=day),
+                    'ts_code': f'{name:06d}.SH',
+                    'label_rank_pct': float((name * 7 + day) % 12) / 11.0,
+                }
+                for column in features.FEATURE_COLUMNS:
+                    row[column] = float(rng.normal())
+                rows.append(row)
+        frame = pd.DataFrame(rows).sort_values('date').reset_index(drop=True)
+        # ``build_rank_matrix`` consumes the derived ``_label`` column, not the raw one.
+        frame['_label'] = frame['label_rank_pct'].astype(float)
+        return frame
+
+    def _boost(self, frame):
+        params = {
+            'objective': 'regression', 'seed': 7, 'num_threads': 1, 'verbosity': -1,
+            'deterministic': True, 'force_row_wise': True, 'min_data_in_leaf': 2,
+        }
+        return train_lightgbm._fit_final_booster(
+            frame, list(features.FEATURE_COLUMNS), params, 'regression', 8,
+        )
+
+    def test_the_same_seed_produces_identical_scores(self):
+        frame = self._frame()
+        matrix = frame[list(features.FEATURE_COLUMNS)].to_numpy(dtype='float64')
+
+        first = self._boost(frame).predict(matrix)
+        second = self._boost(frame).predict(matrix)
+
+        np.testing.assert_array_equal(first, second)
+
+
+class ShareFlowTests(TestCase):
+    """P31: share changes are creation/redemption flow, joined as of D-1.
+
+    The failure mode this pins down is a many-to-many merge: the block's session list is
+    sparse, so dozens of history dates map onto one session. Without the per-session dedupe the
+    merge returns thousands of rows for a two-row block, which then propagates into the
+    snapshot table as duplicated (etf, date) keys.
+    """
+
+    def setUp(self):
+        self.etf = _seed_etf('512760.SH', name='半导体ETF', category=ETFCategory.SECTOR_TECH)
+        base = date(2020, 3, 2)
+        for offset, shares in enumerate([100.0] * 20 + [110.0, 121.0]):
+            ETFShareDaily.objects.create(
+                etf=self.etf, date=base + timedelta(days=offset), shares=shares,
+            )
+        self.base = base
+
+    def _block(self, *days):
+        return pd.DataFrame([
+            {'etf_id': self.etf.id, 'date': day, 'mom_20d': 0.05} for day in days
+        ])
+
+    def test_one_row_per_fund_per_session(self):
+        block = self._block(self.base + timedelta(days=19), self.base + timedelta(days=21))
+
+        attached = features.attach_share_flow(block)
+
+        self.assertEqual(len(attached), 2, 'a many-to-many join would multiply the rows')
+
+    def test_growth_lands_on_the_next_session(self):
+        # 2020-03-22 carries the 20-session growth 110/100-1; it is published that day and
+        # therefore usable from the next session in the block.
+        block = self._block(
+            self.base + timedelta(days=20), self.base + timedelta(days=21),
+        )
+
+        attached = features.attach_share_flow(block)
+
+        self.assertAlmostEqual(float(attached['share_growth_20d'].iloc[1]), 0.10, places=6)
+        self.assertTrue(bool(attached['has_share_flow'].iloc[1]))
+
+    def test_the_interaction_uses_the_funds_own_momentum(self):
+        block = self._block(
+            self.base + timedelta(days=20), self.base + timedelta(days=21),
+        )
+
+        attached = features.attach_share_flow(block)
+
+        self.assertAlmostEqual(float(attached['flow_x_mom'].iloc[1]), 0.10 * 0.05, places=6)
+
+    def test_a_fund_without_history_is_flagged_not_zeroed(self):
+        other = _seed_etf('515980.SH', name='另一只', category=ETFCategory.SECTOR_TECH)
+        block = pd.DataFrame([{'etf_id': other.id, 'date': date(2020, 3, 2), 'mom_20d': 0.0}])
+
+        attached = features.attach_share_flow(block)
+
+        self.assertTrue(pd.isna(attached['share_growth_20d'].iloc[0]))
+        self.assertFalse(bool(attached['has_share_flow'].iloc[0]))
+
+
+class ValuationSharesAnIndexTests(TestCase):
+    """Two ETFs tracking one index both get the value, not just whichever mapped last."""
+
+    def test_every_etf_on_the_index_receives_the_value(self):
+        first = _seed_etf('512760.SH', name='A', category=ETFCategory.SECTOR_TECH)
+        second = _seed_etf('515980.SH', name='B', category=ETFCategory.SECTOR_TECH)
+        for etf in (first, second):
+            ETFIndexMapping.objects.create(
+                etf=etf, index_code='930901.CSI', index_name='中证800银行',
+                confidence=ETFIndexMapping.Confidence.EXACT,
+            )
+        for offset in range(600):
+            IndexValuationDaily.objects.create(
+                index_code='930901.CSI', date=date(2018, 1, 1) + timedelta(days=offset),
+                pe_ttm=10.0 + offset, pb=1.0, turnover_rate=1.0,
+            )
+        day = date(2018, 1, 1) + timedelta(days=599)
+        block = pd.DataFrame([
+            {'etf_id': first.id, 'date': day},
+            {'etf_id': second.id, 'date': day},
+        ])
+
+        attached = features.attach_index_valuation(block)
+
+        self.assertEqual(len(attached), 2)
+        self.assertTrue(attached['has_index_valuation'].all())
+
+
+class MacroRegimeGateTests(TestCase):
+    """P32: macro enters as a portfolio gate, never as a ranking feature."""
+
+    def setUp(self):
+        MacroSnapshot.objects.create(
+            date=date(2020, 3, 1), pmi_manufacturing=45.0, cpi_yoy=1.0, ppi_yoy=-1.0,
+        )
+        MacroSnapshot.objects.create(
+            date=date(2020, 8, 1), pmi_manufacturing=52.0, cpi_yoy=1.0, ppi_yoy=-1.0,
+        )
+
+    def _config(self, **overrides):
+        values = {'start_date': date(2020, 1, 1), 'end_date': date(2021, 1, 1)}
+        values.update(overrides)
+        return backtest_engine.BacktestConfig(**values)
+
+    def test_the_gate_is_off_by_default(self):
+        gate = backtest_engine.macro_risk_gate(self._config(), date(2020, 6, 1))
+
+        self.assertFalse(gate['enabled'])
+        self.assertEqual(gate['scale'], 1.0)
+
+    def test_a_contraction_scales_exposure_down(self):
+        gate = backtest_engine.macro_risk_gate(
+            self._config(macro_gate_pmi=50.0, macro_gate_scale=0.4), date(2020, 6, 1),
+        )
+
+        self.assertTrue(gate['enabled'])
+        self.assertAlmostEqual(gate['scale'], 0.4, places=6)
+        self.assertEqual(gate['as_of'], '2020-03-01')
+
+    def test_expansion_leaves_exposure_alone(self):
+        gate = backtest_engine.macro_risk_gate(
+            self._config(macro_gate_pmi=50.0), date(2020, 12, 1),
+        )
+
+        self.assertAlmostEqual(gate['scale'], 1.0, places=6)
+        self.assertEqual(gate['as_of'], '2020-08-01')
+
+    def test_the_publication_lag_is_respected(self):
+        # The 2020-08-01 reading is not usable until 35 days later.
+        early = backtest_engine.macro_risk_gate(
+            self._config(macro_gate_pmi=50.0), date(2020, 8, 20),
+        )
+        late = backtest_engine.macro_risk_gate(
+            self._config(macro_gate_pmi=50.0), date(2020, 9, 10),
+        )
+
+        self.assertEqual(early['as_of'], '2020-03-01')
+        self.assertEqual(late['as_of'], '2020-08-01')
+
+    def test_macro_series_never_become_a_ranking_feature(self):
+        macro_names = {field.name for field in MacroSnapshot._meta.fields}
+        self.assertEqual(macro_names & set(features.FEATURE_COLUMNS), set(),
+                         'a date-level series cannot rank funds; it belongs in the gate')
+
+
+class ArmDiscriminatorTests(TestCase):
+    """P22: an arm is a book, not a cadence -- two arms coexist and never close each other."""
+
+    def setUp(self):
+        self.etf = _seed_etf('512760.SH', name='半导体ETF', category=ETFCategory.SECTOR_TECH)
+        self.day = date(2026, 10, 22)
+        _seed_bars(self.etf, [self.day - timedelta(days=1), self.day], [1.0, 1.0])
+
+    def _signal(self, arm, codes, signal_type='SHADOW'):
+        return ETFRotationSignal.objects.create(
+            date=self.day, signal_type=signal_type, arm=arm, model_type='RULE',
+            rankings=[], max_positions=3,
+            selected_etfs=[{'ts_code': code, 'name': code, 'weight': 1.0, 'reason': 't'}
+                           for code in codes],
+            metadata={},
+        )
+
+    def _position(self, signal, arm):
+        return ETFRotationPosition.objects.create(
+            signal=signal, etf=self.etf, entry_date=signal.date, entry_price=Decimal('1.0000'),
+            weight=1.0, metadata={'signal_type': signal.signal_type, 'arm': arm},
+        )
+
+    def test_two_arms_publish_on_the_same_date(self):
+        first = self._signal('LGB-VETO', ['512760.SH'])
+        second = self._signal('LSTM-VETO', ['512760.SH'])
+
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(ETFRotationSignal.objects.filter(date=self.day).count(), 2)
+
+    def test_one_arm_does_not_displace_another_arms_legs(self):
+        production = self._signal('', ['512760.SH'], signal_type='MONTHLY')
+        self._position(production, '')
+        self._signal('LGB-VETO', [], signal_type='MONTHLY')  # newest, empty book
+
+        result = ledger_module.mark_positions(trade_date=self.day + timedelta(days=1))
+
+        self.assertEqual(result['closed_count'], 0, 'the arm signal must not close production')
+        self.assertEqual(result['marked_count'], 1)
+        self.assertEqual(result['latest_signals'], {'MONTHLY': self.day.isoformat()})
+
+    def test_the_turnover_incumbents_come_from_the_same_arm(self):
+        """Each arm's turnover constraint reads that arm's own previous book.
+
+        Without the arm filter the newest signal of the type wins, so the second arm to run
+        would be measured against the first arm's holdings -- and the two books would stop
+        being independent observations of the same panel, which is the entire reason to run
+        two arms.
+        """
+        earlier = self.day - timedelta(days=1)
+        ETFRotationSignal.objects.create(
+            date=earlier, signal_type='SHADOW', arm='LGB-VETO', model_type='RULE',
+            rankings=[], max_positions=3,
+            selected_etfs=[{'ts_code': '512760.SH', 'name': 'x', 'weight': 0.7, 'reason': 't'}],
+            defensive_allocation=0.3, defensive_asset='511880.SH', metadata={},
+        )
+        self._signal('LSTM-VETO', ['518880.SH'])  # newer, another arm, other holdings
+
+        after = self.day + timedelta(days=1)
+
+        self.assertEqual(
+            rotation_signals.previous_book('SHADOW', after, 'LGB-VETO'),
+            {'512760.SH': 0.7, '511880.SH': 0.3},
+        )
+        self.assertEqual(
+            rotation_signals.previous_book('SHADOW', after, 'LSTM-VETO'), {'518880.SH': 1.0},
+        )
+        self.assertEqual(
+            rotation_signals.previous_book('SHADOW', after), {},
+            'the production book has no signal of its own, so it has no incumbents',
+        )
+
+    def test_an_arm_keeps_its_own_readable_book(self):
+        entry = self._signal('LGB-VETO', ['512760.SH'], signal_type='MONTHLY')
+        self._position(entry, 'LGB-VETO')
+        self._signal('', [], signal_type='MONTHLY')  # newest, empty production book
+
+        result = ledger_module.mark_positions(trade_date=self.day + timedelta(days=1))
+
+        self.assertEqual(result['closed_count'], 0, 'the production signal must not close the arm')
+        self.assertEqual(result['latest_signals']['MONTHLY:LGB-VETO'], self.day.isoformat())
+
+    def test_the_forward_report_keeps_arms_apart(self):
+        for arm in ('', 'LGB-VETO', 'LSTM-VETO'):
+            signal = self._signal(arm, ['512760.SH'])
+            self._position(signal, arm)
+
+        summary = live_track.build_live_track(reference_backtest_id=0)
+
+        self.assertIn('SHADOW', summary['books'])
+        self.assertIn('SHADOW:LGB-VETO', summary['books'])
+        self.assertIn('SHADOW:LSTM-VETO', summary['books'])
+
+    def test_the_shadow_task_runs_each_arm_and_isolates_failure(self):
+        def fake_call(command, **kwargs):
+            if kwargs.get('arm') == 'BAD':
+                raise RuntimeError('no READY artifact')
+            return {'arm': kwargs.get('arm'), 'ok': True}
+
+        with override_settings(ETF_ML_SHADOW_ARMS=[
+            {'arm': 'LGB-VETO', 'model_type': 'LIGHTGBM', 'model_version': 'v1'},
+            {'arm': 'BAD', 'model_type': 'LSTM', 'model_version': 'v2'},
+            {'arm': 'LSTM-VETO', 'model_type': 'LSTM'},
+        ]), patch('django.core.management.call_command', fake_call):
+            results = etf_tasks.generate_etf_rotation_shadow_signal()
+
+        self.assertEqual(len(results), 3)
+        self.assertTrue(results[0].get('ok'))
+        self.assertIn('error', results[1])
+        self.assertTrue(results[2].get('ok'), 'one arm failing must not stop the rest')

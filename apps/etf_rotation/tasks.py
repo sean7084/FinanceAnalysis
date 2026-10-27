@@ -664,6 +664,28 @@ def generate_etf_rotation_shadow_signal(self):
     from django.conf import settings
     from django.core.management import call_command
 
+    arms = getattr(settings, 'ETF_ML_SHADOW_ARMS', None) or []
+    if arms:
+        # Multi-arm mode: each arm is its own book, and one arm's failure must not stop the
+        # others -- a missing artifact is exactly the state a shadow exists to make visible.
+        results = []
+        for entry in arms:
+            entry = dict(entry or {})
+            arm = str(entry.get('arm') or '').strip()
+            model_type = str(entry.get('model_type') or '').strip().upper()
+            if not arm or not model_type:
+                results.append({'arm': arm, 'skipped': 'arm and model_type are required'})
+                continue
+            try:
+                results.append(call_command(
+                    'generate_etf_rotation_signal', signal_type='SHADOW',
+                    model_type=model_type, arm=arm,
+                    model_version=entry.get('model_version') or None, verbosity=0,
+                ))
+            except Exception as exc:  # per-arm isolation
+                results.append({'arm': arm, 'error': f'{type(exc).__name__}: {exc}'[:200]})
+        return results
+
     configured = str(getattr(settings, 'ETF_ML_SHADOW_MODEL', '') or '').strip()
     if not configured:
         return {'shadow_model': '', 'skipped': 'ETF_ML_SHADOW_MODEL is empty'}

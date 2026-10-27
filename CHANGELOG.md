@@ -1,5 +1,307 @@
 # Changelog
 
+### version 0.1.36
+
+研究计划收尾修正：台账接线、arm 隔离、折计划覆盖面，以及 §17.1 的可追溯性。
+
+#### Fixed:
+
+- **Two shadow arms shared one turnover book.** `previous_book` looked up the newest signal of a
+  `signal_type` with no arm filter, so whichever arm ran second measured its turnover constraint
+  against the other arm's holdings — the two books stopped being independent observations of the
+  same panel, which is the only reason to run two. It now takes the arm; the production book
+  (`arm=''`) reads exactly what it did before.
+- **The pre-registration hash never reached the ledger.** `record_measurement` accepted one and
+  nothing passed it, so all 29 rows said `preregistration: ""` and no verdict could be tied back
+  to the criteria declared before the run — which is what the gate tightened in plan §9 requires.
+  `--preregistration PATH` is now an option on `run_etf_rotation_backtest`, the sensitivity grid
+  hands its file to every cell, and one shared digest helper keeps the ledger value and the
+  report filename from disagreeing. A registration on a path that writes no ledger row is
+  refused rather than silently dropped.
+- **The ledger context did not describe the execution model.** A run behind a macro gate and a
+  run without one shared a context, so the repeat counter — the only thing that shows how often
+  this finite panel has been read — could not tell them apart. The context now carries the
+  resolved `BacktestConfig` fields that move the curve (fee, band, capacity, Kelly, macro gate,
+  selection knobs), resolved through the config so an unset flag and a default-valued flag are
+  the same measurement. Rows written before this read as "defaults", so the count does not
+  restart at the schema change.
+- **`--fold-plan` only worked on the CPCV path.** `--walk-forward-steps` built expanding folds
+  whatever was asked. It now accepts `expanding`/`rolling` and refuses `cpcv`, which means
+  nothing on a path that selects parameters per fold; the flag defaults per path (`cpcv` for
+  blocks, `expanding` for walk-forward) instead of one default serving both.
+
+#### Changed:
+
+- `report_etf_rotation_evidence` prints the pre-registration hash per row, warns how many rows
+  carry none, and groups repeats with the same normalized context the writer uses.
+- Report §17.1 is two tables split by feature schema (`eab79996d610` / `b6165919fbf3`), every
+  row carrying its evidence-ledger id and pre-registration hash where one exists. The two
+  selector rows with no ledger row are marked as untraceable instead of looking like the rest,
+  and the cross-schema comparison the plan forbids is now impossible by construction.
+- The BACKLOG "ML as a filter" entry is rewritten: it quoted the `purge=1` numbers (0.2906 vs
+  0.2227) that §12 superseded and asked for the sensitivity round that has since run
+  (`lgb-veto` 2/3, `lstm-veto` 1/3, failing at the 2018 start).
+
+#### Added:
+
+- Issues #65-#72, listed in BACKLOG under "research programme: what P18-P37 did not finish":
+  coverage denominator and coverage bias, valuation quality gate, share-flow confounds, macro
+  release dates and features, variance table and the P35 criteria, rolling per-fold IC, the
+  remaining label options, and ledger coverage of the other measurement paths.
+
+#### Verified:
+
+- Backend 783 → 795 tests (twelve new: arm-scoped turnover incumbents, the execution-model
+  context and its back-compatibility with rows that predate it, the registration digest and its
+  three refusals and its forwarding from the sensitivity grid, rolling walk-forward folds, and
+  the unregistered-row warning); frontend unchanged at 79.
+- `manage.py check`, `makemigrations --check`, `export_documentation_facts --check` and
+  `scripts/verify_local_stack.sh` clean; no migration in this version, so the dev database is
+  unchanged.
+
+### version 0.1.35
+
+臂判别（P22）、标签 horizon 扫描（P25）、消融协议（P26）与成分广度数据层（P30）。
+
+#### Added:
+
+- **Arm discriminator (P22).** `ETFRotationSignal.arm` (migration 0018) joins the unique key,
+  so two candidate books can publish on the same date instead of overwriting each other.
+  `generate_etf_rotation_signal --arm`, `position_ledger.arm_of`, `live_track` books keyed
+  `SHADOW:<arm>`, and `ETF_ML_SHADOW_ARMS` (one fail-closed entry per arm) make the shadow
+  book able to observe several candidates without touching the production path.
+- **Label-horizon sweep (P25).** `run_etf_rotation_backtest --cpcv-retrain --horizons 20,40,60`
+  re-reads the same per-fold scores against price-based forward returns at each horizon
+  (`rank_ic.forward_return_panel`), so IC decay is measurable without a second label column.
+- **Constituent breadth (P30).** `IndexWeightSnapshot` (migration 0019) plus
+  `sync_index_weight`, which splits a page that comes back at TuShare's cap instead of
+  silently truncating. `features.attach_index_breadth` derives `idx_share_above_ma60`,
+  `idx_ret_dispersion_20d`, `idx_mom_consistency` from `markets.OHLCV` as of D-1;
+  `ETFFeatureSnapshot` gained the four columns (migration 0020).
+- The valuation and breadth columns now actually reach the snapshot row: both are produced by
+  an attach function after assembly, so `build_snapshot_models` and `_full_update_fields`
+  read a shared `ATTACHED_FEATURE_COLUMNS` tuple instead of only `FEATURE_COLUMNS`.
+- **LSTM capacity is configuration (P21).** `ETF_LSTM_{SEQUENCE_LENGTH,HIDDEN_SIZE,
+  NUM_LAYERS,DROPOUT,EPOCHS,BATCH_SIZE,LEARNING_RATE,PATIENCE}` are real settings, resolved by
+  `resolve_lstm_hyperparameters` (argument beats setting beats the old literal). Defaults
+  reproduce the previous model exactly; an unusable value is refused by name.
+- `ETF_ML_SHADOW_ARMS` is declared in `config/settings/base.py` (JSON list). It was read via
+  `getattr` before, which meant a value in `.env` never reached the task.
+- `scripts/verify_local_stack.sh` passes `PYTHON_BIN`/`PROJECT_ROOT` to the migration check;
+  the child process only saw them unset, so the check always reported "PYTHON_BIN must be set".
+- Threads buy time, not readings: the same `lgb-select` arm runs **92.3 s at 4 threads vs
+  66.8 s at 14**, with identical per-block Sharpe and IC. A fixed seed is bit-reproducible
+  (`LightgbmSeedReproducibilityTests`). GPU stays off -- the wheel/OpenCL probe fails.
+
+#### Numbers:
+
+- Label horizon, same scores: mean IC 0.0337 / 0.0308 / 0.0311 and **ICIR 0.5937 / 0.4561 /
+  0.3952** at 20 / 40 / 60 sessions. Longer labels lose consistency, so the 20-session label
+  stays and no training-label change is justified (report section 21).
+- Constituent breadth: 116 indices / 2.97M weight rows, but only **53.2% of eligible rows**
+  (53.1% inside 2016-2023) have breadth -- TuShare's `index_weight` has no 2016-2017 history
+  for most thematic indices. Below the pre-registered 70% floor, so the three columns stay
+  out of `FEATURE_COLUMNS`. On the covered rows `idx_share_above_ma60` correlates 0.83 with
+  `ma60_ratio` (redundant), and the one orthogonal feature, `idx_mom_consistency`, has
+  ICIR 0.13 against the 0.5 gate (report section 23).
+
+### version 0.1.34
+
+宏观 regime 闸门（报告 §20）。
+
+#### Added:
+
+- **Macro regime gate.** `BacktestConfig.macro_gate_pmi` / `macro_gate_scale` plus
+  `macro_risk_gate`: while the latest *published* manufacturing PMI (a 35-day publication lag)
+  sits below the threshold, risk-on exposure is multiplied by the scale and combined with the
+  Kelly governor. Off by default (0), so earlier runs are bit-identical. CLI:
+  `--macro-gate-pmi`, `--macro-gate-scale`. `state.macro_history` records every gated session.
+- A test enforces that macro series never enter `FEATURE_COLUMNS`: a date-level value cannot
+  rank funds, so it belongs in the gate and nowhere else.
+
+#### Numbers:
+
+- RULE with PMI<50 -> 0.5x exposure, same six blocks: median Sharpe 0.1881 -> 0.1283, positive
+  blocks 83.33% -> **100%**, median maxDD 17.97% -> 16.95%, **worst block -6.31% -> -3.21%**.
+  The gate does what a de-risking switch should; it fails R3' only because that criterion asks
+  a risk control to beat the base strategy on return.
+
+### version 0.1.33
+
+份额流特征已启用并测量（报告 §19）。
+
+#### Fixed:
+
+- **`attach_index_valuation` served one ETF per index.** It mapped valuation rows through a
+  reversed ``{index_code: etf}`` dict, so of the 170 ETFs tracking 沪深300 only one received a
+  value. It now maps ETF -> index on the block and joins on ``index_code``; a test pins two
+  ETFs sharing one index.
+- **Background-run state misread.** Section 18 blamed a duplicate-key upsert on a pre-existing
+  block defect; the real cause was two backfills running concurrently. Re-running a single
+  process wrote 2,602,300 rows cleanly. Marker files must get unique names per run.
+
+#### Changed:
+
+- **Share-flow features are in the model input.** `share_growth_5d/20d`, `flow_x_mom` and
+  `has_share_flow` joined `FEATURE_COLUMNS` (24 -> 28) after the backfill showed 95.8%
+  coverage of eligible rows.
+
+#### Numbers:
+
+- Adding the flow features moved the LightGBM selector from -0.1041 to -0.3607 and the veto
+  arm from 0.5400 to 0.3801 (median Sharpe, same blocks). Both changes sit inside the ~1
+  Sharpe start-to-start noise band, so the honest reading is "no measurable gain", not
+  "harmful". Per-block rank IC barely moved, i.e. the new columns are largely redundant with
+  the existing momentum and turnover features.
+
+### version 0.1.32
+
+研究计划 Phase 31/33/34/35/36（份额流、滚动对比、seed 平均、决策门）。
+数据：`docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §15-§18。
+
+#### Added:
+
+- **`--fold-plan expanding`**, so a rolling-vs-expanding comparison shares one validation
+  calendar and differs only in training-window shape.
+- **`--seeds N`**: N boosters per fold with different seeds, scores averaged by
+  `_mean_scorer`. Variance reduction, not a bigger model.
+- **`ETFShareDaily` + `sync_etf_share` + `attach_share_flow`**: daily creation/redemption
+  flow for 811/811 pool funds (854,170 rows, 100% coverage) with `share_growth_5d/20d`,
+  `flow_x_mom` and a coverage flag, all lagged one session.
+
+#### Fixed:
+
+- **Two many-to-many joins in the feature attachments.** Both `attach_index_valuation` and
+  `attach_share_flow` mapped dozens of history rows onto one sparse block session; without a
+  per-session dedupe the merge was a cartesian product (a 2-row block returned 2,000 rows).
+  Both now dedupe, validate and assert the row count. A regression test pins it.
+
+#### Numbers:
+
+- Rolling vs expanding, same blocks: RULE reads identically (0.0791) under both, LightGBM
+  goes from -0.7320 (expanding) to +0.4945 (rolling) -- but the pre-registered grid across
+  three panel starts passes only **1/3**, so that is a boundary artefact.
+- Seed averaging on the veto arm: median Sharpe 0.5400 -> 0.3372 with consistency unchanged,
+  i.e. roughly 0.2 Sharpe of the earlier result was one lucky seed.
+- **The instrument is the bottleneck**: RULE, which has no learned parameters, reads 0.0791 /
+  0.4460 / -0.5284 across three panel starts. Six blocks of ~20 rebalances cannot resolve a
+  0.1-0.5 effect. P35 is therefore no-go for a reason that has nothing to do with models.
+- Share-flow columns are **switched off** pending the duplicate-key defect those columns
+  exposed in the assembled block (report section 18).
+
+### version 0.1.31
+
+研究计划 Phase 27-29（指数映射、估值接入、估值特征）。结果：
+`docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §14。
+
+#### Added:
+
+- **ETF -> tracked index mapping.** `ETFIndexMapping` plus `build_etf_index_mapping`,
+  which matches `fund_basic`'s `benchmark` text against the 9,575-name `index_basic`
+  catalogue (longest name wins, composite benchmarks marked `partial`). 1,474 of the 1,715
+  pool ETFs resolve (85.9%), above the pre-registered 70% floor. Coverage report:
+  `docs/reports/etf-index-mapping-coverage.md`.
+- **Index valuation ingestion.** `IndexValuationDaily` plus `sync_index_valuation`: one call
+  per mapped index, retries with backoff, `--only-missing` for resumes.
+- **Valuation features (built, switched off).** `features.attach_index_valuation` adds
+  `idx_pe_pct_3y`, `idx_pb_pct_3y`, `idx_turnover_z` and `has_index_valuation`, all as of
+  D-1, with the rolling percentile on the index's own history. Migration `0015`.
+
+#### Decided:
+
+- **The valuation feature family stops here.** TuShare's `index_dailybasic` covers six broad
+  indices only: 292 of the 298 mapped codes return empty frames (verified through the MCP
+  client too, so it is coverage, not throttling), which reaches 207/1,715 = **12.1%** of the
+  pool. A model trained on a column that is 88% missing learns whether a fund has a
+  broad-benchmark mapping, not a valuation signal. The four columns stay on the model as
+  NULL and out of `FEATURE_COLUMNS`; the mapping table and the attach path are kept because
+  a source with real coverage (or the P30 breadth work) can reuse them.
+
+### version 0.1.30
+
+研究计划 Phase 20/24/33/37（敏感性格栅、下行标签、闸门收紧）。数据：
+`docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §13。
+
+#### Added:
+
+- **Pre-registered sensitivity harness.** `measure_etf_rotation_sensitivity` refuses to run
+  without a pre-registration file, refuses any grid cell the file does not declare, and
+  requires the baseline arm to be in the grid. Results are aggregated per arm with the
+  pre-registered three legs and a "passed in k/n panel starts" verdict; the file's sha256 is
+  written into the report name. First grid: `docs/reports/sensitivity/sensitivity-veto-2026-10-25-604e01283f7c.md`.
+- **Downside labels.** `fwd_max_drawdown`, `fwd_downside_deviation` and `label_dd_rank` (the
+  safety rank: smallest drawdown ranks 1.0) plus a `fwd_downside_deviation` builder that does
+  not pad missing bars; `--label {rank_pct, dd_rank}` on both the trainer and the CPCV
+  retrain path, LightGBM only. Migration `etf_rotation/0012`; the full panel was recomputed
+  (2,602,300 rows, 350,851 labelled).
+
+#### Changed:
+
+- **The gate tightened (plan section 9).** A CV pass now needs replication across >= 2 veto
+  models or >= 2 panel starts, a purge >= the label horizon, and a ledger record carrying a
+  pre-registration hash. The older "all three legs and done" wording is marked superseded.
+
+#### Numbers:
+
+- Sensitivity grid, three panel starts, fixed 20% quantile: `lgb-veto` passes 2/3 (fails
+  2018 at -0.4900 against RULE 0.2306), `lstm-veto` passes 1/3. **The veto effect does not
+  replicate**, so the 2016 reading in section 12 was a boundary artefact and the arm does
+  not qualify for forward observation.
+- Downside-label veto arm: median Sharpe -0.2292, positive blocks 50%, median maxDD 13.26%
+  (the lowest of any arm) against RULE's 0.1881 / 83.33% / 17.97%. Predicting risk does
+  reduce drawdown and destroys return; the hypothesis is falsified on the return side.
+
+### version 0.1.29
+
+研究计划 Phase 18-23（证据修正与测量基础设施）。计划：
+`docs/plans/etf-rotation-next-phases-2026-10-24.md` §8-§9；数据：
+`docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §12。
+
+#### Fixed:
+
+- **CPCV purged one session instead of the label window.** `CPCV_LABEL_HORIZON = 1` meant
+  a training date up to 19 sessions before a held-out block carried a `fwd_return` computed
+  from bars *inside* that block, so a fold model was fitted on the answer key.
+  `resolve_cpcv_purge` now gives RULE a one-session purge and an ML arm its
+  `ETF_LABEL_HORIZON_DAYS`, and `--cpcv-purge` may raise the value but never lower it.
+- **The purge also moved the block boundaries.** `combinatorial_purged_folds` truncated the
+  panel tail by `horizon_days`, so a different purge re-partitioned the data and two arms
+  could not be read side by side. `panel_tail_days` pins the layout to the label window:
+  RULE (purge 1) and an ML arm (purge 20) now land on identical blocks.
+
+#### Added:
+
+- **Rolling folds.** `walk_forward.rolling_folds` keeps the expanding plan's validation
+  calendar but trains on a fixed-length window that slides (`--fold-plan rolling`,
+  `--rolling-train-days`, default 750 sessions). No embargo parameter: every training date
+  is before its block by construction.
+- **Measurement ledger.** `apps/etf_rotation/evidence.py` appends one JSON line per
+  measurement (panel, fold plan, purge, embargo, arm, model, feature schema, label horizon,
+  results, preregistration hash) to `docs/reports/evidence/etf-rotation-measurements.jsonl`;
+  `report_etf_rotation_evidence` renders it and counts how often a context has been read.
+  The panel is finite, so a repeat has to be visible.
+- **LightGBM thread setting.** `ETF_LGB_NUM_THREADS` (default `cpu_count - 2`, capped at 16)
+  replaces the hard-coded `num_threads: 4`; `ETF_LGB_PARAMS` still wins. `device`,
+  `device_type`, `gpu_use_dp`, `gpu_platform_id` and `gpu_device_id` joined the native
+  parameter allow-list, so a GPU-capable wheel can be selected from settings. The installed
+  wheel has no OpenCL device, so LightGBM stays on CPU.
+
+#### Numbers (same six blocks, purge 20 for ML, purge 1 for RULE):
+
+| arm | median Sharpe | positive blocks | median maxDD | worst block |
+| :--- | ---: | ---: | ---: | ---: |
+| RULE | 0.1881 | 83.33% | 17.97% | -6.31% |
+| LightGBM selector | -0.1041 | 50.00% | 18.44% | -13.82% |
+| LSTM selector | 0.1177 | 66.67% | 19.32% | -13.72% |
+| RULE + LightGBM veto | 0.5400 | 83.33% | 16.78% | -17.62% |
+| RULE + LSTM veto | 0.0841 | 66.67% | 19.09% | -21.93% |
+
+Both selector arms still fail; the LightGBM veto arm still passes and is stronger than
+under the leaky purge (0.2906 -> 0.5400); the LSTM veto arm still fails, so the "ML as a
+filter" hypothesis remains unreplicated. RULE stays in production, no model is activated.
+Rolling folds, 2016-2026 with a 750-session window: LightGBM median Sharpe -0.2640 over six
+folds (a tuning reading - the panel reaches 2026).
+
 ### version 0.1.28
 
 holdout 释放、按折重训与四臂复赛。记录：

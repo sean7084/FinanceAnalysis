@@ -250,7 +250,7 @@ def resolve_model_version(model_type: str, config=None) -> tuple[str, dict[str, 
     return _clip('+'.join(versions[label] for label in REGISTRY_LABELS.values() if label in versions)), versions
 
 
-def previous_book(signal_type: str, trade_date) -> dict[str, float]:
+def previous_book(signal_type: str, trade_date, arm: str = '') -> dict[str, float]:
     """The book the strategy last asked for, as the turnover constraint's incumbents.
 
     Read off the previous signal of the same ``signal_type`` rather than from
@@ -259,10 +259,16 @@ def previous_book(signal_type: str, trade_date) -> dict[str, float]:
     biased by legs the first run wrote. The defensive sleeve is included because the backtest
     holds it too -- ``_plan_to_target_weights`` puts it in the target book -- so it is
     displaced on the same terms.
+
+    ``arm`` scopes the look-up to one book. Two shadow arms publish on the same date and
+    cadence (that is what the arm discriminator exists for), and without this filter the
+    turnover constraint of whichever arm ran second would be measured against the other arm's
+    holdings -- so the two books would not be independent observations of the same panel.
+    Empty means the production book, which is every row written before arms existed.
     """
     day = _as_date(trade_date)
     prior = (
-        ETFRotationSignal.objects.filter(signal_type=signal_type, date__lt=day)
+        ETFRotationSignal.objects.filter(signal_type=signal_type, arm=arm, date__lt=day)
         .order_by('-date').first()
     )
     if prior is None:
@@ -338,8 +344,8 @@ def _sized_shares(capital_base: float, weight: float, entry_price: float) -> int
 @transaction.atomic
 def persist_signal(*, trade_date, signal_type: str, model_type: str, config, plan,
                    selected: list[dict], metadata: dict, model_version: str,
-                   benchmark_return: float | None) -> dict:
-    """Upsert the ``(date, signal_type)`` signal and rebuild the legs hanging off it.
+                   benchmark_return: float | None, arm: str = '') -> dict:
+    """Upsert the ``(date, signal_type, arm)`` signal and rebuild the legs hanging off it.
 
     ``update_or_create`` on the model's unique key is what makes a re-run overwrite instead of
     appending a second row for "the latest signal" to choose between. The day's positions are
@@ -354,6 +360,7 @@ def persist_signal(*, trade_date, signal_type: str, model_type: str, config, pla
     signal, created = ETFRotationSignal.objects.update_or_create(
         date=trade_date,
         signal_type=signal_type,
+        arm=arm,
         defaults={
             'model_type': model_type,
             'rankings': plan.rankings,
@@ -493,7 +500,8 @@ def _whole_pool_unscorable(snapshots, scored, model_type: str, day) -> str:
 
 def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 'RULE',
                              trade_date=None, max_positions=None, momentum_lookback=None,
-                             dry_run: bool = False, model_version: str | None = None) -> dict:
+                             dry_run: bool = False, model_version: str | None = None,
+                             arm: str = '') -> dict:
     """Rank one session's pool, persist the plan, and return a summary dict.
 
     The one date's pipeline: resolve the date -> read the point-in-time cross-section ->
@@ -509,6 +517,9 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     """
     signal_type = str(signal_type or '').strip().upper()
     model_type = str(model_type or '').strip().upper()
+    # The arm is a book discriminator, not a cadence: two arms share a date and signal_type and
+    # are still separate books. Empty means the production book.
+    arm = str(arm or '').strip().upper()[:32]
     if signal_type not in ETFRotationSignal.SignalType.values:
         raise SignalGenerationError(
             f'signal_type must be one of {ETFRotationSignal.SignalType.values}, got {signal_type!r}.',
@@ -534,7 +545,7 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
         model_version, pinned, model_versions = pinned_predictors(model_type, model_version)
     else:
         model_version, model_versions = resolve_model_version(model_type, config)
-    current_weights = previous_book(signal_type, day)
+    current_weights = previous_book(signal_type, day, arm)
 
     try:
         scored = engine.score_snapshots(
@@ -603,7 +614,7 @@ def generate_rotation_signal(*, signal_type: str = 'MONTHLY', model_type: str = 
     written = persist_signal(
         trade_date=day, signal_type=signal_type, model_type=model_type, config=config,
         plan=plan, selected=selected, metadata=metadata, model_version=model_version,
-        benchmark_return=benchmark_return,
+        benchmark_return=benchmark_return, arm=arm,
     )
     summary.update({
         'signal_pk': written['signal'].pk,

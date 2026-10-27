@@ -1286,10 +1286,53 @@ def _pool_stats(frame):
     }
 
 
+#: ``(setting name, default)`` for every LSTM knob a settings file may override. The
+#: defaults are the literals that used to sit in :func:`train_walk_forward`'s signature, so
+#: an unchanged environment produces the same model it always did.
+LSTM_HYPERPARAMETER_SETTINGS = {
+    'sequence_length': ('ETF_LSTM_SEQUENCE_LENGTH', 20),
+    'hidden_size': ('ETF_LSTM_HIDDEN_SIZE', 64),
+    'num_layers': ('ETF_LSTM_NUM_LAYERS', 2),
+    'dropout': ('ETF_LSTM_DROPOUT', 0.2),
+    'epochs': ('ETF_LSTM_EPOCHS', 50),
+    'batch_size': ('ETF_LSTM_BATCH_SIZE', 256),
+    'learning_rate': ('ETF_LSTM_LEARNING_RATE', 1e-3),
+    'patience': ('ETF_LSTM_PATIENCE', 5),
+}
+
+
+def resolve_lstm_hyperparameters(**overrides) -> dict:
+    """Resolve the eight capacity knobs: argument, then settings, then the old default.
+
+    ``None`` means "not specified by the caller", which is what lets the management command
+    keep its hands off these knobs while ``sweep_etf_rotation_lstm`` still passes explicit
+    values. A value that cannot train is refused by name instead of surfacing as a torch
+    shape error an hour into a sweep.
+    """
+    resolved = {}
+    for name, (setting_name, default) in LSTM_HYPERPARAMETER_SETTINGS.items():
+        value = overrides.get(name)
+        if value is None:
+            value = getattr(settings, setting_name, default)
+        resolved[name] = float(value) if name in ('dropout', 'learning_rate') else int(value)
+    if resolved['sequence_length'] < 1:
+        raise ValueError('sequence_length must be at least 1 session.')
+    if resolved['hidden_size'] < 1 or resolved['num_layers'] < 1:
+        raise ValueError('hidden_size and num_layers must be positive.')
+    if not 0.0 <= resolved['dropout'] < 1.0:
+        raise ValueError('dropout must be in [0, 1).')
+    if resolved['epochs'] < 1 or resolved['batch_size'] < 1 or resolved['patience'] < 1:
+        raise ValueError('epochs, batch_size and patience must be positive.')
+    if resolved['learning_rate'] <= 0:
+        raise ValueError('learning_rate must be positive.')
+    return resolved
+
+
 def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, end_date=None,
-                       n_folds=6, horizon_days=20, sequence_length=20, hidden_size=64,
-                       num_layers=2, dropout=0.2, epochs=50, batch_size=256, learning_rate=1e-3,
-                       patience=5, device=None, params=None, objective=None,
+                       n_folds=6, horizon_days=20, sequence_length=None, hidden_size=None,
+                       num_layers=None, dropout=None, epochs=None, batch_size=None,
+                       learning_rate=None, patience=None, device=None, params=None,
+                       objective=None,
                        num_boost_round=None, min_train_days=None, version_tag='', activate=True,
                        sweep=None, folds=None, capture_fold_predictors=False):
     """Expanding-window walk-forward LSTM training for the ETF rotation pool.
@@ -1328,6 +1371,19 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
     after Phase D's gate is a legitimate later step that must not silently start exporting
     pooled holdout numbers.
     """
+    hyper = resolve_lstm_hyperparameters(
+        sequence_length=sequence_length, hidden_size=hidden_size, num_layers=num_layers,
+        dropout=dropout, epochs=epochs, batch_size=batch_size,
+        learning_rate=learning_rate, patience=patience,
+    )
+    sequence_length = hyper['sequence_length']
+    hidden_size = hyper['hidden_size']
+    num_layers = hyper['num_layers']
+    dropout = hyper['dropout']
+    epochs = hyper['epochs']
+    batch_size = hyper['batch_size']
+    learning_rate = hyper['learning_rate']
+    patience = hyper['patience']
     config = _build_config(
         model_type_label=model_type_label, start_date=start_date, end_date=end_date, n_folds=n_folds,
         horizon_days=horizon_days, sequence_length=sequence_length, hidden_size=hidden_size,

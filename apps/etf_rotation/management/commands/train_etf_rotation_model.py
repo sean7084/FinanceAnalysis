@@ -49,6 +49,11 @@ class Command(BaseCommand):
         parser.add_argument('--end', help='Last snapshot date to consider (ISO). Default: latest eligible row.')
         parser.add_argument('--folds', type=int, default=6,
                             help='Number of expanding-window validation steps (default 6).')
+        parser.add_argument('--label', default='rank_pct', choices=['rank_pct', 'dd_rank'],
+                            help='Which stored label the model fits (default rank_pct). dd_rank '
+                                 'trains on the safety rank (smallest forward drawdown ranks '
+                                 'highest); LightGBM only, the LSTM has its own multi-horizon '
+                                 'labels.')
         parser.add_argument('--objective', default=DEFAULT_OBJECTIVE, choices=list(OBJECTIVES),
                             help='lambdarank on label_rank_pct grades (default), binary on label_top_bucket, '
                                  'or regression on label_rank_pct.')
@@ -101,6 +106,13 @@ class Command(BaseCommand):
                     failures.append(f'ensemble: {result.get("reason", result["status"])}')
                 continue
             train_kwargs = dict(common)
+            if target == 'lstm' and options['label'] != 'rank_pct':
+                raise CommandError(
+                    '--label only applies to the LightGBM trainer; the LSTM assembles its own '
+                    'labels from fwd_return and cannot be pointed at label_dd_rank.'
+                )
+            if target != 'lstm':
+                train_kwargs['label'] = options['label']
             # Explicit in both directions: the trainer's default is ``activate=True``, and a
             # post-release retrain that silently took over serving would be the exact mistake
             # the activation gate exists to prevent.

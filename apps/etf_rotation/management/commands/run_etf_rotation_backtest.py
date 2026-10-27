@@ -53,14 +53,18 @@ import importlib
 import itertools
 import math
 import time
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+from statistics import mean, pstdev
 from typing import Any
 
 import pandas as pd
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.core import finance_metrics
-from apps.etf_rotation import rank_ic, tasks
+from apps.etf_rotation import evidence, rank_ic, tasks
 from apps.etf_rotation.backtest_engine import (
     MODEL_TYPES,
     REBALANCE_FREQUENCIES,
@@ -78,8 +82,11 @@ from apps.etf_rotation.rotation_engine import WEIGHTING_MODES, default_defensive
 from apps.etf_rotation.walk_forward import (
     WalkForwardError,
     audit_combinatorial_folds,
+    audit_folds,
     combinatorial_purged_folds,
     expanding_folds,
+    rolling_folds,
+    train_dates_for_any_fold,
     validation_blocks_for_any_fold,
 )
 
@@ -128,8 +135,13 @@ CPCV_DEFAULT_BLOCKS = 6
 CPCV_DEFAULT_TEST_BLOCKS = 2
 CPCV_DEFAULT_EMBARGO_SESSIONS = 5
 #: The RULE ranker fits no label, so a one-session purge is sufficient for its own stability
-#: reading. A fitted model measuring the same splits should use its model horizon.
-CPCV_LABEL_HORIZON = 1
+#: reading. A *fitted* model must purge its own label window instead: with a 20-session label, a
+#: training date up to 19 sessions before a held-out block has a label computed from bars
+#: *inside* that block, so ``purge = 1`` hands the fold model the answer key. ML arms therefore
+#: default to ``ETF_LABEL_HORIZON_DAYS`` and ``--cpcv-purge`` may only raise it. This is a
+#: correction, not a new option: the 2026-10-25 rematch ran its ML arms at ``purge=1`` and the
+#: report annotates those readings (section 12).
+CPCV_RULE_PURGE = 1
 
 #: Start of the window that used to be the locked holdout
 #: (``docs/plans/etf-rotation-selection-sizing-2026-10-23.md`` §7.7) and was **released into
@@ -215,31 +227,49 @@ def grid_name(combo: dict[str, Any], prefix: str = 'grid') -> str:
     return f'{str(prefix or "").strip() or "grid"}-{grid_stem(combo)}'
 
 
-def walk_forward_folds(sessions, n_folds: int) -> list:
-    """Build expanding folds over the session calendar, or fewer when the panel is short.
+def walk_forward_folds(sessions, n_folds: int, fold_plan: str = 'expanding',
+                       rolling_train_days: int = 750) -> list:
+    """Build expanding or rolling folds over the session calendar, or fewer when it is short.
 
-    ``expanding_folds`` lays out ``n`` equal validation steps after
-    ``WALK_FORWARD_MIN_TRAIN_SESSIONS`` and before the one-session label tail. When the
-    validation region cannot supply ``n`` non-empty steps it can emit a fold whose
-    ``valid_start`` is past its ``valid_end`` (the step arithmetic clamps the end, not the
-    start); such a fold would be scored on nothing. This wrapper asks for the largest
-    count, up to ``n_folds``, whose folds are all non-empty -- so a short panel silently
-    loses folds but is never padded with invented boundaries. ``[]`` means the panel
-    cannot even seat one fold, and the caller refuses rather than training on nothing.
+    Both plans lay out ``n`` equal validation steps after the minimum training window and
+    before the one-session label tail; they differ only in the training window's shape
+    (growing vs a fixed ``rolling_train_days`` that slides). When the validation region cannot
+    supply ``n`` non-empty steps the step arithmetic can emit a fold whose ``valid_start`` is
+    past its ``valid_end`` (it clamps the end, not the start); such a fold would be scored on
+    nothing. This wrapper asks for the largest count, up to ``n_folds``, whose folds are all
+    non-empty -- so a short panel silently loses folds but is never padded with invented
+    boundaries. ``[]`` means the panel cannot even seat one fold, and the caller refuses
+    rather than training on nothing.
     """
+    plan = str(fold_plan or 'expanding')
+    if plan not in ('expanding', 'rolling'):
+        raise ValueError(f"fold_plan must be 'expanding' or 'rolling', got {fold_plan!r}.")
     ordered = sorted({value for value in sessions if value is not None})
     requested = int(n_folds)
     if requested < 1:
         raise ValueError(f'n_folds must be >= 1, got {requested}.')
     if not ordered:
         return []
+    train_days = int(rolling_train_days)
     for candidate in range(requested, 0, -1):
-        folds = expanding_folds(
-            ordered[0], ordered[-1], candidate,
-            horizon_days=WALK_FORWARD_LABEL_HORIZON,
-            min_train_days=WALK_FORWARD_MIN_TRAIN_SESSIONS,
-            trade_dates=ordered,
-        )
+        try:
+            if plan == 'rolling':
+                folds = rolling_folds(
+                    ordered[0], ordered[-1], candidate,
+                    train_days=train_days, horizon_days=WALK_FORWARD_LABEL_HORIZON,
+                    min_train_days=train_days, trade_dates=ordered,
+                )
+            else:
+                folds = expanding_folds(
+                    ordered[0], ordered[-1], candidate,
+                    horizon_days=WALK_FORWARD_LABEL_HORIZON,
+                    min_train_days=WALK_FORWARD_MIN_TRAIN_SESSIONS,
+                    trade_dates=ordered,
+                )
+        except WalkForwardError:
+            # A window the plan cannot seat is a shorter plan's problem, not an error to
+            # surface: the loop is already asking for fewer folds.
+            continue
         if not folds:
             return []
         if all(fold.valid_start <= fold.valid_end for fold in folds):
@@ -324,6 +354,87 @@ def walk_forward_table(outcomes: list[dict[str, Any]]) -> list[str]:
         )
     return lines
 
+
+#: ``BacktestConfig`` fields that change the curve. The evidence ledger records them because
+#: the repeat counter is the only thing that makes "this panel has been read nine times"
+#: visible, and a run behind a macro gate is not the same measurement as one without it.
+EVIDENCE_EXECUTION_FIELDS = (
+    'rebalance_frequency', 'max_positions', 'momentum_lookback', 'absolute_momentum_filter',
+    'weighting', 'defensive_asset', 'initial_capital', 'commission_rate', 'min_commission',
+    'slippage', 'liquidity_floor_multiple', 'min_trade_notional_fraction',
+    'drift_band_fraction', 'liquidity_mode', 'adv_participation_cap',
+    'kelly_fraction', 'kelly_cap', 'kelly_floor', 'kelly_lookback_trades',
+    'cash_yield_annual', 'dedup_track_index', 'max_per_category',
+    'macro_gate_pmi', 'macro_gate_scale',
+)
+
+
+def _evidence_value(value: Any) -> Any:
+    """JSON-stable form of one config value, so equal configs yield equal contexts."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return value
+
+
+def execution_context(knobs, overrides, *, start, end) -> dict[str, Any]:
+    """The resolved execution model of a measurement: defaults filled in, not just the flags.
+
+    Resolved through ``BacktestConfig`` rather than read off the CLI because an unset flag and
+    a flag set to its default are the same run. A context that told them apart would report
+    fewer repeats than actually happened, which is the one error this ledger exists to
+    prevent.
+    """
+    config = BacktestConfig(start_date=start, end_date=end, **{
+        key: value for key, value in (knobs or {}).items() if value is not None
+    })
+    for key, value in (overrides or {}).items():
+        setattr(config, key, value)
+    return {
+        field: _evidence_value(getattr(config, field, None))
+        for field in EVIDENCE_EXECUTION_FIELDS
+    }
+
+
+def default_execution_context(start, end) -> dict[str, Any]:
+    """The same fields at engine defaults, for reading rows written before they were recorded."""
+    return execution_context({}, {}, start=start, end=end)
+
+
+def resolve_preregistration(path, *, records_a_row: bool) -> str:
+    """sha256 of the pre-registration file, or ``''`` when the run had none.
+
+    Refuses a path that does not exist -- a digest of nothing is worse than no digest, because
+    it looks like a declaration -- and refuses to accept one on a path that writes no ledger
+    row, since a criterion recorded nowhere cannot be tied to the reading it governed.
+    """
+    if not path:
+        return ''
+    candidate = Path(str(path))
+    if not candidate.is_file():
+        raise CommandError(f'--preregistration file not found: {candidate}')
+    if not records_a_row:
+        raise CommandError(
+            '--preregistration needs --cpcv-retrain: that is the only path that writes an '
+            'evidence-ledger row, so anywhere else the declaration would be recorded nowhere.'
+        )
+    return evidence.preregistration_digest(candidate.read_text(encoding='utf-8'))
+
+
+def refuse_unrecorded_preregistration(path: str, options) -> None:
+    """Reject ``--preregistration`` on any path that writes no ledger row.
+
+    Silent acceptance would be worse than refusal: the run would proceed looking registered
+    while the declaration landed nowhere, which is the failure mode the ledger exists to make
+    impossible.
+    """
+    if options.get('preregistration'):
+        raise CommandError(
+            f'--preregistration is refused on the {path} path: it writes no evidence-ledger row, '
+            'so there would be nowhere to record the declaration. Measure the arm through '
+            '--cpcv-blocks --cpcv-retrain, which does write one.'
+        )
 
 
 def parse_iso_date(value: str, label: str) -> date:
@@ -530,6 +641,46 @@ class Command(BaseCommand):
                                  'other blocks train on after a label-window purge and an embargo.')
         parser.add_argument('--cpcv-embargo', type=int, default=CPCV_DEFAULT_EMBARGO_SESSIONS, metavar='D',
                             help=f'Sessions excluded after each held-out block (default {CPCV_DEFAULT_EMBARGO_SESSIONS}).')
+        parser.add_argument('--macro-gate-pmi', type=float, default=None, metavar='LEVEL',
+                            help='Scale risk-on exposure by --macro-gate-scale while the latest '
+                                 'published manufacturing PMI is below LEVEL (0 disables). Macro '
+                                 'is a portfolio gate here, never a ranking feature.')
+        parser.add_argument('--macro-gate-scale', type=float, default=None, metavar='S',
+                            help='Exposure multiplier while the gate is open (default 0.5).')
+        parser.add_argument('--seeds', type=int, default=1, metavar='N',
+                            help='Fit N boosters per fold with different seeds and average their '
+                                 'scores (default 1). Variance reduction, not a bigger model.')
+        parser.add_argument('--label', default='rank_pct', choices=['rank_pct', 'dd_rank'],
+                            help='Label a re-trained ML arm fits (default rank_pct). dd_rank is '
+                                 'the safety rank: lowest forward drawdown ranks highest, so a veto '
+                                 'still drops the bottom share of the score.')
+        parser.add_argument('--horizons', default='', metavar='H1,H2',
+                            help='With --cpcv-retrain and an ML --model: also report rank IC '
+                                 'against price-based forward returns at these sessions-ahead '
+                                 'horizons (e.g. 20,40,60). The model is unchanged -- this reads '
+                                 'the same scores against a different label, so no extra '
+                                 'training happens.')
+        parser.add_argument('--fold-plan', default=None, choices=['cpcv', 'rolling', 'expanding'],
+                            help='Split shape: combinatorial blocks (the default for '
+                                 '--cpcv-blocks), a fixed-length rolling window, or an expanding '
+                                 'window. Rolling and expanding share the same validation '
+                                 'calendar, so the only difference between them is how much '
+                                 'history the model sees. With --walk-forward-steps the default '
+                                 'is expanding and cpcv is refused: that path has no '
+                                 'combinatorial split.')
+        parser.add_argument('--rolling-train-days', type=int, default=750, metavar='N',
+                            help='Sessions in a rolling training window (default 750, about three '
+                                 'years). Only used with --fold-plan rolling.')
+        parser.add_argument('--preregistration', default=None, metavar='PATH',
+                            help='Pre-registration file (markdown) declaring the arms and '
+                                 'criteria of this measurement. Its sha256 is stored on the '
+                                 'evidence-ledger row, which is what lets a verdict be tied back '
+                                 'to criteria fixed before the run. Requires --cpcv-retrain: '
+                                 'that is the only path that writes a ledger row.')
+        parser.add_argument('--cpcv-purge', type=int, default=None, metavar='N',
+                            help='Sessions excluded before each held-out block. Defaults to 1 for '
+                                 'RULE and to ETF_LABEL_HORIZON_DAYS for an ML arm; an ML arm may '
+                                 'raise it but not lower it.')
         parser.add_argument('--cpcv-hybrid', action='store_true',
                             help='With --cpcv-retrain and an ML --model: RULE selects, the fold '
                                  'model only vetoes. Implements the \'ML as a filter\' arm: the '
@@ -559,8 +710,10 @@ class Command(BaseCommand):
                 )
             self._handle_walk_forward(options)
         elif options['grid']:
+            refuse_unrecorded_preregistration('grid', options)
             self._handle_grid(options)
         else:
+            refuse_unrecorded_preregistration('single-run', options)
             self._handle_single(options)
 
     # -- single configuration -------------------------------------------------
@@ -1152,10 +1305,20 @@ class Command(BaseCommand):
         end = parse_iso_date(options['end'], '--end')
         if end < start:
             raise CommandError('--end must be on or after --start.')
+        fold_plan = str(options['fold_plan'] or 'expanding')
+        if fold_plan == 'cpcv':
+            raise CommandError(
+                '--walk-forward-steps has no combinatorial split; --fold-plan takes expanding '
+                '(the default here) or rolling on this path.'
+            )
+        refuse_unrecorded_preregistration('walk-forward', options)
 
         source = CachedDataSource(DatabaseDataSource())
         try:
-            folds = walk_forward_folds(source.sessions(start, end), requested)
+            folds = walk_forward_folds(
+                source.sessions(start, end), requested, fold_plan=fold_plan,
+                rolling_train_days=int(options['rolling_train_days']),
+            )
         except WalkForwardError as exc:
             raise CommandError(f'walk-forward fold plan is invalid: {exc}') from exc
         if not folds:
@@ -1170,9 +1333,13 @@ class Command(BaseCommand):
                 'the plan is reported as-is rather than padded.'
             ))
         self.stdout.write(
-            f'walk-forward plan: {len(folds)} expanding fold(s), '
-            f'min_train={WALK_FORWARD_MIN_TRAIN_SESSIONS} sessions, '
-            f'label_tail={WALK_FORWARD_LABEL_HORIZON} session'
+            f'walk-forward plan: {len(folds)} {fold_plan} fold(s), '
+            + (
+                f'train_window={int(options["rolling_train_days"])} sessions (fixed), '
+                if fold_plan == 'rolling'
+                else f'min_train={WALK_FORWARD_MIN_TRAIN_SESSIONS} sessions, '
+            )
+            + f'label_tail={WALK_FORWARD_LABEL_HORIZON} session'
         )
         for fold in folds:
             self.stdout.write(
@@ -1344,12 +1511,26 @@ class Command(BaseCommand):
                     'model per block, the other reuses one artifact (and risks scoring its own '
                     'training set).'
                 )
-            if int(options['cpcv_test_blocks']) != 1:
+            if str(options['fold_plan'] or 'cpcv') == 'cpcv' and int(options['cpcv_test_blocks']) != 1:
                 raise CommandError(
                     '--cpcv-retrain needs --cpcv-test-blocks 1 so each held-out block is scored by '
                     'exactly one model. With more blocks per split a block is scored by several '
                     'models, which is a different (and much more expensive) measurement.'
                 )
+        horizons = parse_label_horizons(options.get('horizons'))
+        if horizons and not options['cpcv_retrain']:
+            raise CommandError('--horizons only applies to --cpcv-retrain: a pinned artifact is '
+                               'scored once and has no per-block scores to sweep.')
+        if horizons and model_type == 'RULE':
+            raise CommandError('--horizons needs an ML --model: RULE fits nothing, so there is no '
+                               'scorer whose IC could decay.')
+        preregistration = resolve_preregistration(
+            options.get('preregistration'), records_a_row=bool(options['cpcv_retrain']),
+        )
+        # purge = the label window of whatever is being measured. This is the difference between
+        # a held-out block and a block whose answers leaked into training.
+        label_horizon = int(getattr(settings, 'ETF_LABEL_HORIZON_DAYS', 20) or 20)
+        purge = resolve_cpcv_purge(model_type, options.get('cpcv_purge'), label_horizon)
         if options['name']:
             raise CommandError('--cpcv-blocks is ephemeral; drop --name.')
         if not options['start'] or not options['end']:
@@ -1389,39 +1570,77 @@ class Command(BaseCommand):
                 f'panel: {panel_start}..{panel_end} (requested {start}..{end}); the fold '
                 'boundaries follow the sessions that exist.'
             )
+        fold_plan = str(options['fold_plan'] or 'cpcv')
         try:
-            folds = combinatorial_purged_folds(
-                panel_start, panel_end, n_blocks, test_blocks,
-                horizon_days=CPCV_LABEL_HORIZON, embargo_days=embargo, trade_dates=sessions,
-            )
-            audit = audit_combinatorial_folds(folds, sessions, CPCV_LABEL_HORIZON, embargo)
+            if fold_plan in ('rolling', 'expanding'):
+                # One validation calendar, two training-window shapes: the first fold validates
+                # after ``rolling_train_days`` sessions either way, so a rolling-vs-expanding
+                # comparison differs only in how much history each later fold sees.
+                train_days = int(options['rolling_train_days'])
+                if fold_plan == 'rolling':
+                    folds = rolling_folds(
+                        panel_start, panel_end, n_blocks, train_days=train_days,
+                        horizon_days=purge, min_train_days=train_days, trade_dates=sessions,
+                    )
+                else:
+                    folds = expanding_folds(
+                        panel_start, panel_end, n_blocks, horizon_days=purge,
+                        min_train_days=train_days, trade_dates=sessions,
+                    )
+                audit = audit_folds(folds, sessions, purge)
+            else:
+                folds = combinatorial_purged_folds(
+                    panel_start, panel_end, n_blocks, test_blocks,
+                    horizon_days=purge, embargo_days=embargo, trade_dates=sessions,
+                    # The tail is the *label* window for every arm, so RULE (purge 1) and an ML
+                    # arm (purge 20) are cut into the same blocks and their medians can be read
+                    # side by side.
+                    panel_tail_days=label_horizon,
+                )
+                audit = audit_combinatorial_folds(
+                    folds, sessions, purge, embargo, panel_tail_days=label_horizon,
+                )
         except WalkForwardError as exc:
-            raise CommandError(f'CPCV fold plan is invalid: {exc}') from exc
+            raise CommandError(f'{fold_plan} fold plan is invalid: {exc}') from exc
         if not folds:
             raise CommandError(
                 f'the session calendar in {start}..{end} cannot seat {n_blocks} blocks; widen the window '
                 'or lower --cpcv-blocks.'
             )
 
-        blocks = sorted({block for fold in folds for block in fold.validation_blocks})
-        self.stdout.write(
-            f'CPCV plan: {n_blocks} blocks x {test_blocks} held out = {len(folds)} split(s), '
-            f'{len(blocks)} distinct block(s), purge={CPCV_LABEL_HORIZON} session(s), embargo={embargo}; '
-            f'window {panel_start}..{panel_end}'
-        )
+        blocks = sorted({block for fold in folds for block in validation_blocks_for_any_fold(fold)})
+        if fold_plan in ('rolling', 'expanding'):
+            shape = 'fixed' if fold_plan == 'rolling' else 'growing'
+            self.stdout.write(
+                f'{fold_plan} plan: {len(folds)} fold(s), first window '
+                f'{int(options["rolling_train_days"])} sessions then {shape}, purge={purge}; '
+                f'window {panel_start}..{panel_end}'
+            )
+        else:
+            self.stdout.write(
+                f'CPCV plan: {n_blocks} blocks x {test_blocks} held out = {len(folds)} split(s), '
+                f'{len(blocks)} distinct block(s), purge={purge} session(s), embargo={embargo}; '
+                f'window {panel_start}..{panel_end}'
+            )
         for item in audit[:3]:
             self.stdout.write(
-                f"  fold {item['fold_index']}: valid blocks {item['validation_blocks']} "
-                f"train={item['train_dates_kept']} purged={item['purged_train_dates']} "
-                f"embargoed={item['embargoed_train_dates']}"
+                f"  fold {item['fold_index']}: valid blocks {item.get('validation_blocks')} "
+                f"train={item.get('train_dates_kept')} purged={item.get('purged_train_dates')} "
+                f"embargoed={item.get('embargoed_train_dates', 0)}"
             )
         if len(audit) > 3:
             self.stdout.write(f'  ... {len(audit) - 3} more split(s) audited')
+        if preregistration:
+            self.stdout.write(
+                f'pre-registration {preregistration}: {options["preregistration"]}'
+            )
 
         if options['cpcv_retrain']:
             self._handle_cpcv_retrain(
                 model_type=model_type, folds=folds, options=options, source=source,
                 panel_start=panel_start, panel_end=panel_end, released_window=released_window,
+                purge=purge, label_horizon=label_horizon, fold_plan=fold_plan,
+                horizons=horizons, preregistration=preregistration,
             )
             return
 
@@ -1575,10 +1794,16 @@ class Command(BaseCommand):
             overrides['dedup_track_index'] = bool(options['dedup_track_index'])
         if options['max_per_category'] is not None:
             overrides['max_per_category'] = int(options['max_per_category'])
+        if options.get('macro_gate_pmi') is not None:
+            overrides['macro_gate_pmi'] = float(options['macro_gate_pmi'])
+        if options.get('macro_gate_scale') is not None:
+            overrides['macro_gate_scale'] = float(options['macro_gate_scale'])
         return knobs, overrides
 
     def _handle_cpcv_retrain(self, *, model_type, folds, options, source,
-                             panel_start, panel_end, released_window):
+                             panel_start, panel_end, released_window,
+                             purge=None, label_horizon=None, fold_plan='cpcv',
+                             horizons=(), preregistration: str = ''):
         """Score each held-out block with a model trained on that block's complement.
 
         Every block is a standalone run from initial capital, because a different model scores
@@ -1624,10 +1849,17 @@ class Command(BaseCommand):
                     f'fold {fold.fold_index}: --cpcv-retrain expects one held-out block per fold.'
                 )
             block_start, block_end = blocks[0]
-            train_dates = set(fold.train_dates)
-            inside = sorted(
-                day for day in train_dates if block_start <= day <= block_end
-            )
+            if hasattr(fold, 'train_dates'):
+                train_count = len(fold.train_dates)
+                inside = sorted(
+                    day for day in fold.train_dates if block_start <= day <= block_end
+                )
+            else:
+                # Expanding and rolling folds train strictly before their block and audit_folds
+                # already re-checked the purge, so the leak test is structural.
+                inside = [fold.train_end] if fold.train_end >= block_start else []
+                window = len(source.sessions(fold.train_start, fold.train_end))
+                train_count = max(0, window - int(fold.purged_train_dates))
             if inside:
                 raise CommandError(
                     f'fold {fold.fold_index}: {len(inside)} training date(s) fall inside its own '
@@ -1639,6 +1871,7 @@ class Command(BaseCommand):
                 predictor = self._fold_predictor(
                     fold, model_type=model_type, options=options,
                     panel_start=panel_start, panel_end=panel_end,
+                    label=str(options.get('label') or 'rank_pct'),
                 )
                 if hybrid:
                     predictors = {'veto_predictor': predictor}
@@ -1661,15 +1894,23 @@ class Command(BaseCommand):
                 {'mean_ic': None} if predictor is None
                 else rank_ic.block_rank_ic(predictor, block_start=block_start, block_end=block_end)
             )
+            horizon_ic = {}
+            if predictor is not None:
+                for horizon in horizons:
+                    horizon_ic[str(horizon)] = rank_ic.block_rank_ic(
+                        predictor, block_start=block_start, block_end=block_end,
+                        horizon_days=horizon,
+                    ).get('mean_ic')
             rows.append({
                 'fold_index': fold.fold_index,
                 'start': block_start.isoformat(), 'end': block_end.isoformat(),
-                'train_dates': len(train_dates),
+                'train_dates': train_count,
                 'rebalances': int(counters.get('rebalances') or 0),
                 'total_return': metrics.get('total_return'),
                 'max_drawdown': metrics.get('max_drawdown'),
                 'sharpe_ratio': metrics.get('sharpe_ratio'),
                 'mean_ic': ic.get('mean_ic'),
+                'horizon_ic': horizon_ic,
             })
             self.stdout.write(
                 f"  {ordinal:<5}  {rows[-1]['start']}  {rows[-1]['end']}  "
@@ -1708,13 +1949,78 @@ class Command(BaseCommand):
             'that never saw the block. Compare only with arms measured the same way; the '
             'continuous-run distribution is a different measurement.'
         )
+        horizon_summary = {}
+        for horizon in horizons:
+            values = [
+                row['horizon_ic'][str(horizon)] for row in rows
+                if row.get('horizon_ic', {}).get(str(horizon)) is not None
+            ]
+            spread = pstdev(values) if len(values) > 1 else None
+            horizon_summary[str(horizon)] = {
+                'mean_ic': mean(values) if values else None,
+                'icir': (mean(values) / spread) if spread else None,
+                'blocks': len(values),
+            }
+            self.stdout.write(
+                f"  label h={horizon:>3}  mean IC={_num(horizon_summary[str(horizon)]['mean_ic'])}  "
+                f"ICIR={_num(horizon_summary[str(horizon)]['icir'])}  "
+                f"blocks={horizon_summary[str(horizon)]['blocks']}"
+            )
+        # The panel is a finite resource: record what was read so a repeat is visible later.
+        from apps.etf_rotation import features
+        from apps.etf_rotation.train_lightgbm import feature_schema_version
+
+        context = {
+            'panel_start': panel_start.isoformat(), 'panel_end': panel_end.isoformat(),
+            'fold_plan': str(fold_plan), 'purge': int(purge or 0),
+            'label_horizon': int(label_horizon or 0),
+            'embargo': int(options.get('cpcv_embargo') or 0),
+            'model_type': model_type, 'hybrid': bool(options.get('cpcv_hybrid')),
+            'ml_veto_quantile': float(options['ml_veto_quantile']) if options.get('cpcv_hybrid') else None,
+            'model_version': 'retrain-per-fold',
+            'label': str(options.get('label') or 'rank_pct'),
+            'seeds': int(options.get('seeds') or 1),
+            'ic_horizons': [int(horizon) for horizon in horizons],
+            'feature_schema_version': feature_schema_version(features.FEATURE_COLUMNS),
+            # Every knob that moves the curve. Without these a gated run and an ungated one
+            # share a context and the repeat counter reports a re-read that did not happen.
+            'execution': execution_context(knobs, overrides, start=panel_start, end=panel_end),
+        }
+        # Count repeats *before* appending, or the record counts itself. Rows written before
+        # ``execution`` existed carry no such key, and all of them ran the defaults.
+        repeats = evidence.context_repeats(
+            evidence.read_measurements(), context,
+            execution_defaults=default_execution_context(panel_start, panel_end),
+        )
+        record = evidence.record_measurement(
+            context=context,
+            results={'sharpe': sharpe_dist, 'return': return_dist,
+                     'max_drawdown': drawdown_dist, 'blocks': rows,
+                     'horizon_ic': horizon_summary},
+            preregistration=preregistration,
+            verdict=(
+                f'median sharpe {_num(sharpe_dist.get("median"))}, positive '
+                f'{_pct(sharpe_dist.get("positive_share"))}'
+            ),
+        )
         self.stdout.write(
             f'CPCV retrain measured {len(rows)} block(s) in {time.monotonic() - started:.1f}s; '
             'no ETFRotationBacktest row, no artifact and no ModelVersion was written.'
         )
+        self.stdout.write(
+            f'evidence: {record["id"]} (this context has been measured {repeats} time(s) before)'
+        )
+        # Returned as well as printed: the sensitivity harness runs this measurement many
+        # times and needs the numbers, not the prose.
+        return {
+            'evidence_id': record['id'], 'context': context, 'rows': rows,
+            'sharpe': sharpe_dist, 'return': return_dist, 'max_drawdown': drawdown_dist,
+            'thin_blocks': thin, 'horizon_ic': horizon_summary,
+        }
 
     @staticmethod
-    def _fold_predictor(fold, *, model_type, options, panel_start, panel_end):
+    def _fold_predictor(fold, *, model_type, options, panel_start, panel_end,
+                        label='rank_pct'):
         """Train one in-memory model on ``fold.train_dates`` and return its scorer."""
         if model_type == 'LIGHTGBM':
             from apps.etf_rotation import train_lightgbm
@@ -1725,6 +2031,7 @@ class Command(BaseCommand):
                 # key means "use the trainer's default", not a crash.
                 objective=options.get('objective') or None,
                 num_boost_round=options.get('boost_rounds') or None,
+                label=label, seeds=int(options.get('seeds') or 1),
             )
         else:
             from apps.etf_rotation import train_lstm
@@ -1888,6 +2195,50 @@ def _command_line(combo: dict[str, Any], start: date, end: date) -> str:
         f'--start {start.isoformat()} --end {end.isoformat()} {flags} '
         f'--model RULE --name "ml-{grid_stem(combo)}"'
     )
+
+
+def parse_label_horizons(raw) -> tuple[int, ...]:
+    """Parse ``--horizons 20,40,60`` into ascending unique sessions-ahead values."""
+    text = str(raw or '').strip()
+    if not text:
+        return ()
+    values = []
+    for part in text.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            raise CommandError(f'--horizons must be comma-separated integers; got {part!r}.')
+        if not 1 <= value <= 250:
+            raise CommandError(f'--horizons entries must be in 1..250 sessions; got {value}.')
+        values.append(value)
+    return tuple(sorted(dict.fromkeys(values)))
+
+
+def resolve_cpcv_purge(model_type: str, requested, label_horizon: int) -> int:
+    """Sessions excluded before each held-out block: the label window of what is measured.
+
+    RULE fits nothing, so one session is enough. A fitted model must purge its own label
+    horizon: with a 20-session label, a training date up to 19 sessions before a block has a
+    label computed from bars *inside* that block, and the fold model would be fitted on the
+    answer key. ``requested`` may raise the purge but never lower it below the horizon.
+    """
+    horizon = int(label_horizon)
+    purge = (
+        int(requested) if requested is not None
+        else (CPCV_RULE_PURGE if str(model_type).upper() == 'RULE' else horizon)
+    )
+    if purge < 1:
+        raise CommandError('--cpcv-purge must be at least 1 session.')
+    if str(model_type).upper() != 'RULE' and purge < horizon:
+        raise CommandError(
+            f'--cpcv-purge {purge} is shorter than the label horizon ({horizon}): a training '
+            'date that close to a held-out block has a label computed from bars inside it, so '
+            f'the fold model would be fitted on the answer key. Use --cpcv-purge {horizon} or more.'
+        )
+    return purge
 
 
 def _pct(value: Any, signed: bool = True) -> str:
