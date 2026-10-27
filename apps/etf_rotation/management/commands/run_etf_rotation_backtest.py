@@ -2372,6 +2372,8 @@ def _distribution(values: list) -> dict:
 
     return {
         'count': count,
+        'mean': mean(clean),
+        'sd': pstdev(clean) if count > 1 else 0.0,
         'min': clean[0],
         'q1': rank(0.25),
         'median': rank(0.5),

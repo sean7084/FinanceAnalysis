@@ -20,6 +20,9 @@ class Command(BaseCommand):
         parser.add_argument('--label-table', action='store_true',
                             help='Pivot rows that store per-block IC by label: mean IC, ICIR, '
                                  'median Sharpe. No run is repeated; this reads the ledger.')
+        parser.add_argument('--gate', choices=['p35'], default=None,
+                            help='Evaluate a pre-registered decision gate from the ledger '
+                                 '(p35: per-fold IC mean >= 0.06 and ICIR >= 0.5).')
         parser.add_argument('--ablation-table', action='store_true',
                             help='Pivot the same rows by (arm, label, feature set, schema) -- the '
                                  'ablation matrix, from measurements that already exist.')
@@ -78,6 +81,38 @@ class Command(BaseCommand):
                 f'{unregistered} of {len(records)} row(s) carry no pre-registration hash: they '
                 'were measured before a criterion was declared, so they cannot support a gate.'
             ))
+        if options.get('gate') == 'p35':
+            from apps.etf_rotation import gate
+
+            verdicts = gate.p35_verdict(records)
+            if not verdicts:
+                self.stdout.write('no ledger row stores per-block IC; the gate cannot be read.')
+                return
+            self.stdout.write(
+                'P35 gate (pre-registered: IC mean >= 0.06, ICIR >= 0.5)'
+            )
+            self.stdout.write(f'{"cell":<44} {"rows":>4} {"ic_mean":>9} {"icir":>7} {"verdict":>8} failed')
+            for verdict in verdicts:
+                icir = 'n/a' if verdict['icir'] is None else f"{verdict['icir']:.4f}"
+                self.stdout.write(
+                    f'{verdict["key"]:<44} {verdict["rows"]:>4} {verdict["ic_mean"]:>9.4f} '
+                    f'{icir:>7} {("pass" if verdict["passed"] else "fail"):>8} '
+                    f'{",".join(verdict["failed"]) or "-"}'
+                )
+            self.stdout.write('seed variance (same cell, different seed counts):')
+            self.stdout.write(
+                f'{"cell":<44} {"seeds":>5} {"rows":>4} {"sharpe_mean":>11} {"sharpe_sd":>9} '
+                f'{"ic_mean":>9} {"ic_sd":>8}'
+            )
+            for row in gate.seed_variance_table(records):
+                def _num(value):
+                    return 'n/a' if value is None else f'{value:.4f}'
+                self.stdout.write(
+                    f'{row["key"]:<44} {row["seeds"]:>5} {row["rows"]:>4} '
+                    f'{_num(row["sharpe_mean"]):>11} {_num(row["sharpe_sd"]):>9} '
+                    f'{_num(row["ic_mean"]):>9} {_num(row["ic_sd"]):>8}'
+                )
+            return
         if options.get('label_table') or options.get('ablation_table'):
             rows = measurement_pivot(records)
             if not rows:

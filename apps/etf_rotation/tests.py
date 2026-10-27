@@ -45,6 +45,7 @@ from rest_framework.test import APIClient
 
 from apps.core import finance_metrics
 from apps.macro.models import MacroSnapshot
+from apps.etf_rotation import gate as gate_module
 from apps.etf_rotation import position_ledger as ledger_module
 from apps.etf_rotation import (
     evidence,
@@ -7457,21 +7458,66 @@ class PreregistrationWiringTests(SimpleTestCase):
     def test_the_ablation_table_reads_mean_ic_from_rows_that_already_store_it(self):
         context = {'panel_start': '2016-01-29', 'panel_end': '2023-12-31', 'purge': 20,
                    'fold_plan': 'cpcv', 'model_type': 'LIGHTGBM', 'label': 'rank_pct'}
-        evidence.record_measurement(
-            context=context,
-            results={
-                'sharpe': {'median': 0.5},
-                'blocks': [{'mean_ic': 0.1}, {'mean_ic': 0.2}],
-            },
-        )
-        stdout = io.StringIO()
-
-        call_command('report_etf_rotation_evidence', '--ablation-table', stdout=stdout)
+        ledger = os.path.join(self.tmp.name, 'ablation-ledger.jsonl')
+        with override_settings(ETF_EVIDENCE_PATH=ledger):
+            evidence.record_measurement(
+                context=context,
+                results={
+                    'sharpe': {'median': 0.5},
+                    'blocks': [{'mean_ic': 0.1}, {'mean_ic': 0.2}],
+                },
+            )
+            stdout = io.StringIO()
+            call_command('report_etf_rotation_evidence', '--ablation-table', stdout=stdout)
 
         text = stdout.getvalue()
         self.assertIn('arm x label x features', text)
         self.assertIn('0.1500', text, 'mean IC comes from the stored per-block readings')
         self.assertIn('3.0000', text, 'ICIR = mean / population sd = 0.15 / 0.05')
+
+
+class DecisionGateTests(SimpleTestCase):
+    """#69: the P35 verdict is read from the rows, against the criteria declared in advance."""
+
+    def _row(self, ics, *, sharpe=0.1, seeds=1, label='rank_pct'):
+        return {
+            'context': {'model_type': 'LIGHTGBM', 'hybrid': True, 'label': label,
+                        'fold_plan': 'cpcv', 'seeds': seeds,
+                        'feature_schema_version': 'test-schema'},
+            'results': {
+                'sharpe': {'median': sharpe},
+                'blocks': [{'mean_ic': ic} for ic in ics],
+            },
+        }
+
+    def test_the_p35_verdict_comes_from_per_fold_ic_and_icir_not_from_sharpe_legs(self):
+        weak_ic_strong_sharpe = self._row([0.01, 0.02], sharpe=9.0)
+        strong_ic_weak_sharpe = self._row([0.10, 0.12], sharpe=-5.0, label='dd_rank')
+
+        verdicts = {
+            verdict['key']: verdict
+            for verdict in gate_module.p35_verdict([weak_ic_strong_sharpe, strong_ic_weak_sharpe])
+        }
+
+        self.assertFalse(verdicts['LIGHTGBM+hybrid | rank_pct | cpcv | test-schema']['passed'])
+        self.assertTrue(verdicts['LIGHTGBM+hybrid | dd_rank | cpcv | test-schema']['passed'])
+
+    def test_a_gate_that_fails_only_icir_names_icir(self):
+        rows = [self._row([-0.10, 0.22])]  # mean 0.06 passes, ICIR 0.375 fails
+
+        verdict = gate_module.p35_verdict(rows)[0]
+
+        self.assertEqual(verdict['failed'], ['icir'])
+        self.assertGreaterEqual(verdict['ic_mean'], 0.06)
+
+    def test_the_seed_table_reports_a_spread_not_just_a_median(self):
+        rows = [self._row([0.1, 0.2], sharpe=0.5), self._row([0.1, 0.2], sharpe=0.3)]
+
+        table = gate_module.seed_variance_table(rows)
+
+        self.assertEqual(len(table), 1)
+        self.assertAlmostEqual(table[0]['sharpe_mean'], 0.4)
+        self.assertAlmostEqual(table[0]['sharpe_sd'], 0.1)
 
 
 class DownsideLabelTests(SimpleTestCase):

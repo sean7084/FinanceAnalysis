@@ -1,5 +1,32 @@
 # Changelog
 
+### version 0.1.39
+
+#### Added:
+
+- **The P35 gate is read from the ledger, on its pre-registered criteria.** `--gate p35` on
+  `report_etf_rotation_evidence` recomputes per-fold IC mean and ICIR from the per-block
+  readings rows already store, keyed by (arm, label, fold plan, feature schema) so two schemas
+  are never averaged together, and names the criterion that failed. No run is repeated.
+- **`seed_variance_table`** reports Sharpe and IC mean/sd per (cell, seed count), so the
+  seed-averaging claim has a table instead of a sentence.
+- `_distribution` now carries `mean` and `sd` alongside the quantiles.
+
+#### Numbers:
+
+- Every ML cell fails the declared IC-mean threshold: the best is the 28-column LightGBM veto
+  at **0.0424 / ICIR 0.6977**; the 24-column veto reads 0.0337/0.5937, the selectors
+  -0.0183..0.0337, dd_rank -0.0177. The P35 no-go is now confirmed on the criteria written
+  down in advance, not only on replication counts (report section 29; §17.2 carries a dated
+  appendix, the old argument is left in place).
+- Seed variance: the veto arm reads Sharpe 0.5400 at seeds=1 and 0.3372 at seeds=5 -- about
+  0.2 of that pass was one lucky seed.
+
+#### Verified:
+
+- Backend 813 -> 816 tests; frontend unchanged at 79. No measurement was re-run and no curve
+  changed.
+
 ### version 0.1.38
 
 #### Added:
