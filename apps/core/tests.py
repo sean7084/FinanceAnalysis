@@ -2334,3 +2334,85 @@ class EtfIndexValuationQualityTests(TestCase):
         self.assertIn('000300.SH', text)
         self.assertIn('1/2', text)
         self.assertIn('Why the family was terminated', text)
+
+
+class StaleBacktestSweepTests(TestCase):
+    """#6: one command sweeps both run types, and changes nothing without a verb."""
+
+    def _stock(self):
+        from datetime import date
+
+        from apps.backtest.models import BacktestRun
+
+        return BacktestRun.objects.create(
+            name='orphan-stock', start_date=date(2026, 1, 1), end_date=date(2026, 2, 1),
+            status='RUNNING', current_task_id='dead-task',
+        )
+
+    def _etf(self):
+        from datetime import date
+
+        from apps.etf_rotation.models import ETFRotationBacktest
+
+        return ETFRotationBacktest.objects.create(
+            name='orphan-etf', start_date=date(2026, 1, 1), end_date=date(2026, 2, 1),
+            status='RUNNING', current_task_id='dead-task',
+        )
+
+    def _stale(self):
+        return {'task_state': 'FAILURE', 'task_age_seconds': 9999,
+                'has_stale_task_owner': True}
+
+    def test_a_running_row_whose_task_is_gone_is_reported_as_orphaned(self):
+        import io
+
+        from django.core.management import call_command
+        from unittest.mock import patch
+
+        run = self._stock()
+        out = io.StringIO()
+        with patch(
+            'apps.core.management.commands.sweep_stale_backtest_runs.'
+            'get_backtest_run_task_owner_state', return_value=self._stale(),
+        ):
+            call_command('sweep_stale_backtest_runs', stdout=out)
+
+        self.assertIn(f'BacktestRun id={run.id}', out.getvalue())
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'RUNNING')
+
+    def test_the_sweep_changes_nothing_without_an_explicit_verb(self):
+        import io
+
+        from django.core.management import call_command
+        from unittest.mock import patch
+
+        run = self._etf()
+        with patch(
+            'apps.core.management.commands.sweep_stale_backtest_runs.'
+            'get_backtest_run_task_owner_state', return_value=self._stale(),
+        ):
+            call_command('sweep_stale_backtest_runs', stdout=io.StringIO())
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'RUNNING')
+        self.assertEqual(run.current_task_id, 'dead-task')
+
+    def test_an_etf_row_and_a_stock_row_are_swept_by_the_same_command(self):
+        import io
+
+        from django.core.management import call_command
+        from unittest.mock import patch
+
+        stock, etf = self._stock(), self._etf()
+        with patch(
+            'apps.core.management.commands.sweep_stale_backtest_runs.'
+            'get_backtest_run_task_owner_state', return_value=self._stale(),
+        ):
+            call_command('sweep_stale_backtest_runs', '--fail', stdout=io.StringIO())
+
+        for run in (stock, etf):
+            run.refresh_from_db()
+            self.assertEqual(run.status, 'FAILED')
+            self.assertEqual(run.current_task_id, '')
+            self.assertEqual(run.pending_control_action, 'NONE')

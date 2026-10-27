@@ -1,5 +1,20 @@
 # Changelog
 
+### version 0.1.47
+
+#### Added:
+
+- **`sweep_stale_backtest_runs` (#6).** Reports `RUNNING` rows whose Celery task is missing
+  for both `BacktestRun` and `ETFRotationBacktest`, reusing
+  `apps/core/task_health.get_backtest_run_task_owner_state`. Dry-run is the default; `--fail`
+  marks a row FAILED and `--restart` returns it to PENDING, both clearing `current_task_id`
+  and `pending_control_action`. No beat schedule is added: automatic state changes on shared
+  rows are a larger risk than the dead rows they would clean.
+
+#### Verified:
+
+- Backend 844 -> 847 tests; frontend unchanged at 79.
+
 ### version 0.1.46
 
 #### Added:
