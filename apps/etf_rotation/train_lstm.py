@@ -1114,6 +1114,12 @@ def _registry_fold_report(report):
     return slim
 
 
+def _library_versions():
+    from .train_lightgbm import library_versions
+
+    return library_versions()
+
+
 def _register_model_version(*, version, config, artifact_relative_path, fold_reports, headline,
                             aggregate, panel, scaler_stats, training_start, training_end, metadata,
                             activate=True):
@@ -1134,7 +1140,6 @@ def _register_model_version(*, version, config, artifact_relative_path, fold_rep
         defaults={
             'status': ModelVersion.Status.READY,
             'artifact_path': artifact_relative_path,
-            'library_versions': library_versions(),
             'metrics': headline,
             'feature_schema': list(panel['feature_names']),
             'training_window_start': training_start,
@@ -1146,6 +1151,7 @@ def _register_model_version(*, version, config, artifact_relative_path, fold_rep
                 'framework': 'expanding_window_walk_forward_lstm',
                 'model_type_label': config['model_type_label'],
                 'version': version,
+                'library_versions': _library_versions(),
                 'loss_mode': config['loss'],
                 'loss_note': (
                     'BCEWithLogitsLoss on label_top_bucket with a scalar-score head (choice a). '

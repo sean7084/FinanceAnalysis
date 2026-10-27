@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-26T15:19:25Z_
+_Generated: 2026-10-27T02:48:05Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**49** project commands across **9** apps.
+**55** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -161,6 +161,18 @@ Regenerate the docs/reference/ fact sheets (metrics, models, commands, celery, e
 | `--check` | flag | `False` |  | Exit non-zero if any committed sheet differs from freshly generated output. |
 
 
+### `probe_tushare_entitlement`
+
+Probe TuShare endpoint entitlement and write a dated markdown sheet.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--interfaces` | value | `fund_adj,fund_div,fund_share,index_dailybasic,index_weight,yc_cb,shibor,monetary_policy` |  | Comma-separated interface names to probe. |
+| `--out` | value | &mdash; |  | Report path (default docs/reports/tushare-entitlement-<date>.md). |
+| `--days` | value | `10` |  | Look-back window for the probe query (default 10). |
+| `--dry-run` | flag | `False` |  | Print the table without writing the report. |
+
+
 ### `purge_pre_floor_historical_data`
 
 Dry-run or delete historical database rows dated before the configured floor date.
@@ -169,6 +181,17 @@ Dry-run or delete historical database rows dated before the configured floor dat
 | --- | --- | --- | --- | --- |
 | `--before-date` | value | `2010-01-01` |  |  |
 | `--execute` | flag | `False` |  | Actually delete rows. Without this flag, the command only reports candidate counts. |
+
+
+### `sweep_stale_backtest_runs`
+
+Report or clear RUNNING backtest rows whose Celery task is gone.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--fail` | flag | `False` |  | Mark orphaned rows FAILED and clear their task owner. |
+| `--restart` | flag | `False` |  | Mark orphaned rows PENDING and clear their task owner so the normal dispatcher can start them again. |
+| `--dry-run` | flag | `False` |  | Report only. This is the default when no verb is given. |
 
 
 ### `validate_data_quality`
@@ -253,6 +276,17 @@ Mark OPEN ETF rotation positions to the newest close and close legs displaced by
 | `--date` | value | &mdash; |  | Mark date (YYYY-MM-DD). Default: the newest ETFDaily session. |
 
 
+### `measure_etf_coverage_bias`
+
+Measure coverage and the forward-return spread of the data-coverage flags.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | `2016-01-29` |  |  |
+| `--end` | value | `2023-12-29` |  |  |
+| `--out` | value | &mdash; |  |  |
+
+
 ### `measure_etf_rotation_sensitivity`
 
 Run a pre-registered sensitivity grid over panel starts and arms.
@@ -261,7 +295,7 @@ Run a pre-registered sensitivity grid over panel starts and arms.
 | --- | --- | --- | --- | --- |
 | `--preregistration` | value | &mdash; | yes | Markdown file listing every context that may run, as "<arm>@<panel-start>". Its hash is recorded with the results. |
 | `--panel-starts` | value | &mdash; | yes | Comma-separated panel starts, e.g. 2016-01-29,2017-01-03. |
-| `--arms` | value | `rule,lgb-veto,lstm-veto` |  | Comma-separated arms from ['lgb-select', 'lgb-select-rolling', 'lgb-veto', 'lstm-select', 'lstm-veto', 'rule', 'rule-rolling']. |
+| `--arms` | value | `rule,lgb-veto,lstm-veto` |  | Comma-separated arms from ['lgb-select', 'lgb-select-expanding', 'lgb-select-rolling', 'lgb-veto', 'lstm-select', 'lstm-select-expanding', 'lstm-select-rolling', 'lstm-veto', 'rule', 'rule-expanding', 'rule-rolling']. |
 | `--baseline-arm` | value | `rule` |  | Arm every other arm is compared against (default rule). |
 | `--end` | value | `2023-12-31` |  | Panel end (ISO). |
 | `--blocks` | value | `6` |  | Blocks per split (default 6). |
@@ -269,11 +303,30 @@ Run a pre-registered sensitivity grid over panel starts and arms.
 | `--out-dir` | value | &mdash; |  | Where to write the markdown table. Default: docs/reports/sensitivity. |
 
 
+### `report_etf_index_valuation_quality`
+
+Report IndexValuationDaily quality and file the spot-check table (#66).
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | &mdash; |  | Panel start (ISO). Default: earliest row. |
+| `--end` | value | &mdash; |  | Panel end (ISO). Default: latest row. |
+| `--as-of` | value | &mdash; |  | Staleness reference date (ISO). |
+| `--out` | value | &mdash; |  | Markdown path. Default: docs/reports/etf-index-valuation-quality-<date>.md |
+
+
 ### `report_etf_rotation_evidence`
 
 Render the ETF rotation measurement ledger, flagging repeated contexts.
 
-_No options._
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--label-table` | flag | `False` |  | Pivot rows that store per-block IC by label: mean IC, ICIR, median Sharpe. No run is repeated; this reads the ledger. |
+| `--gate` | value | &mdash; |  | Evaluate a pre-registered decision gate from the ledger (p35: per-fold IC mean >= 0.06 and ICIR >= 0.5). |
+| `--ablation-table` | flag | `False` |  | Pivot the same rows by (arm, label, feature set, schema) -- the ablation matrix, from measurements that already exist. |
+| `--fold-shape` | flag | `False` |  | Adjudicate rolling vs expanding fold shape on per-fold ICIR and the positive-IC fold share (the #70 pre-registration). |
+| `--regime-table` | flag | `False` |  | Attribute each row's fold blocks to the macro regime that covered most of their sessions; <20 rebalances is undecidable. |
+| `--preregistration` | value | &mdash; |  | Only rows whose pre-registration digest starts with DIGEST. |
 
 
 ### `report_etf_rotation_live_track`
@@ -287,6 +340,15 @@ Report the live ETF rotation book and its drift against a declared reference bac
 | `--mean-return-tolerance` | value | &mdash; |  | Absolute mean-trade-return deviation that counts as drift. Default: settings.ETF_LIVE_DRIFT_MEAN_RETURN_TOLERANCE (0.03). |
 | `--min-closed-trades` | value | &mdash; |  | Closed trades required before a drift verdict is made. Default: settings.ETF_LIVE_DRIFT_MIN_CLOSED_TRADES (10). |
 | `--alert` | flag | `False` |  | Write a LIVE_DRIFT alert event when a book breaches its tolerance. |
+
+
+### `report_etf_share_flow_quality`
+
+Write docs/reports/etf-share-flow-quality.md from ETFShareDaily + adj factors.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--out` | value | &mdash; |  | Report path (default docs/reports/etf-share-flow-quality.md). |
 
 
 ### `run_etf_rotation_backtest`
@@ -526,6 +588,16 @@ Backfill MarketContext history from monthly MacroSnapshot data.
 Check earliest available macro snapshot and OHLCV data from sources and local database.
 
 _No options._
+
+
+### `sync_macro_rates`
+
+Fetch SHIBOR fixings and store them on the matching monthly snapshots.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start` | value | &mdash; |  | YYYYMMDD start (default: newest snapshot month). |
+| `--end` | value | &mdash; |  | YYYYMMDD end (default: today). |
 
 
 ## `apps.markets`

@@ -4597,7 +4597,9 @@ class WalkForwardRuleTests(SimpleTestCase):
 
         inner = MagicMock()
         inner.sessions.return_value = sessions
-        with patch.object(backtest_cmd, 'DatabaseDataSource', return_value=inner), \
+        with tempfile.TemporaryDirectory() as ledger_dir, \
+                override_settings(ETF_EVIDENCE_PATH=os.path.join(ledger_dir, 'ledger.jsonl')), \
+                patch.object(backtest_cmd, 'DatabaseDataSource', return_value=inner), \
                 patch.object(backtest_cmd, 'run_rotation_backtest', side_effect=fake_run), \
                 patch.object(backtest_cmd, 'grid_combinations', return_value=combos):
             call_command(
@@ -4889,7 +4891,9 @@ class CpcvCommandGuardTests(SimpleTestCase):
         ]
         sentinel = object()
 
-        with patch.object(
+        with tempfile.TemporaryDirectory() as ledger_dir, \
+                override_settings(ETF_EVIDENCE_PATH=os.path.join(ledger_dir, 'ledger.jsonl')), \
+                patch.object(
                     backtest_cmd.Command, '_pinned_predictors',
                     return_value={'lgb_predictor': sentinel},
                 ) as pinned, \
@@ -8158,12 +8162,12 @@ class MacroRegimeGateTests(TestCase):
         self.assertEqual(gate['as_of'], '2020-08-01')
 
     def test_the_publication_lag_is_respected(self):
-        # The 2020-08-01 reading is not usable until 35 days later.
+        # PMI is published with a one-day lag, so the 2020-08-01 reading is usable on 08-03.
         early = backtest_engine.macro_risk_gate(
-            self._config(macro_gate_pmi=50.0), date(2020, 8, 20),
+            self._config(macro_gate_pmi=50.0), date(2020, 8, 1),
         )
         late = backtest_engine.macro_risk_gate(
-            self._config(macro_gate_pmi=50.0), date(2020, 9, 10),
+            self._config(macro_gate_pmi=50.0), date(2020, 8, 3),
         )
 
         self.assertEqual(early['as_of'], '2020-03-01')

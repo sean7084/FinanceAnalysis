@@ -13,7 +13,9 @@
 
 #### Verified:
 
-- Backend 844 -> 847 tests; frontend unchanged at 79.
+- Full backend suite: **836 tests, all green**; frontend unchanged at 79. Earlier per-phase
+  arithmetic in this batch is superseded by this full run. Six linked ledger rows; active
+  model set unchanged; `ETFRotationBacktest` 353 COMPLETED / 1 FAILED.
 
 ### version 0.1.46
 

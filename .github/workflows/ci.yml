@@ -180,7 +180,11 @@ jobs:
       # pre-registration digest reaches the ledger row (and every path that records nothing
       # refuses it), the ledger context carries the resolved execution model, rows written
       # before that still count as repeats, and --fold-plan is honoured on the walk-forward path.
-      MIN_TEST_COUNT: "795"
+      # 795 -> 836: the issue close-out batch. Fold-shape ICIR adjudication and regime
+      # attribution, valuation quality rules, coverage-bias measurement, the activation bound,
+      # archived-artifact refusal, the stale-run sweep, and the report/pivot readers that work
+      # from existing ledger rows.
+      MIN_TEST_COUNT: "836"
 
     steps:
       - uses: actions/checkout@v4

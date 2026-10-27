@@ -260,39 +260,42 @@ Items here have no commitment attached. When something is done, move it to
   stays closed. What is still open is not the veto hypothesis but the instrument: see "the
   instrument is noisier than the effect" above.
 
-## Open — research programme: what P18-P37 did not finish
+## Closed — research programme P18-P37 (2026-10-27)
 
-Every item below is a measurement or verification gap rather than a code defect, and each has
-an issue. None of it changes a production default, activates a model, or blocks the machinery
-that is already merged; together they are the reason no arm is admissible under the gate in
-plan §9 yet.
+The measurement/verification gaps left after PR #73 are closed with evidence in
+`docs/reports/etf-rotation-cpcv-model-comparison-2026-10-25.md` §27–§37:
 
-- **#65 (P27/P29)** — mapping coverage was computed on the 1,715-name rankable pool instead of
-  the pre-registered ADV-eligible pool (~490 names) and the set of names that ever entered a
-  book, and the coverage-bias measurement — the one that decides whether a data-rich subset is
-  masquerading as alpha — was never run.
-- **#66 (P28)** — `IndexValuationDaily` has no `validate_data_quality` coverage, no filed
-  quality report and no public spot check of the rows that did come back; the interface
-  permission probe is not a reusable command.
-- **#67 (P31)** — the four share-flow columns are in `FEATURE_COLUMNS` without the
-  `fund_adj`/`fund_div` cross-check that separates a split or dividend from a real
-  creation/redemption flow, without a regime-segmented reading, and without a backfill quality
-  report. They were enabled on a null reading.
-- **#68 (P32)** — the macro gate lags PMI by a constant 35 days instead of a release calendar;
-  none of the five declared macro features exists; there is no per-regime attribution of RULE
-  against the ML arms; the `yc_cb`/`shibor`/`monetary_policy` probe was never run, so
-  `MacroSnapshot` yields are still all NULL.
-- **#69 (P34/P35)** — seed averaging (0.5400 -> 0.3372 at seeds=5) has no variance table in the
-  report and artifacts carry no `n_seeds`; the P35 no-go was argued from replication across
-  panel starts rather than from the pre-registered per-fold IC >= 0.06 / ICIR >= 0.5.
-- **#70 (P19/P33)** — the 2016-2026 rolling run recorded a median Sharpe but no per-fold IC and
-  no ledger row; the rolling-vs-expanding verdict used the three Sharpe legs instead of the
-  pre-registered ICIR and positive-IC-fold share; LSTM on rolling folds is unmeasured.
-- **#71 (P24/P26) — partly closed.** All four labels now exist (`rank_pct`, `top_bucket`,
-  `dd_rank`, `downside_rank`), `LABEL_SCHEMA_VERSION` travels with the artifact, and the
-  label/ablation pivots read per-block IC from the ledger instead of re-running anything.
-  Still open: the trainers do not accept `--feature-set`, so the ablation matrix's feature-set
-  axis has one column (`all`) until that wiring lands.
+- **#72** — every measurement path writes a ledger row (walk-forward, pinned CPCV, retrain),
+  and the report counts reads per panel start.
+- **#71** — four labels including `downside_rank`, `LABEL_SCHEMA_VERSION` on artifacts, and
+  label/ablation pivots from ledger rows.
+- **#69** — variance table (seed spread) and the P35 verdict re-derived from the declared
+  per-fold IC / ICIR criteria; all ML arms fail mean IC.
+- **#13** — ML stack pinned in `requirements/base.txt`; `library_versions` recorded on
+  artifacts and in the ledger context.
+- **#68** — per-series release lags replace the 35-day constant; entitlement probe filed;
+  macro regime attribution and the five gate-only inputs implemented. (b) won't-fix:
+  date-level series cannot separate two funds and would invalidate the existing ledgers.
+- **#51** — macro freshness reported with age; yields remain NULL because `yc_cb` is denied,
+  recorded as unavailable rather than fabricated.
+- **#67** — split/unexplained classification, an opt-in adjustment (default off), and a filed
+  backfill-quality report. (b) not run: the flow flag's forward-return spread is −0.10% on 51%
+  of dates, so regime-slicing a null effect would not change a decision.
+- **#65** — coverage against the ever-eligible, ever-in-book and current-rankable denominators,
+  plus a filed coverage-bias measurement (no systematic bias).
+- **#66** — four valuation rules and a filed spot check; the family is terminated because only
+  6 of 299 mapped indices have rows (2.01%), not because a value looks wrong.
+- **#5** — activation refuses accuracy > 0.75 / IC > 0.30; two 2026-04 artifacts archived;
+  pinned loaders refuse archived versions.
+- **#70** — rolling/expanding fold shape adjudicated on per-fold ICIR; no ML arm passes the
+  pre-registered bar, and the plan gap is smaller than the required effect.
+- **#6** — `sweep_stale_backtest_runs` reports/clears orphaned RUNNING rows for both run types.
+- **#7 / #11** — verified already satisfied (ETF artifact paths are relative; the stale-task
+  threshold is wired); closed with evidence.
+
+Still open from this programme: the ETF trainers do not accept `--feature-set`, so the
+ablation matrix's feature-set axis has one column (`all`) until that wiring lands.
+
 
 ## Open — correctness
 
