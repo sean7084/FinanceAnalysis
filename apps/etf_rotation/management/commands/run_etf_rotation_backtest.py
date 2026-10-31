@@ -402,10 +402,29 @@ def default_execution_context(start, end) -> dict[str, Any]:
     return execution_context({}, {}, start=start, end=end)
 
 
+def _feature_set_name(feature_columns) -> str:
+    """The named subset a column list corresponds to, or ``'all'`` when it is unnamed.
+
+    Rows written before the subset axis existed all say ``'all'``; keeping that answer for
+    an unrecognised list means their signatures -- and therefore the repeat counter and the
+    gate's cell key -- do not move underneath them.
+    """
+    from apps.etf_rotation import features
+
+    if not feature_columns:
+        return 'all'
+    wanted = tuple(str(name) for name in feature_columns)
+    for name, declared in features.FEATURE_SETS.items():
+        if tuple(str(column) for column in declared) == wanted:
+            return name
+    return 'all'
+
+
 def measurement_context(*, panel_start, panel_end, fold_plan, purge, label_horizon, embargo,
                         model_type, hybrid, ml_veto_quantile=None,
                         model_version='retrain-per-fold', label='rank_pct', seeds=1,
-                        ic_horizons=(), execution=None, feature_columns=None) -> dict[str, Any]:
+                        ic_horizons=(), execution=None, feature_columns=None,
+                        feature_set=None) -> dict[str, Any]:
     """The context every measuring path records on its ledger row.
 
     One builder on purpose: three paths writing three slightly different dicts would make the
@@ -425,9 +444,9 @@ def measurement_context(*, panel_start, panel_end, fold_plan, purge, label_horiz
         'label': str(label or 'none'), 'seeds': int(seeds or 1),
         'ic_horizons': [int(horizon) for horizon in ic_horizons],
         'feature_schema_version': feature_schema_version(feature_columns or features.FEATURE_COLUMNS),
-        # The ablation axis. Today every run trains on the full set, so this is 'all';
-        # a subset would arrive with its own schema hash and therefore its own key.
-        'feature_set': 'all',
+        # The ablation axis. Derived from the columns actually used, or from the pinned
+        # artifact's metadata; the default stays 'all' so existing rows keep their signature.
+        'feature_set': str(feature_set or _feature_set_name(feature_columns)),
         # Which resolved modelling stack produced this reading. A measurement whose
         # library set is unknown cannot be compared with one whose set is pinned.
         'library_versions': library_versions(),
@@ -1000,6 +1019,22 @@ class Command(BaseCommand):
         except (ImportError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         raise CommandError(f'no pinned-loader branch for model type {model_type!r}.')
+
+    @staticmethod
+    def _pinned_feature_set(model_type: str, version: str) -> str:
+        """The feature set recorded on a pinned artifact; '' when it predates the field."""
+        from apps.prediction.models import ModelVersion
+
+        if model_type == 'RULE' or not version:
+            return ''
+        labels = {'LIGHTGBM': 'ETF_LIGHTGBM', 'LSTM': 'ETF_LSTM'}.get(model_type)
+        if labels is None:
+            return ''
+        metadata = (
+            ModelVersion.objects.filter(model_type=labels, version=version)
+            .values_list('metadata', flat=True).first()
+        ) or {}
+        return str((metadata or {}).get('feature_set') or '')
 
     def _active_predictors(self, model_type: str) -> dict[str, Any]:
         """Resolve the active ``ModelVersion`` predictors up front, or fail.
@@ -1837,6 +1872,7 @@ class Command(BaseCommand):
             model_type=model_type, hybrid=False, ml_veto_quantile=None,
             model_version=pinned_version or model_type, label=str(options.get('label') or 'rank_pct'),
             seeds=1, ic_horizons=(),
+            feature_set=self._pinned_feature_set(model_type, pinned_version) or None,
             execution=execution_context(knobs, overrides, start=panel_start, end=panel_end),
         )
         repeats = evidence.context_repeats(

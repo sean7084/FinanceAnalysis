@@ -4891,12 +4891,13 @@ class MaxPositionsDefaultAlignmentTests(SimpleTestCase):
         )
 
 
-class CpcvCommandGuardTests(SimpleTestCase):
+class CpcvCommandGuardTests(TestCase):
     """Phase 8: the CLI refuses anything that would turn the tuning window into a holdout.
 
-    Every guard fires before the command touches the database, so these run on
-    ``SimpleTestCase`` without a seeded panel. The dispatch test patches the handler to
-    prove the flag reaches it; the rest exercise the real handler's refusals.
+    Every guard fires before the command touches the database, so most of these run without
+    a seeded panel. The class is a ``TestCase`` because the pinned-run test now reads one
+    ``ModelVersion`` row (the artifact's ``feature_set``) while proving the pinned predictor
+    reaches the engine.
     """
 
     def _invoke(self, **overrides):
@@ -7874,6 +7875,97 @@ class DownsideLabelTests(SimpleTestCase):
         source = inspect.getsource(train_lightgbm.train_walk_forward)
         self.assertIn("'n_seeds'", source)
         self.assertIn("'label_schema_version'", source)
+
+    def test_a_feature_subset_trains_on_fewer_columns_and_its_own_schema_hash(self):
+        full = train_lightgbm.get_feature_columns('all')
+        subset = train_lightgbm.get_feature_columns('no_flow')
+
+        self.assertEqual(full, list(features.FEATURE_COLUMNS))
+        self.assertEqual(subset, list(features.resolve_feature_set('no_flow')))
+        self.assertEqual(
+            len(subset), len(features.FEATURE_COLUMNS) - len(features.SHARE_FLOW_COLUMNS),
+        )
+        self.assertNotEqual(
+            train_lightgbm.feature_schema_version(subset),
+            train_lightgbm.feature_schema_version(full),
+            'two column lists must never share a schema hash',
+        )
+
+    def test_an_unknown_feature_set_is_refused_by_name(self):
+        with self.assertRaises(ValueError) as caught:
+            train_lightgbm.get_feature_columns('no_such_set')
+        self.assertIn('no_such_set', str(caught.exception))
+        with self.assertRaises(ValueError):
+            train_lstm._feature_columns('no_such_set')
+
+    def test_a_feature_subset_can_only_remove_whitelisted_columns(self):
+        from apps.etf_rotation import regime
+        from apps.macro.models import MacroSnapshot
+
+        whitelist = set(features.FEATURE_COLUMNS)
+        forbidden = set(regime.REGIME_INPUT_NAMES) | {
+            field.name for field in MacroSnapshot._meta.get_fields()
+        }
+        for name, columns in features.FEATURE_SETS.items():
+            with self.subTest(name=name):
+                self.assertLessEqual(set(columns), whitelist, 'a subset may only subtract')
+                self.assertFalse(set(columns) & forbidden)
+
+    def test_the_lstm_panel_stays_paired_when_a_subset_shrinks_the_base_columns(self):
+        base = train_lstm._feature_columns('no_flow')
+        frame = pd.DataFrame({name: [1.0, float('nan')] for name in base})
+
+        _working, full_names = train_lstm._augment_missingness(frame, base)
+
+        self.assertEqual(len(full_names), 2 * len(base))
+        self.assertEqual(train_lstm._feature_columns('all'), list(features.FEATURE_COLUMNS))
+
+    def test_the_ledger_context_names_the_subset_a_pinned_artifact_was_trained_on(self):
+        with patch('apps.prediction.models.ModelVersion') as model:
+            model.objects.filter.return_value.values_list.return_value.first.return_value = {
+                'feature_set': 'no_flow',
+            }
+            recorded = backtest_cmd.Command._pinned_feature_set('LIGHTGBM', 'etf-lgb-v1')
+
+        self.assertEqual(recorded, 'no_flow')
+        context = backtest_cmd.measurement_context(
+            panel_start=date(2016, 1, 29), panel_end=date(2023, 12, 29),
+            fold_plan='cpcv', purge=20, label_horizon=20, embargo=0,
+            model_type='LIGHTGBM', hybrid=False, model_version='etf-lgb-v1',
+            feature_set=recorded,
+        )
+        self.assertEqual(context['feature_set'], 'no_flow')
+
+    def test_the_default_context_still_says_all_so_existing_rows_keep_their_signature(self):
+        context = backtest_cmd.measurement_context(
+            panel_start=date(2016, 1, 29), panel_end=date(2023, 12, 29),
+            fold_plan='cpcv', purge=20, label_horizon=20, embargo=0,
+            model_type='LIGHTGBM', hybrid=False,
+        )
+
+        self.assertEqual(context['feature_set'], 'all')
+        self.assertEqual(
+            context['feature_schema_version'],
+            train_lightgbm.feature_schema_version(features.FEATURE_COLUMNS),
+        )
+        self.assertEqual(
+            backtest_cmd.measurement_context(
+                panel_start=date(2016, 1, 29), panel_end=date(2023, 12, 29),
+                fold_plan='cpcv', purge=20, label_horizon=20, embargo=0,
+                model_type='LIGHTGBM', hybrid=False,
+                feature_columns=features.FEATURE_COLUMNS,
+            )['feature_set'],
+            'all',
+        )
+        self.assertEqual(
+            backtest_cmd.measurement_context(
+                panel_start=date(2016, 1, 29), panel_end=date(2023, 12, 29),
+                fold_plan='cpcv', purge=20, label_horizon=20, embargo=0,
+                model_type='LIGHTGBM', hybrid=False,
+                feature_columns=features.resolve_feature_set('no_flow'),
+            )['feature_set'],
+            'no_flow',
+        )
 
     def _prices(self):
         # 6 sessions: rise, then a 20% fall, then flat.

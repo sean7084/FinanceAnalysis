@@ -22,9 +22,11 @@ from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.etf_rotation import features
 from apps.etf_rotation.train_lightgbm import (
     DEFAULT_OBJECTIVE,
     OBJECTIVES,
+    feature_schema_version,
     plan_walk_forward,
     register_ensemble_version,
     registered_versions,
@@ -54,6 +56,11 @@ class Command(BaseCommand):
                                  'trains on the safety rank (smallest forward drawdown ranks '
                                  'highest); LightGBM only, the LSTM has its own multi-horizon '
                                  'labels.')
+        parser.add_argument('--feature-set', default='all', choices=sorted(features.FEATURE_SETS),
+                            help='Named subset of FEATURE_COLUMNS to train on (default all). A '
+                                 'subset gets its own schema hash. Applies to both trainers; it '
+                                 'is refused for --type ensemble, which weights registered '
+                                 'members and has no feature list of its own.')
         parser.add_argument('--objective', default=DEFAULT_OBJECTIVE, choices=list(OBJECTIVES),
                             help='lambdarank on label_rank_pct grades (default), binary on label_top_bucket, '
                                  'or regression on label_rank_pct.')
@@ -83,13 +90,25 @@ class Command(BaseCommand):
             'end_date': end,
             'n_folds': options['folds'],
             'objective': options['objective'],
+            'feature_set': options['feature_set'],
         }
         if options['horizon'] is not None:
             common['horizon_days'] = options['horizon']
         if options['min_train_days'] is not None:
             common['min_train_days'] = options['min_train_days']
 
+        if options['feature_set'] != 'all' and options['type'] in ('ensemble', 'all'):
+            raise CommandError(
+                '--feature-set selects a model input set; --type ensemble (or all) only '
+                'weights registered members and has no features of its own.'
+            )
+
         if options['dry_run']:
+            subset = features.resolve_feature_set(options['feature_set'])
+            self.stdout.write(
+                f"feature set: {options['feature_set']} ({len(subset)} columns, "
+                f"schema {feature_schema_version(subset)})"
+            )
             self._run_dry(common, options['type'], options['version_tag'])
             return
 

@@ -235,14 +235,14 @@ def resolve_params(objective: str, overrides: dict = None) -> dict:
 # -----------------------------------------------------------------------------
 # Feature whitelist
 # -----------------------------------------------------------------------------
-def get_feature_columns() -> list:
-    """``apps.etf_rotation.features.FEATURE_COLUMNS`` -- the only permitted feature source.
+def get_feature_columns(feature_set: str = 'all') -> list:
+    """``apps.etf_rotation.features.FEATURE_COLUMNS`` (or a named subset) -- the only source.
 
     Membership is never derived from ``ETFFeatureSnapshot._meta.fields``: that table also
     holds ``fwd_return``/``label_*`` (which look ahead) plus identity columns, so an
     introspected "every float column" list would silently train on the label the moment a
-    feature was added. The module is being written concurrently, hence the lazy import and a
-    failure that names exactly what is missing.
+    feature was added. A named set is a subtraction from that whitelist, never an addition;
+    an unknown name is refused by name.
     """
     try:
         from apps.etf_rotation import features
@@ -257,7 +257,14 @@ def get_feature_columns() -> list:
             'apps.etf_rotation.features.FEATURE_COLUMNS is missing or empty; it is the whitelist '
             'this trainer reads and there is no fallback derivation from _meta.fields.'
         )
-    columns = [str(name) for name in declared]
+    selected = features.resolve_feature_set(feature_set)
+    columns = [str(name) for name in selected]
+    whitelist = {str(name) for name in declared}
+    outside = sorted(set(columns) - whitelist)
+    if outside:
+        raise RuntimeError(
+            f'feature set {feature_set!r} names columns outside FEATURE_COLUMNS: {outside}.'
+        )
     duplicated = sorted({name for name in columns if columns.count(name) > 1})
     if duplicated:
         raise RuntimeError(f'FEATURE_COLUMNS contains duplicate entries: {duplicated}.')
@@ -778,14 +785,14 @@ def registered_versions(model_type_labels=('ETF_LIGHTGBM', 'ETF_LSTM', 'ETF_ENSE
 # Walk-forward driver
 # -----------------------------------------------------------------------------
 def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_days, folds=None,
-             label='rank_pct'):
+             label='rank_pct', feature_set='all'):
     """Shared read + plan path for :func:`plan_walk_forward` and :func:`train_walk_forward`.
 
     Returns ``(base, frame, counts, folds, panel_dates)``. A ``base['status']`` other than
     ``ok`` short-circuits the caller with a reason instead of an exception, because an empty
     table is an expected state on a fresh install.
     """
-    feature_columns = get_feature_columns()
+    feature_columns = get_feature_columns(feature_set)
     start, end = resolve_window(start_date, end_date)
     if start is None:
         return ({
@@ -793,6 +800,7 @@ def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_d
             'reason': 'ETFFeatureSnapshot holds no is_eligible rows in any window; build the '
                       'feature snapshots before training.',
             'feature_columns': feature_columns,
+            'feature_set': str(feature_set),
             'row_counts': {},
         }, None, {}, [], [])
 
@@ -804,6 +812,7 @@ def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_d
             'start_date': start.isoformat(),
             'end_date': end.isoformat(),
             'feature_columns': feature_columns,
+            'feature_set': str(feature_set),
             'row_counts': {},
         }, None, {}, [], [])
 
@@ -844,6 +853,7 @@ def _prepare(start_date, end_date, n_folds, horizon_days, objective, min_train_d
         'min_train_days': int(min_train_days),
         'objective': objective,
         'label': str(label),
+        'feature_set': str(feature_set),
         'n_folds_requested': int(n_folds),
         'n_folds_built': len(folds),
         'feature_columns': feature_columns,
@@ -951,7 +961,8 @@ def train_fold_predictors(*, folds, start_date=None, end_date=None, horizon_days
 
 def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horizon_days=None,
                       objective: str = DEFAULT_OBJECTIVE, min_train_days: int = None,
-                      version_tag: str = '', label: str = 'rank_pct') -> dict:
+                      version_tag: str = '', label: str = 'rank_pct',
+                      feature_set: str = 'all') -> dict:
     """Build the frames and the fold plan, count samples and groups, train nothing, write nothing.
 
     This is ``--dry-run``: every query is a SELECT, no directory is created and no
@@ -964,6 +975,7 @@ def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horiz
     )
     base, frame, _counts, folds, panel_dates = _prepare(
         start_date, end_date, n_folds, horizon_days, objective, min_train_days, label=label,
+        feature_set=feature_set,
     )
     if base['status'] != 'ok':
         return {**base, 'lightgbm_available': lgb is not None}
@@ -1004,7 +1016,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
                        n_folds: int = 6, horizon_days=None, objective: str = DEFAULT_OBJECTIVE,
                        num_boost_round: int = None, params: dict = None,
                        min_train_days: int = None, version_tag: str = '', activate: bool = True,
-                       label: str = 'rank_pct') -> dict:
+                       label: str = 'rank_pct', feature_set: str = 'all') -> dict:
     """Expanding-window walk-forward fit with per-fold holdout metrics, then one registry row.
 
     Each fold trains on its purged window and is scored on the block that follows it. The
@@ -1036,6 +1048,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
 
     base, frame, counts, folds, panel_dates = _prepare(
         start_date, end_date, n_folds, horizon_days, objective, min_train_days, label=label,
+        feature_set=feature_set,
     )
     if base['status'] != 'ok':
         return {**base, 'model_type_label': model_type_label}
@@ -1144,6 +1157,9 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
         'horizons': [int(h) for h in (locals().get('horizons', ()) or ())],
         'label': str(locals().get('label', 'rank_pct') or 'rank_pct'),
         'label_schema_version': features.LABEL_SCHEMA_VERSION,
+        # Which named subset this artifact was fitted on; the ledger context reads it back
+        # when the artifact is pinned, so the ablation axis cannot be mislabelled.
+        'feature_set': str(feature_set),
         'library_versions': library_versions(),
         'model_type_label': model_type_label,
         'version': version,
@@ -1188,6 +1204,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
             'horizon_days': int(horizon_days),
             'feature_names': list(feature_columns),
             'feature_schema_version': base['feature_schema_version'],
+            'feature_set': str(feature_set),
             'lgb_params': params,
             'num_boost_round': int(num_boost_round),
             'trained_at': timezone.now().isoformat(),

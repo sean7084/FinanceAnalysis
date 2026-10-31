@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-27T02:48:05Z_
+_Generated: 2026-10-31T15:31:15Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -508,6 +508,7 @@ Walk-forward training and reporting for the ETF rotation models.
 | `--end` | value | &mdash; |  | Last snapshot date to consider (ISO). Default: latest eligible row. |
 | `--folds` | value | `6` |  | Number of expanding-window validation steps (default 6). |
 | `--label` | value | `rank_pct` |  | Which stored label the model fits (default rank_pct). dd_rank trains on the safety rank (smallest forward drawdown ranks highest); LightGBM only, the LSTM has its own multi-horizon labels. |
+| `--feature-set` | value | `all` |  | Named subset of FEATURE_COLUMNS to train on (default all). A subset gets its own schema hash. Applies to both trainers; it is refused for --type ensemble, which weights registered members and has no feature list of its own. |
 | `--objective` | value | `lambdarank` |  | lambdarank on label_rank_pct grades (default), binary on label_top_bucket, or regression on label_rank_pct. |
 | `--boost-rounds` | value | &mdash; |  | Fixed lgb.train round count; no early stopping. |
 | `--horizon` | value | &mdash; |  | Label horizon in trading sessions. Default: settings.ETF_LABEL_HORIZON_DAYS (20). |

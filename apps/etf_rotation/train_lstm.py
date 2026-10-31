@@ -158,17 +158,27 @@ def _import_symbol(module_path, symbol, purpose):
     return getattr(module, symbol)
 
 
-def _feature_columns():
-    """The typed snapshot feature columns, taken from the feature whitelist.
+def _feature_columns(feature_set='all'):
+    """The typed snapshot feature columns, taken from the feature whitelist (or a named subset).
 
     Never derived from ``ETFFeatureSnapshot._meta.fields``: the table also carries
     ``is_eligible``, ``metadata`` and the look-ahead label columns, so reading
-    membership off the model would train on the labels as inputs.
+    membership off the model would train on the labels as inputs. A named subset is a
+    subtraction from that whitelist, never an addition.
     """
     raw = _import_symbol('apps.etf_rotation.features', 'FEATURE_COLUMNS', 'build the LSTM feature panel')
-    columns = [str(name) for name in raw]
-    if not columns:
+    whitelist = [str(name) for name in raw]
+    if not whitelist:
         raise ETFRotationLSTMTrainingError('FEATURE_COLUMNS is empty; refusing to train a featureless model.')
+    resolver = _import_symbol(
+        'apps.etf_rotation.features', 'resolve_feature_set', 'resolve the requested feature subset',
+    )
+    columns = [str(name) for name in resolver(feature_set)]
+    outside = sorted(set(columns) - set(whitelist))
+    if outside:
+        raise ETFRotationLSTMTrainingError(
+            f'feature set {feature_set!r} names columns outside FEATURE_COLUMNS: {outside}.'
+        )
     leaked = [name for name in columns if name in ('fwd_return', 'label_rank_pct', 'label_top_bucket',
                                                    'label_horizon_days', 'is_eligible')]
     if leaked:
@@ -997,6 +1007,7 @@ def _save_artifact(*, model, mean, scale, panel, config, version, fold_reports, 
         'input_size': int(panel['X'].shape[1]),
         'feature_names': list(panel['feature_names']),
         'base_feature_names': list(config['base_feature_names']),
+        'feature_set': str(config.get('feature_set') or 'all'),
         'sequence_length': int(panel['sequence_length']),
         'hidden_size': int(config['hidden_size']),
         'num_layers': int(config['num_layers']),
@@ -1341,7 +1352,8 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
                        learning_rate=None, patience=None, device=None, params=None,
                        objective=None,
                        num_boost_round=None, min_train_days=None, version_tag='', activate=True,
-                       sweep=None, folds=None, capture_fold_predictors=False):
+                       sweep=None, folds=None, capture_fold_predictors=False,
+                       feature_set='all'):
     """Expanding-window walk-forward LSTM training for the ETF rotation pool.
 
     Returns the same envelope shape as ``apps.etf_rotation.train_lightgbm.train_walk_forward``
@@ -1407,8 +1419,9 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
             config['loss'], config['epochs'],
         )
     resolved_device = _resolve_device(device)
-    base_feature_names = _feature_columns()
+    base_feature_names = _feature_columns(feature_set)
     config['base_feature_names'] = base_feature_names
+    config['feature_set'] = str(feature_set)
     expanding_folds, train_dates_for_fold, audit_folds = _fold_api()
     any_train_dates, any_validation_blocks = _fold_api_any()
 
@@ -1420,6 +1433,7 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
         'horizon_days': int(config['horizon_days']), 'sequence_length': int(config['sequence_length']),
         'min_train_days': int(config['min_train_days']), 'n_folds_requested': int(config['n_folds']),
         'feature_columns': base_feature_names, 'feature_count': len(base_feature_names),
+        'feature_set': str(feature_set),
         'loss': config['loss'],
         # ``--report`` shows this column for both trainers; for a sequence model the
         # equivalent of an objective is its loss.
@@ -1443,6 +1457,13 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
         frame=frame, base_feature_names=base_feature_names, calendar_dates=calendar,
         sequence_length=config['sequence_length'], require_labels=True, horizon_days=config['horizon_days'],
     )
+    if panel and len(panel['feature_names']) != 2 * len(panel['base_feature_names']):
+        # Each base column pairs with its missingness indicator. A subset that changed one
+        # list but not the other would only fail later, when the scaler and input_size disagree.
+        raise ETFRotationLSTMTrainingError(
+            f'panel columns are unpaired: {len(panel["feature_names"])} inputs for '
+            f'{len(panel["base_feature_names"])} base columns.'
+        )
     del frame
     if panel['starts'].size == 0:
         return {**base, 'status': 'insufficient_data', 'n_folds': 0, 'folds': [], 'metrics': {},
