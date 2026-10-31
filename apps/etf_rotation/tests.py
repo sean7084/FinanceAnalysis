@@ -249,8 +249,8 @@ class _PanelSeedMixin:
         _seed_benchmark(self.days)
         return self.days
 
-    def compute_at_pool_date(self):
-        return _compute(self.pool_date, self.pool_date)
+    def compute_at_pool_date(self, **kwargs):
+        return _compute(self.pool_date, self.pool_date, **kwargs)
 
     def explode_after_pool_date(self):
         """Replace every post-D bar with a doubling price ladder (16, 32, 64 ... 8192)."""
@@ -594,6 +594,59 @@ class PointInTimeFeatureLeakTests(_PanelSeedMixin, TestCase):
             },
         )
         self.assertEqual(sorted(frame['ts_code']), sorted([self.etf_a.ts_code, self.etf_b.ts_code]))
+
+
+class LabelsOnlyRecomputeTests(_PanelSeedMixin, TestCase):
+    """A labels-only pass rewrites labels and nothing else.
+
+    ``--recompute-labels-only`` is how the downside-rank backfill reaches rows written before
+    the column existed. The failure it must not carry is a feature rewrite: every stored
+    reading rests on those columns, and a recompute would re-derive them from today's bars
+    rather than from the bars the row was measured with.
+    """
+
+    def test_a_labels_only_pass_cannot_null_a_feature_column(self):
+        self.seed()
+        self.compute_at_pool_date()
+        row = _snapshot(self.etf_a, self.pool_date)
+        before_vol = row.vol_20d
+        before_eligible = row.is_eligible
+
+        # ``mom_120d`` is NULL on this short panel, so a recompute would NULL the sentinel and
+        # leave no trace; a value the feature maths cannot produce makes the rewrite visible.
+        # The label columns are blanked to the state the backfill will find on old rows.
+        sentinel = 123.456789
+        ETFFeatureSnapshot.objects.filter(pk=row.pk).update(
+            mom_120d=sentinel, label_rank_pct=None, label_downside_rank=None,
+        )
+
+        self.compute_at_pool_date(labels_only=True)
+
+        after = _snapshot(self.etf_a, self.pool_date)
+        self.assertEqual(after.mom_120d, sentinel, 'a labels-only pass must not touch a feature')
+        self.assertEqual(after.vol_20d, before_vol)
+        self.assertEqual(after.is_eligible, before_eligible)
+        self.assertIsNotNone(after.label_rank_pct, 'the labels are still written')
+        self.assertIsNotNone(after.label_downside_rank, 'the missing fourth label is filled')
+
+    def test_a_labels_only_pass_never_inserts_a_row(self):
+        days = self.seed()
+        self.compute_at_pool_date()
+        before = ETFFeatureSnapshot.objects.count()
+
+        # The forward tail has no snapshots. A full compute would insert feature-NULL rows for
+        # it, and ``update_conflicts`` would let an unfiltered labels-only pass do the same.
+        summary = _compute(self.pool_date, days[-1], labels_only=True)
+
+        self.assertEqual(ETFFeatureSnapshot.objects.count(), before)
+        self.assertEqual(
+            ETFFeatureSnapshot.objects.filter(date__gt=self.pool_date).count(), 0,
+            'labels-only created a feature-NULL snapshot row',
+        )
+        self.assertGreater(
+            summary['rows_skipped_missing_snapshot'], 0,
+            'the filter must be what keeps the tail out, not an empty compute',
+        )
 
 
 # ---------------------------------------------------------------------------
