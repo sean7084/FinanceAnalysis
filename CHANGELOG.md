@@ -1,5 +1,30 @@
 # Changelog
 
+### version 0.1.48
+
+#### Added:
+
+- **Fourth ETF label backfilled.** `label_downside_rank` now covers the same 351,347 rows
+  as the other three labels (2016-01-29..2026-09-18) after a single-process
+  `compute_etf_features --recompute-labels-only` pass in 11 calendar chunks (779 s); the
+  20-session tail stayed NULL. The labelled-row set hash, the sample windows and
+  `label_horizon_days` are unchanged, and the feature columns were not touched (two tests
+  pin the write path).
+- **`--feature-set` on both ETF trainers.** `train_lightgbm` and `train_lstm` accept a
+  named subset (`all` / `no_flow`); a subset gets its own schema hash (24 columns,
+  `eab79996d610` vs 28 / `b6165919fbf3`). The CLI refuses it for `--type ensemble` and
+  prints the resolved columns in `--dry-run`; `ModelVersion.metadata` and the ledger
+  `measurement_context` record the name, with the default path still saying `all`.
+  No `no_flow` reading exists yet; measuring it needs a pre-registered panel batch.
+
+#### Verified:
+
+- Full backend suite: **844 tests, all green**; frontend unchanged at 79. Backfill
+  assertions: four labels at 351,347; labelled-row set sha256 unchanged; the 2019-06,
+  2023-01 and 2026-06 windows bit-identical; tail 20 sessions NULL; active model set,
+  backtest statuses (353 COMPLETED / 1 FAILED), artifact directories and the 36-row
+  ledger unchanged. No production default changed.
+
 ### version 0.1.47
 
 #### Added:

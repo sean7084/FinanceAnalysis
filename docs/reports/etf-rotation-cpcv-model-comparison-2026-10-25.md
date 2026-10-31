@@ -1129,4 +1129,66 @@ LSTM −0.4626/−0.4626）仅作上下文，**未参与裁决**，与预登记�
   仍为 **353 COMPLETED / 1 FAILED**；无新工件目录。
 - 未改任何生产默认值、未开影子、未激活任何 ETF 模型。
 
+---
+
+## 38. §28 补记：第四标签回填完成、特征集轴接通（2026-10-31）
+
+> 本节是对 §28 的追加记录，原文未改。§28 当时记录的缺口是：`label_downside_rank` 的数据侧
+> 仍空、特征集轴只有一列。本节给出补漏后的实测结果与不变性检查。
+
+### 38.1 数据回填（`--recompute-labels-only`）
+
+单进程、按日历年 11 块。主窗口取到最后一个仍有 20 日前瞻数据的标注日 `2026-09-18`：
+
+| 运行 | 窗口 | 写入行 | eligible | labeled | 耗时 |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| Pilot | 2023-01-01..2023-12-31 | 290,149 | 45,739 | 45,737 | 108.9 s |
+| 全量 | 2016-01-04..2026-09-18 | 2,572,396 | 351,389 | 351,347 | 779.2 s |
+| 尾部 | 2026-09-19..2026-10-26 | 43,157 | 9,806 | 0 | 18.6 s |
+
+全库行数仍 **2,615,553**（labels-only 不插入行，`_filter_existing_snapshots` 由测试钉住）。
+四个标签的非空行现在同为 **351,347**；`label_horizon_days` 的分布仍只有
+`{20: 351,347; NULL: 2,264,206}`。
+
+**逐行不变性。** 标注行 `(etf_id, date)` 集合 sha256 与回填前一致（`f46d86853ffa`）；三个
+抽样窗口的既有字段逐位相同：2019-06（11,801 行）与 2023-01（18,585 行）的九个字段，以及
+2026-06（38,465 行）的十个字段。2026-06 在回填前已有 10,187 行 `label_downside_rank`，本次
+重算逐位复现——这是该写入路径的幂等性证据。尾部 20 个 session（2026-09-21..2026-10-26）的
+标签保持 NULL。
+
+**方向抽查。** 全样本 351,347 对 `(label_dd_rank, label_downside_rank)` 的 Spearman 为
+**0.894868**（pilot 2023 窗口 45,737 对为 0.884803）；两者同向（越安全越靠 1.0），但构造序列
+不同：一个来自最大回撤，一个来自下行偏差。排序两端符合直觉：2023-03-08 的安全端是短融与
+货币 ETF（海富通中证短融 1.000、易方达保证金收益货币-A 0.994），风险端是港股互联网/QDII
+（华宝中证港股通互联网 0.028、博时恒生科技(QDII) 0.023）。
+
+**一个记录在案的意外。** 回填前 `label_downside_rank` 并非 0，而是 75,021 行——每日
+`compute_etf_features` 在迁移后已连续补了 2025-12-15..2026-09-18 的标注行。核对确认这
+75,021 行全部落在 `label_dd_rank` 非空集合内（0 个孤儿），因此"四个标签同一行集合"在回填前
+就成立，回填只是补齐其余 276,326 行；2026-06 的逐位复现是该结论的幂等性证据。
+
+### 38.2 特征集轴接通
+
+两个 trainer（`train_lightgbm.train_walk_forward` / `train_lstm.train_walk_forward`）、命令面
+（`--feature-set`，`choices={all, no_flow}`，默认 `all`，对 `--type ensemble` 拒绝）与台账都
+已接通；`--dry-run` 会打印解析后的列数与 schema 哈希。`all` 仍是 28 列 /
+`b6165919fbf3`，`no_flow` 是 24 列 / `eab79996d610`。`measurement_context` 现在从列清单或
+钉版本工件的 `metadata['feature_set']` 派生名字，**默认路径仍输出 `all`**，既有 36 行台账的
+signature 与重复计数不变（`test_the_default_context_still_says_all_so_existing_rows_keep_their_signature`）。
+
+**仍无 `no_flow` 读数。** 接线不等于测量：本轮没有训练任何子集工件，`no_flow` 臂的实际
+IC/Sharpe 需要另开预登记面板批次。消融矩阵的特征集轴现在**可以被填**，但台账里仍只有
+`all` 一列。
+
+### 38.3 不变性
+
+- 激活模型集逐位不变：3 LIGHTGBM / 1 LSTM / 1 ENSEMBLE。
+- `ETFRotationBacktest` 仍 **353 COMPLETED / 1 FAILED**；无新工件目录。
+- 台账 `docs/reports/evidence/etf-rotation-measurements.jsonl` 仍 36 行；Phase C 前后
+  `git status` 干净（测试不再向真实台账写 fixture 行）。
+- 特征列未被触碰：`mom_120d` / `vol_20d` / `is_eligible` 在三个抽样窗口逐位相同；
+  `_labels_update_fields()` 的写集合由 `test_a_labels_only_pass_cannot_null_a_feature_column`
+  钉住，labels-only 不插入行由 `test_a_labels_only_pass_never_inserts_a_row` 钉住。
+- 未改任何生产默认值、未激活任何 ETF 模型、未开影子；horizon 与 pool 参数未改。
+
 

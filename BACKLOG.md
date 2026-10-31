@@ -293,8 +293,12 @@ The measurement/verification gaps left after PR #73 are closed with evidence in
 - **#7 / #11** — verified already satisfied (ETF artifact paths are relative; the stale-task
   threshold is wired); closed with evidence.
 
-Still open from this programme: the ETF trainers do not accept `--feature-set`, so the
-ablation matrix's feature-set axis has one column (`all`) until that wiring lands.
+Still open from this programme: nothing. Both trainers now accept `--feature-set`
+(`all`/`no_flow`), the ledger context names the subset instead of hardcoding `all`, and the
+artifact records it in `ModelVersion.metadata`; the feature-set axis therefore has two
+columns, though a `no_flow` reading still needs a pre-registered panel batch. The fourth
+label's data landed on 2026-10-31 (`--recompute-labels-only`, single process); the sample
+windows and the labelled-row set were verified unchanged.
 
 
 ## Open — correctness
