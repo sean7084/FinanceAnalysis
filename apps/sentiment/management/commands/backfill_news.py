@@ -31,6 +31,7 @@ from time import sleep
 
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.core.tushare_client import is_throttle_error
 from apps.sentiment.providers import DEFAULT_PROVIDER_NAMES, fetch_normalized_news_items
 from apps.sentiment.tasks import (
     calculate_concept_heat,
@@ -129,8 +130,7 @@ class Command(BaseCommand):
                     )
                     break
                 except Exception as exc:
-                    message = str(exc)
-                    if '每分钟最多访问该接口' not in message or attempt >= max_retries:
+                    if not is_throttle_error(exc) or attempt >= max_retries:
                         raise
                     attempt += 1
                     retry_wait = max(sleep_seconds, 35.0)

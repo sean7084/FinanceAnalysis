@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-10-31T15:31:15Z_
+_Generated: 2026-10-31T17:34:17Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -36,6 +36,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 | Entry | Task | Crontab (min hour dow dom moy) | Options |
 | --- | --- | --- | --- |
+| `catch-up-missed-series-hourly` | `apps.catchup.tasks.catch_up_missed_runs` | `25 * * * *` | &mdash; |
 | `check-alert-rules-every-5-min` | `apps.analytics.tasks.check_alert_rules` | `*/5 * * * *` | &mdash; |
 | `check-etf-rotation-feed-health-daily` | `apps.etf_rotation.tasks.check_etf_rotation_feed_health` | `45 17 * * *` | &mdash; |
 | `compute-etf-features-daily` | `apps.etf_rotation.tasks.compute_etf_features_daily` | `20 17 * * *` | &mdash; |
@@ -57,7 +58,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 2 * 1 *` | &mdash; |
 | `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 0 * 2-8 *` | &mdash; |
 
-**60** registered project tasks, **20** beat entries, **40** reachable only through management commands, API actions, or other tasks.
+**61** registered project tasks, **21** beat entries, **40** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -85,6 +86,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `ops` | default | **300** | **330** | `prewarm-dashboard-stocks-cache` |
 | `apps.analytics.tasks.send_alert_notifications` | `ops` | default | global | global | &mdash; |
 | `apps.backtest.tasks.run_backtest` | `backtest` | explicit | **1800** | **2100** | &mdash; |
+| `apps.catchup.tasks.catch_up_missed_runs` | `ops` | default | **1200** | **1500** | `catch-up-missed-series-hourly` |
 | `apps.etf_rotation.tasks.check_etf_rotation_feed_health` | `ops` | default | **120** | **180** | `check-etf-rotation-feed-health-daily` |
 | `apps.etf_rotation.tasks.compute_etf_features_daily` | `etf-rotation` | explicit | **1800** | **2000** | `compute-etf-features-daily` |
 | `apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal` | `etf-rotation` | explicit | **900** | **1000** | `generate-etf-rotation-shadow-signal-daily` |
@@ -131,6 +133,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | --- | --- | --- |
 | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | **300** | **330** |
 | `apps.backtest.tasks.run_backtest` | **1800** | **2100** |
+| `apps.catchup.tasks.catch_up_missed_runs` | **1200** | **1500** |
 | `apps.etf_rotation.tasks.check_etf_rotation_feed_health` | **120** | **180** |
 | `apps.etf_rotation.tasks.compute_etf_features_daily` | **1800** | **2000** |
 | `apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal` | **900** | **1000** |

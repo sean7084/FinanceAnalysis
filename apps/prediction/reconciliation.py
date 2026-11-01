@@ -18,7 +18,7 @@ from django.core.cache import cache
 from kombu.exceptions import OperationalError
 
 from apps.markets.benchmarking import effective_universe_tradeable_assets
-from apps.markets.models import ExchangeTradingCalendar
+from apps.markets.calendar_utils import open_trading_dates
 
 from .models import LightGBMPrediction, PredictionResult
 
@@ -31,27 +31,6 @@ MODELS = {
 }
 
 RECONCILE_SOURCES = (ENSEMBLE, LIGHTGBM)
-
-
-def open_trading_dates(as_of, lookback_trading_days, exchange_code='SSE'):
-    """The last `lookback_trading_days` open dates up to and including `as_of`.
-
-    Oldest first, so a repair pass heals the backlog in date order.
-    """
-    count = max(int(lookback_trading_days or 0), 0)
-    if count <= 0:
-        return []
-    resolved_as_of = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of))
-    dates = (
-        ExchangeTradingCalendar.objects.filter(
-            exchange_code=exchange_code,
-            is_open=True,
-            trade_date__lte=resolved_as_of,
-        )
-        .order_by('-trade_date')
-        .values_list('trade_date', flat=True)[:count]
-    )
-    return list(reversed(dates))
 
 
 def stored_asset_ids(source, trade_date):

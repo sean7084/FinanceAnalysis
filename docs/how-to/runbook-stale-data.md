@@ -296,6 +296,7 @@ If stale stored features were consumed by inference before you repaired them:
 | Keep the calendar authoritative | `backfill_trading_calendar` must cover the full range before any freshness reasoning is meaningful |
 | Checkpoint long runs | A resumed run is a complete run; an abandoned one leaves exactly this class of gap |
 | Reconcile stored predictions | `check_prediction_coverage --fail-on-gaps` as a gate; the hourly `reconcile_prediction_coverage` beat entry repairs what it finds (§4.4) |
+| Catch up after downtime | `apps/catchup` repairs the holes a beat/worker outage leaves, in the same upstream-first dependency order as §4.1 — a series whose upstream still reports a gap is recorded `BLOCKED_UPSTREAM` and skipped until the upstream heals. Survey with `manage.py catch_up --dry-run` (zero quota); the `:25` hourly beat entry and the cold-stack startup hook converge the rest. See [`runbook-sync-failure.md`](runbook-sync-failure.md) §9 |
 
 The generated coverage sheet is the cheapest early-warning system available: a
 `Latest` column that stops advancing is visible in a diff long before a model

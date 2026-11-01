@@ -122,6 +122,10 @@ Ordering and ownership are in [`backfill.md`](backfill.md) §4. Re-running a
 downstream stage without repairing the upstream one wastes hours and reproduces
 the same gaps.
 
+If the failure was an outage of the scheduler itself — the box was off, so beat
+never fired — do not reconstruct the date list by hand. `manage.py catch_up`
+detects and repairs exactly these holes in dependency order; see §9.
+
 Then re-trigger the daily tasks for the missed date rather than waiting for
 tomorrow's schedule:
 
@@ -305,3 +309,162 @@ python manage.py validate_data_quality \
 
 If the incident revealed a gap in this runbook, add it here. Runbooks that are
 not updated after an incident are how the next one takes longer.
+
+---
+
+## 9. Catching up after downtime
+
+This box is shared, so beat and the workers get stopped for days at a time.
+**Beat never replays a missed occurrence**: if the scheduler was down at the
+scheduled minute, that run is simply gone. Nothing errors — each consumer falls
+back to a documented neutral (`RSI`→50, `RS_SCORE`→0.5, `relative_volume`→1.0),
+so the system keeps producing plausible-but-less-informed output while every
+series quietly accumulates a hole the length of the outage. `apps/catchup`
+repairs those holes.
+
+### 9.1 The two triggers
+
+| Trigger | When | Notes |
+| --- | --- | --- |
+| Cold-stack startup hook | `scripts/restart_cold_stack.sh`, inside the readiness-poll success branch | Runs detached **after** the readiness poll, because catch-up needs Redis (the cache lock) and the DB, and `/assets/` returning 200 is the evidence both are answering. Logs to `tmp/cold_stack/catchup.log`. `scripts/run_local_stack.sh` fires it the same detached way (deliberately *not* tracked in the `pids` array, so the `wait -n` EXIT trap does not tear the stack down when it finishes). |
+| Hourly beat entry | `catch-up-missed-series-hourly`, `crontab(minute='25')` | Offset from the other hourly ticks (`:12` news backfill, `:45` prediction reconcile) and the `:00`/`:15` nightly chain. Runs `apps.catchup.tasks.catch_up_missed_runs` on the `ops` queue. |
+
+Both are detached, so a kill mid-repair is harmless: the run is resumable and the
+next pass re-detects whatever is still missing.
+
+### 9.2 Survey the damage first — zero quota
+
+```bash
+python manage.py catch_up --dry-run
+```
+
+`--dry-run` runs **only the detectors**, prints a per-series gap table, makes
+**zero** TuShare calls and writes **no** `CatchUpRun` rows. This is the "what did
+the last outage cost me" question and is always safe. Columns are `series`,
+`outcome`, `gap`, `calls`, `remaining`, `cause`, with the `detail` on the
+following indented line. Real output from this machine on 2026-10-31:
+
+```
+series                outcome           gap                          calls  remaining  cause
+trading_calendar      SKIPPED           2026-07-03..2026-08-13           0         42  provider_gap
+                      dry run: 42 of 121 calendar days absent for SSE
+suspensions           NO_GAP            none                             0          0  unknown
+                      watermark fresh
+ohlcv                 SKIPPED           2026-09-24..2026-10-30           0         21  provider_gap
+                      dry run: 21 dates with a collapsed cross-section; one sync_daily_a_shares run repairs all of them
+benchmark_index       NO_GAP            none                             0          0  unknown
+                      complete
+index_membership      NO_GAP            none                             0          0  unknown
+                      watermark fresh
+etf_daily             NO_GAP            none                             0          0  unknown
+                      0 ETF trading dates absent
+capital_flow          SKIPPED           2026-09-24..2026-10-30           0         21  provider_gap
+fundamentals          SKIPPED           2026-09-24..2026-10-30           0         21  provider_gap
+news                  NO_GAP            none                             0          0  unknown
+macro_core            SKIPPED           2026-07-01..2026-08-01           0          2  beat_outage
+macro_yields          SKIPPED           2026-07-01..2026-08-01           0          2  beat_outage
+technical_indicators  NO_GAP            none                             0          0  unknown
+model_data_rs_score   NO_GAP            none                             0          0  unknown
+factor_scores         NO_GAP            none                             0          0  unknown
+sentiment_pipeline    NO_GAP            none                             0          0  unknown
+etf_features          NO_GAP            none                             0          0  unknown
+predictions           SKIPPED           2026-10-27..2026-10-30           0          4  provider_gap
+                      dry run: 4 trading dates with missing stored predictions
+```
+
+The `SKIPPED` rows here are the survey *naming* the gaps it would repair on a
+real run; under `--dry-run` nothing is written, so dependency gating is disabled
+— otherwise every dependent series would report `BLOCKED_UPSTREAM` and hide the
+very holes the survey was asked to show.
+
+### 9.3 Bound a real run
+
+A real run is bounded by a **call budget** and a **wall-clock budget** and works
+oldest-hole-first, one unit per series per run, so it converges over repeated
+hourly ticks rather than in one unbounded job. To cap a manual run:
+
+```bash
+python manage.py catch_up --max-calls 200 --max-seconds 900 --trigger manual
+python manage.py catch_up --series ohlcv,capital_flow   # comma-separated subset
+python manage.py catch_up --json                        # machine-readable
+```
+
+`--max-calls` / `--max-seconds` override `CATCHUP_MAX_CALLS_PER_RUN` (200) and
+`CATCHUP_MAX_SECONDS_PER_RUN` (900); `--trigger` is recorded on the run rows;
+`--as-of` overrides today for testing. Full option surface:
+[`../reference/commands.md`](../reference/commands.md); the five `CATCHUP_*`
+settings: [`../reference/env.md`](../reference/env.md). Being throttled — or
+hitting `SoftTimeLimitExceeded` — stops the **whole** run, not just one series:
+continuing to spend quota after a throttle is exactly how a backfill ends up
+half-written and mistaken for a blackout.
+
+### 9.4 Where the run history lives
+
+Every real run writes `CatchUpRun` rows, surfaced read-only in the admin:
+`series`, `triggered_by` (startup/beat/manual), `outcome`, `cause`,
+`gap_start`/`gap_end`, `repaired_dates`, `units_done`/`units_remaining`,
+`estimated_calls`, `detail`, `started_at`/`finished_at`.
+
+| Outcome | Meaning |
+| --- | --- |
+| `OK` | The detected gap was fully repaired this run |
+| `PARTIAL` | Some units repaired, budget ran out; `units_remaining` says how many — the next tick continues |
+| `NO_GAP` | Nothing missing; detectors found the series complete |
+| `BLOCKED_UPSTREAM` | A `depends_on` upstream still reports a gap, so this series was skipped this round — repairing downstream without upstream reproduces the same gap ([`runbook-stale-data.md`](runbook-stale-data.md) §4.1) |
+| `SKIPPED` | Deliberately not attempted — e.g. `macro_yields`, whose `yc_cb` access is entitlement-denied on this token tier, so it is never retried |
+| `FAILED` | The repair raised; read `detail` and `cause` |
+
+`cause` is one of `beat_outage`, `task_failure`, `provider_gap`, `throttled`,
+`entitlement`, `unknown`. `units_remaining` is **reporting, not state**: the
+detectors are data-level, so the database itself is the checkpoint and the next
+run re-detects whatever is still missing — there is no checkpoint file for the
+raw layer (the derived-layer `backfill_*` commands' own `--checkpoint-file` /
+`--resume-from-checkpoint` are used). `NO_GAP` and `SKIPPED` write at most one
+row per (series, outcome, UTC date) — an hourly tick across seventeen series
+would otherwise write hundreds of identical rows a day; `OK`/`PARTIAL`/
+`BLOCKED_UPSTREAM`/`FAILED` always insert, because they are evidence.
+
+### 9.5 How detection works — the three detector classes
+
+Not every series can be gap-detected the same way, and getting this wrong either
+misses holes or spins forever:
+
+| Class | Rule | Series |
+| --- | --- | --- |
+| **A — row presence** | An open trading day *should* have rows, so absence is a real gap | `trading_calendar`, `benchmark_index`, `etf_daily`, `macro_core` (month-starts), `fundamentals` |
+| **B — watermark only** | Absence is **not** evidence of a gap; detected by reading `PeriodicTask.last_run_at` instead. If the watermark is older than `as_of - grace`, the outage window was never fetched, and the repair re-runs one idempotent command over `[last_run_at.date(), as_of]` | `suspensions` (a zero-suspension day legitimately has zero rows), `index_membership` (`index_weight` is published periodically, not daily), `macro_yields` (entitlement-denied on this token tier). Row-presence-detecting these would produce permanent false positives |
+| **C — cross-sectional row count** | Per-asset series: rows are counted per date and compared against the median of the `±3` open dates on **each side** (`CATCHUP_CROSS_SECTION_MIN_RATIO`), and a date is only a gap when *both* sides are higher. This separates a genuine fetch failure (all assets missing on some dates) from the *structural* blackouts in [`runbook-provider-blackout.md`](runbook-provider-blackout.md) §4 (some assets missing on all dates — later history starts, null `pe_ttm`), which are permanent and must not be retried every hour. The reference must stay local: a universe-size step (delistings, ST filtering, a redefined effective universe) makes every date after it look collapsed against one window-wide median, and no repair can restore assets that no longer exist, so the gap would never clear and every dependent series would block upstream forever | `ohlcv`, `capital_flow`, `fundamentals` |
+
+The registry runs the 17 series in dependency order (`trading_calendar` first,
+`predictions` last), and a series whose `depends_on` upstream still reports a gap
+is recorded `BLOCKED_UPSTREAM` and skipped this round.
+
+Repair behaviours worth knowing:
+
+- `index_membership` passes `skip_sync_dispatch=True`; without it the command
+  fans out one `sync_asset_history` task per constituent — redundant work and an
+  unbudgeted quota spike.
+- `macro_yields` fails fast: `yc_cb` is denied on this token tier and the yield
+  phase sleeps 31s between calls, so the first permission error is cached
+  permanently and every later run reports `SKIPPED` / `cause=entitlement`
+  without calling the provider. It is never retried.
+- `predictions` only `.delay()`s `reconcile_prediction_coverage`; it never calls
+  `generate_predictions_for_date` itself, which would double-run against the
+  existing hourly reconcile entry that already owns that repair.
+- The cache lock TTL is `max(CATCHUP_LOCK_SECONDS, max_seconds + 300)` — a lock
+  that expired before the run ended would let the hourly beat entry stack a
+  second pass on top of the startup hook, and both would spend the same
+  per-minute quota.
+
+### 9.6 Convergence is by design, not a defect
+
+After e.g. a three-week outage (~15 trading days) the **raw layer** is
+essentially repaired within the first startup run — `ohlcv` in particular is
+repaired by a **single** `sync_daily_a_shares()` call whose `latest.date + 1 day`
+resume logic fills an arbitrarily long hole in one pass, never per-date. The
+**derived layer** converges at one trading day per series per run, so roughly 15
+hourly ticks. This mirrors the `reconcile_prediction_coverage` philosophy: a date
+missed entirely heals over several hours rather than in one job that would need a
+time budget nobody would approve.
+
+Startup-run log: `tmp/cold_stack/catchup.log`.

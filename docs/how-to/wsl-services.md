@@ -248,6 +248,70 @@ without a credential. It returns an empty result set until the database is popul
 autoreloads on Python changes; **Celery workers and beat do not**, so restart the stack after
 editing any code they import. Frontend changes are picked up by Vite HMR without a restart.
 
+### Recovering an orphaned stack
+
+If the supervisor dies instead of being interrupted, the services survive it. The teardown runs
+from an `INT TERM EXIT` trap in `run_local_stack.sh`, so a closed terminal, a lost SSH session or
+a `wsl --shutdown` kills the supervisor and never fires the trap: the workers and beat are
+reparented to init and keep serving, silently, for as long as the distro stays up.
+
+The next start then refuses, and that refusal is correct — it is not a lock to be worked around:
+
+```
+[stack] refusing to start celery-beat: scheduler(s) already live: pid 43190.
+[stack] two beats double-dispatch every scheduled job. Stop that process first,
+[stack] or set STACK_SKIP_BEAT=1 to start the rest of the stack without one.
+```
+
+Confirm the ownership before deciding — `ppid 9` (or anything that is not your shell) is the
+signature of an orphan, as is an `etime` far longer than the current session:
+
+```bash
+ps -eo pid,ppid,etime,cmd | grep -E 'celery -A config.celery|runserver' | grep -v grep
+```
+
+Then stop the orphans and start once:
+
+```bash
+pkill -TERM -f 'celery -A config.celery'      # workers and beat, graceful
+pkill -TERM -f 'manage.py runserver'          # if this stack included the web process
+pgrep -af 'celery -A config.celery'           # must print nothing before retrying
+./scripts/run_local_stack.sh
+```
+
+Celery deletes its own `celerybeat.pid` on a clean exit, so give beat a few seconds. Only remove
+a leftover pidfile by hand if it survives and blocks the new start.
+
+**`STACK_SKIP_BEAT=1` is the wrong answer when the reason you are restarting is to load new
+code.** It starts workers with *no* scheduler, so nothing fires on the clock at all. It also
+cannot pick up a new `CELERY_BEAT_SCHEDULE` entry: `django_celery_beat`'s `setup_schedule()`
+upserts static entries into the `PeriodicTask` table only when a beat process starts, so a new
+beat row appears on the next real restart, not on a beat-skipped one. Use `STACK_SKIP_BEAT=1`
+only when another host or terminal already owns the scheduler and you just need workers.
+
+Verify a restart actually registered what you expect rather than assuming it did:
+
+```bash
+DJANGO_READ_DOT_ENV_FILE=True .venv/bin/python manage.py shell -c "from django_celery_beat.models import PeriodicTask as P; \
+print(list(P.objects.filter(name='catch-up-missed-series-hourly').values_list('name','enabled')))"
+DJANGO_READ_DOT_ENV_FILE=True celery -A config.celery inspect registered | grep catchup
+```
+
+Both need `DJANGO_READ_DOT_ENV_FILE=True`: without it `config/settings/base.py` raises
+`ImproperlyConfigured: Set the DATABASE_URL environment variable`, which looks like a
+registration failure but is just an unread `.env`.
+
+An empty `PeriodicTask` row means no new beat came up; a task missing from `inspect registered`
+means the worker process still predates the code.
+
+Read the run counters a minute or two after a scheduled minute, not immediately. Beat writes
+`last_run_at` and `total_run_count` on its own sync interval, so within the first tens of seconds
+after a tick the row can still show `None` / `0` even though the task already ran. Confirm against
+the work the task actually did before concluding the scheduler is broken.
+
+To keep the supervisor alive past your shell, start the stack inside `tmux` or `screen` — or as a
+systemd user service. Reattaching lets `Ctrl+C` do its job later.
+
 ---
 
 ## Traps

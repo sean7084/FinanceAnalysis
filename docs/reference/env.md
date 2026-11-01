@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-10-31T15:31:15Z_
+_Generated: 2026-11-01T04:03:50Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -14,94 +14,99 @@ _Generated: 2026-10-31T15:31:15Z_
 
 | Variable | Type | Default | In `.env.example` | Read at |
 | --- | --- | --- | --- | --- |
-| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:703 |
-| `ALERT_NOTIFY_EMAILS` | `list` | `[]` | yes | base.py:707 |
-| `ARTIFACT_LOCAL_CACHE_ROOT` | `str` | `str(BASE_DIR)` | **no** | base.py:423 |
-| `ARTIFACT_S3_ACCESS_KEY_ID` | `str` | `''` | yes | base.py:426 |
-| `ARTIFACT_S3_ADDRESSING_STYLE` | `str` | `'path'` | yes | base.py:429 |
-| `ARTIFACT_S3_BUCKET` | `str` | `'finance-analysis-artifacts'` | yes | base.py:425 |
-| `ARTIFACT_S3_ENDPOINT_URL` | `str` | `''` | yes | base.py:424 |
-| `ARTIFACT_S3_REGION` | `str` | `'us-east-1'` | yes | base.py:428 |
-| `ARTIFACT_S3_SECRET_ACCESS_KEY` | `str` | `''` | yes | base.py:427 |
-| `ARTIFACT_STORE_BACKEND` | `str` | `'local'` | yes | base.py:422 |
-| `BACKTEST_PAYLOAD_CACHE_SECONDS` | `int` | `3600` | yes | base.py:436 |
-| `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` | `int` | `2400` | yes | base.py:432 |
-| `CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS` | `int` | `20` | yes | base.py:305 |
-| `CELERY_BROKER_URL` | `str` | `'redis://localhost:6379/0'` | yes | base.py:188 |
-| `DASHBOARD_INDICATOR_LOOKBACK_DAYS` | `int` | `60` | yes | base.py:451 |
-| `DASHBOARD_STOCKS_CACHE_SECONDS` | `int` | `86400` | yes | base.py:441 |
-| `DASHBOARD_SUMMARY_CACHE_SECONDS` | `int` | `60` | yes | base.py:444 |
-| `DATABASE_URL` | `db` | _required_ | yes | base.py:129 |
-| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:649 |
+| `ALERTS_ENABLE_SMS` | `bool` | `False` | yes | base.py:736 |
+| `ALERT_NOTIFY_EMAILS` | `list` | `[]` | yes | base.py:740 |
+| `ARTIFACT_LOCAL_CACHE_ROOT` | `str` | `str(BASE_DIR)` | **no** | base.py:424 |
+| `ARTIFACT_S3_ACCESS_KEY_ID` | `str` | `''` | yes | base.py:427 |
+| `ARTIFACT_S3_ADDRESSING_STYLE` | `str` | `'path'` | yes | base.py:430 |
+| `ARTIFACT_S3_BUCKET` | `str` | `'finance-analysis-artifacts'` | yes | base.py:426 |
+| `ARTIFACT_S3_ENDPOINT_URL` | `str` | `''` | yes | base.py:425 |
+| `ARTIFACT_S3_REGION` | `str` | `'us-east-1'` | yes | base.py:429 |
+| `ARTIFACT_S3_SECRET_ACCESS_KEY` | `str` | `''` | yes | base.py:428 |
+| `ARTIFACT_STORE_BACKEND` | `str` | `'local'` | yes | base.py:423 |
+| `BACKTEST_PAYLOAD_CACHE_SECONDS` | `int` | `3600` | yes | base.py:437 |
+| `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` | `int` | `2400` | yes | base.py:433 |
+| `CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS` | `int` | `20` | yes | base.py:306 |
+| `CATCHUP_CROSS_SECTION_MIN_RATIO` | `float` | `0.5` | yes | base.py:495 |
+| `CATCHUP_LOCK_SECONDS` | `int` | `1500` | yes | base.py:488 |
+| `CATCHUP_LOOKBACK_TRADING_DAYS` | `int` | `60` | yes | base.py:482 |
+| `CATCHUP_MAX_CALLS_PER_RUN` | `int` | `200` | yes | base.py:483 |
+| `CATCHUP_MAX_SECONDS_PER_RUN` | `int` | `900` | yes | base.py:484 |
+| `CELERY_BROKER_URL` | `str` | `'redis://localhost:6379/0'` | yes | base.py:189 |
+| `DASHBOARD_INDICATOR_LOOKBACK_DAYS` | `int` | `60` | yes | base.py:452 |
+| `DASHBOARD_STOCKS_CACHE_SECONDS` | `int` | `86400` | yes | base.py:442 |
+| `DASHBOARD_SUMMARY_CACHE_SECONDS` | `int` | `60` | yes | base.py:445 |
+| `DATABASE_URL` | `db` | _required_ | yes | base.py:130 |
+| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:682 |
 | `DJANGO_ALLOWED_HOSTS` | `list` | `['localhost', '0.0.0.0', '127.0.0.1', '192.168.31.30']` | yes | local.py:9 |
 | `DJANGO_DEBUG` | `bool` | `False` | yes | base.py:37 |
 | `DJANGO_EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | local.py:17 |
 | `DJANGO_READ_DOT_ENV_FILE` | `bool` | `False` | yes | base.py:25 |
 | `DJANGO_SECRET_KEY` | `str` | `'django-insecure-local-secret-key'` | yes | local.py:7 |
-| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:686 |
-| `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:690 |
-| `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:691 |
-| `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:645 |
-| `EMAIL_HOST` | `str` | `'localhost'` | yes | base.py:670 |
-| `EMAIL_HOST_PASSWORD` | `str` | `''` | yes | base.py:674 |
-| `EMAIL_HOST_USER` | `str` | `''` | yes | base.py:673 |
-| `EMAIL_PORT` | `str` | `587` | yes | base.py:671 |
-| `EMAIL_USE_TLS` | `bool` | `True` | yes | base.py:672 |
-| `ETF_BENCHMARK_CODE` | `str` | `'H00905.CSI'` | **no** | base.py:374 |
-| `ETF_COMMISSION_RATE` | `float` | `0.0003` | **no** | base.py:404 |
-| `ETF_DEDUP_TRACK_INDEX` | `bool` | `True` | **no** | base.py:337 |
-| `ETF_DEFENSIVE_ASSET` | `str` | `'511880.SH'` | **no** | base.py:342 |
-| `ETF_LABEL_HORIZON_DAYS` | `int` | `20` | **no** | base.py:381 |
-| `ETF_LGB_NUM_THREADS` | `int` | `max(1, min(16, (os.cpu_count() or 4) - 2))` | yes | base.py:386 |
-| `ETF_LIQUIDITY_FLOOR_MULTIPLE` | `float` | `10.0` | **no** | base.py:325 |
-| `ETF_LIVE_DRIFT_MEAN_RETURN_TOLERANCE` | `float` | `0.03` | yes | base.py:371 |
-| `ETF_LIVE_DRIFT_MIN_CLOSED_TRADES` | `int` | `10` | yes | base.py:372 |
-| `ETF_LIVE_DRIFT_WIN_RATE_TOLERANCE` | `float` | `0.2` | yes | base.py:370 |
-| `ETF_LIVE_REFERENCE_BACKTEST_ID` | `int` | `0` | yes | base.py:369 |
-| `ETF_LSTM_BATCH_SIZE` | `int` | `256` | yes | base.py:400 |
-| `ETF_LSTM_DROPOUT` | `float` | `0.2` | yes | base.py:398 |
-| `ETF_LSTM_EPOCHS` | `int` | `50` | yes | base.py:399 |
-| `ETF_LSTM_HIDDEN_SIZE` | `int` | `64` | yes | base.py:396 |
-| `ETF_LSTM_LEARNING_RATE` | `float` | `0.001` | yes | base.py:401 |
-| `ETF_LSTM_NUM_LAYERS` | `int` | `2` | yes | base.py:397 |
-| `ETF_LSTM_PATIENCE` | `int` | `5` | yes | base.py:402 |
-| `ETF_LSTM_SEQUENCE_LENGTH` | `int` | `20` | yes | base.py:395 |
-| `ETF_MAX_CONCURRENT_BACKTESTS` | `int` | `2` | **no** | base.py:414 |
-| `ETF_MAX_PER_CATEGORY` | `int` | `2` | **no** | base.py:340 |
-| `ETF_MAX_POSITIONS` | `int` | `3` | **no** | base.py:330 |
-| `ETF_MIN_AVG_AMOUNT_YUAN` | `int` | `50000000` | **no** | base.py:323 |
-| `ETF_MIN_COMMISSION` | `int` | `5` | **no** | base.py:406 |
-| `ETF_MIN_LISTING_AGE_DAYS` | `int` | `183` | **no** | base.py:320 |
-| `ETF_ML_SHADOW_ARMS` | `json` | `[]` | yes | base.py:359 |
-| `ETF_ML_SHADOW_MODEL` | `str` | `''` | yes | base.py:354 |
-| `ETF_SECONDARY_BENCHMARK_CODES` | `list` | `['000905.SH']` | **no** | base.py:379 |
-| `ETF_SHARE_FLOW_ADJUST_FOR_SPLITS` | `bool` | `False` | yes | base.py:363 |
-| `ETF_SIM_CAPITAL_BASE` | `int` | `1000000` | yes | base.py:347 |
-| `ETF_SLIPPAGE` | `float` | `0.001` | **no** | base.py:408 |
-| `ETF_SYNC_MAX_RETRIES` | `int` | `5` | **no** | base.py:318 |
-| `ETF_SYNC_REQUEST_SLEEP_SECONDS` | `float` | `0.15` | **no** | base.py:316 |
-| `ETF_SYNC_RETRY_SLEEP_SECONDS` | `float` | `65.0` | **no** | base.py:317 |
-| `ETF_WEIGHTING` | `str` | `'score'` | **no** | base.py:335 |
-| `HISTORICAL_DATA_FLOOR` | `str` | `'2010-01-01'` | yes | base.py:282 |
-| `MACRO_PUBLICATION_LAG_DAYS_FALLBACK` | `int` | `35` | yes | base.py:290 |
-| `MACRO_RELEASE_LAG_DAYS` | `json` | `{'pmi_manufacturing': 1, 'pmi_non_manufacturing': 1, 'cpi_yoy': 9, 'ppi_yoy': 9, 'dxy': 1, 'cny_usd': 1, 'cn10y_yield': 2, 'cn3y_yield': 2}` | yes | base.py:291 |
-| `MACRO_SYNC_FALLBACK_PROVIDER` | `str` | `'akshare'` | yes | base.py:284 |
-| `MACRO_SYNC_PRIMARY_PROVIDER` | `str` | `'tushare'` | yes | base.py:283 |
-| `MACRO_SYNC_PROVIDER_SLEEP_SECONDS` | `float` | `0.2` | yes | base.py:285 |
-| `MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS` | `float` | `31.0` | yes | base.py:304 |
-| `MACRO_YIELD_BACKFILL_MAX_RETRIES` | `int` | `3` | yes | base.py:302 |
-| `MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS` | `float` | `65.0` | yes | base.py:303 |
-| `MACRO_YIELD_BACKFILL_WINDOW_MONTHS` | `int` | `36` | yes | base.py:301 |
-| `NEWS_BACKFILL_CHUNK_DAYS` | `int` | `31` | yes | base.py:308 |
-| `NEWS_BACKFILL_ENABLED` | `bool` | `True` | yes | base.py:306 |
-| `NEWS_BACKFILL_FLOOR` | `str` | `'2021-04-15 00:00:00'` | yes | base.py:309 |
-| `NEWS_BACKFILL_LIMIT_PER_PROVIDER` | `int` | `0` | yes | base.py:310 |
-| `NEWS_BACKFILL_PROVIDER` | `str` | `'tushare_major'` | yes | base.py:307 |
-| `PREDICTION_GENERATION_LOCK_SECONDS` | `int` | `120` | yes | base.py:472 |
-| `PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS` | `int` | `5` | yes | base.py:461 |
-| `PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN` | `int` | `250` | yes | base.py:468 |
-| `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:630, base.py:638 |
-| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:704 |
+| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:719 |
+| `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:723 |
+| `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:724 |
+| `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:678 |
+| `EMAIL_HOST` | `str` | `'localhost'` | yes | base.py:703 |
+| `EMAIL_HOST_PASSWORD` | `str` | `''` | yes | base.py:707 |
+| `EMAIL_HOST_USER` | `str` | `''` | yes | base.py:706 |
+| `EMAIL_PORT` | `str` | `587` | yes | base.py:704 |
+| `EMAIL_USE_TLS` | `bool` | `True` | yes | base.py:705 |
+| `ETF_BENCHMARK_CODE` | `str` | `'H00905.CSI'` | **no** | base.py:375 |
+| `ETF_COMMISSION_RATE` | `float` | `0.0003` | **no** | base.py:405 |
+| `ETF_DEDUP_TRACK_INDEX` | `bool` | `True` | **no** | base.py:338 |
+| `ETF_DEFENSIVE_ASSET` | `str` | `'511880.SH'` | **no** | base.py:343 |
+| `ETF_LABEL_HORIZON_DAYS` | `int` | `20` | **no** | base.py:382 |
+| `ETF_LGB_NUM_THREADS` | `int` | `max(1, min(16, (os.cpu_count() or 4) - 2))` | yes | base.py:387 |
+| `ETF_LIQUIDITY_FLOOR_MULTIPLE` | `float` | `10.0` | **no** | base.py:326 |
+| `ETF_LIVE_DRIFT_MEAN_RETURN_TOLERANCE` | `float` | `0.03` | yes | base.py:372 |
+| `ETF_LIVE_DRIFT_MIN_CLOSED_TRADES` | `int` | `10` | yes | base.py:373 |
+| `ETF_LIVE_DRIFT_WIN_RATE_TOLERANCE` | `float` | `0.2` | yes | base.py:371 |
+| `ETF_LIVE_REFERENCE_BACKTEST_ID` | `int` | `0` | yes | base.py:370 |
+| `ETF_LSTM_BATCH_SIZE` | `int` | `256` | yes | base.py:401 |
+| `ETF_LSTM_DROPOUT` | `float` | `0.2` | yes | base.py:399 |
+| `ETF_LSTM_EPOCHS` | `int` | `50` | yes | base.py:400 |
+| `ETF_LSTM_HIDDEN_SIZE` | `int` | `64` | yes | base.py:397 |
+| `ETF_LSTM_LEARNING_RATE` | `float` | `0.001` | yes | base.py:402 |
+| `ETF_LSTM_NUM_LAYERS` | `int` | `2` | yes | base.py:398 |
+| `ETF_LSTM_PATIENCE` | `int` | `5` | yes | base.py:403 |
+| `ETF_LSTM_SEQUENCE_LENGTH` | `int` | `20` | yes | base.py:396 |
+| `ETF_MAX_CONCURRENT_BACKTESTS` | `int` | `2` | **no** | base.py:415 |
+| `ETF_MAX_PER_CATEGORY` | `int` | `2` | **no** | base.py:341 |
+| `ETF_MAX_POSITIONS` | `int` | `3` | **no** | base.py:331 |
+| `ETF_MIN_AVG_AMOUNT_YUAN` | `int` | `50000000` | **no** | base.py:324 |
+| `ETF_MIN_COMMISSION` | `int` | `5` | **no** | base.py:407 |
+| `ETF_MIN_LISTING_AGE_DAYS` | `int` | `183` | **no** | base.py:321 |
+| `ETF_ML_SHADOW_ARMS` | `json` | `[]` | yes | base.py:360 |
+| `ETF_ML_SHADOW_MODEL` | `str` | `''` | yes | base.py:355 |
+| `ETF_SECONDARY_BENCHMARK_CODES` | `list` | `['000905.SH']` | **no** | base.py:380 |
+| `ETF_SHARE_FLOW_ADJUST_FOR_SPLITS` | `bool` | `False` | yes | base.py:364 |
+| `ETF_SIM_CAPITAL_BASE` | `int` | `1000000` | yes | base.py:348 |
+| `ETF_SLIPPAGE` | `float` | `0.001` | **no** | base.py:409 |
+| `ETF_SYNC_MAX_RETRIES` | `int` | `5` | **no** | base.py:319 |
+| `ETF_SYNC_REQUEST_SLEEP_SECONDS` | `float` | `0.15` | **no** | base.py:317 |
+| `ETF_SYNC_RETRY_SLEEP_SECONDS` | `float` | `65.0` | **no** | base.py:318 |
+| `ETF_WEIGHTING` | `str` | `'score'` | **no** | base.py:336 |
+| `HISTORICAL_DATA_FLOOR` | `str` | `'2010-01-01'` | yes | base.py:283 |
+| `MACRO_PUBLICATION_LAG_DAYS_FALLBACK` | `int` | `35` | yes | base.py:291 |
+| `MACRO_RELEASE_LAG_DAYS` | `json` | `{'pmi_manufacturing': 1, 'pmi_non_manufacturing': 1, 'cpi_yoy': 9, 'ppi_yoy': 9, 'dxy': 1, 'cny_usd': 1, 'cn10y_yield': 2, 'cn3y_yield': 2}` | yes | base.py:292 |
+| `MACRO_SYNC_FALLBACK_PROVIDER` | `str` | `'akshare'` | yes | base.py:285 |
+| `MACRO_SYNC_PRIMARY_PROVIDER` | `str` | `'tushare'` | yes | base.py:284 |
+| `MACRO_SYNC_PROVIDER_SLEEP_SECONDS` | `float` | `0.2` | yes | base.py:286 |
+| `MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS` | `float` | `31.0` | yes | base.py:305 |
+| `MACRO_YIELD_BACKFILL_MAX_RETRIES` | `int` | `3` | yes | base.py:303 |
+| `MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS` | `float` | `65.0` | yes | base.py:304 |
+| `MACRO_YIELD_BACKFILL_WINDOW_MONTHS` | `int` | `36` | yes | base.py:302 |
+| `NEWS_BACKFILL_CHUNK_DAYS` | `int` | `31` | yes | base.py:309 |
+| `NEWS_BACKFILL_ENABLED` | `bool` | `True` | yes | base.py:307 |
+| `NEWS_BACKFILL_FLOOR` | `str` | `'2021-04-15 00:00:00'` | yes | base.py:310 |
+| `NEWS_BACKFILL_LIMIT_PER_PROVIDER` | `int` | `0` | yes | base.py:311 |
+| `NEWS_BACKFILL_PROVIDER` | `str` | `'tushare_major'` | yes | base.py:308 |
+| `PREDICTION_GENERATION_LOCK_SECONDS` | `int` | `120` | yes | base.py:473 |
+| `PREDICTION_RECONCILE_LOOKBACK_TRADING_DAYS` | `int` | `5` | yes | base.py:462 |
+| `PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN` | `int` | `250` | yes | base.py:469 |
+| `REDIS_URL` | `str` | `'redis://localhost:6379/1'` | yes | base.py:663, base.py:671 |
+| `SMS_WEBHOOK_URL` | `str` | `''` | yes | base.py:737 |
 | `TUSHARE_TOKEN` | `str` | `None` | yes | base.py:30 |
 
 **19** variables are env-overridable but absent from `.env.example`: `ARTIFACT_LOCAL_CACHE_ROOT`, `ETF_BENCHMARK_CODE`, `ETF_COMMISSION_RATE`, `ETF_DEDUP_TRACK_INDEX`, `ETF_DEFENSIVE_ASSET`, `ETF_LABEL_HORIZON_DAYS`, `ETF_LIQUIDITY_FLOOR_MULTIPLE`, `ETF_MAX_CONCURRENT_BACKTESTS`, `ETF_MAX_PER_CATEGORY`, `ETF_MAX_POSITIONS`, `ETF_MIN_AVG_AMOUNT_YUAN`, `ETF_MIN_COMMISSION`, `ETF_MIN_LISTING_AGE_DAYS`, `ETF_SECONDARY_BENCHMARK_CODES`, `ETF_SLIPPAGE`, `ETF_SYNC_MAX_RETRIES`, `ETF_SYNC_REQUEST_SLEEP_SECONDS`, `ETF_SYNC_RETRY_SLEEP_SECONDS`, `ETF_WEIGHTING`. They all have defaults, so nothing breaks -- but they cannot be discovered from the example file.

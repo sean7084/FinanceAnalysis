@@ -113,6 +113,15 @@ while ((SECONDS < deadline)); do
 	status=$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "$API_BASE/assets/?page_size=1" 2>/dev/null || echo 000)
 	if [[ "$status" == "200" ]]; then
 		echo "stack is cold and ready."
+		# Beat never replays what it missed while the stack was down, so start the
+		# catch-up here rather than waiting for the :25 tick. Detached on purpose:
+		# this script's job is a ready stack, not a finished repair, and a multi-week
+		# outage can take hours to converge. The cache lock makes this and the hourly
+		# beat entry mutually exclusive. Runs after the readiness poll because the
+		# lock needs Redis and the repair needs the database, and a 200 from /assets/
+		# is the evidence that both are answering.
+		start_detached catchup env -C "$PROJECT_ROOT" \
+			"$PYTHON_BIN" manage.py catch_up --trigger startup --max-seconds 1800
 		exit 0
 	fi
 	sleep 2
