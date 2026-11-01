@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-11-01T16:52:24Z_
+_Generated: 2026-11-01T17:14:28Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -34,7 +34,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 ## Beat schedule
 
-| Entry | Task | Crontab (min hour dow dom moy) | Options |
+| Entry | Task | Crontab in Asia/Shanghai (min hour dow dom moy) | Options |
 | --- | --- | --- | --- |
 | `catch-up-missed-series-hourly` | `apps.catchup.tasks.catch_up_missed_runs` | `25 * * * *` | &mdash; |
 | `check-alert-rules-every-5-min` | `apps.analytics.tasks.check_alert_rules` | `*/5 * * * *` | &mdash; |
@@ -57,6 +57,8 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `sync-etf-fund-shares-weekly` | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `10 2 0 * *` | &mdash; |
 | `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 10 * 1 *` | &mdash; |
 | `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 8 * 2-8 *` | &mdash; |
+
+Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`, which beat reads them against and which must equal `TIME_ZONE`. Celery does not fall back to Django's `TIME_ZONE`, so a deploy that flips one without the other shifts the whole nightly pipeline eight hours and still looks healthy until the data lands late. `apps/core/tests_beat_schedule.py` is the gate.
 
 **61** registered project tasks, **21** beat entries, **40** reachable only through management commands, API actions, or other tasks.
 

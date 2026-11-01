@@ -1034,6 +1034,14 @@ The bar the model work is aiming at, against the 3.2 baseline:
   the database and referenced by no `PeriodicTask`. Harmless — inert rows, and
   deleting them only invites the next scheduler sync to recreate whatever it wants.
   Worth a one-off query only if that table is ever audited for drift.
+- `export_documentation_facts` output depends on which sheets are built in the same
+  process. `--check` walks `SHEET_NAMES` in order, and `build_commands()` imports every
+  management module — which registers additional Celery tasks — so `celery.md`'s task
+  tables and its "N registered project tasks" count differ from a partial run like
+  `--only celery`. Regenerate with `--only commands,celery,env` or a full run, never
+  `--only celery`, or CI's `--check` fails on a file that looked freshly written.
+  Making each sheet independent of build order (or asserting the task count from the
+  registry rather than the import side effects) is the real fix.
 - Redis boolean flags written with `timeout=None` never expire —
   `apps/catchup/repairs.py:231` caches `catchup:macro_yields_entitlement_denied`
   permanently on the first `yc_cb` permission error. Correct today (a token tier does

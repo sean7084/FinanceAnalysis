@@ -645,9 +645,10 @@ def _symbolic_offset(target):
 
     Only the *fact* that a default is date-relative is published, never the exact
     offset. An offset such as ``<today-1d>`` looks more informative but is not
-    reproducible: local-date and UTC-date defaults diverge for part of every day,
-    so the same command renders differently depending on when the sheet is built.
-    Collapsing to one token keeps ``--check`` a meaningful gate.
+    reproducible: it is measured from a reference day that moves every day, so the
+    sheet would drift between a run today and a run tomorrow no matter which
+    timezone it was computed in. Collapsing to one token keeps ``--check`` a
+    meaningful gate.
 
     Returns ``None`` for dates far from today, which are fixed constants and are
     rendered literally.
@@ -856,7 +857,19 @@ def build_celery():
                 _describe_crontab(schedule) if schedule is not None else str(entry.get('crontab', '&mdash;')),
                 ', '.join(f'`{key}`' for key in sorted(entry.get('options') or {})) or '&mdash;',
             ))
-        parts.append(_md_table(['Entry', 'Task', 'Crontab (min hour dow dom moy)', 'Options'], beat_rows))
+        parts.append(_md_table([
+            'Entry', 'Task',
+            f'Crontab in {settings.CELERY_TIMEZONE} (min hour dow dom moy)',
+            'Options',
+        ], beat_rows))
+        parts.append(
+            f'\nHour numbers are wall clock in `{settings.CELERY_TIMEZONE}` -- the value of '
+            '`CELERY_TIMEZONE`, which beat reads them against and which must equal '
+            '`TIME_ZONE`. Celery does not fall back to Django\'s `TIME_ZONE`, so a deploy '
+            'that flips one without the other shifts the whole nightly pipeline eight '
+            'hours and still looks healthy until the data lands late. '
+            '`apps/core/tests_beat_schedule.py` is the gate.',
+        )
     else:
         parts.append('_No periodic tasks configured._')
 
