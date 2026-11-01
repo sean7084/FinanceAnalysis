@@ -22,7 +22,7 @@ export function AppShell() {
   return (
     <div className="app-shell">
       <aside className="side-nav">
-        <h1>FinanceAnalysis</h1>
+        <h1>{t('shell.brand')}</h1>
         <p className="subtitle">{t('shell.phase')}</p>
         <nav>
           {navItems.map((item) => (

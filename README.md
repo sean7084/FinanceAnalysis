@@ -1,4 +1,4 @@
-# FinanceAnalysis
+# 璇玑 Armillary
 
 A Django-based platform for analysing Chinese A-share markets over the CSI 500
 benchmark universe. It ingests market, fundamental, macro, and news

@@ -20,13 +20,18 @@ backtests, training, the worker fleet, or any long-lived migration runbook, set 
 > | Clone | Path | venv layout | Activate with |
 > | --- | --- | --- | --- |
 > | Windows | `C:\Users\<you>\Documents\FinanceAnalysis` | `.venv\Scripts\` | `.\.venv\Scripts\Activate.ps1` |
-> | WSL2 | `~/FinanceAnalysis-wsl2` (ext4) | `.venv/bin/` | `source .venv/bin/activate` |
+> | WSL2 | `~/Armillary-wsl2` (ext4) | `.venv/bin/` | `source .venv/bin/activate` |
 >
 > The Windows clone is *also* visible from inside WSL at
 > `/mnt/c/Users/<you>/Documents/FinanceAnalysis`. **Never work there from WSL.** It
 > has no `.venv/bin/`, so `source .venv/bin/activate` fails with `No such file or
 > directory`; `scripts/_native_env.sh` refuses to run from a `/mnt/*` root by design;
 > and file I/O over the 9P mount is far slower than ext4.
+>
+> The Windows clone keeps its own directory name: the project was renamed to
+> 璇玑 / Armillary, which moved the WSL2 checkout and the GitHub repo, but no
+> rename was performed on the Windows machine. Its paths above are therefore
+> still `FinanceAnalysis`, and that is accurate, not stale.
 >
 > The failure is confusing because activation failing does **not** stop the next
 > command. `pip install -r requirements/local.txt` then runs against the *system*
@@ -65,12 +70,12 @@ Those services must already be reachable at whatever `.env` points to.
 ## 2. Provision PostgreSQL
 
 ```sql
-CREATE ROLE finance_analysis WITH LOGIN PASSWORD 'finance_analysis';
-CREATE DATABASE finance_analysis OWNER finance_analysis;
+CREATE ROLE armillary WITH LOGIN PASSWORD 'armillary';
+CREATE DATABASE armillary OWNER armillary;
 ```
 
 Grant the role `CREATE` on the database — Django's test runner creates and
-destroys a `test_finance_analysis` database, which needs that privilege.
+destroys a `test_armillary` database, which needs that privilege.
 
 If the server is on another host, ensure `postgresql.conf` has a matching
 `listen_addresses` and `pg_hba.conf` permits the client network with
@@ -96,13 +101,13 @@ tasks to vanish and cached responses to be dropped mid-session.
 
 ### Getting the URL shape right
 
-`.env.example` ships `redis://finance_analysis:finance_analysis@host:6379/1`. The
+`.env.example` ships `redis://armillary:armillary@host:6379/1`. The
 part before the colon is a Redis **ACL username**. Which form is correct depends
 entirely on how the server was configured, and the two are not interchangeable:
 
 | Server configuration | Correct URL |
 | --- | --- |
-| ACL user created (`ACL SETUSER finance_analysis …`) | `redis://finance_analysis:<pw>@host:6379/1` |
+| ACL user created (`ACL SETUSER armillary …`) | `redis://armillary:<pw>@host:6379/1` |
 | `requirepass <pw>` only, no ACL user | `redis://:<pw>@host:6379/1` — **empty username** |
 
 **This deployment uses a real ACL user.** Verified by probing all four forms
@@ -110,7 +115,7 @@ against the configured server:
 
 | Form tried | Result |
 | --- | --- |
-| `finance_analysis:<pw>@` | **PING OK** |
+| `armillary:<pw>@` | **PING OK** |
 | `:<pw>@` (empty username) | AuthenticationError |
 | `default:<pw>@` | AuthenticationError |
 | no password | AuthenticationError |
@@ -154,7 +159,7 @@ Two related traps:
 - A malformed URL fails quietly in a confusing way. If the `:` separating username
   from password is mistyped as `/`, `urlparse` reads the *username* as the hostname
   and pushes the credential into the path — Django then tries to connect to a host
-  literally named `finance_analysis`. Percent-encode any password character that is
+  literally named `armillary`. Percent-encode any password character that is
   significant in a URL (`:` → `%3A`, `/` → `%2F`, `@` → `%40`, also `#`, `?`, `%`).
 
 Three logical databases are in use:
@@ -230,8 +235,8 @@ If it imports under your login shell but not under the launcher scripts, the
 **One venv per clone.** Each of the two clones needs its own, created inside it.
 
 ```bash
-# Linux / WSL2 -- from ~/FinanceAnalysis-wsl2, NOT from /mnt/c/...
-cd ~/FinanceAnalysis-wsl2
+# Linux / WSL2 -- from ~/Armillary-wsl2, NOT from /mnt/c/...
+cd ~/Armillary-wsl2
 python3 -m venv .venv
 source .venv/bin/activate          # 'source' is required; ./.venv/bin/activate alone
                                    # fails with Permission denied
@@ -286,7 +291,7 @@ Minimum viable edits:
 
 ```dotenv
 DJANGO_SECRET_KEY=<something-random>
-DATABASE_URL=postgres://finance_analysis:finance_analysis@<db-host>:5432/finance_analysis
+DATABASE_URL=postgres://armillary:armillary@<db-host>:5432/armillary
 REDIS_URL=redis://:<redis-password>@<redis-host>:6379/1
 CELERY_BROKER_URL=redis://:<redis-password>@<redis-host>:6379/0
 TUSHARE_TOKEN=<your-tushare-token>
@@ -593,8 +598,8 @@ sudo apt-get install -y python3-venv python3-full postgresql-client
 # TA-Lib C library: see §4, "Linux / WSL2".
 
 cd ~
-git clone https://github.com/sean7084/FinanceAnalysis.git FinanceAnalysis-wsl2
-cd FinanceAnalysis-wsl2
+git clone https://github.com/sean7084/Armillary.git Armillary-wsl2
+cd Armillary-wsl2
 # .env is not tracked; copy it from an existing clone, or seed it from the template:
 cp /mnt/c/Users/<you>/Documents/FinanceAnalysis/.env .env 2>/dev/null || cp .env.example .env
 
@@ -612,7 +617,7 @@ via `gh auth login` + `gh auth setup-git`, and reads are anonymous (the repo is 
 ### Keeping the clone in sync
 
 ```bash
-cd ~/FinanceAnalysis-wsl2
+cd ~/Armillary-wsl2
 git fetch origin
 git status -sb                                      # confirm clean, and how far behind
 git merge --ff-only origin/main
@@ -637,10 +642,10 @@ hosts at once.
 ### Working in it
 
 **To start the services, see [`wsl-services.md`](wsl-services.md)** — the day-to-day
-procedure from `cd ~/FinanceAnalysis-wsl2` to a running backend, beat, worker fleet and
+procedure from `cd ~/Armillary-wsl2` to a running backend, beat, worker fleet and
 dashboard. The rest of this section covers the surrounding habits.
 
-Open `~/FinanceAnalysis-wsl2` in VS Code Remote - WSL. The task labels in
+Open `~/Armillary-wsl2` in VS Code Remote - WSL. The task labels in
 `.vscode/tasks.json` carry `linux` overrides, so they route to the `.sh` launchers
 automatically.
 

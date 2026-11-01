@@ -1,4 +1,4 @@
-# Coverage configuration for FinanceAnalysis
+# Coverage configuration for Armillary
 # Run with: coverage run manage.py test && coverage report
 
 [run]

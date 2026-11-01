@@ -1,4 +1,4 @@
-# MinIO deployment — FinanceAnalysis model artifacts
+# MinIO deployment — Armillary model artifacts
 
 Turnkey deployment for the S3 artifact backend described in
 [docs/how-to/artifact-store.md](../../docs/how-to/artifact-store.md). It runs on
@@ -34,7 +34,7 @@ something the Django app runs. Deploy it manually, once.
    ./init-minio.sh                          # prints the app AccessKey/SecretKey ONCE
    ```
 
-5. **Wire FinanceAnalysis** — put the printed key + endpoint in the app `.env`
+5. **Wire Armillary** — put the printed key + endpoint in the app `.env`
    (`ARTIFACT_S3_*`, `ARTIFACT_STORE_BACKEND=s3`), then on the app host:
 
    ```bash
@@ -65,7 +65,7 @@ ZFS dataset, secrets, and monitor steps are in the authoritative HomeServer runb
 `init-minio.sh` mints a service account under the root user, which is fine for a
 LAN-only single-bucket store. For least privilege, instead create a dedicated user
 with a bucket-scoped policy allowing only `s3:GetObject`, `s3:PutObject`, and
-`s3:ListBucket` on `finance-analysis-artifacts`, and mint the service account under
+`s3:ListBucket` on `armillary-artifacts`, and mint the service account under
 that user.
 
 ## Backups

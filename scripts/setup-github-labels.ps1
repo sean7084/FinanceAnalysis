@@ -1,8 +1,8 @@
-# Automated GitHub Label Setup for FinanceAnalysis
+# Automated GitHub Label Setup for Armillary
 # This script creates all ~35 labels with proper colors and descriptions
 
 $repoOwner = "sean7084"
-$repoName = "FinanceAnalysis"
+$repoName = "Armillary"
 $token = (Get-Content '.env' | Select-String '^GITHUB_PERSONAL_ACCESS_TOKEN=').ToString().Split('=', 2)[1].Trim()
 $headers = @{
     "Authorization" = "Bearer $token"

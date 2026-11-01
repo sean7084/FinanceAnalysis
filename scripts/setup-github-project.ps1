@@ -1,8 +1,8 @@
-# GitHub Project Board Setup for FinanceAnalysis
+# GitHub Project Board Setup for Armillary
 # Uses the GitHub Projects (v2) GraphQL API to create a project board.
 
 $repoOwner = "sean7084"
-$repoName = "FinanceAnalysis"
+$repoName = "Armillary"
 $token = (Get-Content '.env' | Select-String '^GITHUB_PERSONAL_ACCESS_TOKEN=').ToString().Split('=', 2)[1].Trim()
 $headers = @{
     "Authorization" = "Bearer $token"
@@ -47,7 +47,7 @@ if ($ownerId) {
 mutation(`$ownerId: ID!) {
   createProjectV2(input: {
     ownerId: `$ownerId,
-    title: "FinanceAnalysis Development"
+    title: "Armillary Development"
   }) {
     projectV2 {
       id
@@ -91,7 +91,7 @@ if (-not $projectId) {
     Write-Host "  2. Click the 'Projects' tab" -ForegroundColor Gray
     Write-Host "  3. Click 'New project'" -ForegroundColor Gray
     Write-Host "  4. Select 'Board' template" -ForegroundColor Gray
-    Write-Host "  5. Name it: 'FinanceAnalysis Development'" -ForegroundColor Gray
+    Write-Host "  5. Name it: 'Armillary Development'" -ForegroundColor Gray
 }
 
 # Step 3: Configure columns (status field)

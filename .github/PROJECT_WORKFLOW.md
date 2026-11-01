@@ -1,9 +1,9 @@
-# GitHub Projects Workflow Setup for FinanceAnalysis
+# GitHub Projects Workflow Setup for Armillary
 
 ## Overview
 
 This document describes how to configure and use GitHub Projects for managing
-the FinanceAnalysis development lifecycle.
+the Armillary development lifecycle.
 
 ---
 

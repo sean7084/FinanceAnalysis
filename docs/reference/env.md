@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-11-01T04:03:50Z_
+_Generated: 2026-11-01T13:50:35Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -19,7 +19,7 @@ _Generated: 2026-11-01T04:03:50Z_
 | `ARTIFACT_LOCAL_CACHE_ROOT` | `str` | `str(BASE_DIR)` | **no** | base.py:424 |
 | `ARTIFACT_S3_ACCESS_KEY_ID` | `str` | `''` | yes | base.py:427 |
 | `ARTIFACT_S3_ADDRESSING_STYLE` | `str` | `'path'` | yes | base.py:430 |
-| `ARTIFACT_S3_BUCKET` | `str` | `'finance-analysis-artifacts'` | yes | base.py:426 |
+| `ARTIFACT_S3_BUCKET` | `str` | `'armillary-artifacts'` | yes | base.py:426 |
 | `ARTIFACT_S3_ENDPOINT_URL` | `str` | `''` | yes | base.py:425 |
 | `ARTIFACT_S3_REGION` | `str` | `'us-east-1'` | yes | base.py:429 |
 | `ARTIFACT_S3_SECRET_ACCESS_KEY` | `str` | `''` | yes | base.py:428 |
@@ -37,7 +37,7 @@ _Generated: 2026-11-01T04:03:50Z_
 | `DASHBOARD_STOCKS_CACHE_SECONDS` | `int` | `86400` | yes | base.py:442 |
 | `DASHBOARD_SUMMARY_CACHE_SECONDS` | `int` | `60` | yes | base.py:445 |
 | `DATABASE_URL` | `db` | _required_ | yes | base.py:130 |
-| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@financeanalysis.com'` | yes | base.py:682 |
+| `DEFAULT_FROM_EMAIL` | `str` | `'noreply@armillary.local'` | yes | base.py:682 |
 | `DJANGO_ALLOWED_HOSTS` | `list` | `['localhost', '0.0.0.0', '127.0.0.1', '192.168.31.30']` | yes | local.py:9 |
 | `DJANGO_DEBUG` | `bool` | `False` | yes | base.py:37 |
 | `DJANGO_EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | local.py:17 |

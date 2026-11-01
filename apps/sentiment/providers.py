@@ -76,7 +76,7 @@ def _coerce_datetime(value, provider_name):
 
 def _synthetic_url(provider_name, payload_text):
     digest = hashlib.sha256(payload_text.encode('utf-8')).hexdigest()
-    return f'https://synthetic.financeanalysis.local/{provider_name}/{digest}'
+    return f'https://synthetic.armillary.local/{provider_name}/{digest}'
 
 
 def _normalize_eastmoney(record):

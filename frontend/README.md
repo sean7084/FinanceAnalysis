@@ -1,6 +1,6 @@
-# FinanceAnalysis Frontend
+# Armillary Frontend
 
-React 19 + TypeScript + Vite dashboard for the FinanceAnalysis platform.
+React 19 + TypeScript + Vite dashboard for the Armillary platform.
 
 Django now serves the built bundle itself through `django-vite` +
 `whitenoise` (see `../apps/core/views.py` and
