@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     'apps.prediction',
     'apps.backtest',
     'apps.etf_rotation',
+    'apps.catchup',
     'apps.developer',
     'drf_spectacular',
 ]
@@ -470,6 +471,29 @@ PREDICTION_RECONCILE_MAX_ASSETS_PER_RUN = env.int('PREDICTION_RECONCILE_MAX_ASSE
 # roughly cover a pass: shorter and a polling SPA re-queues the same job, longer
 # and a pass that dies silently leaves the asset reading "generating" for minutes.
 PREDICTION_GENERATION_LOCK_SECONDS = env.int('PREDICTION_GENERATION_LOCK_SECONDS', default=120)
+
+# Downtime catch-up (apps/catchup). The box is shared with other workloads, so beat
+# is stopped for days at a time and never replays what it missed. LOOKBACK is
+# counted in trading days, not calendar days, and is sized like
+# TRADING_CALENDAR_SYNC_LOOKBACK_DAYS so that even a long outage fits one window.
+# MAX_CALLS is the per-run TuShare budget, deliberately well under the token tier's
+# per-minute limit: runbook-provider-blackout.md §3 warns that a throttled
+# half-finished backfill "leaves partial coverage that looks like a blackout".
+CATCHUP_LOOKBACK_TRADING_DAYS = env.int('CATCHUP_LOOKBACK_TRADING_DAYS', default=60)
+CATCHUP_MAX_CALLS_PER_RUN = env.int('CATCHUP_MAX_CALLS_PER_RUN', default=200)
+CATCHUP_MAX_SECONDS_PER_RUN = env.int('CATCHUP_MAX_SECONDS_PER_RUN', default=900)
+# A floor, not the TTL. service.lock_ttl_for takes max(this, max_seconds + 300),
+# because a lock that expires before its run finishes lets the hourly beat entry
+# start a second pass on top of the startup hook and both spend the same quota.
+CATCHUP_LOCK_SECONDS = env.int('CATCHUP_LOCK_SECONDS', default=1500)
+# An open date counts as a gap when its row count falls below this fraction of the
+# median of the open dates on either side of it. Aggregating by date rather than per
+# asset is what separates a fetch failure (all assets missing on some dates) from the
+# structural blackouts in runbook-provider-blackout.md §4 (some assets missing on all
+# dates). The reference stays local because a universe-size step would otherwise read
+# every later date as collapsed, and no repair can restore assets that no longer exist.
+CATCHUP_CROSS_SECTION_MIN_RATIO = env.float('CATCHUP_CROSS_SECTION_MIN_RATIO', default=0.5)
+
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
@@ -526,6 +550,15 @@ CELERY_BEAT_SCHEDULE = {
         # date missed entirely heals over several hours rather than in one job
         # that would have to be given an unreasonable time budget.
         'schedule': crontab(minute='45'),
+    },
+    # Downtime catch-up. :25 is the only hourly minute that collides with nothing
+    # but the */5 alert poll, which is a stateless read: :12 is the news history
+    # backfill and :45 is the prediction reconcile above. Like that reconcile entry
+    # it stays off the :00/:15 nightly chain. Routes to the default ops queue, so a
+    # repair never queues behind an hour-long etf-rotation backtest.
+    'catch-up-missed-series-hourly': {
+        'task': 'apps.catchup.tasks.catch_up_missed_runs',
+        'schedule': crontab(minute='25'),
     },
     # ETF rotation sits after the 16:10 A-share sync (which refreshes the trading
     # calendar the bar sync walks) and after the 19:15 cache warm. The two :45 slots

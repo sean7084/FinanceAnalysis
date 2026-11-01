@@ -132,6 +132,22 @@ fi
 build_services
 check_stack start
 
+# Catch up on the occurrences beat never replayed. Deliberately NOT a SERVICES
+# entry: start_service appends to pids, and this script tears the whole stack down
+# when any pid exits (wait -n below), so a catch-up that finished normally would
+# take the backend with it. setsid + disown keeps it out of the cleanup trap too --
+# an accidental kill mid-repair is harmless, because the detectors are data-level
+# and the next run re-detects whatever is left.
+CATCHUP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CATCHUP_PYTHON="${PYTHON_BIN:-$CATCHUP_ROOT/.venv/bin/python}"
+CATCHUP_LOG_DIR="${STACK_LOG_DIR:-$CATCHUP_ROOT/tmp/cold_stack}"
+mkdir -p "$CATCHUP_LOG_DIR"
+setsid nohup env -C "$CATCHUP_ROOT" "$CATCHUP_PYTHON" manage.py catch_up \
+  --trigger startup --max-seconds 1800 \
+  >>"$CATCHUP_LOG_DIR/catchup.log" 2>&1 < /dev/null &
+disown
+echo "[stack] started catchup -> $CATCHUP_LOG_DIR/catchup.log"
+
 pids=()
 names=()
 
