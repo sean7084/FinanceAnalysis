@@ -1019,9 +1019,9 @@ The bar the model work is aiming at, against the 3.2 baseline:
   real `date` (`AS_OF = date(2026, 10, 30)`) and none of them goes through the
   command. Fix by parsing in `handle()` and raising `CommandError` on a bad value.
 - A readability pass over the existing session-date call sites, deliberately not
-  taken now. The 39 task-layer sites in `apps/*/tasks*.py` still spell it as
-  `timezone.now().date()`,
-  which by the definition in `apps/core/timez.py` is *exactly* `session_today()` —
+  taken now. The 39 sites in `apps/*/tasks*.py` still spell the session date as
+  `timezone.now().date()`, which by the definition in `apps/core/timez.py` is
+  *exactly* `session_today()` —
   the module says so, and it is why the unification could flip `TIME_ZONE` without
   touching any of them. Rewriting to the named helper is behaviour-identical and
   pure naming, so it was left undone to keep the diff reviewable and the regression
