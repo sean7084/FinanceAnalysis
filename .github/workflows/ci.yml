@@ -183,7 +183,12 @@ jobs:
       # 795 -> 836 -> 844: the issue close-out batch, then the labels-only guard tests and
       # the --feature-set axis (trainer subset resolution, ledger context naming, LSTM column
       # pairing, and the pinned-artifact read).
-      MIN_TEST_COUNT: "844"
+      # 844 -> 939: the timezone unification added 26 (9 named-date helpers, 8 proof that no
+      # beat entry moved a firing instant across the UTC -> Asia/Shanghai flip, 9 for the
+      # sentiment -8h migration's forward/reverse/idempotency contract). The floor was already
+      # stale -- the suite stood at 913 before that refactor, so earlier branches grew it without
+      # bumping this number. Raising it to the measured 939 makes the floor bite again.
+      MIN_TEST_COUNT: "939"
 
     steps:
       - uses: actions/checkout@v4

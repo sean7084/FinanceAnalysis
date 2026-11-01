@@ -138,9 +138,9 @@ Providers publish on their own schedule, and this system aligns to it:
 | Macro (PMI, CPI, PPI, yields, FX) | Monthly | Stored on the **first day of the month**, populated from the first available trade date in that month |
 | Fundamentals (`fina_indicator`) | Quarterly | Aligned by **announcement date**, not report period — never uses a future filing |
 | `daily_basic` (PE/PB/shares/market cap) | Daily | Same trade date |
-| News | Continuous | Ingested hourly for backfill, daily at 16:35 UTC for the latest window |
+| News | Continuous | Ingested hourly for backfill, daily at 00:35 CST (16:35 UTC) for the latest window |
 
-Macro sync runs on days 2–8 of each month at 00:10 UTC precisely because
+Macro sync runs on days 2–8 of each month at 08:10 CST (00:10 UTC) precisely because
 month-start publication is not instantaneous. A macro snapshot for the current
 month being absent on the 1st is **expected**.
 

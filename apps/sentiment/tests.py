@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -41,17 +41,25 @@ class Phase13SentimentTests(TestCase):
         )
 
     def test_daily_sentiment_creates_article_and_asset_scores(self):
+        """Seeded at an explicit local midday, never at ``timezone.now()``.
+
+        ``calculate_daily_sentiment`` opens its day window with ``make_aware``,
+        so the bounds are the active ``TIME_ZONE``'s day. A fixture anchored to
+        the real clock lands outside that window whenever the suite runs after
+        16:00Z, which is a time-of-day flake and not a bug.
+        """
+        target_day = timezone.now().date()
         article = NewsArticle.objects.create(
             source=NewsArticle.Source.SINA,
             title='公司业绩增长 利好',
             summary='盈利改善 突破',
             content='增长 利好 看涨',
             url='https://example.com/news-1',
-            published_at=timezone.now(),
+            published_at=timezone.make_aware(datetime.combine(target_day, time(12))),
         )
         article.related_assets.add(self.asset)
 
-        calculate_daily_sentiment(target_date=str(timezone.now().date()))
+        calculate_daily_sentiment(target_date=str(target_day))
 
         self.assertTrue(
             SentimentScore.objects.filter(article=article, score_type=SentimentScore.ScoreType.ARTICLE).exists()
@@ -225,6 +233,14 @@ class Phase13SentimentTests(TestCase):
 
     @patch('apps.sentiment.tasks.fetch_normalized_news_items')
     def test_hourly_historical_backfill_fetches_next_window(self, mock_fetch):
+        """The window walks back one chunk from the newest stored article.
+
+        The boundary row is seeded at Beijing midnight, so the window is the 31
+        days that end one second before it. The strings handed to the provider
+        are the UTC reading of those bounds, which TuShare wants in Beijing
+        terms -- an eight hour label skew this test pins as-is rather than
+        silently changing. See BACKLOG.
+        """
         NewsArticle.objects.create(
             source=NewsArticle.Source.SINA,
             title='Current boundary',
@@ -247,13 +263,13 @@ class Phase13SentimentTests(TestCase):
 
         message = run_hourly_historical_news_backfill()
 
-        self.assertIn('Historical backfill window 2026-03-07 00:00:00 -> 2026-04-06 23:59:59', message)
+        self.assertIn('Historical backfill window 2026-03-06 16:00:00 -> 2026-04-06 15:59:59', message)
         self.assertTrue(NewsArticle.objects.filter(url='https://example.com/historical-news').exists())
         mock_fetch.assert_called_once_with(
             providers=['tushare_major'],
             limit_per_provider=0,
-            start_at='2026-03-07 00:00:00',
-            end_at='2026-04-06 23:59:59',
+            start_at='2026-03-06 16:00:00',
+            end_at='2026-04-06 15:59:59',
         )
 
     @patch('apps.sentiment.tasks.fetch_normalized_news_items')

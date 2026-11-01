@@ -35,11 +35,11 @@ TUSHARE_TOKEN = env("TUSHARE_TOKEN", default=None)
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#debug
 DEBUG = env.bool("DJANGO_DEBUG", False)
-# Local time zone. Choices are
-# http://en.wikipedia.org/wiki/List_of_tz_zones_by_name
-# though not all of them may be available with every OS.
-# In Windows, this must be set to your system time zone.
-TIME_ZONE = "UTC"
+# Local time zone. This is the A-share trading timezone, not the deploy host's:
+# TuShare trade dates, the trading calendar and the nightly pipeline all mean
+# Beijing wall time. TIME_ZONE and CELERY_TIMEZONE must stay equal -- see the
+# note in the CELERY section.
+TIME_ZONE = "Asia/Shanghai"
 # https://docs.djangoproject.com/en/dev/ref/settings/#language-code
 LANGUAGE_CODE = "en-us"
 # https://docs.djangoproject.com/en/dev/ref/settings/#site-id
@@ -172,22 +172,25 @@ STATICFILES_FINDERS = [
 ]
 
 
-# Internationalization
-# https://docs.djangoproject.com/en/6.0/topics/i18n/
-
-LANGUAGE_CODE = 'en-us'
-
-TIME_ZONE = 'UTC'
-
-USE_I18N = True
-
-USE_TZ = True
+# Internationalization is configured above, next to TIME_ZONE: LANGUAGE_CODE,
+# USE_I18N, USE_TZ and TIME_ZONE each get exactly one declaration here. A second
+# cookiecutter block used to re-declare them after the app definitions, and the
+# later one silently won -- which for a timezone setting is not a detail.
 
 
 # CELERY
 # ------------------------------------------------------------------------------
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+
+# The wall clock beat reads the crontab hour numbers against. This must equal
+# TIME_ZONE: celery does not fall back to Django's TIME_ZONE (with conf.timezone
+# unset and enable_utc on, the app timezone is UTC), and django-celery-beat
+# stamps the timezone onto each CrontabSchedule row it creates from this value.
+# Flipping TIME_ZONE without flipping this -- or flipping this without rewriting
+# the hour numbers in CELERY_BEAT_SCHEDULE below -- moves the whole nightly
+# pipeline by eight hours.
+CELERY_TIMEZONE = 'Asia/Shanghai'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
@@ -307,6 +310,8 @@ CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS = env.int('CAPITAL_FLOW_DAILY_SYNC_LOOKBAC
 NEWS_BACKFILL_ENABLED = env.bool('NEWS_BACKFILL_ENABLED', default=True)
 NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
 NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
+# A naive wall-clock string: from 2026-11 it is interpreted as Asia/Shanghai by
+# ``_parse_backfill_floor``'s ``make_aware``, i.e. Beijing midnight.
 NEWS_BACKFILL_FLOOR = env('NEWS_BACKFILL_FLOOR', default='2021-04-15 00:00:00')
 NEWS_BACKFILL_LIMIT_PER_PROVIDER = env.int('NEWS_BACKFILL_LIMIT_PER_PROVIDER', default=0)
 
@@ -494,14 +499,19 @@ CATCHUP_LOCK_SECONDS = env.int('CATCHUP_LOCK_SECONDS', default=1500)
 # every later date as collapsed, and no repair can restore assets that no longer exist.
 CATCHUP_CROSS_SECTION_MIN_RATIO = env.float('CATCHUP_CROSS_SECTION_MIN_RATIO', default=0.5)
 
+# Every hour/minute below is Asia/Shanghai wall clock, read against
+# CELERY_TIMEZONE. They fire at the same instants as the pre-2026-11 UTC numbers
+# they replaced (16:10Z became 00:10 CST, and so on); what changed is which
+# clock you are looking at when you edit one. apps/core/tests_beat_schedule.py
+# asserts that the instants did not move.
 CELERY_BEAT_SCHEDULE = {
     'sync-a-shares-daily-from-tushare': {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
-        'schedule': crontab(hour='16', minute='10'),
+        'schedule': crontab(hour='0', minute='10'),
     },
     'sync-index-memberships-monthly': {
         'task': 'apps.markets.tasks.sync_monthly_index_memberships',
-        'schedule': crontab(day_of_month='1', hour='2', minute='15'),
+        'schedule': crontab(day_of_month='1', hour='10', minute='15'),
     },
     'check-alert-rules-every-5-min': {
         'task': 'apps.analytics.tasks.check_alert_rules',
@@ -509,11 +519,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     'sync-macro-data-monthly': {
         'task': 'apps.macro.tasks.sync_macro_data_monthly',
-        'schedule': crontab(day_of_month='2-8', hour='0', minute='10'),
+        'schedule': crontab(day_of_month='2-8', hour='8', minute='10'),
     },
     'fetch-latest-market-news-daily': {
         'task': 'apps.sentiment.tasks.fetch_latest_market_news',
-        'schedule': crontab(hour='16', minute='35'),
+        'schedule': crontab(hour='0', minute='35'),
     },
     'run-hourly-historical-news-backfill': {
         'task': 'apps.sentiment.tasks.run_hourly_historical_news_backfill',
@@ -521,15 +531,15 @@ CELERY_BEAT_SCHEDULE = {
     },
     'run-daily-sentiment-pipeline': {
         'task': 'apps.sentiment.tasks.run_daily_sentiment_pipeline',
-        'schedule': crontab(hour='17', minute='0'),
+        'schedule': crontab(hour='1', minute='0'),
     },
     'generate-predictions-daily': {
         'task': 'apps.prediction.tasks.generate_predictions_for_date',
-        'schedule': crontab(hour='18', minute='0'),
+        'schedule': crontab(hour='2', minute='0'),
     },
     'generate-lightgbm-predictions-daily': {
         'task': 'apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date',
-        'schedule': crontab(hour='18', minute='30'),  # 30 min after heuristic predictions
+        'schedule': crontab(hour='2', minute='30'),  # 30 min after heuristic predictions
     },
     'prewarm-dashboard-stocks-cache': {
         'task': 'apps.analytics.tasks.prewarm_dashboard_stocks_cache',
@@ -541,7 +551,7 @@ CELERY_BEAT_SCHEDULE = {
         # stored-row read -- measured at ~4s cold, so a redundant pass costs
         # nothing, which is not true of the ~27-minute inference version this
         # entry was originally sized for.
-        'schedule': crontab(hour='19', minute='15'),
+        'schedule': crontab(hour='3', minute='15'),
     },
     'reconcile-prediction-coverage-hourly': {
         'task': 'apps.prediction.tasks.reconcile_prediction_coverage',
@@ -560,67 +570,71 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.catchup.tasks.catch_up_missed_runs',
         'schedule': crontab(minute='25'),
     },
-    # ETF rotation sits after the 16:10 A-share sync (which refreshes the trading
-    # calendar the bar sync walks) and after the 19:15 cache warm. The two :45 slots
+    # ETF rotation sits after the 00:10 CST A-share sync (which refreshes the trading
+    # calendar the bar sync walks) and after the 03:15 CST cache warm. The two :45 slots
     # share the clock with reconcile-prediction-coverage-hourly above but route to the
     # etf-rotation queue, so they contend for the database rather than a worker slot.
     'sync-etf-daily-bars-daily': {
         'task': 'apps.etf_rotation.tasks.sync_etf_daily_recent',
-        'schedule': crontab(hour='16', minute='45'),
+        'schedule': crontab(hour='0', minute='45'),
     },
     # The relative-strength features the ranker scores on are read from the alpha benchmark's
-    # closes, so the benchmark has to be current *before* the 17:20 feature run -- not on the
-    # stock pipeline's 16:10 clock, which was the only thing refreshing it and which the ETF
+    # closes, so the benchmark has to be current *before* the 01:20 CST feature run -- not on the
+    # stock pipeline's 00:10 CST clock, which was the only thing refreshing it and which the ETF
     # chain had no dependency on. On 2026-10-22 the total-return index was a session behind,
     # every eligible fund lost ``rs_vs_benchmark_60d``, and the scorer excluded the whole pool.
     'sync-etf-benchmark-index-daily': {
         'task': 'apps.etf_rotation.tasks.sync_etf_benchmark_index',
-        'schedule': crontab(hour='17', minute='5'),
+        'schedule': crontab(hour='1', minute='5'),
     },
     'compute-etf-features-daily': {
         'task': 'apps.etf_rotation.tasks.compute_etf_features_daily',
-        'schedule': crontab(hour='17', minute='20'),
+        'schedule': crontab(hour='1', minute='20'),
     },
-    # After the benchmark (17:05) and feature (17:20) jobs, with 2 hours before the signal:
+    # After the benchmark (01:05 CST) and feature (01:20 CST) jobs, with 2 hours before the signal:
     # a lag is written as a FEED_STALE row and dispatched while it is still actionable,
-    # instead of surfacing as a silent 19:45 refusal.
+    # instead of surfacing as a silent 03:45 CST refusal.
     'check-etf-rotation-feed-health-daily': {
         'task': 'apps.etf_rotation.tasks.check_etf_rotation_feed_health',
-        'schedule': crontab(hour='17', minute='45'),
+        'schedule': crontab(hour='1', minute='45'),
     },
     'generate-etf-rotation-signal-daily': {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_signal_daily',
-        'schedule': crontab(hour='19', minute='45'),
+        'schedule': crontab(hour='3', minute='45'),
     },
     # The ML rematch's parallel book. No-op unless ``ETF_ML_SHADOW_MODEL`` names a model type,
     # so an unconfigured deploy runs exactly the production signal. Five minutes after the
-    # production signal and before the 20:15 ledger, which closes a displaced shadow leg on
+    # production signal and before the 04:15 CST ledger, which closes a displaced shadow leg on
     # the same clock as production while keeping the two books separate by ``signal_type``.
     'generate-etf-rotation-shadow-signal-daily': {
         'task': 'apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal',
-        'schedule': crontab(hour='19', minute='50'),
+        'schedule': crontab(hour='3', minute='50'),
     },
-    # After the 19:45 signal: a leg the newest signal no longer selects is closed on the
+    # After the 03:45 CST signal: a leg the newest signal no longer selects is closed on the
     # session its replacement was decided, and every surviving leg gets a fresh mark. A
     # day the signal job did not run has no newer signal, so the ledger only marks.
     'mark-etf-rotation-positions-daily': {
         'task': 'apps.etf_rotation.tasks.mark_etf_rotation_positions_daily',
-        'schedule': crontab(hour='20', minute='15'),
+        'schedule': crontab(hour='4', minute='15'),
     },
     # Monthly forward-track report (plan Phase 11). Runs after the ledger has closed the
     # month's last displaced leg. ``--alert`` is passed only here, so a hand-run report is a
     # read; a breach writes one LIVE_DRIFT event through the existing asset-less dispatch path.
     'report-etf-rotation-live-track-monthly': {
+    # 21:00Z on the 1st is 05:00 CST on the 2nd, so the day-of-month moved with the
+    # hour. Still 45 minutes after the 04:15 CST ledger, as it was before.
         'task': 'apps.etf_rotation.tasks.report_etf_rotation_live_track',
-        'schedule': crontab(hour='21', minute='0', day_of_month='1'),
+        'schedule': crontab(hour='5', minute='0', day_of_month='2'),
     },
     # Fund 份额 is a period stamp, not a live quote, and the rotation engine only uses it to
     # pick which wrapper represents an index cluster -- a ranking that moves over months, not
-    # days. Weekly, after the 16:45 bar tick (so the AUM estimate has a close to multiply) and
-    # before the 19:45 signal, keeps the tie-break honest for one TuShare call.
+    # days. Weekly, after the 00:45 CST bar tick (so the AUM estimate has a close to multiply) and
+    # before the 03:45 CST signal, keeps the tie-break honest for one TuShare call.
     'sync-etf-fund-shares-weekly': {
+    # Saturday 18:10Z is Sunday 02:10 CST, so day_of_week moved 6 -> 0. Celery rejects
+    # '7', and 0 is Sunday in its crontab numbering.
         'task': 'apps.etf_rotation.tasks.sync_etf_fund_shares',
-        'schedule': crontab(hour='18', minute='10', day_of_week='6'),
+        'schedule': crontab(hour='2', minute='10', day_of_week='0'),
     },
 }
 

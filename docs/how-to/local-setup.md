@@ -411,6 +411,32 @@ Run the suite with it explicitly:
 .venv/bin/python manage.py test --keepdb --settings=config.settings.test
 ```
 
+### Timezone
+
+`config/settings/base.py` declares `TIME_ZONE = "Asia/Shanghai"` exactly once, and
+`CELERY_TIMEZONE = "Asia/Shanghai"` next to the Celery block. Both are required and
+they must stay equal: celery does not fall back to Django's `TIME_ZONE`, so beat
+reads its crontab hour numbers against `CELERY_TIMEZONE` and an unpaired flip moves
+the nightly pipeline eight hours. `apps/core/tests_beat_schedule.py` asserts the
+pair and the hour numbers together.
+
+The host machine's clock no longer affects any result. That was the bug the
+unification closed: a bare `date.today()` read the *host* clock while
+`timezone.now().date()` read UTC, so the two disagreed on any machine not set to
+UTC — a Beijing-hosted box was eight hours off, and a UTC-hosted one agreed only by
+accident. Every clock read now goes through `django.utils.timezone`
+(`now()` / `localdate()` / `localtime()`) or `apps.core.timez.session_today()`, which
+resolve against `TIME_ZONE` regardless of where Python is running. The `DTZ003` /
+`DTZ005` / `DTZ011` rules in `ruff.toml` fail the three bare calls that read the host
+clock (tests are exempt), and CI adds a grep for `time.strftime`, which reads the
+same clock and is outside those rules.
+
+Zone data itself comes from `tzdata`, pinned in `requirements/base.txt`. Debian and
+the CI runner ship an IANA database as a system package, but a Windows-native
+checkout has no source for one, and there `ZoneInfo('Asia/Shanghai')` raises.
+Installing the requirements is therefore the whole setup — no system package and no
+fallback to WSL is needed for the zone to resolve.
+
 ---
 
 ## 10. Start the stack

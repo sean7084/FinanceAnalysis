@@ -33,7 +33,7 @@ import ast
 import json
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone as dt_timezone
 from pathlib import Path
 
 from django.apps import apps
@@ -43,6 +43,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, models
 from django.db.models import Count, Max, Min
 from django.db.utils import InterfaceError, OperationalError, ProgrammingError
+from django.utils import timezone
 
 SHEET_NAMES = ('metrics', 'models', 'commands', 'celery', 'env')
 
@@ -105,18 +106,21 @@ DYNAMIC_DATE_WINDOW_DAYS = 400
 def _reference_today():
     """Return the date that dynamic defaults are measured against.
 
-    UTC, matching the project's ``TIME_ZONE``/``USE_TZ`` configuration. Commands are
-    inconsistent about this -- most use ``date.today()`` (local) while some use
-    ``timezone.now().date()`` (UTC) -- so the two references disagree for part of
-    every day in any non-UTC timezone. Rendering an exact day offset would therefore
-    make this sheet differ between a morning and an evening run and break ``--check``.
-    The offset is deliberately not published; see ``_describe_default``.
+    The Beijing calendar date -- ``timezone.localdate()``, read from Django's active
+    timezone (``TIME_ZONE``, the A-share trading zone) and never from the host clock.
+    ``date.today()`` and bare ``datetime.now()`` are the host-clock forms; the ruff DTZ
+    guard in CI keeps them out of the tree.
+
+    Every command now derives its dynamic date defaults from that same
+    ``timezone.localdate()``, so there is a single reference day and a morning run and
+    an evening run agree. The exact offset from it is still deliberately not published;
+    see ``_describe_default``.
     """
-    return datetime.now(timezone.utc).date()
+    return timezone.localdate()
 
 
 def _utc_stamp():
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return datetime.now(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def _header(title, source_of_truth):
@@ -706,12 +710,13 @@ def build_commands():
         '`--traceback`, `--no-color`, `--force-color`, `--skip-checks`); they '
         'are omitted from the per-command tables below.\n\n'
         '`<dynamic-date>` marks a default computed from the current day rather '
-        'than a fixed constant. The exact offset is not published because '
-        'commands differ in whether they derive it from the local date '
-        '(`date.today()`) or from UTC (`timezone.now().date()`), and those '
-        'disagree for part of every day outside UTC. Read the `Help` column for '
-        'the intended semantics, or the command source for the precise '
-        'expression.\n',
+        'than a fixed constant. Every dynamic default derives from '
+        '`timezone.localdate()` -- the Beijing calendar date, taken from Django\'s '
+        'active timezone and never from the host clock -- so all commands share one '
+        'reference today. The exact offset from that reference is not published, '
+        'because it is a property of the command rather than of this sheet. Read the '
+        '`Help` column for the intended semantics, or the command source for the '
+        'precise expression.\n',
     )
 
     registry = get_commands()

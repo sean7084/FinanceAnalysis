@@ -387,6 +387,19 @@ Worth matching when adding tests:
   money and probability fields, never floats.
 - **Test databases are seeded per test**, not per class, so ordering is not
   significant.
+- **The suite runs under `Asia/Shanghai`.** `config/settings/test.py` inherits
+  `TIME_ZONE` from `base.py` and nothing overrides it on the way, so
+  `timezone.now()`, `timezone.localdate()` and `session_today()` resolve in Beijing
+  time — the same frame production uses, which is the point. The consequence for
+  fixtures: when the code under test opens a **day-granularity** window, seed an
+  explicit midday instant rather than the live clock —
+  `timezone.make_aware(datetime.combine(d, time(12)))`. A fixture built from
+  `timezone.now()` lands in a different Beijing day depending on what time of day
+  the suite runs, so the same test passes at 10:00 and fails at 03:00. That is not a
+  theoretical window: 00:00–08:00 is exactly when `session_today()` reports the
+  *previous* day, so a now()-derived fixture straddles the very boundary most of
+  these tests exist to pin. Naive datetimes are fine in tests, which is why
+  `ruff.toml` exempts them from the DTZ rules — the helpers localise them.
 
 ---
 

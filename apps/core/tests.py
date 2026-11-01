@@ -1840,7 +1840,7 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
         self._create_ohlcv_series(asset, trade_dates)
 
         rsi_rows = self._build_indicator_rows(asset, trade_dates[0], trade_dates[-1], ('RSI',))
-        stored_row = next(row for row in reversed(rsi_rows) if row.timestamp.date() == trade_dates[-1])
+        stored_row = next(row for row in reversed(rsi_rows) if timezone.localtime(row.timestamp).date() == trade_dates[-1])
         TechnicalIndicator.objects.create(
             asset=asset,
             timestamp=stored_row.timestamp,
@@ -1884,7 +1884,7 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
         self._create_ohlcv_series(asset, trade_dates)
 
         rsi_rows = self._build_indicator_rows(asset, trade_dates[0], trade_dates[-1], ('RSI',))
-        stored_row = next(row for row in reversed(rsi_rows) if row.timestamp.date() == trade_dates[-1])
+        stored_row = next(row for row in reversed(rsi_rows) if timezone.localtime(row.timestamp).date() == trade_dates[-1])
         TechnicalIndicator.objects.create(
             asset=asset,
             timestamp=stored_row.timestamp,

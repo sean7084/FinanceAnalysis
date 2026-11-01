@@ -346,7 +346,8 @@ median Sharpe alone.
 ### The ML rematch's CV arm needs per-fold retraining, not another artifact
 
 Phase 10 added the shadow book (`signal_type=SHADOW`, `ETF_ML_SHADOW_MODEL`, a
-19:50 beat task) and the API/ledger isolation that keeps it out of production.
+03:50 CST beat task — `19:50 UTC` before the 2026-11 timezone unification, same
+instant) and the API/ledger isolation that keeps it out of production.
 It is inert until an ML `ModelVersion` is active, which the gate forbids until a
 candidate wins.
 
@@ -991,3 +992,67 @@ The bar the model work is aiming at, against the 3.2 baseline:
 - An unexplained arithmetic note survived from the old scratch section:
   `$23.7 / 0.2257 ≈ 105`. Kept here only because deleting it loses the hint that
   something was being sized.
+- Catch-up treats an in-progress Beijing trading day as a missing day.
+  `apps/catchup/service.py:106` sets `as_of` from `session_today()`, and every
+  detector then compares that against `trade_date` without ever asking whether the
+  market has closed: `detectors.py:183-184` (a zero cross-sectional count *is* a
+  gap), `detectors.py:224-231` (`benchmark_index` rows absent up to `as_of`),
+  `detectors.py:249` (`missing_etf_daily_dates` up to `as_of`), and the repairs that
+  act on them at `repairs.py:89-145`. So during every trading session the hourly
+  `:25` tick really does call TuShare to repair a date that cannot have data yet —
+  burning budget and writing `FAILED` / `PROVIDER_GAP` rows for a hole that the
+  00:10 CST sync fills by itself. The fix is a "the session has closed" guard on the
+  **repair** path, not a different `as_of`. Note explicitly that using
+  `session_today()` rather than `timezone.localdate()` here was a **deliberate
+  choice made during the timezone unification, not a fix for this**: it is what
+  bounds the exposure to ~7h/day (08:00–15:00 Beijing, the hours in which `as_of`
+  names a day the market has not finished) instead of widening it to ~15h/day
+  (00:00–15:00). Switching it to the calendar date would make the bug worse while
+  looking more "correct".
+- `manage.py catch_up --as-of` never parses its argument. The help text promises
+  "Override today as YYYY-MM-DD", but `apps/catchup/management/commands/catch_up.py:45`
+  passes `options['as_of']` through as a **string**; `service.py:106`
+  (`as_of = as_of or session_today()`) keeps it, because a non-empty string is
+  truthy, and `detectors.py:109` then evaluates `as_of - timedelta(...)`. Any
+  non-empty `--as-of` therefore raises `TypeError` before a single detector runs.
+  The path is uncovered rather than working: every test calls `run_catch_up` with a
+  real `date` (`AS_OF = date(2026, 10, 30)`) and none of them goes through the
+  command. Fix by parsing in `handle()` and raising `CommandError` on a bad value.
+- A readability pass over the existing session-date call sites, deliberately not
+  taken now. The 39 task-layer sites in `apps/*/tasks*.py` still spell it as
+  `timezone.now().date()`,
+  which by the definition in `apps/core/timez.py` is *exactly* `session_today()` —
+  the module says so, and it is why the unification could flip `TIME_ZONE` without
+  touching any of them. Rewriting to the named helper is behaviour-identical and
+  pure naming, so it was left undone to keep the diff reviewable and the regression
+  surface at zero. The view and management-command sites need the same decision one
+  at a time, because for those `timezone.localdate()` is sometimes the better name —
+  that is a per-call-site judgement, not a sweep.
+- Orphaned UTC `CrontabSchedule` rows. After the flip, django-celery-beat's
+  `DatabaseScheduler` created a new row per beat entry keyed on the new
+  `timezone='Asia/Shanghai'`; the pre-flip rows with `timezone='UTC'` are still in
+  the database and referenced by no `PeriodicTask`. Harmless — inert rows, and
+  deleting them only invites the next scheduler sync to recreate whatever it wants.
+  Worth a one-off query only if that table is ever audited for drift.
+- Redis boolean flags written with `timeout=None` never expire —
+  `apps/catchup/repairs.py:231` caches `catchup:macro_yields_entitlement_denied`
+  permanently on the first `yc_cb` permission error. Correct today (a token tier does
+  not gain entitlement mid-run, and every re-probe costs a 31s sleep per call), but
+  the flag then outlives the condition: upgrading the token requires deleting the key
+  by hand, and nothing in the code says so. Unrelated to timezones, and listed here
+  only because it is the same shape of problem — a convention that changed, with a
+  stored value still written under the old one.
+- The hourly news backfill hands its provider a window label eight hours behind the
+  zone that label names. `apps/sentiment/tasks.py:367-368` builds `start_at`/`end_at`
+  by calling `.strftime('%Y-%m-%d %H:%M:%S')` on the window bounds read back from the
+  database. Postgres returns those **UTC-aware**, so `strftime` renders the UTC reading
+  of an instant TuShare then parses as Beijing wall time — the window sent is eight
+  hours earlier than the one the task computed. This was expected to fix itself when
+  `TIME_ZONE` flipped; it did not, because the offset lives in the driver's return
+  value, not in the setting. Fix is `timezone.localtime(window_start).strftime(...)` at
+  both sites. Deliberately left alone in the unification: changing what a live provider
+  receives is a semantic change, not a mechanical one, and it wants its own rehearsal
+  against real TuShare responses. Until then
+  `apps/sentiment/tests.py::test_hourly_historical_backfill_fetches_next_window` pins
+  the current UTC-reading strings, so the first person to fix this sees a failing
+  assertion that explains the trade rather than a silent behaviour change.

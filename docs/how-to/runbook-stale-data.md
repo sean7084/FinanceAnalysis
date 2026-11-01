@@ -223,8 +223,9 @@ against stale inputs. See [`runbook-sync-failure.md`](runbook-sync-failure.md) Â
 
 Stored predictions fail in two different ways and they look the same from the
 dashboard. Beat **never replays a missed occurrence with its original target
-date**, so if the scheduler was down at 18:00 that date is simply absent. And a
-universe sweep that hits its time budget leaves the date present but holding a
+date**, so if the scheduler was down at 02:00 CST (`18:00 UTC`) that date is
+simply absent. And a universe sweep that hits its time budget leaves the date
+present but holding a
 handful of assets -- which a reader interprets as "almost nothing was tradeable
 today" rather than "the job was truncated".
 
