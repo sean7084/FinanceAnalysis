@@ -10,6 +10,7 @@ from django.utils import timezone
 from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_assets
+from apps.markets.calendar_utils import open_trading_dates
 from apps.markets.models import Asset
 from apps.macro.models import MarketContext
 from apps.prediction.historical_features import latest_momentum, latest_rs_score, latest_rsi
@@ -17,7 +18,6 @@ from apps.prediction.reconciliation import (
     ENSEMBLE,
     RECONCILE_SOURCES,
     gaps_for_date,
-    open_trading_dates,
 )
 from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult

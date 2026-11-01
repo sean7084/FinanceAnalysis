@@ -10,6 +10,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from apps.markets.calendar_utils import open_trading_dates
 from apps.markets.models import Asset, ExchangeTradingCalendar, Market
 
 from .models import ModelVersion, PredictionResult
@@ -19,7 +20,6 @@ from .reconciliation import (
     LIGHTGBM,
     coverage_gaps,
     gaps_for_date,
-    open_trading_dates,
     stored_asset_ids,
 )
 from .tasks import reconcile_prediction_coverage
