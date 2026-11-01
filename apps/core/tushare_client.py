@@ -10,6 +10,17 @@ import time
 
 from django.conf import settings
 
+# TuShare reports a per-minute quota breach with either of these, depending on the
+# endpoint. Matching only one of them is how a caller ends up surfacing a throttle
+# as a hard failure -- or, worse, retrying something that was never a throttle.
+THROTTLE_MARKERS = ('频率超限', '每分钟最多访问该接口')
+
+
+def is_throttle_error(exc) -> bool:
+    """Whether ``exc`` is TuShare telling us to slow down rather than stop."""
+    text = str(exc)
+    return any(marker in text for marker in THROTTLE_MARKERS)
+
 
 def pro(token: str | None = None):
     """A TuShare pro client, or a ``ValueError`` naming the missing setting."""
@@ -33,6 +44,6 @@ def call_with_retry(fn, label: str, *, max_retries: int | None = None, sleep_sec
             return result
         except Exception as exc:
             attempts += 1
-            if '频率超限' not in str(exc) or attempts >= limit:
+            if not is_throttle_error(exc) or attempts >= limit:
                 raise
             time.sleep(max(1.0, sleep_seconds))
