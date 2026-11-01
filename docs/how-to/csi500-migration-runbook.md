@@ -84,7 +84,7 @@ python manage.py showmigrations markets | tail -2    # 0013 must read [ ], unche
 
 # 5. Services, settings, and the suite.
 bash scripts/verify_local_stack.sh     # every service must report "ready"
-python manage.py test --keepdb         # cheap insurance before a destructive step
+python manage.py test --keepdb --settings=config.settings.test   # cheap insurance before a destructive step
 ```
 
 If step 1 reports local commits rather than a clean fast-forward, **stop and branch

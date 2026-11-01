@@ -21,7 +21,9 @@ List files or apps modified:
 Detailed instructions for verifying the changes:
 1. Apply migration (if any): `python manage.py migrate`
 2. Run backend checks: `python manage.py check`
-3. Run test suite: `python manage.py test --noinput`
+3. Run test suite: `python manage.py test --noinput --settings=config.settings.test`
+   (`manage.py` refuses a test run whose resolved cache backend is not in-process, because
+   a bare run writes into the shared development Redis the dashboard serves from)
 4. Run frontend tests: `cd frontend && npm test`
 5. Verify the change in browser at: `http://localhost:5173/...`
 

@@ -262,7 +262,7 @@ pin — but for `scikit-learn` it matters: `models/lightgbm/*/scaler.pkl` and
 version change rather than assuming the artifacts still load:
 
 ```bash
-python manage.py test --keepdb
+python manage.py test --keepdb --settings=config.settings.test
 ```
 
 **Never reuse a `.venv` copied from another OS.** The interpreter path is baked

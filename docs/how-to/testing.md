@@ -76,35 +76,45 @@ Pass `--settings=config.settings.test` (or export `DJANGO_SETTINGS_MODULE`):
 python manage.py test --settings=config.settings.test
 ```
 
-CI sets the same module in its environment. Running without it uses
-`config.settings.local`, whose cache is the shared development Redis — the tests
-still pass, but they pollute (and are polluted by) the live cache, which is the
-thing this module exists to prevent.
+CI sets the same module in its environment, and `manage.py` now enforces it: a `test` run whose
+resolved default cache backend is neither `LocMemCache` nor `DummyCache` is refused with exit 2,
+before `--settings` parsing, test-database creation or any Redis contact. The check is on the
+*resolved backend*, not the settings module name, so `--settings=config.settings.production` is
+refused too and a future settings module that forgets to isolate the cache cannot pass silently.
+`ALLOW_LIVE_CACHE_TESTS=1` overrides the refusal with a loud warning, for the rare deliberate
+case. The guard lives in `manage.py`, so `django-admin test` bypasses it; every documented path
+here and in CI uses `manage.py`.
+
+This is not cosmetic. Under `config.settings.local` the cache is the shared development Redis the
+running dashboard serves from, so a test run can hand production a cache entry built from fixture
+rows, and the `cache.clear()` calls in `apps/analytics/tests.py` and `apps/backtest/tests.py`
+empty that shared cache database. A cache-dependent test can also pass or fail depending on what
+the previous run left behind — see §6.
 
 ```bash
 # Everything
 python manage.py test --settings=config.settings.test
 
 # One app
-python manage.py test apps.backtest
+python manage.py test --settings=config.settings.test apps.backtest
 
 # One module
-python manage.py test apps.backtest.tests
+python manage.py test --settings=config.settings.test apps.backtest.tests
 
 # One class
-python manage.py test apps.backtest.tests.BacktestManagementCommandTests
+python manage.py test --settings=config.settings.test apps.backtest.tests.BacktestManagementCommandTests
 
 # One test
-python manage.py test apps.backtest.tests.BacktestManagementCommandTests.test_run_core_backtest_matrix_inline_scheduler_round_robins_continuations
+python manage.py test --settings=config.settings.test apps.backtest.tests.BacktestManagementCommandTests.test_run_core_backtest_matrix_inline_scheduler_round_robins_continuations
 
 # Several specific tests in one invocation
-python manage.py test apps.factors.tests apps.prediction.tests_lightgbm
+python manage.py test --settings=config.settings.test apps.factors.tests apps.prediction.tests_lightgbm
 ```
 
 ### Use `--keepdb`
 
 ```bash
-python manage.py test --keepdb apps.backtest
+python manage.py test --keepdb --settings=config.settings.test apps.backtest
 ```
 
 Without it, Django drops and recreates the test database on every run. Two
@@ -210,6 +220,18 @@ produced one by default.
 A full run currently ends **OK**, with no known failures. The `Ran N tests` count
 is read from the run rather than quoted here — it moves as modules are added and
 removed, and §1 lists what is in the suite right now.
+
+**One failure class that is not a product bug: running without `--settings=config.settings.test`.**
+`PredictionEndpointInferenceGuardTests` intermittently asserted `already_queued: False` and got
+`True`. The endpoint under test takes a guard lock in the cache —
+`cache.add('prediction_generation_lock:<scope>:<asset_id>:<date>', True, 120)` in
+`apps/prediction/reconciliation.py` — and under `config.settings.local` that cache is the shared
+development Redis. The test database is rebuilt per test, so `asset_id` is deterministic and the
+target date is today: a run less than 120 seconds after a previous one finds the leftover key and
+fails, while the identical command minutes later passes. The test and the endpoint are both
+correct; the invocation was wrong. `manage.py` now refuses that invocation outright (§3), so the
+symptom cannot reappear as a mystery. Read any intermittent cache-dependent failure the same way —
+check the settings module before digging into the code under test.
 
 That was not true until recently: the count was **109**, and before that the suite was
 silently discovering *zero* tests, so it reported success while checking nothing. The
@@ -335,7 +357,7 @@ To measure ad hoc:
 
 ```bash
 pip install coverage
-coverage run --source=apps manage.py test --keepdb
+coverage run --source=apps manage.py test --keepdb --settings=config.settings.test
 coverage report -m
 ```
 
@@ -372,14 +394,14 @@ Worth matching when adding tests:
 
 ```bash
 # Backend, fast iteration
-python manage.py test --keepdb -v 2 apps.backtest
+python manage.py test --keepdb --settings=config.settings.test -v 2 apps.backtest
 
 # Backend, single test
-python manage.py test --keepdb apps.core.tests.<Class>.<test_name>
+python manage.py test --keepdb --settings=config.settings.test apps.core.tests.<Class>.<test_name>
 
 # Frontend
 cd frontend && npm test
 
 # Both, from the repo root
-python manage.py test --keepdb; (cd frontend; npm test)
+python manage.py test --keepdb --settings=config.settings.test; (cd frontend; npm test)
 ```
