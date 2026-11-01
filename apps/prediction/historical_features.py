@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import models
+from django.utils import timezone
 
 from apps.analytics.technical_staleness import (
     latest_official_trade_date,
@@ -127,7 +128,7 @@ def _matching_indicator_rows(
         )
         if score < 0:
             continue
-        indicator_date = indicator.timestamp.date()
+        indicator_date = timezone.localtime(indicator.timestamp).date()
         existing = best_rows_by_date.get(indicator_date)
         if existing is None or score > existing[0]:
             best_rows_by_date[indicator_date] = (score, indicator)
@@ -168,7 +169,7 @@ def _latest_indicator_value(
         return None if default is None else _to_decimal(default, default)
 
     if not stored_indicator_is_fresh(
-        indicators[0].timestamp.date(),
+        timezone.localtime(indicators[0].timestamp).date(),
         current_trade_date,
         position_map,
         indicator_type=indicator_type,
@@ -221,7 +222,7 @@ def latest_rsi(asset_id, as_of, timeperiod=14, default=Decimal('50'), cache=None
         return _to_decimal(default, default)
 
     if not stored_indicator_is_fresh(
-        indicators[0].timestamp.date(),
+        timezone.localtime(indicators[0].timestamp).date(),
         current_trade_date,
         position_map,
         indicator_type='RSI',
@@ -248,7 +249,7 @@ def latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0'), cache=None)
         return _to_decimal(default, default)
 
     if not stored_indicator_is_fresh(
-        indicators[0].timestamp.date(),
+        timezone.localtime(indicators[0].timestamp).date(),
         current_trade_date,
         position_map,
         max_gap=0,
@@ -275,7 +276,7 @@ def latest_bbands(asset_id, as_of, timeperiod=20, nbdevup=2, nbdevdn=2, cache=No
         return None
 
     if not stored_indicator_is_fresh(
-        indicators[0].timestamp.date(),
+        timezone.localtime(indicators[0].timestamp).date(),
         current_trade_date,
         position_map,
         indicator_type='BBANDS',
@@ -312,7 +313,7 @@ def latest_sma(asset_id, as_of, timeperiod=60, default=None, cache=None):
         return None if default is None else _to_decimal(default, default)
 
     if not stored_indicator_is_fresh(
-        indicators[0].timestamp.date(),
+        timezone.localtime(indicators[0].timestamp).date(),
         current_trade_date,
         position_map,
         indicator_type='SMA',
@@ -339,7 +340,7 @@ def latest_rs_score(asset_id, as_of, default=Decimal('0.5'), cache=None):
     if indicator is None:
         return _to_decimal(default, default)
     if not stored_indicator_is_fresh(
-        indicator.timestamp.date(),
+        timezone.localtime(indicator.timestamp).date(),
         current_trade_date,
         position_map,
         indicator_type='RS_SCORE',

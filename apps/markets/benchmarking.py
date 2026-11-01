@@ -13,6 +13,7 @@ audit/report surfaces instead.
 
 from bisect import bisect_right
 from datetime import date
+from django.utils import timezone
 from decimal import Decimal
 
 from apps.core.date_floor import get_historical_data_floor
@@ -272,7 +273,7 @@ def effective_universe_tradeable_assets(trade_date, index_codes=None, context='E
 
 
 def current_active_union_assets():
-    return effective_universe_assets(date.today(), context='Current effective universe')
+    return effective_universe_assets(timezone.localdate(), context='Current effective universe')
 
 
 def _latest_fundamental_rows(asset_ids, trade_date):

@@ -6,6 +6,7 @@ import pandas as pd
 import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.macro.models import MacroSnapshot
@@ -123,7 +124,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
-        parser.add_argument('--end-date', default=date.today().isoformat())
+        parser.add_argument('--end-date', default=timezone.localdate().isoformat())
         parser.add_argument('--disable-fallback', action='store_true')
         parser.add_argument('--resume-yields', action='store_true')
 

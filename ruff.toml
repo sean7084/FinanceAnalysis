@@ -1,0 +1,23 @@
+line-length = 119
+target-version = "py312"
+
+# Only the timezone rules are enabled. The rest of the codebase has never been
+# linted, so turning anything else on would be a separate, much larger change.
+#
+# DTZ003 datetime.utcnow()
+# DTZ005 datetime.now() without an explicit tzinfo
+# DTZ011 date.today()
+#
+# All three read the host clock. Under TIME_ZONE='Asia/Shanghai' the host clock
+# and Django's notion of "today" are allowed to differ, so a bare call here is a
+# silent bug: go through django.utils.timezone (now()/localdate()/localtime())
+# or apps.core.timez.session_today() instead, and pick whichever of the two
+# dates -- the calendar day or the trading session -- the code actually means.
+[lint]
+select = ["DTZ003", "DTZ005", "DTZ011"]
+
+[lint.per-file-ignores]
+# Tests pin fixtures to explicit instants and are free to spell out a naive
+# datetime for readability; the helpers localise it.
+"apps/**/tests*.py" = ["DTZ"]
+"apps/**/tests_*.py" = ["DTZ"]

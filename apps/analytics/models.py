@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
 
 from apps.markets.models import Asset
 
@@ -41,7 +42,7 @@ class TechnicalIndicator(models.Model):
         unique_together = ('asset', 'timestamp', 'indicator_type', 'parameters')
 
     def __str__(self):
-        return f"{self.asset.symbol} - {self.indicator_type} ({self.timestamp.date()}): {self.value}"
+        return f"{self.asset.symbol} - {self.indicator_type} ({timezone.localtime(self.timestamp).date()}): {self.value}"
 
 
 class ScreenerTemplate(models.Model):
@@ -248,4 +249,4 @@ class SignalEvent(models.Model):
         unique_together = ('asset', 'timestamp', 'signal_type')
 
     def __str__(self):
-        return f"{self.asset.symbol} - {self.signal_type} ({self.timestamp.date()})"
+        return f"{self.asset.symbol} - {self.signal_type} ({timezone.localtime(self.timestamp).date()})"

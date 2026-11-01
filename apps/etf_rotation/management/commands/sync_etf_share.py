@@ -12,6 +12,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.utils import timezone
 
 from apps.etf_rotation.models import ETFShareDaily, ETFFeatureSnapshot, ETFUniverse
 
@@ -50,7 +51,7 @@ class Command(BaseCommand):
             raise CommandError('no eligible ETF to sync; build the feature snapshots first.')
         self.stdout.write(f'etf share: {len(pairs)} fund(s)')
 
-        end = options['end'] or time.strftime('%Y%m%d')
+        end = options['end'] or timezone.localdate().strftime('%Y%m%d')
         written = failed = 0
         for position, (etf_id, ts_code) in enumerate(pairs, start=1):
             frame = None

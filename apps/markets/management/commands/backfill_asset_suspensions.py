@@ -2,6 +2,7 @@ from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
+from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import Asset
@@ -13,7 +14,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
-        parser.add_argument('--end-date', default=date.today().isoformat())
+        parser.add_argument('--end-date', default=timezone.localdate().isoformat())
         parser.add_argument('--symbols', default='')
 
     def handle(self, *args, **options):

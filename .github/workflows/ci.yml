@@ -202,6 +202,17 @@ jobs:
           pip install -r requirements/local.txt
         # torch is unpinned and large; expect this step to dominate the job runtime.
 
+      - name: Python timezone lint
+        run: |
+          # The project's clock is not the reference frame the code runs in, so a
+          # call that reads it directly is a silent bug: it disagrees with
+          # timezone.now()/localdate() for part of every day. ruff's DTZ rules
+          # cover datetime.utcnow(), a tz-less datetime.now() and date.today().
+          # They do not cover time.strftime(), which reads the same host clock,
+          # so that one needs the grep.
+          ruff check apps config scripts
+          ! grep -rn "time\.strftime" apps config
+
       - name: Django system checks
         run: python manage.py check
 

@@ -6,6 +6,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
+from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.factors.fundamental_materialization import (
@@ -42,7 +43,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
-        parser.add_argument('--end-date', default=date.today().isoformat())
+        parser.add_argument('--end-date', default=timezone.localdate().isoformat())
         parser.add_argument('--symbols', default='')
         parser.add_argument('--limit-assets', type=int, default=0)
         parser.add_argument(

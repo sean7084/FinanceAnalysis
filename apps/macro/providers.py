@@ -3,6 +3,7 @@ from decimal import Decimal
 from time import sleep
 
 from django.conf import settings
+from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 
@@ -361,7 +362,7 @@ def fetch_macro_snapshot_from_tushare(snapshot_date=None):
     if client is None:
         return None
 
-    as_of = snapshot_date or date.today().replace(day=1)
+    as_of = snapshot_date or timezone.localdate().replace(day=1)
     payload = _empty_payload(as_of, 'tushare')
 
     try:
@@ -507,7 +508,7 @@ def _safe_call_akshare(function_name, **kwargs):
 
 
 def fetch_macro_snapshot_from_akshare(snapshot_date=None):
-    as_of = snapshot_date or date.today().replace(day=1)
+    as_of = snapshot_date or timezone.localdate().replace(day=1)
     payload = _empty_payload(as_of, 'akshare')
 
     cpi_df = _safe_call_akshare('macro_china_cpi_yearly')
@@ -600,7 +601,7 @@ def fetch_macro_snapshot_with_fallback(snapshot_date=None, primary='tushare', fa
         return primary_payload
 
     floor_dt = _project_floor_date()
-    resolved = snapshot_date or date.today().replace(day=1)
+    resolved = snapshot_date or timezone.localdate().replace(day=1)
     if resolved < floor_dt:
         resolved = floor_dt
 

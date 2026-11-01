@@ -19,7 +19,6 @@ detectors in ``detectors.py``, not by this module.
 """
 
 from datetime import datetime, time, timedelta
-from datetime import timezone as dt_timezone
 
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
@@ -44,8 +43,8 @@ def missed_window(task_name, as_of, grace_days=DEFAULT_GRACE_DAYS):
     last = timezone.localtime(task.last_run_at).date()
     if last >= as_of - timedelta(days=max(int(grace_days), 0)):
         return None
-    start = datetime.combine(last, time.min, tzinfo=dt_timezone.utc)
-    end = datetime.combine(as_of, time.max, tzinfo=dt_timezone.utc)
+    start = timezone.make_aware(datetime.combine(last, time.min))
+    end = timezone.make_aware(datetime.combine(as_of, time.max))
     return (start, end)
 
 

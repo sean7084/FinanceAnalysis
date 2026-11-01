@@ -12,6 +12,7 @@ from datetime import date, timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from apps.core import tushare_client
 
@@ -78,7 +79,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         interfaces = [item.strip() for item in options['interfaces'].split(',') if item.strip()]
-        end = date.today()
+        end = timezone.localdate()
         start = end - timedelta(days=max(1, int(options['days'])))
         results = probe(
             tushare_client.pro(), interfaces,

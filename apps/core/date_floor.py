@@ -1,6 +1,7 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time
 
 from django.conf import settings
+from django.utils import timezone
 
 
 DEFAULT_HISTORICAL_DATA_FLOOR = date(2010, 1, 1)
@@ -14,13 +15,15 @@ def get_historical_data_floor():
         return DEFAULT_HISTORICAL_DATA_FLOOR
 
 
-def utc_midnight(day):
-    """Return an aware UTC midnight for ``day`` (a ``datetime.date``).
+def session_midnight(day):
+    """Return an aware midnight in the active ``TIME_ZONE`` for ``day``.
 
-    Under ``TIME_ZONE='UTC'``/``USE_TZ=True`` the ORM ``timestamp__date`` lookup casts to
-    the UTC date, which is non-sargable and forces a sequential scan on huge tables such
-    as ``analytics_technicalindicator``. Filtering the raw ``timestamp`` against these
-    UTC-midnight bounds is equivalent and lets PostgreSQL use a
-    ``(asset_id, timestamp, indicator_type)`` index instead.
+    The ORM ``timestamp__date`` lookup casts to a date in the current timezone,
+    which is non-sargable and forces a sequential scan on huge tables such as
+    ``analytics_technicalindicator``. Filtering the raw ``timestamp`` against
+    midnight bounds built the same way is equivalent -- both sides resolve
+    through ``TIME_ZONE``, so the pairing keeps working whatever the setting is
+    set to -- and lets PostgreSQL use a ``(asset_id, timestamp,
+    indicator_type)`` index instead.
     """
-    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    return timezone.make_aware(datetime.combine(day, time.min))
