@@ -1,5 +1,130 @@
 # Changelog
 
+### version 0.1.49
+
+#### Added:
+
+- **`apps/catchup`: repair the holes an outage leaves behind.** Beat never replays a missed
+  occurrence, so on this shared box -- where the stack is stopped for days or weeks -- every
+  series silently accumulates a hole over the outage window while consumers fall back to their
+  documented neutrals (`RSI`→50, `RS_SCORE`→0.5, `relative_volume`→1.0). The new app scans 17
+  series in dependency order (`trading_calendar` … `predictions`), oldest-hole-first, one unit
+  per series per run, bounded by a call budget and a wall-clock budget, so it converges over
+  repeated hourly ticks rather than in one unbounded job. Detection uses three classes: row
+  presence where an open day must have rows, `PeriodicTask.last_run_at` watermarks where absence
+  is legitimate (suspensions, index membership, `macro_yields`), and per-date cross-sectional
+  counts against the median of the dates on *both* sides, which separates a fetch failure from
+  the structural blackouts in `runbook-provider-blackout.md` §4 and from a universe-size step,
+  neither of which may ever be retried.
+- **`manage.py catch_up`** with `--dry-run` (detectors only: a per-series gap table, zero
+  TuShare calls, no rows written), `--series`, `--max-calls`, `--max-seconds`, `--trigger
+  {startup,beat,manual}`, `--as-of` and `--json`. Real runs write `CatchUpRun` rows (read-only
+  in admin; `OK`/`PARTIAL`/`NO_GAP`/`BLOCKED_UPSTREAM`/`SKIPPED`/`FAILED` with a cause), deduped
+  to one `NO_GAP`/`SKIPPED` row per (series, outcome, UTC date). `units_remaining` is reporting,
+  not state: the database is the checkpoint and the next run re-detects. A series whose upstream
+  still reports a gap is recorded `BLOCKED_UPSTREAM` and skipped, per `runbook-stale-data.md`
+  §4.1; gating is disabled under `--dry-run` so a survey shows every hole.
+- **Hourly beat entry `catch-up-missed-series-hourly`** (`crontab(minute='25')`, deliberately
+  offset from the `:12` news backfill and `:45` prediction reconcile) running
+  `apps.catchup.tasks.catch_up_missed_runs` on the default `ops` queue with **soft 1200s / hard
+  1500s** -- an override of the global 60/300 pair, same convention as
+  `run_post_sync_universal_refresh` and `reconcile_prediction_coverage`.
+- **Two detached startup hooks.** `scripts/restart_cold_stack.sh` fires `manage.py catch_up`
+  inside the readiness-poll success branch via the existing `start_detached` helper (catch-up
+  needs Redis and the DB; `/assets/` returning 200 is the evidence both answer), logging to
+  `tmp/cold_stack/catchup.log`. `scripts/run_local_stack.sh` fires it after `check_stack start`
+  via `setsid nohup … & disown` and deliberately keeps it out of the `pids` array, whose
+  `wait -n` + EXIT trap would otherwise tear the whole stack down when the catch-up exits. Both
+  are detached so a kill mid-repair is harmless -- the run is resumable.
+- **Five settings** (`config/settings/base.py`): `CATCHUP_LOOKBACK_TRADING_DAYS` (60),
+  `CATCHUP_MAX_CALLS_PER_RUN` (200 -- far below the token tier's per-minute cap, because a
+  throttled half-finished backfill looks like a blackout), `CATCHUP_MAX_SECONDS_PER_RUN` (900),
+  `CATCHUP_LOCK_SECONDS` (1500, a *floor*: the service locks for `max(this, max_seconds + 300)`
+  so the beat entry cannot stack a second pass on the startup hook and share its quota), and
+  `CATCHUP_CROSS_SECTION_MIN_RATIO` (0.5).
+- **Repair behaviours chosen for quota, not convenience.** `ohlcv` heals via a **single**
+  `sync_daily_a_shares()` call whose `latest.date + 1` resume fills an arbitrarily long hole --
+  per-date replay would spend N times the quota for the same rows. `index_membership` passes
+  `skip_sync_dispatch=True` to avoid fanning out one `sync_asset_history` task per constituent.
+  `macro_yields` fails fast: `yc_cb` is entitlement-denied and the yield phase sleeps 31s per
+  call, so the first permission error is cached permanently and later runs report
+  `SKIPPED`/`entitlement` without calling the provider. `predictions` only `.delay()`s
+  `reconcile_prediction_coverage`, never `generate_predictions_for_date`, which would double-run
+  against the existing hourly reconcile. Throttling or `SoftTimeLimitExceeded` stops the whole
+  run, not one series. After a three-week outage the raw layer is essentially repaired in the
+  first startup run; the derived layer converges at one trading day per series per run (~15
+  hourly ticks), the same philosophy as `reconcile_prediction_coverage`.
+- **`manage.py` refuses `test` against a live cache.** `config/settings/test.py` has always existed
+  to put the cache in-process, but nothing enforced it: `manage.py` defaults
+  `DJANGO_SETTINGS_MODULE='config.settings'`, and `config/settings/__init__.py` resolves that to
+  `local.py`, whose default cache is the shared development Redis the running dashboard serves
+  from. A bare `manage.py test` therefore wrote real keys into production's cache -- and the
+  `cache.clear()` calls in `apps/analytics/tests.py` and `apps/backtest/tests.py` emptied that
+  shared cache database outright. It also manufactured a fake intermittent failure:
+  `PredictionEndpointInferenceGuardTests` asserted `already_queued: False` and sometimes got `True`,
+  because the endpoint takes `cache.add('prediction_generation_lock:<scope>:<asset_id>:<date>',
+  True, 120)` in `apps/prediction/reconciliation.py` and the rebuilt test database makes `asset_id`
+  deterministic, so any run within 120 s of an earlier one inherited the leftover key. The guard
+  reads the *resolved* backend rather than the settings module name, so it also refuses
+  `--settings=config.settings.production` and any future module that forgets to isolate the cache;
+  it resolves `--settings` from `argv` itself, because Django applies that flag only after this
+  check would have run; `ALLOW_LIVE_CACHE_TESTS=1` overrides it with a loud warning; help paths and
+  every non-test command are untouched. It lives in `manage.py`, so `django-admin test` bypasses it.
+  Every command example in the docs now carries the flag: ten in `docs/how-to/testing.md` (§3, the
+  §7 coverage line, the §9 quick reference), plus `docs/how-to/local-setup.md` and the
+  `csi500-migration-runbook.md` pre-flight step. §3 explains the guard and §6 records the
+  intermittency as an invocation artifact, so nobody re-diagnoses it as a product bug.
+
+#### Changed:
+
+- **Throttle matching unified.** `apps/core/tushare_client.py` now exposes
+  `THROTTLE_MARKERS = ('频率超限', '每分钟最多访问该接口')` and `is_throttle_error(exc)`. Previously
+  `call_with_retry` matched only the first string and
+  `apps/sentiment/management/commands/backfill_news.py` only the second; both now use the
+  helper. No existing sleep value was reduced (0.15 / 0.35 / 0.4 / 1.1 / 31s all unchanged).
+- **`open_trading_dates` moved** out of `apps/prediction/reconciliation.py` into a new
+  `apps/markets/calendar_utils.py` -- it queries markets' `ExchangeTradingCalendar` and
+  `apps/catchup` needs it without depending on `apps/prediction`. The three importers were
+  updated in place; there is no re-export shim.
+- **The C-class cross-section baseline is local, not window-wide.** The first version compared
+  each open date against `median(counts over the whole window)`. On the live database that read
+  every date after a universe-size step (1758 -> 499 -> 388 -> 280 -> 259 -> 227 stored assets)
+  as collapsed: 21 permanent false gaps that no repair can clear, because the assets that no
+  longer exist cannot be re-fetched. `fundamentals`, `capital_flow` and the whole derived layer
+  blocked upstream forever and the loop never converged. `cross_sectional_gap_dates` now
+  compares against the median of the 3 open dates on *each* side and requires both sides to be
+  higher, which tells a one-day fetch failure (low either way) from a regime shift (low only
+  against the past); a date with zero rows stays an unambiguous gap regardless.
+
+#### Verified:
+
+- Live gates that need real quota and real writes, run against the production database:
+  `catch_up --dry-run` named 42 absent SSE calendar days without spending a call; the repair
+  pass wrote 242 calendar rows for 2 calls and both series then reported `NO_GAP`; `ohlcv`
+  closed through **one** `sync_daily_a_shares()` dispatch (~25 s), which is the production
+  proof of the no-per-date-replay rule; a second concurrent run returned `no work` against the
+  real Redis lock; `fundamentals` repaired 21 collapsed dates in one budgeted pass; steady-state
+  `macro_yields` costs 3.8 s and zero provider calls off the cached entitlement refusal.
+  `check_prediction_coverage --lookback 10` and `validate_data_quality --effective-universe-only`
+  both ran clean. Final live dry-run: 16 of 17 series `NO_GAP`, with only `predictions`
+  converging one delegated date per tick.
+- Backend 844 -> **913 tests, all green** (69 of them in the four new `apps/catchup` test
+  modules: `tests_detectors`, `tests_service`, `tests_replay`, `tests_tasks`); frontend
+  unchanged at 79. A real `--dry-run` survey on 2026-10-31 named 42 absent SSE calendar days,
+  21 collapsed OHLCV/capital-flow/fundamentals dates and 4 missing prediction dates without
+  spending a single call; it is reproduced in `docs/how-to/runbook-sync-failure.md` §9.
+- The cache guard verified end to end on the live box. `manage.py test --keepdb
+  --settings=config.settings.test` runs the whole suite green (913, `OK`); the bare invocation and
+  `--settings=config.settings.production` both exit 2 with the refusal; the `--settings VALUE` and
+  `--settings=VALUE` forms and an exported `DJANGO_SETTINGS_MODULE` are all honoured, which needed
+  the flag resolved from `argv` because Django applies it only later; `ALLOW_LIVE_CACHE_TESTS=1`
+  warns and proceeds; `manage.py --help`, `manage.py help test`, `manage.py test --help`,
+  `manage.py catch_up --help`, `manage.py migrate --plan` and `manage.py shell` are untouched.
+  `PredictionEndpointInferenceGuardTests` then passed four consecutive back-to-back runs under test
+  settings, the condition that had reproduced the failure within 120 s against live Redis. A
+  sentinel written into the live cache database before the full suite was still present afterwards,
+  proving the analytics and backtest `cache.clear()` calls no longer reach shared state.
+
 ### version 0.1.48
 
 #### Added:

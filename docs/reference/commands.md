@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-10-31T15:31:15Z_
+_Generated: 2026-10-31T17:34:17Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. The exact offset is not published because commands differ in whether they derive it from the local date (`date.today()`) or from UTC (`timezone.now().date()`), and those disagree for part of every day outside UTC. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**55** project commands across **9** apps.
+**56** project commands across **10** apps.
 
 
 ## `apps.analytics`
@@ -145,6 +145,24 @@ Run systematic backtest validations over rolling windows for heuristic, LightGBM
 | `--min-up-probability` | value | `0.0` |  | Minimum up probability threshold. |
 | `--name-prefix` | value | `validation` |  | Prefix used for BacktestRun names. |
 | `--queue` | flag | `False` |  | Queue runs asynchronously instead of running inline. |
+
+
+## `apps.catchup`
+
+
+### `catch_up`
+
+Catch up on the data holes an outage left behind. Beat never replays a missed occurrence, so after the box has been off every series with a fixed trailing window is short by the length of the outage. --dry-run only runs the detectors and spends no TuShare quota.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--dry-run` | flag | `False` |  | Detect and report gaps without repairing anything. |
+| `--series` | value | `""` |  | Comma-separated subset of: trading_calendar,suspensions,ohlcv,benchmark_index,index_membership,etf_daily,capital_flow,fundamentals,news,macro_core,macro_yields,technical_indicators,model_data_rs_score,factor_scores,sentiment_pipeline,etf_features,predictions |
+| `--max-calls` | value | &mdash; |  | TuShare call budget for this run. |
+| `--max-seconds` | value | &mdash; |  | Wall-clock budget for this run. |
+| `--trigger` | value | `manual` |  |  |
+| `--as-of` | value | `""` |  | Override today as YYYY-MM-DD. For testing. |
+| `--json` | flag | `False` |  | Machine-readable output. |
 
 
 ## `apps.core`
