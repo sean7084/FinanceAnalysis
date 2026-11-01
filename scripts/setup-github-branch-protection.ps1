@@ -1,9 +1,9 @@
-# Automated GitHub Branch Protection Setup for FinanceAnalysis
+# Automated GitHub Branch Protection Setup for Armillary
 # Protects main with PR requirement (1 reviewer), CI status checks, and
 # force-push / deletion guards.
 
 $repoOwner = "sean7084"
-$repoName = "FinanceAnalysis"
+$repoName = "Armillary"
 $token = (Get-Content '.env' | Select-String '^GITHUB_PERSONAL_ACCESS_TOKEN=').ToString().Split('=', 2)[1].Trim()
 $headers = @{
     "Authorization" = "Bearer $token"

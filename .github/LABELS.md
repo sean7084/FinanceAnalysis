@@ -1,8 +1,8 @@
-# GitHub Labels Configuration for FinanceAnalysis
+# GitHub Labels Configuration for Armillary
 
 ## Overview
 
-This document defines the labeling strategy for the FinanceAnalysis repository
+This document defines the labeling strategy for the Armillary repository
 to streamline issue tracking, pull request management, and project workflow.
 
 ---

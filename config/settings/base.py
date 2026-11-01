@@ -423,7 +423,7 @@ ETF_MAX_CONCURRENT_BACKTESTS = env.int('ETF_MAX_CONCURRENT_BACKTESTS', default=2
 ARTIFACT_STORE_BACKEND = env('ARTIFACT_STORE_BACKEND', default='local')
 ARTIFACT_LOCAL_CACHE_ROOT = env('ARTIFACT_LOCAL_CACHE_ROOT', default=str(BASE_DIR))
 ARTIFACT_S3_ENDPOINT_URL = env('ARTIFACT_S3_ENDPOINT_URL', default='')
-ARTIFACT_S3_BUCKET = env('ARTIFACT_S3_BUCKET', default='finance-analysis-artifacts')
+ARTIFACT_S3_BUCKET = env('ARTIFACT_S3_BUCKET', default='armillary-artifacts')
 ARTIFACT_S3_ACCESS_KEY_ID = env('ARTIFACT_S3_ACCESS_KEY_ID', default='')
 ARTIFACT_S3_SECRET_ACCESS_KEY = env('ARTIFACT_S3_SECRET_ACCESS_KEY', default='')
 ARTIFACT_S3_REGION = env('ARTIFACT_S3_REGION', default='us-east-1')
@@ -679,13 +679,13 @@ EMAIL_BACKEND = env(
     'EMAIL_BACKEND',
     default='django.core.mail.backends.console.EmailBackend'
 )
-DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@financeanalysis.com')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@armillary.local')
 
 
 # DRF SPECTACULAR (OpenAPI 3.0)
 # ------------------------------------------------------------------------------
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'FinanceAnalysis API',
+    'TITLE': 'Armillary API',
     'DESCRIPTION': (
         'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 500).\n\n'
         'This API is unauthenticated: no credential is required for any endpoint.\n'

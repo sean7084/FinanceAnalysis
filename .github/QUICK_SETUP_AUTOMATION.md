@@ -1,7 +1,7 @@
 # Quick Setup Guide - Project Automation Rules
 
 **Date:** September 15, 2026
-**Repository:** sean7084/FinanceAnalysis
+**Repository:** sean7084/Armillary
 **Time Required:** 3-5 minutes
 
 ---

@@ -3252,7 +3252,7 @@ class Command(BaseCommand):
             lines.append(f'- {severity} {issue_type}: {count}')
 
         send_mail(
-            subject='FinanceAnalysis data quality validation alert',
+            subject='Armillary data quality validation alert',
             message='\n'.join(lines),
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=recipients,

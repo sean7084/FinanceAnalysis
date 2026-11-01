@@ -32,7 +32,7 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_DB: finance_analysis
+          POSTGRES_DB: armillary
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
@@ -59,7 +59,7 @@ jobs:
       DJANGO_SETTINGS_MODULE: config.settings.test
       DJANGO_READ_DOT_ENV_FILE: "False"
       DJANGO_SECRET_KEY: ci-only-not-a-secret
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/finance_analysis
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/armillary
       # Stock redis:7 needs no credentials. The development server does -- it uses an
       # ACL user, and the password-only and default-user URL forms both fail against it
       # -- but that is a property of that server's configuration, not of this code.

@@ -6,7 +6,7 @@ $headers = @{
     "Authorization" = "Bearer $token"
     "Accept"        = "application/vnd.github.v3+json"
 }
-$baseUrl = "https://api.github.com/repos/sean7084/FinanceAnalysis"
+$baseUrl = "https://api.github.com/repos/sean7084/Armillary"
 
 $issues = @(
     @{
@@ -265,7 +265,7 @@ BACKLOG.md -- Open > configuration and infrastructure
 )
 
 Write-Host "Creating $($issues.Count) GitHub issues..." -ForegroundColor Cyan
-Write-Host "Repository: sean7084/FinanceAnalysis`n" -ForegroundColor Yellow
+Write-Host "Repository: sean7084/Armillary`n" -ForegroundColor Yellow
 
 $created = 0
 $errors = 0

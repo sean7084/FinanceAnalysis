@@ -8,7 +8,7 @@ retrain rather than overwriting, `.git` grew permanently with each run (151 blob
 backend that removes that coupling, and how to deploy and operate it.
 
 Status: **deployed and cut over (2026-10-10).** MinIO runs on the NAS as
-`finance_artifacts_minio` (`192.168.31.8:9000`, bucket `finance-analysis-artifacts`,
+`finance_artifacts_minio` (`192.168.31.8:9000`, bucket `armillary-artifacts`,
 versioning on, a least-privilege scoped key); all 170 on-disk artifacts were migrated,
 `verify_artifact_store` reports every ACTIVE artifact resolving (cold-load from MinIO
 verified), `models/` is untracked and gitignored (now a local cache), and the app runs
@@ -47,7 +47,7 @@ All keys are read from `.env` (see `.env.example`); settings live in
 | `ARTIFACT_STORE_BACKEND` | `local` | `local` or `s3` |
 | `ARTIFACT_LOCAL_CACHE_ROOT` | repo root | cache/store root for the local backend |
 | `ARTIFACT_S3_ENDPOINT_URL` | — | MinIO S3 endpoint, e.g. `http://192.168.31.8:9000` |
-| `ARTIFACT_S3_BUCKET` | `finance-analysis-artifacts` | bucket name |
+| `ARTIFACT_S3_BUCKET` | `armillary-artifacts` | bucket name |
 | `ARTIFACT_S3_ACCESS_KEY_ID` | — | scoped access key (secret) |
 | `ARTIFACT_S3_SECRET_ACCESS_KEY` | — | scoped secret key (secret) |
 | `ARTIFACT_S3_REGION` | `us-east-1` | region label (MinIO ignores it but boto3 requires one) |
@@ -88,7 +88,7 @@ services:
 
 Then, once:
 
-1. Create the bucket `finance-analysis-artifacts`; enable **versioning** (cheap
+1. Create the bucket `armillary-artifacts`; enable **versioning** (cheap
    rollback, matches the §6.2 retain-every-family policy); optionally add a lifecycle
    rule to expire non-current versions after N days.
 2. Create a **scoped** access/secret key (read/write that bucket only), bucket-private.

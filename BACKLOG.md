@@ -51,7 +51,7 @@ Items here have no commitment attached. When something is done, move it to
   round-trips, and the Channels layer completes a group add/send/discard/flush
   cycle. Recovered **92 tests** (109 failing → 17). Probing also settled the URL
   shape: this server uses a real ACL user, so `redis://:<pw>@` and
-  `redis://default:<pw>@` both fail while `redis://finance_analysis:<pw>@`
+  `redis://default:<pw>@` both fail while `redis://armillary:<pw>@`
   succeeds. Recorded in `docs/how-to/local-setup.md` §3 so nobody "simplifies" a
   working URL into a broken one.
 - **`verify_local_stack.ps1` never actually verified anything.** It shelled out to
@@ -633,7 +633,7 @@ are inactive, and `migrate_artifacts_to_store --normalize-registry` rewrites any
 map under the current `BASE_DIR`.
 
 The git-bloat half is **done** (2026-10-10). MinIO is deployed on the NAS
-(`finance_artifacts_minio`, bucket `finance-analysis-artifacts`, versioning on); all
+(`finance_artifacts_minio`, bucket `armillary-artifacts`, versioning on); all
 170 on-disk artifacts were migrated (`migrate_artifacts_to_store --execute`),
 `ARTIFACT_STORE_BACKEND=s3` is live, `verify_artifact_store` passes for every ACTIVE
 artifact, and `models/` is untracked + gitignored (forward-only — existing history keeps

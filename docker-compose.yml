@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: ./compose/local/django/Dockerfile
-    image: finance_analysis_django
-    container_name: finance_analysis_django
+    image: armillary_django
+    container_name: armillary_django
     volumes:
       - .:/app
       # Anonymous volume that preserves the frontend/dist directory baked into
@@ -22,8 +22,8 @@ services:
     build:
       context: .
       dockerfile: ./compose/local/django/Dockerfile
-    image: finance_analysis_django
-    container_name: finance_analysis_celery_worker
+    image: armillary_django
+    container_name: armillary_celery_worker
     volumes:
       - .:/app
     env_file:
@@ -34,8 +34,8 @@ services:
     build:
       context: .
       dockerfile: ./compose/local/django/Dockerfile
-    image: finance_analysis_django
-    container_name: finance_analysis_celery_beat
+    image: armillary_django
+    container_name: armillary_celery_beat
     volumes:
       - .:/app
     env_file:

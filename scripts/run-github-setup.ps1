@@ -1,9 +1,9 @@
-# Master GitHub Setup Script for FinanceAnalysis
+# Master GitHub Setup Script for Armillary
 # Runs all configuration steps in sequence.
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "GitHub Features Configuration - Master Runner" -ForegroundColor Cyan
-Write-Host "Repository: sean7084/FinanceAnalysis" -ForegroundColor Yellow
+Write-Host "Repository: sean7084/Armillary" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -73,7 +73,7 @@ Write-Host "Total Time: $($totalTime.TotalSeconds.ToString('0.0')) seconds" -For
 Write-Host ""
 Write-Host "Next Actions:" -ForegroundColor Yellow
 Write-Host "  1. Commit and push .github/ files to the repository" -ForegroundColor Gray
-Write-Host "  2. Verify labels: https://github.com/sean7084/FinanceAnalysis/labels" -ForegroundColor Gray
+Write-Host "  2. Verify labels: https://github.com/sean7084/Armillary/labels" -ForegroundColor Gray
 Write-Host "  3. Configure project board columns and custom fields" -ForegroundColor Gray
 Write-Host "  4. Test branch protection by creating a test PR" -ForegroundColor Gray
 Write-Host "  5. Run verify script: .\scripts\verify-github-setup.ps1" -ForegroundColor Gray

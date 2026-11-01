@@ -1,4 +1,4 @@
-# MinIO object store for FinanceAnalysis model artifacts.
+# MinIO object store for Armillary model artifacts.
 #
 # Deploy on HomeNAS (192.168.31.8), which already runs Docker + ZFS + this
 # project's PostgreSQL/Redis. LAN-only and ZFS-backed, mirroring the Immich /

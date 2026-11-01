@@ -1,5 +1,5 @@
 # ===========================================================================
-# FinanceAnalysis — .gitattributes
+# Armillary — .gitattributes
 #
 # Normalize line endings so the WSL clone and the Windows peer stop producing
 # phantom CRLF/LF diffs. Without this file each OS applies its own

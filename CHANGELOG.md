@@ -1,5 +1,82 @@
 # Changelog
 
+### version 0.1.50
+
+#### Changed:
+
+- **Project renamed to 璇玑 (Armillary).** The name comes from the *Shangshu*
+  ("璇玑玉衡，以齐七政"): the rotating armillary ring of the ancient Chinese
+  instrument. It was chosen because it carries both halves of what this system
+  actually does -- rotation, and precision measurement with an instrument that is
+  supposed to be honest rather than flattering -- which "FinanceAnalysis", a
+  description of a generic market-analysis site, did not. Machine identifiers are
+  now uniformly `armillary`: the PostgreSQL database and role, the Redis ACL user,
+  the MinIO bucket (`armillary-artifacts`), the Celery app, the Docker image and
+  three container names, the CI service database, the repository directory
+  (`~/Armillary-wsl2`) and the GitHub repo (`sean7084/Armillary`).
+  No Python import path changed: the project has no `pyproject.toml` or `setup.py`,
+  the Django settings package is `config`, every app is under `apps/`, and
+  `frontend/package.json` is named `frontend` -- so the 115 modules importing
+  `apps.`/`config.` and both lockfiles are untouched by a brand rename.
+- **Synthetic news URLs move to `synthetic.armillary.local`.** `NewsArticle.url` is
+  `unique=True` and is the ingestion dedup identity, and `_synthetic_url()` derives
+  it from `sha256(provider_name | payload_text)`. Flipping the prefix in code alone
+  would therefore have re-ingested every linkless article as a duplicate under the
+  new URL and double-counted its sentiment. **2109 stored rows** carry the old
+  prefix (2009 `sina`, 100 `tushare_cctv`), so `sentiment/0002_rename_synthetic_news_urls`
+  rewrites them in the same release. The digest suffix is unchanged by the rewrite,
+  which is what makes it deterministic and uniqueness-preserving.
+- **The sidebar `<h1>` is now i18n-driven** (`t('shell.brand')`) rather than a
+  hardcoded string -- it was the only chrome in `AppShell` not going through the
+  dictionary, which is why it stayed English in the Chinese UI. The subtitle slot,
+  which read 前端 / "Frontend", now carries **宁拒不欺 / "Refuses rather than
+  flatters"**: fail-closed is the project's actual behaviour, and the slot was
+  doing nothing.
+- **Deliberately NOT renamed.** `CHANGELOG.md` entries before this one,
+  `docs/reports/*.canvas.tsx`, and `docs/how-to/csi500-migration-runbook.md` keep
+  the old name verbatim: they record what happened under it, and rewriting them
+  would make the history say something that was not true of the moment it
+  describes. The same reasoning applies to
+  `docs/reports/evidence/etf-rotation-measurements.jsonl`, which needed no change
+  anyway (it contains zero brand or path matches) and to which nothing was
+  appended -- a rename is not a measurement, and the ledger's rule is that a
+  correction is a new line, not an edit. `deploy/minio`'s `finance_artifacts_minio`
+  container name is also left alone: renaming it means restarting MinIO on the NAS,
+  which is real risk for a cosmetic string. The Windows clone's paths
+  (`C:\Users\<you>\Documents\FinanceAnalysis`) are left literal in
+  `local-setup.md` / `wsl-services.md` because no rename was performed on that
+  machine, so the old name is the accurate one.
+
+#### Verified:
+
+- Full backend suite: **913 tests, all green** (CI floor 844) under
+  `--keepdb --settings=config.settings.test`; frontend `tsc --noEmit` clean,
+  `npm run build` clean, **79 vitest tests green** (CI floor 79).
+- `export_documentation_facts --check`: all non-DB-gated sheets current. Only
+  `env.md` needed regeneration (it records the two changed `base.py` defaults);
+  `commands.md` and `celery.md` never carried the brand string, so the Celery app
+  rename does not touch them.
+- `makemigrations --check --dry-run`: no pending model changes. `sentiment/0002`
+  loads and is unapplied pending the infrastructure cutover.
+- The migration's `Replace()` expression was checked read-only via `annotate`
+  against a live row rather than by running it: the prefix swaps, the SHA-256
+  suffix and the provider segment are byte-identical afterwards, and the length
+  delta is exactly -6 (`financeanalysis` -> `armillary`). The test database is
+  migrated from empty, so the suite alone would never have executed it.
+- Blast radius measured, not assumed: **2109 rows** carry the old synthetic prefix
+  (2009 `sina`, 100 `tushare_cctv`); article total unchanged at 175,640.
+- Brand-string census: 142 occurrences before, 48 after, and every one of the 48
+  is accounted for as deliberately preserved -- 42 in historical records
+  (`CHANGELOG.md` 8, `docs/reports/*.canvas.tsx` 15,
+  `docs/reference/models.md` 12 from live registry rows, the CSI 500 runbook 7),
+  5 Windows-machine paths that were never renamed, and 1 sentence added here to
+  say so. Zero remain in `config/`, `apps/`, `frontend/src/`, `docker-compose.yml`,
+  `deploy/`, `scripts/`, `.github/` or `.env.example`.
+- The append-only measurement ledger is unchanged: 36 lines, and it matched zero
+  times before and after -- it never recorded a brand name or a path.
+  `git status` on `docs/reports/` is empty.
+- No import path, no lockfile and no migration of any schema changed.
+
 ### version 0.1.49
 
 #### Added:

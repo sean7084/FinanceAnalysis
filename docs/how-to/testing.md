@@ -56,7 +56,7 @@ registered by `vite.config.ts`.
 The backend suite needs:
 
 - A reachable PostgreSQL with `CREATE` privilege for the configured role —
-  Django builds and tears down `test_finance_analysis`.
+  Django builds and tears down `test_armillary`.
 - A `.env` present, or the equivalent variables exported.
 - Nothing else. `config.settings.test` puts the cache and the channel layer
   in-process, so no test can read from or write to the development Redis.
@@ -122,7 +122,7 @@ consequences matter here:
 
 1. **It is slow.** This schema has many migrations across nine apps, and the
    backtest and analytics tables carry large indexes.
-2. **It prompts interactively.** If a stale `test_finance_analysis` exists —
+2. **It prompts interactively.** If a stale `test_armillary` exists —
    common after an interrupted run — Django asks
    `Type 'yes' if you would like to try deleting the test database…`. In a
    non-interactive shell that read hits EOF and the run aborts:
@@ -140,7 +140,7 @@ If you genuinely need a clean database, drop it deliberately rather than
 answering a prompt:
 
 ```bash
-psql "$DATABASE_URL" -c 'DROP DATABASE IF EXISTS test_finance_analysis;'
+psql "$DATABASE_URL" -c 'DROP DATABASE IF EXISTS test_armillary;'
 ```
 
 ### Useful flags

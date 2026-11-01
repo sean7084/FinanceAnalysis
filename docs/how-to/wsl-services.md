@@ -6,7 +6,7 @@ clone. The only thing on the Windows side is the browser you view the dashboard 
 ## Quick start
 
 ```bash
-cd ~/FinanceAnalysis-wsl2
+cd ~/Armillary-wsl2
 ./scripts/run_local_stack.sh
 ```
 
@@ -68,8 +68,8 @@ export https_proxy=http://localhost:10808 http_proxy=http://localhost:10808
 
 ## Preflight (first run, or after a pull)
 
-The clone at `~/FinanceAnalysis-wsl2` talks to GitHub **directly**: its git `origin` is
-`https://github.com/sean7084/FinanceAnalysis.git`, so one `git fetch` sees every merged PR with no
+The clone at `~/Armillary-wsl2` talks to GitHub **directly**: its git `origin` is
+`https://github.com/sean7084/Armillary.git`, so one `git fetch` sees every merged PR with no
 intermediate clone. (This replaces an older two-hop setup that relayed through a Windows clone at
 `/mnt/c/…/FinanceAnalysis` as `origin`; that hop is retired. A Windows clone, if you keep one, is
 now an independent peer that also points at GitHub.)
@@ -86,7 +86,7 @@ Two one-time prerequisites make the direct link work from WSL:
 Before the first start — and after any pull — sync and align dependencies:
 
 ```bash
-cd ~/FinanceAnalysis-wsl2
+cd ~/Armillary-wsl2
 git fetch origin
 git status -sb                        # confirm clean, and how far behind
 git merge --ff-only origin/main
@@ -113,7 +113,7 @@ bash scripts/verify_local_stack.sh
 It probes PostgreSQL (`psycopg2`) and Redis (`redis-py`), imports the core Python deps, and runs
 `manage.py check`. It exits non-zero if either service is unreachable. If Redis auth fails while
 PostgreSQL connects, the `.env` credentials are stale — the server needs a real ACL user
-(`redis://finance_analysis:<pw>@…`) and any special character in the password percent-encoded.
+(`redis://armillary:<pw>@…`) and any special character in the password percent-encoded.
 
 > **Commit and push real work** — `origin` is GitHub now, so a pushed branch is backed up
 > off-machine (the old two-hop clone pushed nowhere and could silently hold changes that existed
@@ -124,7 +124,7 @@ PostgreSQL connects, the `.env` credentials are stale — the server needs a rea
 
 ## Must run from the ext4 clone, not `/mnt/c`
 
-`cd ~/FinanceAnalysis-wsl2` and confirm `pwd` does **not** begin with `/mnt/`. This is not a
+`cd ~/Armillary-wsl2` and confirm `pwd` does **not** begin with `/mnt/`. This is not a
 style preference — `scripts/_native_env.sh` (sourced by every launcher) hard-guards it and
 exits 1:
 
@@ -323,7 +323,7 @@ an unsupported Node API.
 
 **`node_modules` is per-clone.** The WSL clone does not share `node_modules` with the Windows
 checkout, and native modules are not interchangeable across OSes. Run `npm ci` inside
-`~/FinanceAnalysis-wsl2/frontend` after cloning and after any `package-lock.json` change.
+`~/Armillary-wsl2/frontend` after cloning and after any `package-lock.json` change.
 
 **The launcher scripts are executable in git.** Every `scripts/*.sh` is committed mode `100755`,
 so `./scripts/run_local_stack.sh` works with no `chmod`. If a future reset drops the bits and

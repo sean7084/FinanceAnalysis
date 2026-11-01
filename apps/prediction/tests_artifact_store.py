@@ -240,7 +240,7 @@ class GetArtifactStoreFactoryTests(SimpleTestCase):
         reset_artifact_store()
         with override_settings(
             ARTIFACT_STORE_BACKEND='s3',
-            ARTIFACT_S3_BUCKET='finance-analysis-artifacts',
+            ARTIFACT_S3_BUCKET='armillary-artifacts',
             ARTIFACT_S3_ENDPOINT_URL='http://192.168.31.8:9000',
             ARTIFACT_S3_ACCESS_KEY_ID='id',
             ARTIFACT_S3_SECRET_ACCESS_KEY='secret',
@@ -249,7 +249,7 @@ class GetArtifactStoreFactoryTests(SimpleTestCase):
             store = get_artifact_store()
         self.assertIsInstance(store, S3ArtifactStore)
         self.assertTrue(store.is_remote)
-        self.assertEqual(store.bucket, 'finance-analysis-artifacts')
+        self.assertEqual(store.bucket, 'armillary-artifacts')
         # Constructing the store must not require a reachable endpoint.
         self.assertIsNone(store._client)
 

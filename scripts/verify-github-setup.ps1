@@ -1,8 +1,8 @@
-# Final Configuration Verification Script for FinanceAnalysis
+# Final Configuration Verification Script for Armillary
 # Checks labels, branch protection, and prints a summary report.
 
 $repoOwner = "sean7084"
-$repoName = "FinanceAnalysis"
+$repoName = "Armillary"
 $token = (Get-Content '.env' | Select-String '^GITHUB_PERSONAL_ACCESS_TOKEN=').ToString().Split('=', 2)[1].Trim()
 $headers = @{
     "Authorization" = "Bearer $token"
