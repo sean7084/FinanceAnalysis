@@ -519,3 +519,28 @@ Order:
 New rows need no attention: the flip itself fixes `make_aware()` in
 `apps/sentiment/providers.py`, so anything ingested from step 3 onward is stored
 correctly. What the migration handles is only the history written before it.
+
+### What the rehearsal measured
+
+Rehearsed 2026-11-02 on an isolated copy (`finance_analysis_tzrehearsal`, same server,
+so the timings transfer) holding the four tables `0003` and its FK closure touch:
+`markets_market`, `markets_asset`, `sentiment_newsarticle`, `sentiment_sentimentscore`,
+dumped with `pg_dump -Fc`, schema rebuilt by `migrate` with `0003` then backed out to
+`0002` so it was pending. Beat and the workers were stopped first, which is what froze
+the row count.
+
+| Check | Result |
+| --- | --- |
+| Forward report | `shifted=175730 already_marked=0 no_raw_payload=0 mismatch_untouched=0 total_scanned=175730`, per source `EASTMONEY=4873, OTHER=166921, SINA=2029, TONGHUASHUN=1907` |
+| Predicted beforehand | the same, from evaluating the migration's own predicate over live in Python — every row in the table is legacy, because the flip was not yet deployed |
+| Duration | 66s forward / 63s reverse, and `RunPython` is atomic, so that is the lock window on `sentiment_newsarticle` |
+| Per-row correctness | instant equals provider wall clock − 8h, and the Beijing wall reading still equals the provider's own string: 0 violations in 175,730 |
+| Idempotency | second forward: `shifted=0 already_marked=175730` |
+| Reverse | `reverted=175730`, before-state checksum `79945dc13dbd6d0442130c7474e1c8fd` reproduced byte-for-byte, markers gone; reverse again `reverted=0` |
+| `SentimentScore` | 6,521,107 rows over 4,046 dates, per-date histogram and whole-row checksums unchanged |
+| Day buckets | on 11 sampled days the old UTC-midnight window over pre-correction values and the new Beijing-midnight window over corrected values select the identical article set — zero rows in either symmetric difference; across all rows, zero date mismatches |
+| Dashboard | plan-only `EXPLAIN` of the Indicator Board query uses `analytics_t_asset_i_836ba1_idx` (`asset, timestamp, indicator_type`) as a bitmap index scan, no seq scan, because `make_aware()` bounds and stored values move together |
+
+One accepted cost, not a defect: the hourly backfill skips eight hours of news once, at
+the boundary day of the oldest article, because its provider label is rendered from the
+UTC reading of a bound that just moved. It is quantified and pinned in `BACKLOG.md`.

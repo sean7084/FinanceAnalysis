@@ -18,7 +18,7 @@ already covers its shape.
 
 import io
 from contextlib import redirect_stdout
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase
@@ -31,6 +31,7 @@ from apps.sentiment.migrations._tz_shift_logic import (
     _shift_legacy_rows,
 )
 from apps.sentiment.models import NewsArticle
+from apps.sentiment.tasks import _compute_historical_backfill_window
 
 BEIJING = ZoneInfo('Asia/Shanghai')
 
@@ -185,3 +186,36 @@ class TzShiftMigrationTests(TestCase):
         self.assertEqual(counted['shifted'], 0)
         already_fixed.refresh_from_db()
         self.assertEqual(already_fixed.published_at, POST_FLIP_CORRECT)
+
+    def test_the_backfill_walk_boundary_moves_eight_hours_at_the_correction(self):
+        """One-time cost of the correction, on the hourly walk that runs after it.
+
+        ``run_hourly_historical_news_backfill`` walks *backwards* from
+        ``Min('published_at')`` and renders the bound with ``strftime``. The ORM
+        hands that bound back UTC-aware, so the label is the UTC reading of it --
+        and for a legacy row the UTC reading *was* the provider's Beijing wall
+        clock, because the mis-stamp and the UTC rendering cancelled. Correcting
+        the row therefore moves the label eight hours back: the first window
+        fetched after the deploy stops eight hours short of where the walk had
+        got to, and news published 01:30-09:30 Beijing on the boundary day is
+        skipped once, permanently. Measured across all 175,730 rehearsal rows.
+
+        Pinned, not fixed. Closing the hole means rendering the label in the zone
+        it names, which changes what a live provider receives and needs its own
+        rehearsal against real TuShare responses -- see BACKLOG. Day-aligning the
+        boundary instead, which looks like the cheaper move, widens this hole to
+        eighteen hours, because ``window_end`` is already below ``earliest`` in
+        the corrected frame.
+        """
+        NewsArticle.objects.all().delete()
+        self._article('walk-floor', 'https://example.com/walk-floor',
+                      LEGACY_MIS_STAMPED, {'raw': {'published_at': WALL}})
+
+        _, end_before, _ = _compute_historical_backfill_window(31, '2021-04-15 00:00:00')
+        self.assertEqual(end_before.strftime('%Y-%m-%d %H:%M:%S'), '2026-03-05 09:29:59')
+
+        self._forward()
+
+        _, end_after, _ = _compute_historical_backfill_window(31, '2021-04-15 00:00:00')
+        self.assertEqual(end_after.strftime('%Y-%m-%d %H:%M:%S'), '2026-03-05 01:29:59')
+        self.assertEqual(end_before - end_after, timedelta(hours=8))

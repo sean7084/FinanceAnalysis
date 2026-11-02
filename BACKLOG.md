@@ -1064,3 +1064,15 @@ The bar the model work is aiming at, against the 3.2 baseline:
   `apps/sentiment/tests.py::test_hourly_historical_backfill_fetches_next_window` pins
   the current UTC-reading strings, so the first person to fix this sees a failing
   assertion that explains the trade rather than a silent behaviour change.
+- That same rendering costs the backfill one permanent eight-hour hole at the moment
+  sentiment `0003` lands. Every stored `published_at` moves −8h, the walk's next
+  `end_at` is still rendered as the UTC reading, and so it jumps eight hours behind
+  where the walk had already got to: news published 01:30–09:30 Beijing on the
+  boundary day is skipped once and never revisited, because the walk only goes
+  backwards. Measured on the rehearsal copy across all 175,730 rows and pinned by
+  `apps/sentiment/tests_tz_migration.py::test_the_backfill_walk_boundary_moves_eight_hours_at_the_correction`.
+  Day-aligning `window_end` — the obvious-looking containment fix — widens the hole to
+  eighteen hours, since `window_end = earliest - 1s` is already below `earliest` in the
+  corrected frame and pulling it back to the previous Beijing midnight discards the
+  rest of the boundary day. Rendering in the zone the label names closes this and the
+  steady-state skew at once; both wait on the same TuShare rehearsal.

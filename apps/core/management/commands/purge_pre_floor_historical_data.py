@@ -30,6 +30,15 @@ def _parse_date(value, label):
 
 
 def _start_of_day(value):
+    """``--before-date`` as an instant, at midnight in ``TIME_ZONE``.
+
+    Only ``news_articles`` needs this. Every other entry in ``_querysets()``
+    compares a ``DateField`` to the bare date, and a date has no zone to disagree
+    with; ``published_at`` is the one timestamp column in the list, so its
+    boundary is the one that moves when ``TIME_ZONE`` moves. Under ``'UTC'`` this
+    was 08:00 Beijing, which deleted articles published in the small hours of the
+    floor day even though their Beijing date *was* the floor day.
+    """
     cutoff = datetime.combine(value, time.min)
     if timezone.is_naive(cutoff):
         return timezone.make_aware(cutoff, timezone.get_current_timezone())
