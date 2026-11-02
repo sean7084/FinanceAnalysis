@@ -541,6 +541,34 @@ the row count.
 | Day buckets | on 11 sampled days the old UTC-midnight window over pre-correction values and the new Beijing-midnight window over corrected values select the identical article set — zero rows in either symmetric difference; across all rows, zero date mismatches |
 | Dashboard | plan-only `EXPLAIN` of the Indicator Board query uses `analytics_t_asset_i_836ba1_idx` (`asset, timestamp, indicator_type`) as a bitmap index scan, no seq scan, because `make_aware()` bounds and stored values move together |
 
-One accepted cost, not a defect: the hourly backfill skips eight hours of news once, at
-the boundary day of the oldest article, because its provider label is rendered from the
-UTC reading of a bound that just moved. It is quantified and pinned in `BACKLOG.md`.
+### Deployed 2026-11-02 19:26 CST
+
+Against live `finance_analysis`, with beat down since 10:18:43 and the four worker fleets down
+since 10:18:59, the rehearsal reproduced exactly:
+
+```
+sentiment 0003 forward: shifted=175730 already_marked=0 no_raw_payload=0 mismatch_untouched=0 total_scanned=175730
+sentiment 0003 forward shifted by source: EASTMONEY=4873, OTHER=166921, SINA=2029, TONGHUASHUN=1907
+```
+
+88s (66s on the copy). Whole-table verification after the run: zero rows failing either invariant
+(`published_at == raw read as UTC minus 8h`, and the Beijing wall reading still equal to the
+provider's own string), markers on all 175,730 and none unmarked, range moved
+`2025-06-09 10:06:00+00 / 2026-11-02 00:34:11+00` → `2025-06-09 02:06:00+00 / 2026-11-01 16:34:11+00`,
+`SentimentScore` untouched at 6,521,107 rows over 4,046 dates with an identical histogram, and the
+dashboard `EXPLAIN` unchanged. The strongest signal: live's post-migration row checksum
+`c34d7a6b5aa131a85ca1ddbd7bf4b024` is **bit-identical to the copy's**, and live's pre-migration
+checksum had equalled the copy's too — so the rehearsal ran against the actual rows, not a look-alike.
+
+Two things to know before starting beat. `django_celery_beat_crontabschedule` still holds 27 rows
+stamped `timezone='UTC'`; the `Asia/Shanghai` rows are created by `DatabaseScheduler.sync()` on the
+first tick of step 5, and the UTC rows are then orphaned rather than deleted (`BACKLOG.md`). And the
+eight-hour backfill hole described below was **not** closed by hand as planned: the fetch returned
+`抱歉，您没有接口(major_news)访问权限`. That turned out to be the smaller problem — the same
+permission loss has stopped the whole historical walk since 2026-06-13, so nothing has advanced and
+the hole is latent. Both are recorded in `BACKLOG.md` with the measurements.
+
+One accepted cost, not a defect: once `major_news` access returns, the hourly backfill will skip
+eight hours of news once at the boundary day of the oldest article, because its provider label is
+rendered from the UTC reading of a bound that moved with the correction. Fetch Beijing
+`2025-06-09 02:06:00 → 10:05:59` before letting the walk advance past it.

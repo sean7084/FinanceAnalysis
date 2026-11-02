@@ -1076,3 +1076,45 @@ The bar the model work is aiming at, against the 3.2 baseline:
   corrected frame and pulling it back to the previous Beijing midnight discards the
   rest of the boundary day. Rendering in the zone the label names closes this and the
   steady-state skew at once; both wait on the same TuShare rehearsal.
+  **Deployed 2026-11-02 19:26 CST**, and the hole is still open rather than closed: the
+  planned manual fill of Beijing `2025-06-09 02:06:00 → 10:05:59` returned
+  `抱歉，您没有接口(major_news)访问权限`, so the window has to be fetched the moment the
+  entitlement comes back — see the next entry.
+- The historical news backfill has been **dead since 2026-06-13** and nothing surfaces it.
+  `sentiment_newsarticle` rows carrying `metadata.provider = 'tushare_major'` (166,821 of them)
+  stop being created at `2026-06-13 20:12:40Z`; ingest by month is Apr 56,014 / May 95,217 /
+  Jun 15,590 / nothing since. The walk reached `2025-06-09` against a floor of `2021-04-15`, so
+  it is four and a half years short. Two separate things make this invisible. First, the
+  provider now answers `抱歉，您没有接口(major_news)访问权限` — a *permission* loss, not a rate
+  limit — and `_is_provider_quota_error` (`apps/sentiment/tasks.py:58-66`) only matches
+  `最多访问该接口` and `频率超限`, so the branch at `:379` never fires and `:384` re-raises: the
+  task fails loudly instead of returning the "deferred" string that the provider-blackout
+  runbook is written around. Second, `run-hourly-historical-news-backfill` is `enabled=true` with
+  `total_run_count=1797` and `last_run_at` 2026-11-02 02:12Z, so beat keeps ticking it and every
+  hour's failure looks like the previous hour's failure. Unrelated to timezones, listed here
+  because it is the same shape — a convention that changed (the token's entitlement) with the
+  error-handling code still written against the old one. Fix: recognise permission loss as its
+  own deferred class, with an alert after N consecutive failures rather than after 1,700.
+- `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
+  second row rather than an update. Every indicator task builds its key the same way —
+  `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
+  `:155` for MACD — which under `TIME_ZONE='UTC'` stored a trade date at `00:00+00:00` and now
+  stores it at `00:00+08:00`, i.e. eight hours *earlier* as an instant. Measured on
+  `analytics_technicalindicator` before the deploy: for asset 660 since 2026-09-01, 476 rows sit
+  at time-of-day `00:00:00`, 68 at one bulk `00:12:43.145224`, and **zero** at `16:00:00`. So
+  `get_or_create(asset, timestamp, indicator_type, parameters)` on a date that old code already
+  wrote inserts a parallel row instead of updating it, `unique_together` cannot catch it (the
+  timestamps differ), and the dashboard's `order_by('-timestamp').distinct('asset_id',
+  'indicator_type')` (`apps/analytics/views.py:663`) then prefers the *older-convention* row
+  because its instant is later. No displayed number is wrong — both rows are recomputed from the
+  same OHLCV — but the cost is a slowly doubling key space on a 166,338,926-row table and an
+  ambiguous winner. Left alone here for the same reason as the label skew: it is a semantic fix
+  in the deferred sweep, and the right shape is a zone-stable key (`session_midnight()` from
+  `apps/core/date_floor.py:18-29`, or a real `DateField`) rather than `make_aware` on a wall
+  midnight. Check after the first new-code indicator run: for the seam trade date, count
+  `(asset_id, indicator_type, parameters)` groups holding two rows exactly eight hours apart.
+- `sentiment.0003`'s `RunPython` is `elidable=True`, so a future `squashmigrations` over the
+  sentiment apps drops the −8h correction silently. A freshly built database does not need it —
+  that is why it is elidable — but the flag also means the correction survives only as long as
+  nobody squashes. Note it next to the migration file, and keep the deploy log
+  (`shifted=175730`, 2026-11-02 19:26 CST) as the record that it ran.
