@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from apps.core.tushare_client import is_throttle_error
 from apps.markets.calendar_utils import open_trading_dates
+from apps.core.timez import session_today
 
 from . import registry
 from .detectors import CatchUpContext, calendar_scan_start
@@ -102,7 +103,7 @@ def run_catch_up(*, as_of=None, series=None, max_calls=None, max_seconds=None,
     Returns one ``CatchUpRun`` per series considered. Under ``dry_run`` the rows are
     built but not saved and no provider call is made.
     """
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or session_today()
     max_calls = settings.CATCHUP_MAX_CALLS_PER_RUN if max_calls is None else int(max_calls)
     max_seconds = (settings.CATCHUP_MAX_SECONDS_PER_RUN if max_seconds is None
                    else int(max_seconds))
@@ -269,5 +270,5 @@ def _already_recorded_today(row):
     return CatchUpRun.objects.filter(
         series=row.series,
         outcome=row.outcome,
-        started_at__date=timezone.now().date(),
+        started_at__date=timezone.localdate(),
     ).exists()

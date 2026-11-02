@@ -9,17 +9,20 @@ stuck. Task inventory and time limits: [`../reference/celery.md`](../reference/c
 
 The daily pipeline is a chain with deliberate spacing:
 
-| Time (UTC) | Task | Depends on |
+| Time (CST, UTC+8) | Task | Depends on |
 | --- | --- | --- |
-| 16:10 | `sync_daily_a_shares` | provider availability |
-| 16:35 | `fetch_latest_market_news` | — |
-| 17:00 | `run_daily_sentiment_pipeline` | news ingest |
-| 18:00 | `generate_predictions_for_date` | indicators, factors, sentiment, market context |
-| 18:30 | `generate_lightgbm_predictions_for_date` | same, plus an active artifact per horizon |
+| 00:10 | `sync_daily_a_shares` | provider availability |
+| 00:35 | `fetch_latest_market_news` | — |
+| 01:00 | `run_daily_sentiment_pipeline` | news ingest |
+| 02:00 | `generate_predictions_for_date` | indicators, factors, sentiment, market context |
+| 02:30 | `generate_lightgbm_predictions_for_date` | same, plus an active artifact per horizon |
 | every 5 min | `check_alert_rules` | indicators |
 
-A-share markets close at 15:00 CST (07:00 UTC), so a 16:10 UTC sync is same-day.
-If you are checking before 16:10 UTC, nothing is wrong yet.
+The A-share session closes at 15:00 CST. The 00:10 CST sync runs about nine hours
+after that close and still belongs to the same trading day — it is the first link
+in the chain that processes the day just finished, which is why it sits after
+midnight rather than at 15:05. If you are checking before 00:10 CST, there is
+nothing new to see yet.
 
 Quick health check:
 
@@ -209,7 +212,7 @@ is non-empty, nothing scored, and a required column is null for every row, it
 raises `SignalGenerationError` naming the column. Recovery:
 
 ```bash
-# 1. Close the gap (the daily 17:05Z tick is sync_etf_benchmark_index).
+# 1. Close the gap (the daily 01:05 CST tick is sync_etf_benchmark_index).
 DJANGO_READ_DOT_ENV_FILE=True python manage.py shell -c "
 from apps.markets.tasks import sync_benchmark_index_history
 print(sync_benchmark_index_history(index_codes=['000905.SH','H00905.CSI'],
@@ -222,7 +225,7 @@ DJANGO_READ_DOT_ENV_FILE=True python manage.py generate_etf_rotation_signal --da
 ```
 
 Beat ordering is the guard that keeps this from recurring: the index tick runs at
-17:05Z and the feature job at 17:20Z, and both tasks are routed to `ops` rather
+01:05 CST and the feature job at 01:20 CST, and both tasks are routed to `ops` rather
 than `etf-rotation` so a two-second refresh never queues behind an hour-long
 backtest. If the signal still refuses, `ETF_SECONDARY_BENCHMARK_CODES` lists what
 is synced -- the total-return series is the one that is easy to forget.
@@ -420,9 +423,11 @@ detectors are data-level, so the database itself is the checkpoint and the next
 run re-detects whatever is still missing — there is no checkpoint file for the
 raw layer (the derived-layer `backfill_*` commands' own `--checkpoint-file` /
 `--resume-from-checkpoint` are used). `NO_GAP` and `SKIPPED` write at most one
-row per (series, outcome, UTC date) — an hourly tick across seventeen series
-would otherwise write hundreds of identical rows a day; `OK`/`PARTIAL`/
-`BLOCKED_UPSTREAM`/`FAILED` always insert, because they are evidence.
+row per (series, outcome, Beijing date) — the dedup lookup in
+`apps/catchup/service.py` filters `started_at__date` on `timezone.localdate()` —
+because an hourly tick across seventeen series would otherwise write hundreds of
+identical rows a day; `OK`/`PARTIAL`/`BLOCKED_UPSTREAM`/`FAILED` always insert,
+because they are evidence.
 
 ### 9.5 How detection works — the three detector classes
 
@@ -468,3 +473,102 @@ missed entirely heals over several hours rather than in one job that would need 
 time budget nobody would approve.
 
 Startup-run log: `tmp/cold_stack/catchup.log`.
+
+---
+
+## 10. Deploying a timezone or schedule change
+
+`TIME_ZONE`, `CELERY_TIMEZONE` and the hour numbers in `CELERY_BEAT_SCHEDULE` are
+one change, not three. Beat reads those numbers against `CELERY_TIMEZONE` and does
+**not** fall back to Django's `TIME_ZONE`; `apps/core/tests_beat_schedule.py`
+asserts that the two agree and that every entry still fires at the instant it always
+did. Ship two of the three and the whole nightly chain moves eight hours early or
+late.
+
+That is the one failure this runbook has no symptom table for, because there is no
+symptom: every tick fires on time, every task succeeds, every row is written, and
+the schedule merely looks healthy. The only evidence is that the data describes the
+wrong day.
+
+Order:
+
+1. **Stop beat.** Nothing may fire while the schedule is half-applied.
+2. **Stop the workers.** This must *precede* `migrate`, not merely accompany it: an
+   old-code worker still ingesting after the correction lands inserts one more
+   `NewsArticle` stamped under the old interpretation. It matches the migration's
+   predicate, but the migration has already run and will not run again, so that row
+   stays wrong forever and nothing reports it.
+3. **Deploy the code** — settings, `apps/core/timez.py`, the task call sites.
+4. **`python manage.py migrate`.**
+   `sentiment/0003_shift_legacy_published_at_to_beijing` shifts legacy
+   `NewsArticle.published_at` values back eight hours and **prints a row-count
+   report**: `shifted=`, `already_marked=`, `no_raw_payload=`,
+   `mismatch_untouched=`, `total_scanned=`, then a per-source breakdown. Capture it
+   in the deploy log — it is the only record of how much was corrected, and a
+   re-run reporting everything as `already_marked` is the evidence the pass is
+   idempotent. It is reversible too: `reverse` keys off the `metadata['tz_shift']`
+   marker the forward pass writes, so rows it never touched stay untouched.
+5. **Start beat.** django-celery-beat's `DatabaseScheduler` re-syncs the
+   `CrontabSchedule` rows against the new table and stamps them
+   `timezone='Asia/Shanghai'`. `PeriodicTask.last_run_at` is preserved, so the
+   watermark-based detectors in §9.5 do not read the restart as an outage. The
+   previous UTC `CrontabSchedule` rows are orphaned rather than deleted: harmless,
+   since nothing references them, and tracked in `BACKLOG.md`.
+6. **Start the workers.**
+
+New rows need no attention: the flip itself fixes `make_aware()` in
+`apps/sentiment/providers.py`, so anything ingested from step 3 onward is stored
+correctly. What the migration handles is only the history written before it.
+
+### What the rehearsal measured
+
+Rehearsed 2026-11-02 on an isolated copy (`finance_analysis_tzrehearsal`, same server,
+so the timings transfer) holding the four tables `0003` and its FK closure touch:
+`markets_market`, `markets_asset`, `sentiment_newsarticle`, `sentiment_sentimentscore`,
+dumped with `pg_dump -Fc`, schema rebuilt by `migrate` with `0003` then backed out to
+`0002` so it was pending. Beat and the workers were stopped first, which is what froze
+the row count.
+
+| Check | Result |
+| --- | --- |
+| Forward report | `shifted=175730 already_marked=0 no_raw_payload=0 mismatch_untouched=0 total_scanned=175730`, per source `EASTMONEY=4873, OTHER=166921, SINA=2029, TONGHUASHUN=1907` |
+| Predicted beforehand | the same, from evaluating the migration's own predicate over live in Python — every row in the table is legacy, because the flip was not yet deployed |
+| Duration | 66s forward / 63s reverse, and `RunPython` is atomic, so that is the lock window on `sentiment_newsarticle` |
+| Per-row correctness | instant equals provider wall clock − 8h, and the Beijing wall reading still equals the provider's own string: 0 violations in 175,730 |
+| Idempotency | second forward: `shifted=0 already_marked=175730` |
+| Reverse | `reverted=175730`, before-state checksum `79945dc13dbd6d0442130c7474e1c8fd` reproduced byte-for-byte, markers gone; reverse again `reverted=0` |
+| `SentimentScore` | 6,521,107 rows over 4,046 dates, per-date histogram and whole-row checksums unchanged |
+| Day buckets | on 11 sampled days the old UTC-midnight window over pre-correction values and the new Beijing-midnight window over corrected values select the identical article set — zero rows in either symmetric difference; across all rows, zero date mismatches |
+| Dashboard | plan-only `EXPLAIN` of the Indicator Board query uses `analytics_t_asset_i_836ba1_idx` (`asset, timestamp, indicator_type`) as a bitmap index scan, no seq scan, because `make_aware()` bounds and stored values move together |
+
+### Deployed 2026-11-02 19:26 CST
+
+Against live `finance_analysis`, with beat down since 10:18:43 and the four worker fleets down
+since 10:18:59, the rehearsal reproduced exactly:
+
+```
+sentiment 0003 forward: shifted=175730 already_marked=0 no_raw_payload=0 mismatch_untouched=0 total_scanned=175730
+sentiment 0003 forward shifted by source: EASTMONEY=4873, OTHER=166921, SINA=2029, TONGHUASHUN=1907
+```
+
+88s (66s on the copy). Whole-table verification after the run: zero rows failing either invariant
+(`published_at == raw read as UTC minus 8h`, and the Beijing wall reading still equal to the
+provider's own string), markers on all 175,730 and none unmarked, range moved
+`2025-06-09 10:06:00+00 / 2026-11-02 00:34:11+00` → `2025-06-09 02:06:00+00 / 2026-11-01 16:34:11+00`,
+`SentimentScore` untouched at 6,521,107 rows over 4,046 dates with an identical histogram, and the
+dashboard `EXPLAIN` unchanged. The strongest signal: live's post-migration row checksum
+`c34d7a6b5aa131a85ca1ddbd7bf4b024` is **bit-identical to the copy's**, and live's pre-migration
+checksum had equalled the copy's too — so the rehearsal ran against the actual rows, not a look-alike.
+
+Two things to know before starting beat. `django_celery_beat_crontabschedule` still holds 27 rows
+stamped `timezone='UTC'`; the `Asia/Shanghai` rows are created by `DatabaseScheduler.sync()` on the
+first tick of step 5, and the UTC rows are then orphaned rather than deleted (`BACKLOG.md`). And the
+eight-hour backfill hole described below was **not** closed by hand as planned: the fetch returned
+`抱歉，您没有接口(major_news)访问权限`. That turned out to be the smaller problem — the same
+permission loss has stopped the whole historical walk since 2026-06-13, so nothing has advanced and
+the hole is latent. Both are recorded in `BACKLOG.md` with the measurements.
+
+One accepted cost, not a defect: once `major_news` access returns, the hourly backfill will skip
+eight hours of news once at the boundary day of the oldest article, because its provider label is
+rendered from the UTC reading of a bound that moved with the correction. Fetch Beijing
+`2025-06-09 02:06:00 → 10:05:59` before letting the walk advance past it.

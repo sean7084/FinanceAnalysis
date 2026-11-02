@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-10-31T17:34:17Z_
+_Generated: 2026-11-01T17:14:28Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -34,29 +34,31 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 ## Beat schedule
 
-| Entry | Task | Crontab (min hour dow dom moy) | Options |
+| Entry | Task | Crontab in Asia/Shanghai (min hour dow dom moy) | Options |
 | --- | --- | --- | --- |
 | `catch-up-missed-series-hourly` | `apps.catchup.tasks.catch_up_missed_runs` | `25 * * * *` | &mdash; |
 | `check-alert-rules-every-5-min` | `apps.analytics.tasks.check_alert_rules` | `*/5 * * * *` | &mdash; |
-| `check-etf-rotation-feed-health-daily` | `apps.etf_rotation.tasks.check_etf_rotation_feed_health` | `45 17 * * *` | &mdash; |
-| `compute-etf-features-daily` | `apps.etf_rotation.tasks.compute_etf_features_daily` | `20 17 * * *` | &mdash; |
-| `fetch-latest-market-news-daily` | `apps.sentiment.tasks.fetch_latest_market_news` | `35 16 * * *` | &mdash; |
-| `generate-etf-rotation-shadow-signal-daily` | `apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal` | `50 19 * * *` | &mdash; |
-| `generate-etf-rotation-signal-daily` | `apps.etf_rotation.tasks.generate_etf_rotation_signal_daily` | `45 19 * * *` | &mdash; |
-| `generate-lightgbm-predictions-daily` | `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | `30 18 * * *` | &mdash; |
-| `generate-predictions-daily` | `apps.prediction.tasks.generate_predictions_for_date` | `0 18 * * *` | &mdash; |
-| `mark-etf-rotation-positions-daily` | `apps.etf_rotation.tasks.mark_etf_rotation_positions_daily` | `15 20 * * *` | &mdash; |
-| `prewarm-dashboard-stocks-cache` | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `15 19 * * *` | &mdash; |
+| `check-etf-rotation-feed-health-daily` | `apps.etf_rotation.tasks.check_etf_rotation_feed_health` | `45 1 * * *` | &mdash; |
+| `compute-etf-features-daily` | `apps.etf_rotation.tasks.compute_etf_features_daily` | `20 1 * * *` | &mdash; |
+| `fetch-latest-market-news-daily` | `apps.sentiment.tasks.fetch_latest_market_news` | `35 0 * * *` | &mdash; |
+| `generate-etf-rotation-shadow-signal-daily` | `apps.etf_rotation.tasks.generate_etf_rotation_shadow_signal` | `50 3 * * *` | &mdash; |
+| `generate-etf-rotation-signal-daily` | `apps.etf_rotation.tasks.generate_etf_rotation_signal_daily` | `45 3 * * *` | &mdash; |
+| `generate-lightgbm-predictions-daily` | `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | `30 2 * * *` | &mdash; |
+| `generate-predictions-daily` | `apps.prediction.tasks.generate_predictions_for_date` | `0 2 * * *` | &mdash; |
+| `mark-etf-rotation-positions-daily` | `apps.etf_rotation.tasks.mark_etf_rotation_positions_daily` | `15 4 * * *` | &mdash; |
+| `prewarm-dashboard-stocks-cache` | `apps.analytics.tasks.prewarm_dashboard_stocks_cache` | `15 3 * * *` | &mdash; |
 | `reconcile-prediction-coverage-hourly` | `apps.prediction.tasks.reconcile_prediction_coverage` | `45 * * * *` | &mdash; |
-| `report-etf-rotation-live-track-monthly` | `apps.etf_rotation.tasks.report_etf_rotation_live_track` | `0 21 * 1 *` | &mdash; |
-| `run-daily-sentiment-pipeline` | `apps.sentiment.tasks.run_daily_sentiment_pipeline` | `0 17 * * *` | &mdash; |
+| `report-etf-rotation-live-track-monthly` | `apps.etf_rotation.tasks.report_etf_rotation_live_track` | `0 5 * 2 *` | &mdash; |
+| `run-daily-sentiment-pipeline` | `apps.sentiment.tasks.run_daily_sentiment_pipeline` | `0 1 * * *` | &mdash; |
 | `run-hourly-historical-news-backfill` | `apps.sentiment.tasks.run_hourly_historical_news_backfill` | `12 * * * *` | &mdash; |
-| `sync-a-shares-daily-from-tushare` | `apps.markets.tasks.sync_daily_a_shares` | `10 16 * * *` | &mdash; |
-| `sync-etf-benchmark-index-daily` | `apps.etf_rotation.tasks.sync_etf_benchmark_index` | `5 17 * * *` | &mdash; |
-| `sync-etf-daily-bars-daily` | `apps.etf_rotation.tasks.sync_etf_daily_recent` | `45 16 * * *` | &mdash; |
-| `sync-etf-fund-shares-weekly` | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `10 18 6 * *` | &mdash; |
-| `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 2 * 1 *` | &mdash; |
-| `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 0 * 2-8 *` | &mdash; |
+| `sync-a-shares-daily-from-tushare` | `apps.markets.tasks.sync_daily_a_shares` | `10 0 * * *` | &mdash; |
+| `sync-etf-benchmark-index-daily` | `apps.etf_rotation.tasks.sync_etf_benchmark_index` | `5 1 * * *` | &mdash; |
+| `sync-etf-daily-bars-daily` | `apps.etf_rotation.tasks.sync_etf_daily_recent` | `45 0 * * *` | &mdash; |
+| `sync-etf-fund-shares-weekly` | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `10 2 0 * *` | &mdash; |
+| `sync-index-memberships-monthly` | `apps.markets.tasks.sync_monthly_index_memberships` | `15 10 * 1 *` | &mdash; |
+| `sync-macro-data-monthly` | `apps.macro.tasks.sync_macro_data_monthly` | `10 8 * 2-8 *` | &mdash; |
+
+Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`, which beat reads them against and which must equal `TIME_ZONE`. Celery does not fall back to Django's `TIME_ZONE`, so a deploy that flips one without the other shifts the whole nightly pipeline eight hours and still looks healthy until the data lands late. `apps/core/tests_beat_schedule.py` is the gate.
 
 **61** registered project tasks, **21** beat entries, **40** reachable only through management commands, API actions, or other tasks.
 

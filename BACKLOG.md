@@ -346,7 +346,8 @@ median Sharpe alone.
 ### The ML rematch's CV arm needs per-fold retraining, not another artifact
 
 Phase 10 added the shadow book (`signal_type=SHADOW`, `ETF_ML_SHADOW_MODEL`, a
-19:50 beat task) and the API/ledger isolation that keeps it out of production.
+03:50 CST beat task — `19:50 UTC` before the 2026-11 timezone unification, same
+instant) and the API/ledger isolation that keeps it out of production.
 It is inert until an ML `ModelVersion` is active, which the gate forbids until a
 candidate wins.
 
@@ -991,3 +992,129 @@ The bar the model work is aiming at, against the 3.2 baseline:
 - An unexplained arithmetic note survived from the old scratch section:
   `$23.7 / 0.2257 ≈ 105`. Kept here only because deleting it loses the hint that
   something was being sized.
+- Catch-up treats an in-progress Beijing trading day as a missing day.
+  `apps/catchup/service.py:106` sets `as_of` from `session_today()`, and every
+  detector then compares that against `trade_date` without ever asking whether the
+  market has closed: `detectors.py:183-184` (a zero cross-sectional count *is* a
+  gap), `detectors.py:224-231` (`benchmark_index` rows absent up to `as_of`),
+  `detectors.py:249` (`missing_etf_daily_dates` up to `as_of`), and the repairs that
+  act on them at `repairs.py:89-145`. So during every trading session the hourly
+  `:25` tick really does call TuShare to repair a date that cannot have data yet —
+  burning budget and writing `FAILED` / `PROVIDER_GAP` rows for a hole that the
+  00:10 CST sync fills by itself. The fix is a "the session has closed" guard on the
+  **repair** path, not a different `as_of`. Note explicitly that using
+  `session_today()` rather than `timezone.localdate()` here was a **deliberate
+  choice made during the timezone unification, not a fix for this**: it is what
+  bounds the exposure to ~7h/day (08:00–15:00 Beijing, the hours in which `as_of`
+  names a day the market has not finished) instead of widening it to ~15h/day
+  (00:00–15:00). Switching it to the calendar date would make the bug worse while
+  looking more "correct".
+- `manage.py catch_up --as-of` never parses its argument. The help text promises
+  "Override today as YYYY-MM-DD", but `apps/catchup/management/commands/catch_up.py:45`
+  passes `options['as_of']` through as a **string**; `service.py:106`
+  (`as_of = as_of or session_today()`) keeps it, because a non-empty string is
+  truthy, and `detectors.py:109` then evaluates `as_of - timedelta(...)`. Any
+  non-empty `--as-of` therefore raises `TypeError` before a single detector runs.
+  The path is uncovered rather than working: every test calls `run_catch_up` with a
+  real `date` (`AS_OF = date(2026, 10, 30)`) and none of them goes through the
+  command. Fix by parsing in `handle()` and raising `CommandError` on a bad value.
+- A readability pass over the existing session-date call sites, deliberately not
+  taken now. The 39 sites in `apps/*/tasks*.py` still spell the session date as
+  `timezone.now().date()`, which by the definition in `apps/core/timez.py` is
+  *exactly* `session_today()` —
+  the module says so, and it is why the unification could flip `TIME_ZONE` without
+  touching any of them. Rewriting to the named helper is behaviour-identical and
+  pure naming, so it was left undone to keep the diff reviewable and the regression
+  surface at zero. The view and management-command sites need the same decision one
+  at a time, because for those `timezone.localdate()` is sometimes the better name —
+  that is a per-call-site judgement, not a sweep.
+- Orphaned UTC `CrontabSchedule` rows. After the flip, django-celery-beat's
+  `DatabaseScheduler` created a new row per beat entry keyed on the new
+  `timezone='Asia/Shanghai'`; the pre-flip rows with `timezone='UTC'` are still in
+  the database and referenced by no `PeriodicTask`. Harmless — inert rows, and
+  deleting them only invites the next scheduler sync to recreate whatever it wants.
+  Worth a one-off query only if that table is ever audited for drift.
+- `export_documentation_facts` output depends on which sheets are built in the same
+  process. `--check` walks `SHEET_NAMES` in order, and `build_commands()` imports every
+  management module — which registers additional Celery tasks — so `celery.md`'s task
+  tables and its "N registered project tasks" count differ from a partial run like
+  `--only celery`. Regenerate with `--only commands,celery,env` or a full run, never
+  `--only celery`, or CI's `--check` fails on a file that looked freshly written.
+  Making each sheet independent of build order (or asserting the task count from the
+  registry rather than the import side effects) is the real fix.
+- Redis boolean flags written with `timeout=None` never expire —
+  `apps/catchup/repairs.py:231` caches `catchup:macro_yields_entitlement_denied`
+  permanently on the first `yc_cb` permission error. Correct today (a token tier does
+  not gain entitlement mid-run, and every re-probe costs a 31s sleep per call), but
+  the flag then outlives the condition: upgrading the token requires deleting the key
+  by hand, and nothing in the code says so. Unrelated to timezones, and listed here
+  only because it is the same shape of problem — a convention that changed, with a
+  stored value still written under the old one.
+- The hourly news backfill hands its provider a window label eight hours behind the
+  zone that label names. `apps/sentiment/tasks.py:367-368` builds `start_at`/`end_at`
+  by calling `.strftime('%Y-%m-%d %H:%M:%S')` on the window bounds read back from the
+  database. Postgres returns those **UTC-aware**, so `strftime` renders the UTC reading
+  of an instant TuShare then parses as Beijing wall time — the window sent is eight
+  hours earlier than the one the task computed. This was expected to fix itself when
+  `TIME_ZONE` flipped; it did not, because the offset lives in the driver's return
+  value, not in the setting. Fix is `timezone.localtime(window_start).strftime(...)` at
+  both sites. Deliberately left alone in the unification: changing what a live provider
+  receives is a semantic change, not a mechanical one, and it wants its own rehearsal
+  against real TuShare responses. Until then
+  `apps/sentiment/tests.py::test_hourly_historical_backfill_fetches_next_window` pins
+  the current UTC-reading strings, so the first person to fix this sees a failing
+  assertion that explains the trade rather than a silent behaviour change.
+- That same rendering costs the backfill one permanent eight-hour hole at the moment
+  sentiment `0003` lands. Every stored `published_at` moves −8h, the walk's next
+  `end_at` is still rendered as the UTC reading, and so it jumps eight hours behind
+  where the walk had already got to: news published 01:30–09:30 Beijing on the
+  boundary day is skipped once and never revisited, because the walk only goes
+  backwards. Measured on the rehearsal copy across all 175,730 rows and pinned by
+  `apps/sentiment/tests_tz_migration.py::test_the_backfill_walk_boundary_moves_eight_hours_at_the_correction`.
+  Day-aligning `window_end` — the obvious-looking containment fix — widens the hole to
+  eighteen hours, since `window_end = earliest - 1s` is already below `earliest` in the
+  corrected frame and pulling it back to the previous Beijing midnight discards the
+  rest of the boundary day. Rendering in the zone the label names closes this and the
+  steady-state skew at once; both wait on the same TuShare rehearsal.
+  **Deployed 2026-11-02 19:26 CST**, and the hole is still open rather than closed: the
+  planned manual fill of Beijing `2025-06-09 02:06:00 → 10:05:59` returned
+  `抱歉，您没有接口(major_news)访问权限`, so the window has to be fetched the moment the
+  entitlement comes back — see the next entry.
+- The historical news backfill has been **dead since 2026-06-13** and nothing surfaces it.
+  `sentiment_newsarticle` rows carrying `metadata.provider = 'tushare_major'` (166,821 of them)
+  stop being created at `2026-06-13 20:12:40Z`; ingest by month is Apr 56,014 / May 95,217 /
+  Jun 15,590 / nothing since. The walk reached `2025-06-09` against a floor of `2021-04-15`, so
+  it is four and a half years short. Two separate things make this invisible. First, the
+  provider now answers `抱歉，您没有接口(major_news)访问权限` — a *permission* loss, not a rate
+  limit — and `_is_provider_quota_error` (`apps/sentiment/tasks.py:58-66`) only matches
+  `最多访问该接口` and `频率超限`, so the branch at `:379` never fires and `:384` re-raises: the
+  task fails loudly instead of returning the "deferred" string that the provider-blackout
+  runbook is written around. Second, `run-hourly-historical-news-backfill` is `enabled=true` with
+  `total_run_count=1797` and `last_run_at` 2026-11-02 02:12Z, so beat keeps ticking it and every
+  hour's failure looks like the previous hour's failure. Unrelated to timezones, listed here
+  because it is the same shape — a convention that changed (the token's entitlement) with the
+  error-handling code still written against the old one. Fix: recognise permission loss as its
+  own deferred class, with an alert after N consecutive failures rather than after 1,700.
+- `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
+  second row rather than an update. Every indicator task builds its key the same way —
+  `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
+  `:155` for MACD — which under `TIME_ZONE='UTC'` stored a trade date at `00:00+00:00` and now
+  stores it at `00:00+08:00`, i.e. eight hours *earlier* as an instant. Measured on
+  `analytics_technicalindicator` before the deploy: for asset 660 since 2026-09-01, 476 rows sit
+  at time-of-day `00:00:00`, 68 at one bulk `00:12:43.145224`, and **zero** at `16:00:00`. So
+  `get_or_create(asset, timestamp, indicator_type, parameters)` on a date that old code already
+  wrote inserts a parallel row instead of updating it, `unique_together` cannot catch it (the
+  timestamps differ), and the dashboard's `order_by('-timestamp').distinct('asset_id',
+  'indicator_type')` (`apps/analytics/views.py:663`) then prefers the *older-convention* row
+  because its instant is later. No displayed number is wrong — both rows are recomputed from the
+  same OHLCV — but the cost is a slowly doubling key space on a 166,338,926-row table and an
+  ambiguous winner. Left alone here for the same reason as the label skew: it is a semantic fix
+  in the deferred sweep, and the right shape is a zone-stable key (`session_midnight()` from
+  `apps/core/date_floor.py:18-29`, or a real `DateField`) rather than `make_aware` on a wall
+  midnight. Check after the first new-code indicator run: for the seam trade date, count
+  `(asset_id, indicator_type, parameters)` groups holding two rows exactly eight hours apart.
+- `sentiment.0003`'s `RunPython` is `elidable=True`, so a future `squashmigrations` over the
+  sentiment apps drops the −8h correction silently. A freshly built database does not need it —
+  that is why it is elidable — but the flag also means the correction survives only as long as
+  nobody squashes. Note it next to the migration file, and keep the deploy log
+  (`shifted=175730`, 2026-11-02 19:26 CST) as the record that it ran.

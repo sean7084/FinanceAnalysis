@@ -12,6 +12,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.utils import timezone
 
 from apps.etf_rotation.models import ETFIndexMapping, IndexValuationDaily
 
@@ -54,7 +55,7 @@ class Command(BaseCommand):
             )
         self.stdout.write(f'index valuation: {len(codes)} index code(s)')
 
-        end = options['end'] or time.strftime('%Y%m%d')
+        end = options['end'] or timezone.localdate().strftime('%Y%m%d')
         written = failed = 0
         for position, code in enumerate(codes, start=1):
             frame = None

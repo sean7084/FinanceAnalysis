@@ -83,7 +83,7 @@ def _resolve_target_date(target_date=None):
         try:
             return date.fromisoformat(str(target_date))
         except ValueError:
-            return timezone.now().date()
+            return timezone.now().date()  # UTC date == A-share session date; see apps/core/timez.py
     return timezone.now().date()
 
 

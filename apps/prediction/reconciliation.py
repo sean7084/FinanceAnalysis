@@ -19,6 +19,7 @@ from kombu.exceptions import OperationalError
 
 from apps.markets.benchmarking import effective_universe_tradeable_assets
 from apps.markets.calendar_utils import open_trading_dates
+from apps.core.timez import session_today
 
 from .models import LightGBMPrediction, PredictionResult
 
@@ -119,7 +120,7 @@ def coverage_gaps(as_of=None, lookback_trading_days=None, sources=RECONCILE_SOUR
         if lookback_trading_days is None
         else int(lookback_trading_days)
     )
-    resolved_as_of = as_of if isinstance(as_of, date) else (as_of or date.today())
+    resolved_as_of = as_of if isinstance(as_of, date) else (as_of or session_today())
     gaps = []
     for trade_date in open_trading_dates(resolved_as_of, resolved_lookback):
         gaps.extend(gaps_for_date(trade_date, sources=sources))

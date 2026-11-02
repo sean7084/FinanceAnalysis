@@ -819,7 +819,7 @@ class Phase10SignalTests(TestCase):
             calculate_rsi_for_asset(self.asset.id)
 
         indicator = TechnicalIndicator.objects.get(asset=self.asset, indicator_type='RSI')
-        self.assertEqual(indicator.timestamp.date(), as_of)
+        self.assertEqual(timezone.localtime(indicator.timestamp).date(), as_of)
         self.assertFalse(
             TechnicalIndicator.objects.filter(
                 asset=self.asset,

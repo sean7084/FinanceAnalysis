@@ -4,6 +4,61 @@
 
 #### Changed:
 
+- **Timezone unified on `Asia/Shanghai`.** The project models Beijing market time and
+  read its own clock in UTC. `config/settings/base.py` declared `TIME_ZONE` **twice**:
+  the intended value near the top, then a leftover cookiecutter block after the app
+  definitions that silently won. Both halves said `'UTC'`. It is now declared exactly
+  once, as `'Asia/Shanghai'`, and `CELERY_TIMEZONE = 'Asia/Shanghai'` was added beside
+  the Celery block because celery 5.4 does *not* fall back to Django's `TIME_ZONE` --
+  without it beat reads the crontab numbers as UTC while every task body computes a
+  Beijing date, which is the failure the whole change exists to remove.
+  `apps/core/tests_beat_schedule.py` asserts the two settings agree and that
+  `TIME_ZONE` appears exactly once in the file.
+  - **All 17 hour-bearing `CELERY_BEAT_SCHEDULE` entries were relabelled from UTC
+    hours to Beijing hours. No firing instant moved** -- `16:10 UTC` *is* `00:10 CST`;
+    only the clock you are looking at when you edit one changed. (Four entries carry no
+    hour field and are untouched.) Two of the 17 roll past midnight with the +8 and so
+    took their day constraint with them: `report-etf-rotation-live-track-monthly` from
+    `21:00 UTC` on day 1 to `05:00 CST` on day **2**, and `sync-etf-fund-shares-weekly`
+    from Saturday `18:10 UTC` to Sunday `02:10 CST` with `day_of_week='0'` -- celery
+    rejects `'7'` outright (`ValueError: Invalid end range: 7 > 6`), which would have
+    crashed beat at startup rather than misfiring. The proof is that both tables select
+    the same minutes over a week-long window chosen to contain a Sunday, a month end and
+    a month start, which is where a naive `hour + 8` goes silently wrong;
+    `remaining_estimate` cannot be used for it, because it measures from the real wall
+    clock and mixes two reference frames.
+  - **`sentiment/0003_shift_legacy_published_at_to_beijing` corrects the history the old
+    setting wrote.** The Chinese providers publish Beijing wall-clock strings and
+    `providers._coerce_datetime` localises them with `make_aware()`, so under `'UTC'` an
+    article published at 09:30 Beijing was stored as `09:30+00:00` -- an instant eight
+    hours ahead of the truth. The flip fixes every row ingested from here on; this
+    migration shifts the legacy ones back. It identifies its target set by *predicate*,
+    not by a timestamp cutoff (a post-flip row is the same string read with a non-zero
+    offset and so can never equal the UTC reading; a `created_at` cutoff would have
+    "corrected" the `timezone.now()` fallback rows and missed rows an old-code worker
+    inserts after `migrate`). Each touched row is marked
+    `metadata['tz_shift'] = 'legacy-utc-minus-8h-v1'`, which is both the idempotency
+    marker -- a shifted row no longer matches the forward predicate -- and the key the
+    `reverse_code` works from, so the pass is reversible and re-runnable. It prints a
+    row-count report (`shifted` / `already_marked` / `no_raw_payload` /
+    `mismatch_untouched` / `total_scanned`, then per source) to capture in the deploy
+    log. No `SentimentScore` recompute: the mis-stamped value's UTC date and the
+    corrected value's Beijing date are the same day, so the daily bucket is invariant.
+  - **`apps/core/timez.py` names the two "todays"** the codebase had been mixing.
+    `session_today()` is the A-share session date -- the Beijing calendar day, minus one
+    before 08:00 Beijing, which is exactly the old UTC day boundary, so every
+    long-standing `timezone.now().date()` call site keeps its meaning. Django's
+    `timezone.localdate()` is the Beijing calendar date. Nightly pipeline jobs and
+    anything describing "the trading day that just closed" take the former; CLI defaults,
+    freshness checks, "this month" and user-facing validation take the latter. Rewriting
+    the existing `timezone.now().date()` call sites to the new name is a deferred
+    readability pass, not a behaviour change.
+  - **`ruff.toml` guards the boundary**, selecting only `DTZ003` (`datetime.utcnow()`),
+    `DTZ005` (`datetime.now()` without a tzinfo) and `DTZ011` (`date.today()`) -- the
+    three calls that read the *host* clock, which under a Beijing `TIME_ZONE` are allowed
+    to disagree with Django's notion of today. Tests are exempt, since they pin fixtures to
+    explicit instants. CI additionally greps for `time.strftime`, which reads the same
+    clock and is outside those rules.
 - **Project renamed to 璇玑 (Armillary).** The name comes from the *Shangshu*
   ("璇玑玉衡，以齐七政"): the rotating armillary ring of the ancient Chinese
   instrument. It was chosen because it carries both halves of what this system

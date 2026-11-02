@@ -2,6 +2,7 @@ from datetime import date
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.macro.models import MacroSnapshot
@@ -20,7 +21,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
-        parser.add_argument('--end-date', default=date.today().isoformat())
+        parser.add_argument('--end-date', default=timezone.localdate().isoformat())
 
     def handle(self, *args, **options):
         floor_date = get_historical_data_floor()

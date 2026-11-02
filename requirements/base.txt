@@ -24,3 +24,7 @@ whitenoise==6.8.2
 # S3-compatible object-store client for the model artifact backend (MinIO on the NAS).
 # Imported lazily by apps/prediction/artifact_store.py; only exercised when ARTIFACT_STORE_BACKEND=s3.
 boto3==1.43.110
+# IANA timezone database for zoneinfo. Debian and the CI runner ship it as a
+# system package, but a Windows-native checkout has no source for it and
+# ZoneInfo('Asia/Shanghai') raises there.
+tzdata==2025.3

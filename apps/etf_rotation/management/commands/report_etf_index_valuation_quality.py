@@ -13,6 +13,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from apps.etf_rotation import valuation_qc
 from apps.etf_rotation.models import ETFDaily, ETFIndexMapping, IndexValuationDaily
@@ -48,7 +49,7 @@ class Command(BaseCommand):
             .values_list('date', flat=True)
         )) if start and end else []
         mapped = set(ETFIndexMapping.objects.values_list('index_code', flat=True))
-        as_of = date.fromisoformat(options['as_of']) if options['as_of'] else date.today()
+        as_of = date.fromisoformat(options['as_of']) if options['as_of'] else timezone.localdate()
 
         report = valuation_qc.quality_report(
             rows, mapped_indices=mapped,
@@ -58,7 +59,7 @@ class Command(BaseCommand):
         text = _render(report, start=start, end=end, as_of=as_of)
         out = options['out'] or os.path.join(
             str(settings.BASE_DIR), 'docs/reports',
-            f'etf-index-valuation-quality-{date.today().isoformat()}.md',
+            f'etf-index-valuation-quality-{timezone.localdate().isoformat()}.md',
         )
         Path(out).parent.mkdir(parents=True, exist_ok=True)
         Path(out).write_text(text, encoding='utf-8')

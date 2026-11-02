@@ -183,7 +183,16 @@ jobs:
       # 795 -> 836 -> 844: the issue close-out batch, then the labels-only guard tests and
       # the --feature-set axis (trainer subset resolution, ledger context naming, LSTM column
       # pairing, and the pinned-artifact read).
-      MIN_TEST_COUNT: "844"
+      # 844 -> 939: the timezone unification added 26 (9 named-date helpers, 8 proof that no
+      # beat entry moved a firing instant across the UTC -> Asia/Shanghai flip, 9 for the
+      # sentiment -8h migration's forward/reverse/idempotency contract). The floor was already
+      # stale -- the suite stood at 913 before that refactor, so earlier branches grew it without
+      # bumping this number. Raising it to the measured 939 makes the floor bite again.
+      # 939 -> 941: running 0003 against a copy of the real rows pinned two consequences that
+      # were measured rather than argued. The purge cutoff is Beijing midnight, the only boundary
+      # in that command that moves with TIME_ZONE; and correcting a row drags the hourly
+      # backfill's provider label eight hours back, which skips one morning session once.
+      MIN_TEST_COUNT: "941"
 
     steps:
       - uses: actions/checkout@v4
@@ -201,6 +210,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements/local.txt
         # torch is unpinned and large; expect this step to dominate the job runtime.
+
+      - name: Python timezone lint
+        run: |
+          # The project's clock is not the reference frame the code runs in, so a
+          # call that reads it directly is a silent bug: it disagrees with
+          # timezone.now()/localdate() for part of every day. ruff's DTZ rules
+          # cover datetime.utcnow(), a tz-less datetime.now() and date.today().
+          # They do not cover time.strftime(), which reads the same host clock,
+          # so that one needs the grep.
+          ruff check apps config scripts
+          ! grep -rn "time\.strftime" apps config
 
       - name: Django system checks
         run: python manage.py check

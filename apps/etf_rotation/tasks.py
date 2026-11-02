@@ -29,6 +29,7 @@ from django.utils import timezone
 
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.models import ExchangeTradingCalendar
+from apps.core.timez import session_today
 
 from .etf_universe import (
     SHARE_UNIT_TO_SHARES,
@@ -403,7 +404,7 @@ def sync_etf_benchmark_index(self, end_date=None, lookback_days=30):
     end_day = (
         end_date if isinstance(end_date, date)
         else date.fromisoformat(str(end_date)) if end_date
-        else timezone.localdate()
+        else session_today()
     )
     codes = [str(settings.ETF_BENCHMARK_CODE)] + [
         code for code in (settings.ETF_SECONDARY_BENCHMARK_CODES or [])
@@ -588,7 +589,7 @@ def missing_etf_daily_dates(start_date, end_date, exchange_code='SSE'):
              soft_time_limit=600, time_limit=660)
 def sync_etf_daily_recent(self, lookback_days=10):
     """Daily beat entry point: fill any gap in the trailing window, then today."""
-    end_day = timezone.localdate()
+    end_day = session_today()
     start_day = end_day - timedelta(days=max(int(lookback_days), 1))
     dates = missing_etf_daily_dates(start_day, end_day)
     results = []
@@ -613,7 +614,7 @@ def compute_etf_features_daily(self, lookback_days=320):
     """
     from django.core.management import call_command
 
-    end_day = timezone.localdate()
+    end_day = session_today()
     start_day = end_day - timedelta(days=max(int(lookback_days), 1))
     call_command(
         'compute_etf_features',

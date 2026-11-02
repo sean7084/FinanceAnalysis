@@ -53,7 +53,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        suite_name = options['suite_name'] or f"reference_benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        suite_name = options['suite_name'] or f"reference_benchmark_{timezone.localtime(timezone.now()).strftime('%Y%m%d_%H%M%S')}"
         output_dir = Path(options['output_dir']) if options['output_dir'] else Path('reports') / suite_name
         output_dir.mkdir(parents=True, exist_ok=True)
         suite_started_at = timezone.now()

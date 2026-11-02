@@ -77,7 +77,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
-        parser.add_argument('--end-date', default=date.today().isoformat())
+        parser.add_argument('--end-date', default=timezone.localdate().isoformat())
         parser.add_argument('--symbols', default='')
         parser.add_argument('--limit-assets', type=int, default=0)
         parser.add_argument('--signal-types', default=','.join(DEFAULT_SIGNAL_TYPES))

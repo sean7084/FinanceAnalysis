@@ -19,6 +19,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.utils import timezone
 
 from apps.etf_rotation.models import ETFIndexMapping, ETFFeatureSnapshot, IndexWeightSnapshot
 
@@ -117,7 +118,7 @@ class Command(BaseCommand):
         self.stdout.write(f'index weight: {len(codes)} index(es)')
 
         start = _parse_day(options['start'])
-        end = _parse_day(options['end']) if options['end'] else date.today()
+        end = _parse_day(options['end']) if options['end'] else timezone.localdate()
         written = failed = 0
         for position, code in enumerate(codes, start=1):
             index_rows = 0

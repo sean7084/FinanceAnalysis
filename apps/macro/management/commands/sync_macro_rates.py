@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from apps.core import tushare_client
 from apps.macro.models import MacroSnapshot
@@ -25,7 +26,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         newest = MacroSnapshot.objects.order_by('-date').values_list('date', flat=True).first()
         start = options['start'] or (newest.strftime('%Y%m%d') if newest else None)
-        end = options['end'] or date.today().strftime('%Y%m%d')
+        end = options['end'] or timezone.localdate().strftime('%Y%m%d')
         if not start:
             raise CommandError('no snapshot exists and no --start was given.')
         frame = tushare_client.call_with_retry(

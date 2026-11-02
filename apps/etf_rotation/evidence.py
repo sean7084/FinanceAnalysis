@@ -62,6 +62,9 @@ def record_measurement(*, context: dict, results: dict, verdict: str = '',
     unregistered run is still recorded, with an empty value, because hiding it would defeat
     the purpose of the ledger.
     """
+    # Deliberately UTC, not the session timezone: this is an append-only audit
+    # ledger whose existing rows carry a +00:00 offset, and a record of when a
+    # measurement ran should not move because a deploy changed a setting.
     created_at = datetime.now(timezone.utc).isoformat()
     record = {
         'id': measurement_id(context, created_at),

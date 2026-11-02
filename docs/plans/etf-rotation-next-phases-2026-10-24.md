@@ -1,5 +1,7 @@
 # ETF 轮动 — 后续 Phases 6-12：样本外证据、资金基数与 ML 复赛
 
+> 时区说明（2026-11 补）：本文写于 `TIME_ZONE='UTC'` 时期，文中 19:50 影子信号、每月 1 日 21:00 月报等 beat 小时数都是 UTC。时区统一后 beat 的小时数已改用北京时间书写（`CELERY_TIMEZONE='Asia/Shanghai'`），触发瞬间没有移动：+8 即为当前排程（19:50 → 03:50；21:00 每月 1 日 → 05:00 每月 **2** 日，跨午夜的条目其 day 约束一并前移）。本文是历史记录，正文数字按原样保留、不改写。
+
 > 上一轮（Phases 0-5）见 [`etf-rotation-selection-sizing-2026-10-23.md`](etf-rotation-selection-sizing-2026-10-23.md)，
 > 实施记录在其 §7。本计划承接 PR #62 合并后的状态（`origin/main` @ `63342b0`），
 > 只安排它没有覆盖的开放项。

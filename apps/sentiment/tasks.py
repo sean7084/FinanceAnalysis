@@ -400,6 +400,8 @@ def calculate_daily_sentiment(target_date=None):
     else:
         d = timezone.now().date()
 
+    # ``d`` is the UTC date, which is the session date: the UTC midnight
+    # boundary is 08:00 Beijing, after the close. Do not switch to localdate().
     day_start = timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time()))
     day_end = day_start + timedelta(days=1)
 

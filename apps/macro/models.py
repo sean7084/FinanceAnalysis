@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
 
 
 class MacroSnapshot(models.Model):
@@ -100,7 +101,7 @@ def macro_freshness(as_of=None, *, max_age_days: int = 45) -> dict:
     from datetime import date
 
     newest = MacroSnapshot.objects.order_by('-date').values_list('date', flat=True).first()
-    today = as_of or date.today()
+    today = as_of or timezone.localdate()
     if newest is None:
         return {'latest': None, 'age_days': None, 'stale': True, 'max_age_days': max_age_days}
     age_days = (today - newest).days

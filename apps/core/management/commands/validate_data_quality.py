@@ -26,7 +26,7 @@ from apps.analytics.management.commands.backfill_technical_indicators import (
 )
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import TechnicalIndicator
-from apps.core.date_floor import get_historical_data_floor, utc_midnight
+from apps.core.date_floor import get_historical_data_floor, session_midnight
 from apps.factors.fundamental_materialization import (
     iter_date_windows,
     materialize_fundamental_snapshot_rows,
@@ -449,7 +449,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
-        parser.add_argument('--end-date', default=date.today().isoformat())
+        parser.add_argument('--end-date', default=timezone.localdate().isoformat())
         parser.add_argument('--symbols', default='', help='Comma-separated symbols or TuShare ts_codes. Default validates active assets.')
         parser.add_argument('--include-delisted', action='store_true')
         parser.add_argument('--effective-universe-only', action='store_true', help='Restrict validation to assets/dates present in the PIT effective universe during the requested window.')
@@ -1562,8 +1562,8 @@ class Command(BaseCommand):
             lambda: list(
                 TechnicalIndicator.objects.filter(
                     asset=asset,
-                    timestamp__gte=utc_midnight(min_date),
-                    timestamp__lt=utc_midnight(max_date + timedelta(days=1)),
+                    timestamp__gte=session_midnight(min_date),
+                    timestamp__lt=session_midnight(max_date + timedelta(days=1)),
                     indicator_type__in=technical_indicators,
                 ).values('timestamp__date', 'indicator_type', 'parameters', 'value')
             ),
@@ -2286,8 +2286,8 @@ class Command(BaseCommand):
         asset_ids = [asset.id for asset in assets]
         base_queryset = TechnicalIndicator.objects.filter(
             asset_id__in=asset_ids,
-            timestamp__gte=utc_midnight(start_date),
-            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
+            timestamp__gte=session_midnight(start_date),
+            timestamp__lt=session_midnight(end_date + timedelta(days=1)),
             indicator_type__in=auditable_indicator_types,
         ).select_related('asset').order_by('timestamp', 'asset_id', 'indicator_type', 'pk')
 
@@ -2305,7 +2305,7 @@ class Command(BaseCommand):
         audit_rows = []
         for sampled_asset_rows in sampled_rows_by_asset.values():
             asset = sampled_asset_rows[0].asset
-            sampled_dates = [row.timestamp.date() for row in sampled_asset_rows]
+            sampled_dates = [timezone.localtime(row.timestamp).date() for row in sampled_asset_rows]
             sampled_indicator_types = tuple(sorted({row.indicator_type for row in sampled_asset_rows}))
             recomputed_values = {}
             recompute_error = None
@@ -2321,7 +2321,7 @@ class Command(BaseCommand):
                     )
                     recomputed_values = {
                         (
-                            technical_row.timestamp.date(),
+                            timezone.localtime(technical_row.timestamp).date(),
                             technical_row.indicator_type,
                             self._technical_indicator_parameters_key(technical_row.parameters),
                         ): technical_row.value
@@ -2346,7 +2346,7 @@ class Command(BaseCommand):
                 else:
                     recomputed_value = recomputed_values.get(
                         (
-                            row.timestamp.date(),
+                            timezone.localtime(row.timestamp).date(),
                             row.indicator_type,
                             self._technical_indicator_parameters_key(parameters),
                         )
@@ -2373,7 +2373,7 @@ class Command(BaseCommand):
                     'asset_symbol': row.asset.symbol,
                     'asset_ts_code': row.asset.ts_code,
                     'asset_name': row.asset.name,
-                    'date': row.timestamp.date(),
+                    'date': timezone.localtime(row.timestamp).date(),
                     'indicator_type': row.indicator_type,
                     'parameters': parameters,
                     'stored_value': row.value,
@@ -2614,8 +2614,8 @@ class Command(BaseCommand):
 
         technical_queryset = TechnicalIndicator.objects.filter(
             asset_id__in=asset_ids,
-            timestamp__gte=utc_midnight(start_date),
-            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
+            timestamp__gte=session_midnight(start_date),
+            timestamp__lt=session_midnight(end_date + timedelta(days=1)),
             indicator_type__in=technical_indicators,
             value=Decimal('0.5'),
         ).select_related('asset')
@@ -2846,8 +2846,8 @@ class Command(BaseCommand):
 
         for row in TechnicalIndicator.objects.filter(
             asset_id__in=union_asset_ids,
-            timestamp__gte=utc_midnight(start_date),
-            timestamp__lt=utc_midnight(end_date + timedelta(days=1)),
+            timestamp__gte=session_midnight(start_date),
+            timestamp__lt=session_midnight(end_date + timedelta(days=1)),
             indicator_type__in=technical_indicators,
         ).order_by().values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
             row_date = row['timestamp__date']
@@ -3035,8 +3035,8 @@ class Command(BaseCommand):
         # only populate participant_payload dicts (order-independent), so clear the default
         # ordering to avoid a full sort before the server-side cursor can stream the rows.
         for row in TechnicalIndicator.objects.filter(
-            timestamp__gte=utc_midnight(min(audit_dates)),
-            timestamp__lt=utc_midnight(max(audit_dates) + timedelta(days=1)),
+            timestamp__gte=session_midnight(min(audit_dates)),
+            timestamp__lt=session_midnight(max(audit_dates) + timedelta(days=1)),
             indicator_type='RS_SCORE',
         ).order_by().select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
             if row['timestamp__date'] not in audit_dates_set:
