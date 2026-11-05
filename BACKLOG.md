@@ -835,6 +835,26 @@ and `htmlcov/` but nothing generates them.
 
 ## Open — documentation
 
+- **`CONTRIBUTING.md` §6 misdescribes where model artifacts live, and the error is
+  dangerous.** It says "`models/` is **tracked in git** — 132 files including `.pkl`,
+  `.pt`" and instructs "Commit a new artifact family together with the registry change that
+  activates it." In fact `git ls-files models/` returns **0** and `.gitignore:102` has ignored
+  the tree since 2026-10-10, because artifacts live in the object store
+  (`ARTIFACT_STORE_BACKEND = s3`). Following the published instruction would commit multi-MB
+  binaries. The correct step is `migrate_artifacts_to_store --execute` followed by
+  `verify_artifact_store`. Found on 2026-11-05 while publishing the `adj-fix` families.
+- **`CONTRIBUTING.md` §1 says there is no branch or PR workflow, which the history
+  contradicts.** It states "Work happens on `main`. There is no protected-branch workflow, no
+  PR template, and no CI." `.github/PULL_REQUEST_TEMPLATE.md` exists, and PRs #56-#78 each
+  merged a `<type>/<slug>` branch. The branching convention is therefore inferable only from
+  git history, which is exactly what §1 claims is unnecessary.
+- **`export_documentation_facts --check` reports drift in an order that invites a false
+  green.** The `CommandError` is written before the per-sheet `Building …` lines, so checking a
+  log with `tail` can show a clean run for a sheet that failed. Verified the hard way:
+  `--check` flagged `commands.md`, a regeneration invoked with a mistyped flag
+  (`--sheets`, which the parser rejects) exited non-zero, and a `tail -4` of the follow-up
+  `--check` showed no error at all. Use `--only <sheet>` and read the whole output.
+
 - Correct the `relative_volume_*` gap values in `TECHNICAL_GUIDE.md` (see above).
 - Add docstrings to `apps/backtest/` (19 non-test files, ~4,100 lines, zero
   docstrings — including the 2,061-line engine in `tasks.py` that encodes the fee
@@ -867,12 +887,53 @@ unvalidated.
 
 ### Data semantics
 
-- **OHLCV adjustment semantics.** `close` is already qfq and `adj_close` holds the
-  same value; the unadjusted original close is not retained. Add a `raw_close`
-  column so the two stop being "same value, different name".
+- **OHLCV adjustment semantics — measured, no longer a tidy-up.** `close` is
+  already qfq and `adj_close` holds the same value; the unadjusted original close
+  and the `adj_factor` are not retained, so a stored row cannot be re-based or
+  audited locally. Because TuShare re-bases qfq to the newest factor at query time
+  and the writer only ever appends (`ignore_conflicts=True` plus
+  `start_dt = latest.date + 1`), each ex-dividend event leaves the asset's history
+  on two bases. A 2026-11-03 census (479 trading dates, 1,767 measurable assets)
+  found **38% of the universe** carrying a seam — and **54% of the 500 assets in
+  the synced universe**, which is the population the models actually read. The
+  metric is the total spread of bases inside one asset's series, not a single day's
+  step: median 1.93%, p90 5.33%, max 71.4%, and 657 of the 679 drifted assets have
+  more than half their rows off-basis. Damage to return series is therefore not
+  "one bad day" but a majority of rows on a basis the newest rows no longer use.
+  See `docs/reference/price-adjustment.md` and `manage.py audit_adjustment_drift`;
+  remediation is the approved `raw_close` + `adj_factor` schema change plus a
+  per-asset re-fetch.
+- **`OHLCV.amount` and `ETFDaily.amount` differ by 1000x.** The stock table stores
+  TuShare's raw 千元 unchanged (`markets/tasks.py`, `_safe_decimal(row['amount'])`),
+  the ETF table converts to 元 via `TUSHARE_AMOUNT_QIAN_YUAN_TO_YUAN`. Deliberately
+  left alone for now: converting would break every reader of `amount` for no
+  cleaning benefit. Record the unit in `OHLCV.amount`'s `help_text` when the schema
+  is next touched, and do not join the two tables on `amount`.
 - **No limit-up / limit-down rules.** Nothing judges 10% / 20% / ST limits against
   the previous close, distinguishes main board / ChiNext / STAR / BSE regimes, or
   flags return-based price anomalies. Limit-up days are not marked.
+- **PIT union benchmark: two write-path defects, both pre-existing.**
+  (a) `refresh_point_in_time_union_benchmark(start, end, initial_nav)` treats
+  `start_date` as a seed row and writes it with `daily_return = 0`. Its only
+  caller for the daily path,
+  `refresh_latest_point_in_time_union_benchmark`, passes the *previous* row's date
+  as `start` -- so every daily refresh zeroes the previous session's PIT return,
+  and that date is never revisited. Observed directly: refreshing 2010-01-07 rewrote
+  2010-01-06's `daily_return` from -0.00083720 to 0 with `nav` unchanged.
+  (b) The first trading day of 2011-2016 all carry a flat NAV (`daily_return = 0`)
+  while the index itself moved (2016-01-04: -8.33%). Data coverage on those dates is
+  normal (461-492 computable members, same as neighbouring sessions), and it
+  reproduces with a single whole-range build, so it is build logic, not a chunking
+  artefact and not missing data. Six dates out of 4,084, and a flat day shifts the
+  NAV *level* rather than corrupting later returns, so the impact is bounded -- but
+  `PIT vs 000905.SH daily-return correlation` sits at 0.9529 and should be
+  re-measured after a fix.
+- **`TechnicalIndicator.timestamp` is stored as midnight in the active `TIME_ZONE`,
+  so reading it back with `datetime.date()` is wrong.** `.date()` on the UTC value
+  truncates in UTC, which for a Beijing-midnight row returns the *previous* day --
+  every session, not occasionally. `apps/core/date_floor.session_midnight`'s
+  docstring documents the SQL-side hazard (non-sargable `timestamp__date`) but not
+  this one. Convert with `django.utils.timezone.localtime()` first.
 - **Macro snapshot alignment.** The yield curve uses each month's first-day data
   and CNY/USD uses the monthly open. Switch to the previous month's OHLCV, and
   align snapshots and market context by publication/availability date rather than

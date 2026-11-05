@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-01T16:52:24Z_
+_Generated: 2026-11-05T18:21:02Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**56** project commands across **10** apps.
+**58** project commands across **10** apps.
 
 
 ## `apps.analytics`
@@ -622,6 +622,22 @@ Fetch SHIBOR fixings and store them on the matching monthly snapshots.
 ## `apps.markets`
 
 
+### `audit_adjustment_drift`
+
+Report which assets hold rows written under more than one forward-adjustment basis, and how large the resulting phantom step is.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start-date` | value | &mdash; |  | First trading date to sample. Defaults to --window-years back. |
+| `--end-date` | value | &mdash; |  | Last trading date to sample. Defaults to today. |
+| `--window-years` | value | `1` |  | How far back to cover when --start-date is not given. Each extra trading day costs two TuShare calls for the whole market. |
+| `--max-dates` | value | `0` |  | Cover at most this many of the most recent trading dates. 0 means every date in the window. Never thins coverage. |
+| `--max-calls` | value | `400` |  | Hard TuShare call budget. The census stops rather than spending the quota the daily sync needs. |
+| `--include-delisted` | flag | `False` |  | Also census delisted assets, which still feed PIT backtests. |
+| `--output-dir` | value | `""` |  |  |
+| `--min-rows` | value | `4` |  | Assets with fewer comparable rows are reported as unmeasurable. |
+
+
 ### `backfill_asset_list_dates`
 
 Backfill Asset.list_date, delist_date, and listing_status from TuShare stock_basic with AkShare current-listing fallback.
@@ -727,6 +743,20 @@ Verify OHLCV/full-day suspension overlaps against AkShare Baidu suspension notic
 | `--output-file` | value | `""` |  |  |
 | `--baidu-cookie` | value | `""` |  |  |
 | `--execute` | flag | `False` |  |  |
+
+
+### `repair_ohlcv_adjustment_basis`
+
+Re-fetch OHLCV history so every row stores its unadjusted close and adjustment factor on one shared basis.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--synced-universe` | flag | `False` |  | Repair index-tagged assets, the population the models read. Default. |
+| `--all-assets` | flag | `False` |  | Repair every asset with stored OHLCV, including those outside the sync scope. |
+| `--symbols` | value | `""` |  | Comma-separated ts_codes, e.g. 600519.SH,000001.SZ. |
+| `--limit` | value | `0` |  | Stop after this many assets. |
+| `--max-calls` | value | `0` |  | Stop after this many TuShare calls (two per asset). 0 means no cap. |
+| `--dry-run` | flag | `False` |  | Report what would be re-fetched without calling the provider. |
 
 
 ### `sync_benchmark_index_history`
