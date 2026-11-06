@@ -6,7 +6,7 @@
 
 # Data Coverage Metrics
 
-_Generated: 2026-11-05T18:54:39Z_
+_Generated: 2026-11-06T04:21:15Z_
 
 Table-level coverage for every concrete model in `apps/`. `Assets` is the distinct count of the `asset` foreign key where the table has one. Prose about what each metric *means* and what a gap *implies* lives in `TECHNICAL_GUIDE.md`; this sheet only states the measured facts.
 
@@ -23,7 +23,7 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 | `backtest_backtesttrade` | `backtest.BacktestTrade` | 240,874 | 595 | trade_date | 2023-01-03 | 2026-05-18 |
 | `catchup_catchuprun` | `catchup.CatchUpRun` | 115 | &mdash; | &mdash; | &mdash; | &mdash; |
 | `etf_rotation_etfdaily` | `etf_rotation.ETFDaily` | 2,649,487 | &mdash; | date | 2016-01-04 | 2026-11-03 |
-| `etf_rotation_etffeaturesnapshot` | `etf_rotation.ETFFeatureSnapshot` | 2,647,301 | &mdash; | date | 2016-01-04 | 2026-11-02 |
+| `etf_rotation_etffeaturesnapshot` | `etf_rotation.ETFFeatureSnapshot` | 2,649,487 | &mdash; | date | 2016-01-04 | 2026-11-03 |
 | `etf_rotation_etfindexmapping` | `etf_rotation.ETFIndexMapping` | 1,966 | &mdash; | &mdash; | &mdash; | &mdash; |
 | `etf_rotation_etfrotationbacktest` | `etf_rotation.ETFRotationBacktest` | 354 | &mdash; | created_at | 2026-10-20 | 2026-10-23 |
 | `etf_rotation_etfrotationposition` | `etf_rotation.ETFRotationPosition` | 9 | &mdash; | created_at | 2026-10-25 | 2026-11-02 |
@@ -53,7 +53,7 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 | `prediction_featureimportancesnapshot` | `prediction.FeatureImportanceSnapshot` | 1,071 | &mdash; | created_at | 2026-04-15 | 2026-11-05 |
 | `prediction_lightgbmmodelartifact` | `prediction.LightGBMModelArtifact` | 32 | &mdash; | created_at | 2026-04-15 | 2026-11-05 |
 | `prediction_lightgbmprediction` | `prediction.LightGBMPrediction` | 57,442 | 897 | date | 2025-01-14 | 2026-11-03 |
-| `prediction_modelversion` | `prediction.ModelVersion` | 95 | &mdash; | created_at | 2026-04-15 | 2026-11-05 |
+| `prediction_modelversion` | `prediction.ModelVersion` | 98 | &mdash; | created_at | 2026-04-15 | 2026-11-06 |
 | `prediction_predictionresult` | `prediction.PredictionResult` | 70,826 | 898 | date | 2025-01-14 | 2026-11-03 |
 | `sentiment_conceptheat` | `sentiment.ConceptHeat` | 634 | &mdash; | date | 2026-04-15 | 2026-11-02 |
 | `sentiment_newsarticle` | `sentiment.NewsArticle` | 175,820 | &mdash; | published_at | 2025-06-09 | 2026-11-02 |
@@ -132,12 +132,12 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 
 | model_type | Rows | Share | Earliest | Latest |
 | --- | --- | --- | --- | --- |
-| `ENSEMBLE` | 11 | 11.6% | 2026-04-15 | 2026-11-05 |
-| `ETF_ENSEMBLE` | 2 | 2.1% | 2026-10-20 | 2026-10-20 |
-| `ETF_LIGHTGBM` | 3 | 3.2% | 2026-10-20 | 2026-10-25 |
-| `ETF_LSTM` | 38 | 40.0% | 2026-10-20 | 2026-10-25 |
-| `LIGHTGBM` | 33 | 34.7% | 2026-04-15 | 2026-11-05 |
-| `LSTM` | 8 | 8.4% | 2026-04-18 | 2026-11-05 |
+| `ENSEMBLE` | 11 | 11.2% | 2026-04-15 | 2026-11-05 |
+| `ETF_ENSEMBLE` | 3 | 3.1% | 2026-10-20 | 2026-11-06 |
+| `ETF_LIGHTGBM` | 4 | 4.1% | 2026-10-20 | 2026-11-06 |
+| `ETF_LSTM` | 39 | 39.8% | 2026-10-20 | 2026-11-06 |
+| `LIGHTGBM` | 33 | 33.7% | 2026-04-15 | 2026-11-05 |
+| `LSTM` | 8 | 8.2% | 2026-04-18 | 2026-11-05 |
 
 ### `sentiment_sentimentscore` by `score_type`
 
