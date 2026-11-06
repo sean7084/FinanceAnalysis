@@ -303,6 +303,55 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### `list_date` is NULL on 1,591 of 1,912 assets, which makes `validate_data_quality` uninterpretable
+
+Measured 2026-11-06 while closing out the OHLCV adjustment-basis repair. Of the 1,886 assets that
+actually carry price rows, **1,590 have no `list_date`**.
+
+The consequence is that `manage.py validate_data_quality --fail-on-critical` cannot bound each
+asset's expected date range, so it demands rows from `HISTORICAL_DATA_FLOOR` (2010-01-01) for
+assets that did not exist yet, and reports the difference as critical. A bare run returned
+**exit 1 with 5,302,805 critical issues**, dominated by `missing_factor_score` 4,176,723 and
+`missing_ohlcv` 1,126,060 — plus its own `missing_list_date` warning on 1,590 assets, which is the
+cause sitting inside the same report. These are coverage gaps against an over-broad expectation, not
+wrong values: the repaired series passes the local adjustment invariant at 0 violations over all
+6,542,582 rows.
+
+`--effective-universe-only` restricts to asset/dates present in the PIT effective universe and is the
+correct way to invoke this gate; it was not used for the run above.
+
+To do:
+- Populate `list_date` from TuShare `stock_basic` / `stock_company` (`list_date`) for the assets that
+  have price history, which should collapse most of the 1.13M `missing_ohlcv` count on its own.
+- Then re-establish `validate_data_quality --effective-universe-only --fail-on-critical` as the
+  release gate, and record the passing counts so a future regression is distinguishable from the
+  current noise floor.
+- Consider whether the check should refuse to emit `missing_ohlcv` as **critical** for an asset whose
+  `list_date` is unknown, since it cannot know the expected start at all — a warning with a stated
+  reason would be more honest than a critical built on an assumption.
+
+### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
+
+Observed twice on 2026-11-05. Signature, from three independent sources that all have to agree
+before "hung" is a safe conclusion: the server backend sits in `wait_event_type=Client,
+wait_event=ClientWrite`; the client is in `poll_schedule_timeout` at **zero CPU**; and `ss -tnp`
+shows the socket `ESTAB` with **both** `Recv-Q` and `Send-Q` at 0. Nothing times out, so it never
+recovers on its own.
+
+The trigger was a `COUNT(*)` over the 174M-row `analytics_technicalindicator` table running
+concurrently with a large result-set fetch. A controlled test ruled out a structural fault: the same
+link moved 500,000 rows in 1.5 s (**331k rows/s**) when nothing else was running. So the rule is
+concurrency, not capacity.
+
+Two consequences that are still open:
+- A killed client does **not** free its backend. Orphans were seen sitting in `ClientWrite` **1,068 s**
+  after the client died, because `tcp_keepalives_idle=600` does not fire on a backend actively blocked
+  writing. Against `max_connections=100` this is a slow leak, and `pg_terminate_backend(pid)` plus a
+  `pg_stat_activity` emptiness check before each launch is the only current remedy.
+- Long training and audit jobs need a client-side read timeout, or at minimum a watchdog that
+  compares CPU ticks against `pg_stat_activity` and fails loudly instead of waiting for a human to
+  notice a flat log.
+
 ### The reference RULE parameter set is window-specific
 
 Phase 4 ran a CLI-only walk-forward over 2016–2023 (four expanding folds,
