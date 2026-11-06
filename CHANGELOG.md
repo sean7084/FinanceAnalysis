@@ -117,6 +117,23 @@
     `model_version` and its FK is `on_delete=SET_NULL`, so deleting a version would blank the
     reference on every prediction that records what was actually served. Archiving is the correct
     action, and `is_active=False` is what stops the contaminated generations being used.
+- **The ETF track was contaminated by the same route and is now rebuilt too.**
+  `apps/prediction/features.py` builds ETF features from the constituents' `adj_close`, so all
+  2,647,301 `ETFFeatureSnapshot` rows inherited the mixed-basis prices; they were recomputed to
+  2,649,487 rows spanning 2016-01-04..2026-11-03 (22 min), the ETF rotation models were retrained
+  under `--version-tag adj-fix`, and `apps/prediction/migrations/0009_*` archives the 43 ETF
+  versions trained before the repair. Registry after both archive migrations: 98 rows, **exactly 8
+  active** (three stock LightGBM horizons, stock LSTM, ensemble, and the three ETF models), and
+  zero rows left `READY` but inactive.
+  - **Retraining the ETF models was impossible before this branch, for two unrelated bugs in the
+    ETF trainers that only running them exposed.** `apps/etf_rotation/train_lightgbm.py` referenced
+    `features.LABEL_SCHEMA_VERSION` at module level in a function where the file only ever imports
+    `features` inside other functions -- a plain `NameError`. `apps/etf_rotation/train_lstm.py`
+    guarded its feature/indicator pairing check with `panel['base_feature_names']`, a key
+    `_assemble_windows` has never returned (it returns `feature_names`; the base list lives in
+    `config`), so the guard raised `KeyError` on every non-empty panel and therefore **never once
+    got to run** -- a correctness check that had been dead since it was written. Both fixed;
+    452 ETF tests pass.
 - **`OHLCV.amount` is in 千元 and `ETFDaily.amount` is in 元** -- 1000× apart, recorded
   because it was only discovered during this audit. Unchanged deliberately: converting would
   break every reader of `amount` for no cleaning benefit. The unit is now in the field's

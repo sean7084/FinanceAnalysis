@@ -6,7 +6,7 @@
 
 # Model Registry and Artifacts
 
-_Generated: 2026-11-05T18:54:18Z_
+_Generated: 2026-11-06T03:59:18Z_
 
 Read this sheet before trusting any accuracy or feature count quoted in prose. `LightGBMModelArtifact` is the authority for per-horizon LightGBM deployment; `ModelVersion` is a higher-level registry that does **not** keep one simultaneously active row per horizon. The rationale for that split, and the version-tag naming convention, are explained in `TECHNICAL_GUIDE.md`; the promote/rollback procedure is in `docs/how-to/retrain.md`.
 
@@ -26,6 +26,9 @@ Registry totals: **32** `LightGBMModelArtifact` rows, **3** active.
 | ID | Type | Version | Active | Status | Trained at | Accuracy | Artifact path |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 106 | ENSEMBLE | `ensemble-2026-11-03` | ACTIVE | READY | 2026-11-05 17:50:19 | &mdash; | models/ensemble/latest.json |
+| 110 | ETF_ENSEMBLE | `etf-ensemble-2026-11-06-adj-fix` | ACTIVE | READY | 2026-11-06 03:54:37 | &mdash; | &mdash; |
+| 108 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2026-09-29-adj-fix` | ACTIVE | READY | 2026-11-06 03:51:41 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2026-09-29-adj-fix |
+| 109 | ETF_LSTM | `etf-lstm-2026-09-29-adj-fix` | ACTIVE | READY | 2026-11-06 03:54:37 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-29-adj-fix |
 | 105 | LIGHTGBM | `lgb-30d-2026-11-03-adj-fix` | ACTIVE | READY | 2026-11-05 17:43:37 | 0.59844 | models/lightgbm/30d_lgb-30d-2026-11-03-adj-fix |
 | 104 | LIGHTGBM | `lgb-7d-2026-11-03-adj-fix` | ACTIVE | READY | 2026-11-05 17:42:50 | 0.483502 | models/lightgbm/7d_lgb-7d-2026-11-03-adj-fix |
 | 103 | LIGHTGBM | `lgb-3d-2026-11-03-adj-fix` | ACTIVE | READY | 2026-11-05 17:42:00 | 0.522605 | models/lightgbm/3d_lgb-3d-2026-11-03-adj-fix |
@@ -40,49 +43,49 @@ Registry totals: **32** `LightGBMModelArtifact` rows, **3** active.
 | 14 | ENSEMBLE | `ensemble-2024-12-31` |  | ARCHIVED | 2026-05-23 16:41:47 | &mdash; | models/ensemble/latest.json |
 | 9 | ENSEMBLE | `ensemble-2026-04-18` |  | ARCHIVED | 2026-04-18 04:00:00 | 0.5 | models/ensemble/2026-04-18.bin |
 | 1 | ENSEMBLE | `ensemble-2026-04-15` |  | ARCHIVED | 2026-04-15 01:45:38 | &mdash; | models/ensemble/latest.json |
-| 65 | ETF_ENSEMBLE | `etf-ensemble-2026-10-20-oos23` |  | READY | 2026-10-20 18:35:45 | &mdash; | &mdash; |
-| 62 | ETF_ENSEMBLE | `etf-ensemble-2026-10-20` |  | READY | 2026-10-20 18:22:16 | &mdash; | &mdash; |
-| 101 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2026-09-17-post-release` |  | READY | 2026-10-25 06:58:26 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2026-09-17-post-release |
-| 63 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2023-11-30-oos23` |  | READY | 2026-10-20 18:33:58 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2023-11-30-oos23 |
-| 60 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2026-09-14` |  | READY | 2026-10-20 18:07:01 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2026-09-14 |
-| 102 | ETF_LSTM | `etf-lstm-2026-09-17-post-release` |  | READY | 2026-10-25 07:03:14 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-17-post-release |
-| 100 | ETF_LSTM | `etf-lstm-2023-12-29-oos-lstm-v2` |  | READY | 2026-10-22 20:48:05 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-oos-lstm-v2 |
-| 99 | ETF_LSTM | `etf-lstm-2023-12-29-t-4da7ba13` |  | READY | 2026-10-22 20:40:56 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-4da7ba13 |
-| 98 | ETF_LSTM | `etf-lstm-2023-12-29-t-3764f738` |  | READY | 2026-10-22 20:39:21 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3764f738 |
-| 97 | ETF_LSTM | `etf-lstm-2023-12-29-t-894273e9` |  | READY | 2026-10-22 20:37:26 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-894273e9 |
-| 96 | ETF_LSTM | `etf-lstm-2023-12-29-t-d0086700` |  | READY | 2026-10-22 20:36:01 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-d0086700 |
-| 95 | ETF_LSTM | `etf-lstm-2023-12-29-t-3ddb961e` |  | READY | 2026-10-22 20:34:35 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3ddb961e |
-| 94 | ETF_LSTM | `etf-lstm-2023-12-29-t-3b39a23e` |  | READY | 2026-10-22 20:32:58 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3b39a23e |
-| 93 | ETF_LSTM | `etf-lstm-2023-12-29-t-43a584d6` |  | READY | 2026-10-22 20:31:22 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-43a584d6 |
-| 92 | ETF_LSTM | `etf-lstm-2023-12-29-t-2fd85c66` |  | READY | 2026-10-22 20:29:55 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-2fd85c66 |
-| 91 | ETF_LSTM | `etf-lstm-2023-12-29-t-cb1ae1d7` |  | READY | 2026-10-22 20:28:29 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-cb1ae1d7 |
-| 90 | ETF_LSTM | `etf-lstm-2023-12-29-t-ea816a41` |  | READY | 2026-10-22 20:26:58 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-ea816a41 |
-| 89 | ETF_LSTM | `etf-lstm-2023-12-29-t-9ac4dfba` |  | READY | 2026-10-22 20:25:27 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9ac4dfba |
-| 88 | ETF_LSTM | `etf-lstm-2023-12-29-t-15bc3f78` |  | READY | 2026-10-22 20:24:06 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-15bc3f78 |
-| 87 | ETF_LSTM | `etf-lstm-2023-12-29-t-48a3a44f` |  | READY | 2026-10-22 20:22:46 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-48a3a44f |
-| 86 | ETF_LSTM | `etf-lstm-2023-12-29-t-d4c0f43f` |  | READY | 2026-10-22 20:21:15 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-d4c0f43f |
-| 85 | ETF_LSTM | `etf-lstm-2023-12-29-t-526e79aa` |  | READY | 2026-10-22 20:19:32 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-526e79aa |
-| 84 | ETF_LSTM | `etf-lstm-2023-12-29-t-465b242a` |  | READY | 2026-10-22 20:18:11 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-465b242a |
-| 83 | ETF_LSTM | `etf-lstm-2023-12-29-t-9a8eee8c` |  | READY | 2026-10-22 20:16:50 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9a8eee8c |
-| 82 | ETF_LSTM | `etf-lstm-2023-12-29-t-9d712399` |  | READY | 2026-10-22 20:15:15 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9d712399 |
-| 81 | ETF_LSTM | `etf-lstm-2023-12-29-t-c6514865` |  | READY | 2026-10-22 20:13:44 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-c6514865 |
-| 80 | ETF_LSTM | `etf-lstm-2023-12-29-t-6ef67633` |  | READY | 2026-10-22 20:12:17 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-6ef67633 |
-| 79 | ETF_LSTM | `etf-lstm-2023-12-29-t-9fa1140b` |  | READY | 2026-10-22 20:10:51 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9fa1140b |
-| 78 | ETF_LSTM | `etf-lstm-2023-12-29-t-ac65802d` |  | READY | 2026-10-22 20:09:16 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-ac65802d |
-| 77 | ETF_LSTM | `etf-lstm-2023-12-29-t-3ca96e66` |  | READY | 2026-10-22 20:07:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3ca96e66 |
-| 76 | ETF_LSTM | `etf-lstm-2023-12-29-t-84dc6607` |  | READY | 2026-10-22 20:06:13 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-84dc6607 |
-| 75 | ETF_LSTM | `etf-lstm-2023-12-29-t-d9d06d3d` |  | READY | 2026-10-22 20:04:48 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-d9d06d3d |
-| 74 | ETF_LSTM | `etf-lstm-2023-12-29-t-27c2548a` |  | READY | 2026-10-22 20:03:13 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-27c2548a |
-| 73 | ETF_LSTM | `etf-lstm-2023-12-29-t-ca3d925e` |  | READY | 2026-10-22 20:01:28 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-ca3d925e |
-| 72 | ETF_LSTM | `etf-lstm-2023-12-29-t-95ab0141` |  | READY | 2026-10-22 20:00:02 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-95ab0141 |
-| 71 | ETF_LSTM | `etf-lstm-2023-12-29-t-3cd95031` |  | READY | 2026-10-22 19:58:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3cd95031 |
-| 70 | ETF_LSTM | `etf-lstm-2023-12-29-t-1becb8db` |  | READY | 2026-10-22 19:56:52 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-1becb8db |
-| 69 | ETF_LSTM | `etf-lstm-2023-12-29-t-625c11fd` |  | READY | 2026-10-22 19:55:09 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-625c11fd |
-| 68 | ETF_LSTM | `etf-lstm-2023-12-29-t-cf1276f1` |  | READY | 2026-10-22 19:53:46 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-cf1276f1 |
-| 67 | ETF_LSTM | `etf-lstm-2023-12-29-t-50cbd9f4` |  | READY | 2026-10-22 19:50:27 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-50cbd9f4 |
-| 66 | ETF_LSTM | `etf-lstm-2023-12-29-t-fd4deb21` |  | READY | 2026-10-22 19:49:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-fd4deb21 |
-| 64 | ETF_LSTM | `etf-lstm-2023-11-30-oos23` |  | READY | 2026-10-20 18:35:40 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-11-30-oos23 |
-| 61 | ETF_LSTM | `etf-lstm-2026-09-14` |  | READY | 2026-10-20 18:13:05 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-14 |
+| 65 | ETF_ENSEMBLE | `etf-ensemble-2026-10-20-oos23` |  | ARCHIVED | 2026-10-20 18:35:45 | &mdash; | &mdash; |
+| 62 | ETF_ENSEMBLE | `etf-ensemble-2026-10-20` |  | ARCHIVED | 2026-10-20 18:22:16 | &mdash; | &mdash; |
+| 101 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2026-09-17-post-release` |  | ARCHIVED | 2026-10-25 06:58:26 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2026-09-17-post-release |
+| 63 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2023-11-30-oos23` |  | ARCHIVED | 2026-10-20 18:33:58 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2023-11-30-oos23 |
+| 60 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2026-09-14` |  | ARCHIVED | 2026-10-20 18:07:01 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2026-09-14 |
+| 102 | ETF_LSTM | `etf-lstm-2026-09-17-post-release` |  | ARCHIVED | 2026-10-25 07:03:14 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-17-post-release |
+| 100 | ETF_LSTM | `etf-lstm-2023-12-29-oos-lstm-v2` |  | ARCHIVED | 2026-10-22 20:48:05 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-oos-lstm-v2 |
+| 99 | ETF_LSTM | `etf-lstm-2023-12-29-t-4da7ba13` |  | ARCHIVED | 2026-10-22 20:40:56 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-4da7ba13 |
+| 98 | ETF_LSTM | `etf-lstm-2023-12-29-t-3764f738` |  | ARCHIVED | 2026-10-22 20:39:21 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3764f738 |
+| 97 | ETF_LSTM | `etf-lstm-2023-12-29-t-894273e9` |  | ARCHIVED | 2026-10-22 20:37:26 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-894273e9 |
+| 96 | ETF_LSTM | `etf-lstm-2023-12-29-t-d0086700` |  | ARCHIVED | 2026-10-22 20:36:01 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-d0086700 |
+| 95 | ETF_LSTM | `etf-lstm-2023-12-29-t-3ddb961e` |  | ARCHIVED | 2026-10-22 20:34:35 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3ddb961e |
+| 94 | ETF_LSTM | `etf-lstm-2023-12-29-t-3b39a23e` |  | ARCHIVED | 2026-10-22 20:32:58 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3b39a23e |
+| 93 | ETF_LSTM | `etf-lstm-2023-12-29-t-43a584d6` |  | ARCHIVED | 2026-10-22 20:31:22 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-43a584d6 |
+| 92 | ETF_LSTM | `etf-lstm-2023-12-29-t-2fd85c66` |  | ARCHIVED | 2026-10-22 20:29:55 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-2fd85c66 |
+| 91 | ETF_LSTM | `etf-lstm-2023-12-29-t-cb1ae1d7` |  | ARCHIVED | 2026-10-22 20:28:29 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-cb1ae1d7 |
+| 90 | ETF_LSTM | `etf-lstm-2023-12-29-t-ea816a41` |  | ARCHIVED | 2026-10-22 20:26:58 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-ea816a41 |
+| 89 | ETF_LSTM | `etf-lstm-2023-12-29-t-9ac4dfba` |  | ARCHIVED | 2026-10-22 20:25:27 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9ac4dfba |
+| 88 | ETF_LSTM | `etf-lstm-2023-12-29-t-15bc3f78` |  | ARCHIVED | 2026-10-22 20:24:06 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-15bc3f78 |
+| 87 | ETF_LSTM | `etf-lstm-2023-12-29-t-48a3a44f` |  | ARCHIVED | 2026-10-22 20:22:46 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-48a3a44f |
+| 86 | ETF_LSTM | `etf-lstm-2023-12-29-t-d4c0f43f` |  | ARCHIVED | 2026-10-22 20:21:15 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-d4c0f43f |
+| 85 | ETF_LSTM | `etf-lstm-2023-12-29-t-526e79aa` |  | ARCHIVED | 2026-10-22 20:19:32 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-526e79aa |
+| 84 | ETF_LSTM | `etf-lstm-2023-12-29-t-465b242a` |  | ARCHIVED | 2026-10-22 20:18:11 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-465b242a |
+| 83 | ETF_LSTM | `etf-lstm-2023-12-29-t-9a8eee8c` |  | ARCHIVED | 2026-10-22 20:16:50 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9a8eee8c |
+| 82 | ETF_LSTM | `etf-lstm-2023-12-29-t-9d712399` |  | ARCHIVED | 2026-10-22 20:15:15 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9d712399 |
+| 81 | ETF_LSTM | `etf-lstm-2023-12-29-t-c6514865` |  | ARCHIVED | 2026-10-22 20:13:44 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-c6514865 |
+| 80 | ETF_LSTM | `etf-lstm-2023-12-29-t-6ef67633` |  | ARCHIVED | 2026-10-22 20:12:17 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-6ef67633 |
+| 79 | ETF_LSTM | `etf-lstm-2023-12-29-t-9fa1140b` |  | ARCHIVED | 2026-10-22 20:10:51 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-9fa1140b |
+| 78 | ETF_LSTM | `etf-lstm-2023-12-29-t-ac65802d` |  | ARCHIVED | 2026-10-22 20:09:16 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-ac65802d |
+| 77 | ETF_LSTM | `etf-lstm-2023-12-29-t-3ca96e66` |  | ARCHIVED | 2026-10-22 20:07:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3ca96e66 |
+| 76 | ETF_LSTM | `etf-lstm-2023-12-29-t-84dc6607` |  | ARCHIVED | 2026-10-22 20:06:13 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-84dc6607 |
+| 75 | ETF_LSTM | `etf-lstm-2023-12-29-t-d9d06d3d` |  | ARCHIVED | 2026-10-22 20:04:48 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-d9d06d3d |
+| 74 | ETF_LSTM | `etf-lstm-2023-12-29-t-27c2548a` |  | ARCHIVED | 2026-10-22 20:03:13 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-27c2548a |
+| 73 | ETF_LSTM | `etf-lstm-2023-12-29-t-ca3d925e` |  | ARCHIVED | 2026-10-22 20:01:28 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-ca3d925e |
+| 72 | ETF_LSTM | `etf-lstm-2023-12-29-t-95ab0141` |  | ARCHIVED | 2026-10-22 20:00:02 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-95ab0141 |
+| 71 | ETF_LSTM | `etf-lstm-2023-12-29-t-3cd95031` |  | ARCHIVED | 2026-10-22 19:58:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-3cd95031 |
+| 70 | ETF_LSTM | `etf-lstm-2023-12-29-t-1becb8db` |  | ARCHIVED | 2026-10-22 19:56:52 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-1becb8db |
+| 69 | ETF_LSTM | `etf-lstm-2023-12-29-t-625c11fd` |  | ARCHIVED | 2026-10-22 19:55:09 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-625c11fd |
+| 68 | ETF_LSTM | `etf-lstm-2023-12-29-t-cf1276f1` |  | ARCHIVED | 2026-10-22 19:53:46 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-cf1276f1 |
+| 67 | ETF_LSTM | `etf-lstm-2023-12-29-t-50cbd9f4` |  | ARCHIVED | 2026-10-22 19:50:27 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-50cbd9f4 |
+| 66 | ETF_LSTM | `etf-lstm-2023-12-29-t-fd4deb21` |  | ARCHIVED | 2026-10-22 19:49:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-fd4deb21 |
+| 64 | ETF_LSTM | `etf-lstm-2023-11-30-oos23` |  | ARCHIVED | 2026-10-20 18:35:40 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-11-30-oos23 |
+| 61 | ETF_LSTM | `etf-lstm-2026-09-14` |  | ARCHIVED | 2026-10-20 18:13:05 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-14 |
 | 57 | LIGHTGBM | `lgb-30d-2020-01-01` |  | ARCHIVED | 2026-09-25 12:16:10 | 0.630868 | models/lightgbm/30d_lgb-30d-2020-01-01 |
 | 56 | LIGHTGBM | `lgb-7d-2020-01-01` |  | ARCHIVED | 2026-09-25 12:15:43 | 0.501229 | models/lightgbm/7d_lgb-7d-2020-01-01 |
 | 55 | LIGHTGBM | `lgb-3d-2020-01-01` |  | ARCHIVED | 2026-09-25 12:15:20 | 0.521064 | models/lightgbm/3d_lgb-3d-2020-01-01 |
