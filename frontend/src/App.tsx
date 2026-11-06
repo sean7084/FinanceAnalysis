@@ -11,6 +11,7 @@ const BacktestWorkbenchPage = lazy(() => import('./pages/BacktestWorkbenchPage')
 const IndicatorBoardPage = lazy(() => import('./pages/IndicatorBoardPage').then((m) => ({ default: m.IndicatorBoardPage })))
 const AlertCenterPage = lazy(() => import('./pages/AlertCenterPage').then((m) => ({ default: m.AlertCenterPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const DataLimitsPage = lazy(() => import('./pages/DataLimitsPage').then((m) => ({ default: m.DataLimitsPage })))
 const ModelMonitoringPage = lazy(() => import('./pages/ModelMonitoringPage').then((m) => ({ default: m.ModelMonitoringPage })))
 const EtfRotationPage = lazy(() => import('./pages/EtfRotationPage').then((m) => ({ default: m.EtfRotationPage })))
 const EtfBacktestWorkbenchPage = lazy(() => import('./pages/EtfBacktestWorkbenchPage').then((m) => ({ default: m.EtfBacktestWorkbenchPage })))
@@ -44,6 +45,7 @@ const router = createBrowserRouter([
       { path: 'etf/backtest', element: withSuspense(<EtfBacktestWorkbenchPage />) },
       { path: 'alerts', element: withSuspense(<AlertCenterPage />) },
       { path: 'settings', element: withSuspense(<SettingsPage />) },
+      { path: 'data-limits', element: withSuspense(<DataLimitsPage />) },
     ],
   },
 ])

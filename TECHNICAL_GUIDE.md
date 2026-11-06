@@ -845,3 +845,106 @@ Tracked in `BACKLOG.md`.
 
 Exports are generated local output under `reports/`, which is gitignored — they
 are not committed source files.
+
+## 8. The date contract
+
+Raw-data retention, production training and walk-forward evaluation each start on
+a different date, on purpose. The boundaries live in `apps/core/date_contract.py`
+as immutable module constants -- no setting, no environment variable -- and are
+read by every pipeline and displayed at `/settings`.
+
+| Asset class | Raw data retained from | Production training starts | Walk-forward backtest starts |
+| :--- | :--- | :--- | :--- |
+| Stocks | `2008-07-02` (observed) | `2016-06-01` | `2018-01-02` |
+| ETFs | `2016-01-04` (observed) | `2020-01-02` | `2021-01-13` |
+
+The raw column is descriptive, not enforced. It is the earliest session actually
+stored: for stocks that predates `HISTORICAL_DATA_FLOOR` (`2010-01-01`) by eighteen
+months, because 365,224 rows across 1,077 assets were never purged by
+`purge_pre_floor_historical_data`. Retention policy and retained data are different
+facts and the UI shows both rather than reconciling them silently.
+
+**Why `2016-06-01` for stocks.** It excludes the 2014-2015 leverage bubble, the
+OTC-financing cleanup, the market rescue and the January 2016 circuit-breaker
+episode, with a stabilisation buffer rather than pretending one policy on one day
+changed the market. It still leaves roughly ten years of training history,
+including the 2018 bear market, the 2020 shock, the 2021 style rotation and the
+2022 decline.
+
+**Why `2020-01-02` for ETFs, and not the legacy `2016-01-29`.** The eligible pool was
+far thinner early. Median eligible ETFs per session: 24 (2016), 26 (2017), 27 (2018),
+38 (2019), 61 (2020), 147 (2022), 200 (2024), 512 (2026). A cross-sectional ranker
+selects the top 30% of whatever universe it is given, so in 2016 that was about seven
+funds and today it is several hundred -- training across the discontinuity risks
+learning universe development instead of repeatable cross-sectional alpha. The
+250-session features have been available since January 2017, and the initial training
+year contains the COVID crash and recovery, which is useful adverse-regime evidence.
+
+**Why `2021-01-13` is not a round number.** `expanding_folds`
+(`apps/etf_rotation/walk_forward.py`) reserves indices `0..min_train_days-1` for
+training and validates from `min_train_days` onward, with
+`WALK_FORWARD_MIN_TRAIN_SESSIONS = 250`. The earliest date on which a fold can
+actually exist is therefore the 251st eligible session after the training start.
+`2020-01-02 -> 2021-01-04` is only 244 sessions, so a backtest start at the month
+boundary would name a date that produces no folds at all. Stocks are unaffected:
+`2016-06-01 -> 2018-01-02` is 388 sessions, about nineteen months of initial
+training.
+
+### Enforcement
+
+`enforce_date_contract()` raises `CommandError` when an explicit `--start` precedes
+the boundary for that asset class and stage, unless `--allow-pre-contract-history`
+is passed. It is wired to `rebuild_lightgbm_pipeline`, `rebuild_lstm_pipeline`,
+`run_etf_rotation_backtest` (single, grid and CPCV paths), `sweep_etf_rotation_lstm`
+and `train_etf_rotation_model`. Their defaults now come from the contract, so an
+unflagged production run cannot silently reach back past the boundary.
+
+Two exceptions are deliberate:
+
+* `measure_etf_coverage_bias` keeps its `2016-01-29` default. Measuring coverage
+  bias in the pre-contract era is the entire point of the tool.
+* The floors are applied *after* the DB-derived start (`max(floor, earliest
+  eligible snapshot)`), never instead of it, so tightening `HISTORICAL_DATA_FLOOR`
+  can never silently loosen the contract, and the contract can never ask for data
+  that does not exist.
+
+A date the contract rejects is not a date the data forbids. The legacy `2016-01-29`
+ETF panel remains valid for RULE research and long-history stress testing -- pass
+the flag -- but a result produced that way is research output, not a production
+metric.
+
+> **Re-baseline notice.** ETF metrics computed from `2020-01-02` are **not
+> comparable** with any headline number computed on the `2016-01-29` window. The
+> same applies to stock metrics against the pre-`2016-06-01` window. Cached
+> `BacktestResult` and `ModelVersion` rows produced before this change describe the
+> old window and were not deleted or relabelled; compare only like with like.
+> Separately, the ETF `2024-2026` holdout has already been examined, so re-running
+> over it yields another tuning measurement rather than restored out-of-sample
+> evidence -- no date in this contract changes that.
+
+### Measured consequence of the ETF boundary
+
+Re-running the reference RULE configuration (`MONTHLY`, 3 positions, `mom60`,
+absolute filter on, score weighting, fees and slippage on) with one engine and one
+config, varying only the window:
+
+| Window | Total | Annualized | Max DD | Sharpe | Alpha vs CSI 500 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `2016-01-29 .. 2023-12-31` (legacy headline) | **+7.04%** | +0.89% | 51.22% | **+0.147** | **+1.13%** |
+| `2021-01-13 .. 2023-12-31` (contract start, same end) | **-37.93%** | -15.39% | 51.22% | **-0.654** | -12.49% |
+| `2016-01-29 .. 2026-10-24` (legacy start, to today) | -27.73% | -3.12% | 65.50% | -0.004 | -3.90% |
+| `2021-01-13 .. 2026-10-24` (**contract window**) | **-58.07%** | -14.74% | 65.48% | **-0.432** | -15.42% |
+
+Rows 1 and 2 hold the end date fixed and move only the start. The sign of the result
+flips on that one change, which localises the effect precisely: essentially all of the
+RULE configuration's positive Sharpe and its positive alpha were earned in
+`2016-01-29 .. 2020-12-31`, the thin-universe era the contract now excludes. Turnover
+rises from 15.8x/yr to 19.3x/yr over the later period while the win rate falls from
+39.5% to 28.4%, so this is not a fee artifact alone.
+
+This is the finding the re-baseline exists to produce, and it quantifies the existing
+`BACKLOG.md` item "The reference RULE parameter set is window-specific". The contract
+does not cause the deterioration; it removes the flattering years that were hiding it.
+It also supports the rationale for `ETF_TRAINING_START` rather than undermining it: a
+configuration whose measured edge is concentrated in a 24-fund universe was never
+measuring repeatable cross-sectional alpha.

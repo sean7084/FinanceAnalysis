@@ -40,11 +40,15 @@ both generations survive to be compared.
 
 Examples::
 
-    python manage.py run_etf_rotation_backtest --start 2018-01-02 --end 2018-12-31 --model RULE
+    python manage.py run_etf_rotation_backtest --start 2021-01-13 --end 2023-12-31 --model RULE
     python manage.py run_etf_rotation_backtest --backtest-id 12
-    python manage.py run_etf_rotation_backtest --start 2019-01-01 --end 2024-12-31 --grid --grid-top 15
-    python manage.py run_etf_rotation_backtest --start 2019-01-01 --end 2024-12-31 --grid --grid-plan
-    python manage.py run_etf_rotation_backtest --start 2016-01-29 --end 2023-12-31 --grid --grid-prefix grid-dedup
+    python manage.py run_etf_rotation_backtest --start 2021-01-13 --end 2026-10-24 --grid --grid-top 15
+    python manage.py run_etf_rotation_backtest --start 2021-01-13 --end 2026-10-24 --grid --grid-plan
+    python manage.py run_etf_rotation_backtest --start 2016-01-29 --end 2023-12-31 --grid --allow-pre-contract-history
+
+``--start`` before the ETF date-contract boundary (``ETF_BACKTEST_START``) is refused
+unless ``--allow-pre-contract-history`` is given; the override marks the run as research,
+not comparable with production metrics.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.core import finance_metrics
+from apps.core.date_contract import ASSET_ETF, STAGE_BACKTEST, enforce_date_contract
 from apps.etf_rotation import evidence, rank_ic, tasks
 from apps.etf_rotation.backtest_engine import (
     MODEL_TYPES,
@@ -599,6 +604,8 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--start', help='YYYY-MM-DD, inclusive.')
         parser.add_argument('--end', help='YYYY-MM-DD, inclusive. Required with --start.')
+        parser.add_argument('--allow-pre-contract-history', action='store_true',
+                            help='Evaluate before the ETF date-contract boundary. Research only.')
         parser.add_argument('--model', default=None, choices=list(MODEL_TYPES),
                             help='Ranker to use. Default: RULE.')
         parser.add_argument('--frequency', default=None, choices=list(REBALANCE_FREQUENCIES),
@@ -785,6 +792,12 @@ class Command(BaseCommand):
             raise CommandError('--start and --end are required (or --backtest-id).')
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')
+        start = enforce_date_contract(
+            asset_class=ASSET_ETF,
+            stage=STAGE_BACKTEST,
+            requested_start=start,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
         if end < start:
             raise CommandError('--end must be on or after --start.')
 
@@ -1259,6 +1272,12 @@ class Command(BaseCommand):
         prefix = str(options['grid_prefix'] or 'grid').strip() or 'grid'
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')
+        start = enforce_date_contract(
+            asset_class=ASSET_ETF,
+            stage=STAGE_BACKTEST,
+            requested_start=start,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
         if end < start:
             raise CommandError('--end must be on or after --start.')
 
@@ -1373,6 +1392,12 @@ class Command(BaseCommand):
             )
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')
+        start = enforce_date_contract(
+            asset_class=ASSET_ETF,
+            stage=STAGE_BACKTEST,
+            requested_start=start,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
         if end < start:
             raise CommandError('--end must be on or after --start.')
         fold_plan = str(options['fold_plan'] or 'expanding')
@@ -1643,6 +1668,12 @@ class Command(BaseCommand):
             raise CommandError('--cpcv-blocks requires --start and --end.')
         start = parse_iso_date(options['start'], '--start')
         end = parse_iso_date(options['end'], '--end')
+        start = enforce_date_contract(
+            asset_class=ASSET_ETF,
+            stage=STAGE_BACKTEST,
+            requested_start=start,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
         if end < start:
             raise CommandError('--end must be on or after --start.')
         released_window = end >= RELEASED_HOLDOUT_START

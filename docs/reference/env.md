@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-11-07T02:19:03Z_
+_Generated: 2026-11-07T08:10:44Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 

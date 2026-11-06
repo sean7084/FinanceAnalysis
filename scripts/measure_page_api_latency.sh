@@ -181,11 +181,15 @@ ENDPOINTS=(
 	'ETF Workbench|runs (created sort)|/etf/backtests/?page_size=20&page=1&sort=created'
 	# Alert Center: page_size=20. The old entry measured the Dashboard's 200.
 	'Alert Center|alert events|/alert-events/?page_size=20'
-	# Settings renders from useI18n alone -- no API call -- so its cost is the SPA
-	# shell. Unconditional: a page group that appears only when frontend/dist
-	# happens to be built silently drops the count and the run still reports all
-	# green. apps/core/tests_frontend.py asserts this group is always present.
-	'Settings|SPA document|/'
+	# Settings shows the date contract, so it now reads the API. The row is
+	# unconditional: a page group that appears only when frontend/dist happens to
+	# be built silently drops the count and the run still reports all green.
+	# apps/core/tests_frontend.py asserts this group is always present.
+	'Settings|date contract|/system/date-contract/'
+	# Data Limits reports stored-data extent and model thresholds. The first cold
+	# read probes fourteen tables; the cached read is what a warm page load sees.
+	'Data Limits|data limits|/system/data-limits/'
+	'Data Limits|date contract|/system/date-contract/'
 )
 
 if [[ -n "$BACKTEST_ID" ]]; then
@@ -355,7 +359,7 @@ lines += [
 # even though it makes no API call, because its cost is the SPA shell.
 BUDGETS = {page: 3.0 for page in (
     'Dashboard', 'Indicator Board', 'Stock Detail', 'Macro Context', 'Models',
-    'Backtest', 'ETF', 'ETF Workbench', 'Alert Center', 'Settings',
+    'Backtest', 'ETF', 'ETF Workbench', 'Alert Center', 'Settings', 'Data Limits',
 )}
 
 for page, items in pages.items():

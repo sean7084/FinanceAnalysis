@@ -303,6 +303,89 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### The 7-day stock LightGBM model has below-coin-flip directional accuracy
+
+Retrained on the `2016-06-01` date-contract window, the three stock horizons scored
+accuracy 0.5492 (3-day), **0.4874 (7-day)** and 0.5744 (30-day), on 1.25M / 1.25M /
+1.24M samples respectively. The 7-day model is worse than a coin flip on its own
+training window's evaluation split, and it is the horizon the daily beat consumes
+alongside 3-day.
+
+This is **not** caused by the narrower window, and the numbers say so directly: the
+superseded `lgb-*-2026-11-03-adj-fix` rows trained from the `2010-01-01` floor on
+~1.99M samples scored 0.5226 / **0.4835** / 0.5984. The 7-day horizon was already
+sub-random before the contract, on 60% more data, and it is the only horizon that got
+*no* better after -- 3-day improved 0.5226 -> 0.5492. Compare the paired rows in
+`docs/reference/models.md` before assuming a retrain fixed it.
+
+Two things make this worth opening rather than shrugging at:
+
+* The stock training path reports **only** `accuracy`, with no time-based holdout and no
+  calibration or rank metric. So these figures are in-sample and cannot be compared
+  across windows the way the ETF `rank_ic` series can. We are flying the most-consumed
+  horizon without an out-of-sample number at all.
+* A below-0.5 accuracy is either noise around 0.5 or an inverted signal. Distinguishing
+  those needs a held-out window, which this path does not produce.
+
+Measure the 7-day model on a genuine time-based holdout before trusting or replacing it,
+and add at least one out-of-sample metric to `train_lightgbm_models` so this is
+detectable without a manual retrain. Found while re-baselining the stock models for
+`apps/core/date_contract.py`; the re-baseline did not cause it, it is the first time the
+number was looked at.
+
+### Stock headline metrics were re-baselined onto the `2016-06-01` window
+
+Done as part of the date-contract change: `rebuild_lightgbm_pipeline --skip-backfill`
+was run for horizons 3, then 7 and 30. Numbers are in `CHANGELOG.md` under version
+0.1.53. The remaining gap is the missing out-of-sample metric above, not a stale window.
+
+**Not gating, by design:** `docs/reference/metrics.md` and `models.md` are in
+`DB_GATED_SHEETS` (`apps/core/management/commands/export_documentation_facts.py:1132`).
+CI regenerates them against a freshly created, table-less service database because
+migrations have not run at that step, so a "fresh" CI render is a wall of
+`UNAVAILABLE ... <exc>` rows that can never equal a developer's populated render in
+either direction -- `--check` skips both for exactly that reason. They have been
+refreshed locally for this change and committed. Budget ~9 minutes with warm caches and
+40+ cold for `export_documentation_facts --only metrics,models`: it scans ~30 tables
+including ~174M rows of `analytics_technicalindicator` (`pg_stat_activity`: `active` /
+`IO` / `DataFileRead`, real sequential scans, not the wedge below). Run it detached.
+
+Note for anyone re-running this: each invocation rebuilds the entire feature matrix
+(~2.9M OHLCV rows, then one pass per indicator at 10-110 s, then per-asset masking over
+1,296 assets) before it trains, so one horizon costs roughly the same as three. Pass all
+horizons in a single call. One early attempt made no progress for 41 minutes at zero
+client CPU while the test suite was also hammering the database; it was killed rather
+than nursed, and the retry on a quieter system finished normally. Whether that was the
+wedge below or pure I/O contention was never confirmed -- `pg_stat_activity` was not
+sampled at the time, so do not record it as a reproducing case.
+
+### The two ETF trainers disagree on max positions: LightGBM holds 5, the LSTM 3
+
+`apps/etf_rotation/train_lightgbm.py:1059` reads `ETF_ROTATION_MAX_POSITIONS`, which no
+settings module defines, so it keeps its fallback of 5. `apps/etf_rotation/train_lstm.py:1260`
+reads `ETF_MAX_POSITIONS`, which `config/settings/base.py:336` sets to 3. The comment at
+`train_lstm.py:1257-1259` already flags the asymmetry. Two serving models of the same
+strategy therefore size positions differently, and any comparison between them is
+comparing different portfolios.
+
+Decide which is intended, then delete the other name. `/data-limits` now shows both
+values side by side so the divergence cannot be missed again. Found while wiring the
+date contract, which needed the thresholds resolved the way the code resolves them.
+
+### The 250-session minimum train window is six duplicated literals
+
+`WALK_FORWARD_MIN_TRAIN_SESSIONS = 250` (`run_etf_rotation_backtest.py:126`),
+`min_train_days: int = 250` (`walk_forward.py:232`), `_setting_int('ETF_MIN_TRAIN_DAYS', 250)`
+at `train_lightgbm.py:974` and `:1041`, `train_lstm.py:1250`, plus the `(250)` in
+`train_etf_rotation_model.py:71` help text. `ETF_MIN_TRAIN_DAYS` is not in settings, so the
+fallback is always the live value.
+
+`ETF_BACKTEST_START` in `apps/core/date_contract.py` is derived from this number -- it is the
+251st eligible session after the training start -- so moving one without the other silently
+breaks the contract's coherence. `apps/core/tests_date_contract.py` pins the arithmetic
+against a synthetic calendar, but that tests the rule, not the duplication. Consolidate on
+one named constant next to the contract. Found while writing the contract tests.
+
 ### `sentiment_score` is 0.5 on all 2,043,000 COMPOSITE factor rows, so it is a zero-variance feature
 
 `audit_model_data_quality --start-date 2010-01-01 --end-date 2026-11-03` (exit 0) reported, for the
@@ -431,6 +514,20 @@ initial capital. No default was changed. The 2024–2026 window has since been
 **released into the training pool** (2026-10-25, `etf-rotation-next-phases-2026-10-24.md`
 §8): it is training data now, so ranking winners on it is allowed but produces a tuning
 number, never out-of-sample evidence. The sealed forward window is the only honest one.
+
+**The date contract made the window dependence concrete, and it is worse than "unstable".**
+Re-running the reference RULE configuration with one engine and one config, moving only
+`--start` while holding `--end 2023-12-31` fixed: from `2016-01-29` it returns **+7.04%**
+(Sharpe **+0.147**, alpha **+1.13%**); from `2021-01-13` it returns **-37.93%** (Sharpe
+**-0.654**, alpha **-12.49%**). Over the full contract window `2021-01-13 .. 2026-10-24`
+it is **-58.07%**, Sharpe **-0.432**. So the sign of the headline depends entirely on
+whether the thin-universe 2016–2020 years are inside the window -- every prior number in
+this item, the CPCV block distribution included, was measured with those years included.
+Turnover also rises 15.8x -> 19.3x per year while win rate falls 39.5% -> 28.4%, so it is
+not a pure fee artifact. Full table in `TECHNICAL_GUIDE.md` §8. This does not invalidate
+the contract: a configuration whose edge lives in a 24-fund universe was never measuring
+repeatable alpha. It does mean the RULE defaults now have **no** evidence behind them on
+the post-contract window, and re-selecting them there is the actual open work.
 
 **Phase 8 added the measurement tool; it has now been run.**
 `walk_forward.combinatorial_purged_folds` plus

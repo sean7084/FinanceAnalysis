@@ -12,6 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from apps.core.date_contract import STOCK_TRAINING_START
 from apps.core.date_floor import get_historical_data_floor
 from apps.markets.benchmarking import effective_universe_tradeable_assets
 from .models import ModelVersion, PredictionResult
@@ -96,13 +97,14 @@ def _parse_training_window(training_start_date=None, training_end_date=None):
     else:
         training_end = timezone.now().date() - timedelta(days=1)
 
+    stock_floor = max(get_historical_data_floor(), STOCK_TRAINING_START)
     if training_start_date:
         try:
-            training_start = max(date.fromisoformat(str(training_start_date)), get_historical_data_floor())
+            training_start = max(date.fromisoformat(str(training_start_date)), stock_floor)
         except ValueError:
-            training_start = get_historical_data_floor()
+            training_start = stock_floor
     else:
-        training_start = get_historical_data_floor()
+        training_start = stock_floor
 
     return training_start, training_end
 

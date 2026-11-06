@@ -38,6 +38,7 @@ from django.conf import settings
 from django.db.models import Max, Min
 from django.utils import timezone
 
+from apps.core.date_contract import ETF_TRAINING_START
 from apps.core.date_floor import get_historical_data_floor
 from apps.prediction.artifact_store import get_artifact_store, to_store_key
 from apps.prediction.models import ModelVersion
@@ -315,9 +316,9 @@ def resolve_window(start_date=None, end_date=None):
         end = end or bounds['max_date']
     if start is None or end is None:
         return None, None
-    floor = get_historical_data_floor()
+    floor = max(get_historical_data_floor(), ETF_TRAINING_START)
     if start < floor:
-        logger.info('ETF training start %s raised to HISTORICAL_DATA_FLOOR %s.', start, floor)
+        logger.info('ETF training start %s raised to date-contract floor %s.', start, floor)
         start = floor
     if end < start:
         raise ValueError(f'end_date {end} is before start_date {start}.')

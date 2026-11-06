@@ -29,6 +29,9 @@ PIT_BENCHMARK_CODE = 'CSI500_PIT'
 PIT_BENCHMARK_NAME = 'CSI 500 PIT'
 PIT_UNION_WEIGHTING_METHOD = 'free_float_market_cap'
 ACTIVE_UNIVERSE_TAGS = {'CSI500'}
+#: Earliest session for which PIT index membership is required. This is a
+#: coverage-requirement date, not a model window; the training and backtest
+#: boundaries live in ``apps/core/date_contract.py``.
 PIT_UNIVERSE_START_DATE = date(2010, 1, 1)
 
 

@@ -6,7 +6,12 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from apps.core.date_floor import get_historical_data_floor
+from apps.core.date_contract import (
+    ASSET_STOCKS,
+    STAGE_TRAINING,
+    STOCK_TRAINING_START,
+    enforce_date_contract,
+)
 from apps.markets.benchmarking import PITMembershipCoverageError, ensure_pit_membership_coverage
 from apps.markets.models import OHLCV
 from apps.prediction.tasks_lightgbm import train_lightgbm_models
@@ -17,13 +22,18 @@ class Command(BaseCommand):
 
     @staticmethod
     def _default_start_date():
-        return get_historical_data_floor()
+        return STOCK_TRAINING_START
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--start-date',
             default=self._default_start_date().isoformat(),
-            help='Training start date (YYYY-MM-DD). Defaults to HISTORICAL_DATA_FLOOR.',
+            help='Training start date (YYYY-MM-DD). Defaults to the stocks date-contract boundary.',
+        )
+        parser.add_argument(
+            '--allow-pre-contract-history',
+            action='store_true',
+            help='Train from before the stocks date-contract boundary. Research only.',
         )
         parser.add_argument(
             '--end-date',
@@ -84,9 +94,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         start_date = self._parse_date(options['start_date'], 'start-date')
         end_date = self._parse_date(options['end_date'], 'end-date')
-        floor_date = get_historical_data_floor()
-        if start_date < floor_date:
-            raise CommandError(f'start-date cannot be earlier than HISTORICAL_DATA_FLOOR={floor_date}.')
+        start_date = enforce_date_contract(
+            asset_class=ASSET_STOCKS,
+            stage=STAGE_TRAINING,
+            requested_start=start_date,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
 

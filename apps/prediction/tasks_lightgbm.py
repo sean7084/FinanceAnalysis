@@ -16,6 +16,7 @@ from django.conf import settings
 from django.db.models import Avg
 from django.utils import timezone
 
+from apps.core.date_contract import STOCK_TRAINING_START
 from apps.core.date_floor import get_historical_data_floor, session_midnight
 from apps.core.timez import SESSION_TZ
 try:
@@ -2030,13 +2031,14 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
     else:
         training_end = timezone.now().date() - timedelta(days=1)
 
+    stock_floor = max(get_historical_data_floor(), STOCK_TRAINING_START)
     if training_start_date:
         try:
-            training_start = max(date.fromisoformat(str(training_start_date)), get_historical_data_floor())
+            training_start = max(date.fromisoformat(str(training_start_date)), stock_floor)
         except ValueError:
-            training_start = get_historical_data_floor()
+            training_start = stock_floor
     else:
-        training_start = get_historical_data_floor()
+        training_start = stock_floor
 
     normalized_version_tag = _normalize_version_tag(version_tag)
     if normalized_version_tag:

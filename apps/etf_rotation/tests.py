@@ -3431,7 +3431,7 @@ def _sweep_options(**overrides):
     options = {
         'start': None, 'end': None, 'folds': 6, 'horizon': None, 'min_train_days': None,
         'sequence_length': 20, 'limit': None, 'top': 10, 'force': False, 'plan': False,
-        'dry_run': False,
+        'dry_run': False, 'allow_pre_contract_history': True,
     }
     options.update(overrides)
     return options
@@ -3639,7 +3639,12 @@ class LstmSweepCommandTests(TestCase):
         'information_ratio', 'benchmark_return', 'total_fees')
 
     def _options(self, **overrides):
-        merged = {'start': self.START, 'end': self.END, 'folds': 2, 'limit': self.LIMIT}
+        merged = {
+            'start': self.START, 'end': self.END, 'folds': 2, 'limit': self.LIMIT,
+            # This class pins sweep plumbing (fingerprints, ledger, activation), not the
+            # date policy; its fixture panel predates the contract on purpose.
+            'allow_pre_contract_history': True,
+        }
         merged.update(overrides)
         # ``call_command`` renders values into argv, so an explicit None has to drop out and
         # take the parser default rather than arrive as the string "None".
@@ -4657,6 +4662,7 @@ class WalkForwardRuleTests(SimpleTestCase):
                 patch.object(backtest_cmd, 'grid_combinations', return_value=combos):
             call_command(
                 'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
+                '--allow-pre-contract-history',
                 '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat(),
                 stdout=io.StringIO(),
             )
@@ -4753,6 +4759,7 @@ class WalkForwardRuleTests(SimpleTestCase):
         with self.assertRaises(CommandError) as caught:
             call_command(
                 'run_etf_rotation_backtest', '--grid', '--walk-forward-steps', '2',
+                '--allow-pre-contract-history',
                 '--start', '2016-01-29', '--end', '2023-12-31', '--fold-plan', 'cpcv',
                 stdout=io.StringIO(),
             )
@@ -4901,7 +4908,9 @@ class CpcvCommandGuardTests(TestCase):
     """
 
     def _invoke(self, **overrides):
-        options = {'start': '2016-01-29', 'end': '2023-12-29', 'cpcv_blocks': 6}
+        # Pre-contract fixture panel: the guards under test fire independently of it.
+        options = {'start': '2016-01-29', 'end': '2023-12-29', 'cpcv_blocks': 6,
+                   'allow_pre_contract_history': True}
         options.update(overrides)
         call_command('run_etf_rotation_backtest', **options, stdout=io.StringIO())
 
@@ -4932,6 +4941,7 @@ class CpcvCommandGuardTests(TestCase):
         with self.assertRaises(CommandError):
             call_command(
                 'run_etf_rotation_backtest', start='2016-01-29', end='2023-12-29',
+                allow_pre_contract_history=True,
                 model_version='etf-lgb-x', stdout=io.StringIO(),
             )
 
@@ -5029,6 +5039,7 @@ class CpcvWritesNothingTests(_EvidenceIsolated):
                 'run_etf_rotation_backtest',
                 start=session_dates[0].isoformat(), end=session_dates[-1].isoformat(),
                 cpcv_blocks=4, cpcv_test_blocks=1, cpcv_embargo=1,
+                allow_pre_contract_history=True,
                 stdout=io.StringIO(),
             )
 
@@ -5531,7 +5542,8 @@ class CpcvRetrainModeTests(_EvidenceIsolated):
 
     def _invoke(self, **overrides):
         options = {'start': '2016-01-04', 'end': '2016-04-04', 'cpcv_blocks': 4,
-                   'cpcv_test_blocks': 1, 'cpcv_embargo': 1}
+                   'cpcv_test_blocks': 1, 'cpcv_embargo': 1,
+                   'allow_pre_contract_history': True}
         options.update(overrides)
         call_command('run_etf_rotation_backtest', stdout=io.StringIO(), **options)
 
@@ -5551,7 +5563,8 @@ class CpcvRetrainModeTests(_EvidenceIsolated):
 
         options = {'model': 'LIGHTGBM', 'start': '2016-01-04', 'end': '2016-04-04',
                    'cpcv_blocks': 4, 'cpcv_test_blocks': 1,
-                   'cpcv_embargo': 1, 'cpcv_retrain': True}
+                   'cpcv_embargo': 1, 'cpcv_retrain': True,
+                   'allow_pre_contract_history': True}
         options.update(overrides)
         stdout = io.StringIO()
         with patch.object(backtest_cmd.Command, '_fold_predictor', return_value=sentinel), \
@@ -5792,7 +5805,8 @@ class SingleRunKwargForwardingTests(SimpleTestCase):
             captured.update(run_kwargs)
             return {'metrics': {}, 'parameters': {}, 'report': {}, 'equity_curve': []}
 
-        call_options = {'start': '2016-01-29', 'end': '2023-12-31', 'persist': False}
+        call_options = {'start': '2016-01-29', 'end': '2023-12-31', 'persist': False,
+                        'allow_pre_contract_history': True}
         call_options.update(options)
         with patch.object(backtest_cmd.Command, '_call', fake_call), \
                 patch.object(backtest_cmd.Command, '_report', lambda *a, **k: None), \
@@ -5892,6 +5906,7 @@ class QueuedSizingKnobColumnTests(TestCase):
             call_command(
                 'run_etf_rotation_backtest',
                 start='2016-01-29', end='2023-12-31', queue=True,
+                allow_pre_contract_history=True,
                 kelly_fraction=0.25, kelly_floor=0.5,
                 stdout=io.StringIO(),
             )
@@ -7099,7 +7114,8 @@ class TrainCommandActivationTests(SimpleTestCase):
             }
 
         stdout = io.StringIO()
-        options = {'type': 'lightgbm', 'start': '2016-01-29', 'end': '2023-12-29'}
+        options = {'type': 'lightgbm', 'start': '2016-01-29', 'end': '2023-12-29',
+                   'allow_pre_contract_history': True}
         options.update(overrides)
         with patch.object(train_cmd, 'train_walk_forward', side_effect=fake_train):
             call_command('train_etf_rotation_model', stdout=stdout, **options)
@@ -7400,7 +7416,7 @@ class PreregistrationWiringTests(SimpleTestCase):
         ledger = os.path.join(self.tmp.name, 'wf-ledger.jsonl')
         inner = MagicMock()
         inner.sessions.return_value = sessions
-        options = ['--grid', '--walk-forward-steps', '2',
+        options = ['--grid', '--walk-forward-steps', '2', '--allow-pre-contract-history',
                    '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat()]
         if preregistration:
             options += ['--preregistration', self.path]
@@ -7450,6 +7466,7 @@ class PreregistrationWiringTests(SimpleTestCase):
                 patch.object(backtest_cmd, 'defensive_asset_problem', return_value=''):
             call_command(
                 'run_etf_rotation_backtest', '--cpcv-blocks', '4', '--model', 'RULE',
+                '--allow-pre-contract-history',
                 '--start', sessions[0].isoformat(), '--end', sessions[-1].isoformat(),
                 '--preregistration', self.path, stdout=io.StringIO(),
             )

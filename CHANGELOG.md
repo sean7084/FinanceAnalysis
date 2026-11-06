@@ -1,5 +1,118 @@
 # Changelog
 
+### version 0.1.53
+
+#### Changed:
+
+- **Training and backtest windows are now policy, not whatever the database happens to
+  hold oldest.** `apps/core/date_contract.py` defines per-asset-class boundaries as
+  immutable module constants -- stocks train from `2016-06-01` and evaluate from
+  `2018-01-02`; ETFs train from `2020-01-02` and evaluate from `2021-01-13` -- and every
+  pipeline reads them. Previously one global `HISTORICAL_DATA_FLOOR` (`2010-01-01`)
+  drove every default, so ingestion history, training history and evaluation history
+  could not be set apart at all.
+  The ETF boundary moved because the eligible universe was far thinner early: median
+  eligible names per session was 24 in 2016 against 512 now, and a top-30% cross-sectional
+  ranker trained across that discontinuity can learn universe development instead of
+  alpha. `apps/etf_rotation/train_lightgbm.py:resolve_window` and the LSTM twin no longer
+  take the earliest eligible snapshot as their start; the floor is applied *after* the
+  DB-derived value with `max()`, so neither can ever ask for data that is not stored.
+  `ETF_BACKTEST_START` is the 251st eligible session after the training start, not a month
+  boundary, because `expanding_folds` reserves `min_train_days = 250` sessions before the
+  first validation date -- `2021-01-04` would have named a date yielding zero folds.
+- **`rebuild_lightgbm_pipeline` / `rebuild_lstm_pipeline` default to the contract.** Their
+  `--start-date` defaulted to `2010-01-01`, which is *behind* the new boundary; the default
+  and the guard had to move in the same change or every unflagged production run would
+  have failed on its own default.
+- **A new `/data-limits` page and a contract card on `/settings`.** `/settings` showed a
+  language selector and nothing else; there was no API through which any Django setting
+  had ever reached the browser. `apps/core/views.py:SystemInfoViewSet` adds
+  `/api/v1/system/date-contract/` (constants, no queries) and `/api/v1/system/data-limits/`
+  (stored extent plus model thresholds, cached).
+
+#### Added:
+
+- `--allow-pre-contract-history` on the five enforced commands, so the legacy
+  `2016-01-29` ETF panel stays usable for RULE research and long-history stress testing.
+- `/api/v1/system/data-limits/` reports the two ETF trainers' max-position settings
+  side by side, because they disagree: `train_lstm.py` reads `ETF_MAX_POSITIONS` (3)
+  while `train_lightgbm.py` reads an unset `ETF_ROTATION_MAX_POSITIONS` and keeps its
+  fallback of 5. Surfaced rather than silently normalised; tracked in `BACKLOG.md`.
+- Row counts on that page come from `pg_stat_user_tables.n_live_tup`, labelled as
+  estimates. `Model.objects.count()` was measured at minutes on
+  `analytics_technicalindicator` (~179M rows), which is not acceptable on a page-load
+  path. The extent probes are index-only except `markets_ohlcv`, which has no
+  date-leading index and is therefore cached (~0.7 s cold, ~0.02 s warm).
+
+#### Docs:
+
+- `TECHNICAL_GUIDE.md` section 8 records the contract, why each boundary sits where it
+  does, and a re-baseline notice: ETF and stock metrics computed after this change are
+  not comparable with numbers from the wider windows. The stock raw bound is documented
+  as the observed `2008-07-02`, since 365,224 rows across 1,077 assets predate the floor.
+
+#### Re-baselined metrics:
+
+- **ETF rotation, LightGBM `rank_pct`, retrained from `2020-01-02`** (was
+  `2016-01-29`): registered as `etf-lgb-20d-lambdarank-2026-10-08` and activated.
+  Pooled holdout `rank_ic=0.0489`, `icir=0.1662`, `top5_hit=0.3296`, `ndcg@5=0.3960`
+  over 1,343 dated observations and 307,554 validation rows; 6/6 folds trained,
+  3 with positive IC, `mean_rank_ic=0.0490`.
+- The fold plan is direct evidence the boundary is arithmetically right, not merely
+  adopted: fold 0 trains `2020-01-02..2021-01-12` and validates from **`2021-01-13`**,
+  exactly `ETF_BACKTEST_START`. Had the boundary been left at the original
+  `2021-01-04` proposal, fold 0 would have had 243 training sessions against a
+  250-session minimum and could not have been evaluated at all.
+- These numbers supersede every `2016-01-29`-window ETF headline in this file and in
+  `docs/reference/metrics.md`; they are not comparable with them.
+- **The reference RULE configuration has no positive edge on the contract window.**
+  Moving only `--start` while holding `--end 2023-12-31` fixed takes it from +7.04%
+  / Sharpe +0.147 / alpha +1.13% to -37.93% / Sharpe -0.654 / alpha -12.49%; over the
+  full contract window `2021-01-13 .. 2026-10-24` it is -58.07% / Sharpe -0.432.
+  Essentially all of the previously reported Sharpe and alpha was earned in
+  `2016-01-29 .. 2020-12-31` -- the thin-universe era the ETF boundary now excludes.
+  The contract did not cause this; it removed the years that were hiding it. Recorded
+  in `TECHNICAL_GUIDE.md` §8 and turned into open work in `BACKLOG.md`, because the
+  RULE defaults are now unevidenced on the window production actually trains on.
+- **Stock LightGBM retrained from `2016-06-01`** (was the `2010-01-01` floor), all three
+  horizons, 39 features each, activated as `lgb-3d-2026-11-05`, `lgb-7d-2026-11-05`,
+  `lgb-30d-2026-11-05`:
+
+  | Horizon | Pre-contract (`2010-01-01 →`) | Contract (`2016-06-01 →`) |
+  | :--- | ---: | ---: |
+  | 3-day | 0.5226 (1,986,850) | **0.5492** (1,247,276) |
+  | 7-day | 0.4835 (1,985,030) | **0.4874** (1,246,255) |
+  | 30-day | 0.5984 (1,978,145) | **0.5744** (1,237,658) |
+
+  The previous window is in parentheses with its own sample count, read from the
+  superseded `lgb-*-2026-11-03-adj-fix` registry rows. Two things follow. Training
+  samples fall ~37% by design, and accuracy does not collapse with them -- 3-day and
+  7-day both **improve**, 30-day gives back 0.024. And the 7-day model was **already**
+  below a coin flip (0.4835) on the wide pre-contract window, so its sub-random accuracy
+  is a property of that horizon, not an artifact the boundary introduced.
+
+  The 7-day model is **below a coin flip** on both windows, and it is the only horizon
+  that is; a sub-random accuracy that predates the contract by three model versions is
+  not something the boundary can be blamed for. Treat it as unusable until
+  investigated, and note that `accuracy` here is the only reported stock-side metric --
+  there is no time-based holdout in this path, so these numbers are in-sample and cannot
+  be compared across windows the way the ETF rank-IC figures can.
+- `docs/reference/metrics.md` and `models.md` have been regenerated and are committed,
+  so their coverage tables and model registry now show the contract-window runs. Note
+  for the next contributor: both are `DB_GATED_SHEETS`
+  (`export_documentation_facts.py:1132`). CI renders them against a table-less service
+  database because migrations have not run at that step, so a CI-fresh render is a wall
+  of `UNAVAILABLE` rows that can never equal a developer's populated render in either
+  direction, and `--check` deliberately skips them. A local refresh costs ~9 minutes
+  warm and 40+ cold -- ~30 tables including ~174M rows of `analytics_technicalindicator`
+  -- so run it detached. The three sheets that do gate CI -- `commands.md`, `env.md`,
+  `celery.md` -- are regenerated and `--check` passes.
+- Side effect to be aware of: the ETF retrain **activated** its new row
+  (`etf-lgb-20d-lambdarank-2026-10-08`), because `train_etf_rotation_model` activates
+  by default. Signals served today are therefore already computed on the
+  `2020-01-02` training window. `--no-activate` is the flag for a future run that
+  should not take effect immediately.
+
 ### version 0.1.52
 
 #### Changed:
