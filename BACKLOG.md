@@ -303,6 +303,50 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### `sentiment_score` is 0.5 on all 2,043,000 COMPOSITE factor rows, so it is a zero-variance feature
+
+`audit_model_data_quality --start-date 2010-01-01 --end-date 2026-11-03` (exit 0) reported, for the
+whole 2010-2026 window:
+
+```
+field=sentiment_score total=2043000 non_null=2043000 null=0 zero=0 half=2043000
+```
+
+Not one row differs from the neutral default. `FactorScore.technical_score` by comparison is fully
+populated and varied. The earlier full-universe `validate_data_quality` run independently logged
+`factor_score.sentiment_score.neutral_default_value` as an info item on 2,041,651 rows, so the two
+audits agree.
+
+Consequences worth deciding on:
+- `sentiment_score` is one of the 39 features in the LightGBM feature matrix and is used in
+  `feature_source_asof` checks. A constant column cannot split, so it contributes nothing and the
+  model pays for it in every training pass.
+- `SENTIMENT_7D` and `sentiment_7d_avg_20d` in the feature matrix derive from `SentimentScore` rows
+  that *do* exist (5,637,394 fetched for 2010..2026), so the raw sentiment data is present -- it is
+  the **composite factor's** sentiment component that is defaulted. Look for the scoring path that
+  should have written a non-neutral value and is not, rather than assuming sentiment is unavailable.
+- Either fix the composite scoring, or drop the feature and shrink the schema. Leaving it is the
+  worst option because it looks like a live signal in `docs/reference/models.md`.
+
+### The newest trading session is missing for 1,680 of 1,886 assets
+
+Measured 2026-11-06: per-date OHLCV counts run 1,759 / 1,759 / 1,760 / 1,760 / 1,760 / 1,758 for
+2026-10-26..2026-11-02, then collapse to **206** on 2026-11-03. By newest-row-per-asset, 1,552
+assets stop at 2026-11-02 and 1,680 predate 2026-11-03 entirely.
+
+This is an operational catch-up gap, not a value defect: `docs/reference/metrics.md` recorded OHLCV
+coverage ending at 2026-10-16 before the adjustment-basis work, and the beat and workers were then
+stopped for ~27 hours to keep the machine clear for the retrains, so no scheduled sync ran. The
+repair filled history through 2026-11-02 for the assets it walked.
+
+Expect `catch_up --trigger startup`, fired by `scripts/run_local_stack.sh`, to close it. Verify after
+restart that 2026-11-03 and 2026-11-06 each reach ~1,760 rows before trusting
+`validate_data_quality --effective-universe-only --fail-on-critical`, whose remaining 34,416
+`missing_ohlcv` criticals are partly this gap. Note the same run leaves a long tail of assets whose
+newest row is far older (3 assets end 2024-06-21, 2 end 2026-09-14) -- those are the delisted and
+suspended names and should be excused by `list_date`/`delist_date`, which is the NULL-list_date
+problem above.
+
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
 Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
