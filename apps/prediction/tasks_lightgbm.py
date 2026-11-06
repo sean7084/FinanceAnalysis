@@ -2,6 +2,8 @@ import json
 import os
 import pickle
 import re
+import resource
+import time
 from bisect import bisect_left
 from collections import OrderedDict
 from datetime import date, timedelta
@@ -1102,24 +1104,80 @@ def _extract_features_for_asset(
     return _augment_single_asset_features(features)
 
 
-def _indicator_frame_from_rows(rows, value_column, *, parameter_key=None, parameter_value=None):
-    frame = pd.DataFrame.from_records(rows)
-    if frame.empty:
+def _query_frame(queryset, columns):
+    """Build a DataFrame from a QuerySet, releasing the row list when the call returns.
+
+    Written as `list(qs.values())` at the call site, the row dicts stay bound to a function
+    local for the rest of `_create_feature_matrix`, and it holds twelve of them at once. For
+    the 2010..2026 window that is ~5.5M dicts per fetch at ~700 bytes each: measured 2026-11-05
+    in tmp/retrain/probe-full-run2.log, peak RSS reached 22.9GB at fetch 8 of 12 on a 23GB host
+    and the run had to be terminated. Narrowing to the columns the caller actually keeps is
+    what makes the full window fit.
+    """
+    rows = list(queryset)
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    frame = pd.DataFrame.from_records(rows, columns=columns)
+    del rows
+    return frame
+
+
+def _indicator_frame_from_queryset(
+    queryset,
+    value_column,
+    *,
+    parameter_key=None,
+    parameter_value=None,
+):
+    """Stream an indicator query into the feature frame the trainer needs.
+
+    Keeps the semantics the feature matrix depends on -- parameter scoring, the
+    (asset_id, timestamp) de-duplication that lets an exact parameter match win over a
+    parameterless row, the Beijing-session date derivation, and the final
+    ['asset_id', date, value] shape.
+
+    Deliberately a plain bulk fetch rather than `.iterator(chunk_size=...)`. A chunked
+    iterator makes Django open a named server-side cursor, which costs Postgres the parallel
+    plan on the 172M-row TechnicalIndicator table: measured 2026-11-05
+    (tmp/retrain/iterator-ab.log), the same RSI query returned 5,703,455 rows in 86.1s in bulk
+    and had still not finished after 432s through the cursor. Memory is bounded instead by
+    dropping `parameters` the moment it has been scored and releasing the row list before
+    returning.
+    """
+    rows = list(queryset)
+    if not rows:
         return pd.DataFrame({'asset_id': [], 'date': [], value_column: []})
 
     if parameter_key:
-        def _parameter_score(parameters):
-            resolved = dict(parameters or {})
+        kept = []
+        for row in rows:
+            resolved = dict(row['parameters'] or {})
             if not resolved:
-                return 1
-            return 2 if resolved.get(parameter_key) == parameter_value else -1
-
-        frame['parameter_score'] = frame['parameters'].apply(_parameter_score)
-        frame = frame[frame['parameter_score'] > 0].copy()
-        if frame.empty:
+                score = 1
+            elif resolved.get(parameter_key) == parameter_value:
+                score = 2
+            else:
+                score = -1
+            if score > 0:
+                kept.append((row['asset_id'], row['timestamp'], row['value'], score))
+        del rows
+        if not kept:
             return pd.DataFrame({'asset_id': [], 'date': [], value_column: []})
+        frame = pd.DataFrame.from_records(
+            kept,
+            columns=['asset_id', 'timestamp', 'value', 'parameter_score'],
+        )
+        del kept
         frame = frame.sort_values(['asset_id', 'timestamp', 'parameter_score'])
         frame = frame.drop_duplicates(['asset_id', 'timestamp'], keep='last')
+    else:
+        kept = [(row['asset_id'], row['timestamp'], row['value']) for row in rows]
+        del rows
+        frame = pd.DataFrame.from_records(
+            kept,
+            columns=['asset_id', 'timestamp', 'value'],
+        )
+        del kept
 
     frame['date'] = (pd.to_datetime(frame['timestamp'], utc=True)
          .dt.tz_convert(SESSION_TZ)
@@ -1212,6 +1270,27 @@ def _prepare_macro_dataframe(end_date, missing_value_strategy=MISSING_VALUE_STRA
     return macro_df.sort_values('date'), context_df.sort_values('date')
 
 
+class _BuildTimer:
+    """Liveness heartbeat for a training build that is otherwise silent for hours.
+
+    `ru_maxrss` is kilobytes on Linux. Every line is flushed because the 2026-11 retrain
+    died 28 hours in with nothing recoverable to read: `print` block-buffers, and a
+    SIGKILL loses the buffer, so an unflushed heartbeat is no heartbeat at all.
+    """
+
+    def __init__(self, label):
+        self.label = label
+        self.started_at = time.perf_counter()
+
+    def tick(self, detail):
+        elapsed = time.perf_counter() - self.started_at
+        peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        print(
+            f'[{self.label}] {elapsed:8.1f}s peak_rss={peak_mb:7.0f}MB {detail}',
+            flush=True,
+        )
+
+
 def _create_feature_matrix(
     start_date,
     end_date,
@@ -1226,6 +1305,9 @@ def _create_feature_matrix(
         DataFrame with shape (n_samples, n_features)
         Index: (date, asset_id)
     """
+    timer = _BuildTimer('feature-matrix')
+    timer.tick(f'start window={start_date}..{end_date}')
+
     if asset_ids is None:
         asset_ids = list(Asset.objects.values_list('id', flat=True))
     else:
@@ -1237,6 +1319,7 @@ def _create_feature_matrix(
         .distinct()
         .order_by('date')
     )
+    timer.tick(f'trade_dates={len(target_trade_dates)} assets={len(asset_ids)}')
     if not target_trade_dates:
         df = pd.DataFrame(columns=['date', 'asset_id'])
         df.attrs['feature_names'] = []
@@ -1246,6 +1329,7 @@ def _create_feature_matrix(
         target_trade_dates,
         context=f'Training feature matrix for {start_date}..{end_date}',
     )
+    timer.tick('pit membership coverage ensured')
 
     membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
     asset_id_set = set(asset_ids)
@@ -1255,28 +1339,30 @@ def _create_feature_matrix(
         for asset_id in member_asset_ids
         if asset_id in asset_id_set
     })
+    timer.tick(f'pit union resolved eligible_assets={len(eligible_asset_ids)}')
     if not eligible_asset_ids:
         df = pd.DataFrame(columns=['date', 'asset_id'])
         df.attrs['feature_names'] = []
         return df
 
     warmup_start = start_date - timedelta(days=40)
-    ohlcv_rows = list(
+    ohlcv_df = _query_frame(
         OHLCV.objects.filter(asset_id__in=eligible_asset_ids, date__gte=warmup_start, date__lte=end_date)
         .values('asset_id', 'date', 'close', 'volume')
-        .order_by('asset_id', 'date')
+        .order_by('asset_id', 'date'),
+        ['asset_id', 'date', 'close', 'volume'],
     )
-    if not ohlcv_rows:
+    timer.tick(f'ohlcv rows={len(ohlcv_df)} warmup_start={warmup_start}')
+    if ohlcv_df.empty:
         df = pd.DataFrame(columns=['date', 'asset_id'])
         df.attrs['feature_names'] = []
         return df
 
-    ohlcv_df = pd.DataFrame.from_records(ohlcv_rows)
     ohlcv_df['date'] = pd.to_datetime(ohlcv_df['date'])
     ohlcv_df['close'] = ohlcv_df['close'].astype(float)
     ohlcv_df['volume'] = ohlcv_df['volume'].astype(float)
 
-    factor_rows = list(
+    factor_df = _query_frame(
         FactorScore.objects.filter(
             asset_id__in=eligible_asset_ids,
             mode=FactorScore.FactorMode.COMPOSITE,
@@ -1291,15 +1377,20 @@ def _create_feature_matrix(
             'main_force_flow_score',
             'margin_flow_score',
             'composite_score',
-        ).order_by('asset_id', 'date')
+        ).order_by('asset_id', 'date'),
+        [
+            'asset_id',
+            'date',
+            'pe_ttm_percentile_score',
+            'pb_percentile_score',
+            'roe_trend_score',
+            'main_force_flow_score',
+            'margin_flow_score',
+            'composite_score',
+        ],
     )
-    factor_df = pd.DataFrame.from_records(factor_rows)
-    if factor_df.empty:
-        factor_df = pd.DataFrame({
-            'asset_id': [], 'date': [], 'pe_ttm_percentile_score': [], 'pb_percentile_score': [], 'roe_trend_score': [],
-            'main_force_flow_score': [], 'margin_flow_score': [], 'composite_score': [],
-        })
-    else:
+    timer.tick(f'factor_score rows={len(factor_df)}')
+    if not factor_df.empty:
         factor_df['date'] = pd.to_datetime(factor_df['date'])
         for column in [
             'pe_ttm_percentile_score', 'pb_percentile_score', 'roe_trend_score',
@@ -1307,156 +1398,141 @@ def _create_feature_matrix(
         ]:
             factor_df[column] = factor_df[column].astype(float)
 
-    sentiment_rows = list(
+    sentiment_df = _query_frame(
         SentimentScore.objects.filter(
             asset_id__in=eligible_asset_ids,
             score_type=SentimentScore.ScoreType.ASSET_7D,
             date__gte=warmup_start,
             date__lte=end_date,
-        ).values('asset_id', 'date', 'sentiment_score').order_by('asset_id', 'date')
+        ).values('asset_id', 'date', 'sentiment_score').order_by('asset_id', 'date'),
+        ['asset_id', 'date', 'sentiment_score'],
     )
-    sentiment_df = pd.DataFrame.from_records(sentiment_rows)
-    if sentiment_df.empty:
-        sentiment_df = pd.DataFrame({'asset_id': [], 'date': [], 'sentiment_score': []})
-    else:
+    timer.tick(f'sentiment rows={len(sentiment_df)}')
+    if not sentiment_df.empty:
         sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
         sentiment_df['sentiment_score'] = sentiment_df['sentiment_score'].astype(float)
 
-    rsi_rows = list(
+    rsi_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RSI',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    rsi_df = _indicator_frame_from_rows(
-        rsi_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'rsi',
         parameter_key='timeperiod',
         parameter_value=14,
     )
+    timer.tick(f'RSI kept={len(rsi_df)}')
 
-    mom_5d_rows = list(
+    mom_5d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='MOM_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    mom_5d_df = _indicator_frame_from_rows(
-        mom_5d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'mom_5d',
         parameter_key='n_days',
         parameter_value=5,
     )
+    timer.tick(f'MOM_5D kept={len(mom_5d_df)}')
 
-    rs_rows = list(
+    rs_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RS_SCORE',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
+        ).values('asset_id', 'timestamp', 'value').order_by('asset_id', 'timestamp'),
+        'rs_score',
     )
-    rs_df = _indicator_frame_from_rows(rs_rows, 'rs_score')
+    timer.tick(f'RS_SCORE kept={len(rs_df)}')
 
-    return_3d_rows = list(
+    return_3d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RETURN_3D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    return_3d_df = _indicator_frame_from_rows(
-        return_3d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'return_3d',
         parameter_key='n_days',
         parameter_value=3,
     )
+    timer.tick(f'RETURN_3D kept={len(return_3d_df)}')
 
-    return_5d_rows = list(
+    return_5d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RETURN_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    return_5d_df = _indicator_frame_from_rows(
-        return_5d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'return_5d',
         parameter_key='n_days',
         parameter_value=5,
     )
+    timer.tick(f'RETURN_5D kept={len(return_5d_df)}')
 
-    return_10d_rows = list(
+    return_10d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RETURN_10D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    return_10d_df = _indicator_frame_from_rows(
-        return_10d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'return_10d',
         parameter_key='n_days',
         parameter_value=10,
     )
+    timer.tick(f'RETURN_10D kept={len(return_10d_df)}')
 
-    relative_volume_5d_rows = list(
+    relative_volume_5d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RELATIVE_VOLUME_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    relative_volume_5d_df = _indicator_frame_from_rows(
-        relative_volume_5d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'relative_volume_5d',
         parameter_key='n_days',
         parameter_value=5,
     )
+    timer.tick(f'RELATIVE_VOLUME_5D kept={len(relative_volume_5d_df)}')
 
-    relative_volume_20d_rows = list(
+    relative_volume_20d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='RELATIVE_VOLUME_20D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    relative_volume_20d_df = _indicator_frame_from_rows(
-        relative_volume_20d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'relative_volume_20d',
         parameter_key='n_days',
         parameter_value=20,
     )
+    timer.tick(f'RELATIVE_VOLUME_20D kept={len(relative_volume_20d_df)}')
 
-    realized_volatility_5d_rows = list(
+    realized_volatility_5d_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
             asset_id__in=eligible_asset_ids,
             indicator_type='REALIZED_VOLATILITY_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp')
-    )
-    realized_volatility_5d_df = _indicator_frame_from_rows(
-        realized_volatility_5d_rows,
+        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
         'realized_volatility_5d',
         parameter_key='window',
         parameter_value=5,
     )
+    timer.tick(f'REALIZED_VOLATILITY_5D kept={len(realized_volatility_5d_df)}')
 
     preserve_true_missing = _preserves_true_missing(missing_value_strategy)
     macro_df, context_df = _prepare_macro_dataframe(
         end_date,
         missing_value_strategy=missing_value_strategy,
     )
+    timer.tick(f'macro rows={len(macro_df)} context rows={len(context_df)}')
 
     asset_map = {
         asset.id: asset
@@ -1476,7 +1552,13 @@ def _create_feature_matrix(
     target_start_ts = pd.Timestamp(start_date)
     target_end_ts = pd.Timestamp(end_date)
 
-    for asset_id, asset_df in ohlcv_df.groupby('asset_id', sort=False):
+    grouped_assets = ohlcv_df.groupby('asset_id', sort=False)
+    total_grouped_assets = grouped_assets.ngroups
+    timer.tick(f'per-asset masking start assets={total_grouped_assets}')
+
+    for asset_index, (asset_id, asset_df) in enumerate(grouped_assets, start=1):
+        if asset_index % 200 == 0:
+            timer.tick(f'per-asset masking {asset_index}/{total_grouped_assets} assets, frames={len(frames)}')
         asset_df = asset_df.sort_values('date').copy()
         asset = asset_map.get(int(asset_id))
         if asset is None:
@@ -1802,14 +1884,18 @@ def _create_feature_matrix(
         ]])
 
     if not frames:
+        timer.tick('per-asset masking produced no frames')
         df = pd.DataFrame(columns=['date', 'asset_id'])
         df.attrs['feature_names'] = []
         return df
 
+    timer.tick(f'per-asset masking done assets={total_grouped_assets} frames={len(frames)}, concatenating')
     df = pd.concat(frames, ignore_index=True)
     base_feature_names = [col for col in df.columns if col not in ['date', 'asset_id']]
+    timer.tick(f'concatenated shape={df.shape}, building interaction features')
     df, feature_names = _build_interaction_features(df, base_feature_names)
     df.attrs['feature_names'] = feature_names
+    timer.tick(f'done shape={df.shape} features={len(feature_names)}')
     return df
 
 
@@ -1822,6 +1908,8 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
     FLAT: -2% < return < +2%
     """
     labels = {}
+    timer = _BuildTimer(f'labels-{horizon_days}d')
+    timer.tick(f'start window={start_date}..{end_date}')
 
     target_trade_dates = list(
         OHLCV.objects.filter(date__gte=start_date, date__lte=end_date)
@@ -1830,6 +1918,7 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
         .order_by('date')
     )
     if not target_trade_dates:
+        timer.tick('no trade dates in window')
         return labels
 
     ensure_pit_membership_coverage(
@@ -1852,17 +1941,19 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
             date__lte=end_date + timedelta(days=horizon_days + 7),
             asset_id__in=eligible_asset_ids,
         )
-        .values('asset_id', 'date', 'close')
+        .values_list('asset_id', 'date', 'close')
         .order_by('asset_id', 'date')
     )
-    if not rows:
-        return labels
+    timer.tick(f'ohlcv rows={len(rows)} assets={len(eligible_asset_ids)}')
 
     grouped = {}
-    for row in rows:
-        grouped.setdefault(row['asset_id'], {'dates': [], 'closes': []})
-        grouped[row['asset_id']]['dates'].append(row['date'])
-        grouped[row['asset_id']]['closes'].append(float(row['close']))
+    for asset_id, session_date, close in rows:
+        payload = grouped.setdefault(asset_id, {'dates': [], 'closes': []})
+        payload['dates'].append(session_date)
+        payload['closes'].append(float(close))
+    del rows
+    if not grouped:
+        return labels
 
     for asset_id, payload in grouped.items():
         dates = payload['dates']
@@ -1892,6 +1983,7 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
 
             labels[(target_date, asset_id, horizon_days)] = label
 
+    timer.tick(f'done labels={len(labels)}')
     return labels
 
 

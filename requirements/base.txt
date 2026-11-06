@@ -7,6 +7,13 @@ channels-redis==4.2.0
 django-filter==24.2
 celery==5.4.0
 redis==5.0.4
+# Pinned because celery==5.4.0 only constrains kombu to <6.0,>=5.3.4, so a fresh resolve floats
+# to whatever kombu has released. 5.7.0 (2026-11-03) tightened its redis extra to >=6.4.0 and
+# its transport raises VersionMismatch against the redis==5.0.4 pinned above, which broke CI on
+# every branch from that date -- not on any code change. 5.6.2 declares redis>=4.5.2,<6.5, so it
+# is the newest kombu that still accepts this redis client. Move this pin only together with the
+# redis one.
+kombu==5.6.2
 django-modeltranslation==0.18.12
 akshare==1.18.63
 tushare==1.4.29

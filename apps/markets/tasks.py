@@ -3,7 +3,7 @@ import time
 from collections import defaultdict
 from celery import chord, shared_task
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 import pandas as pd
 from decimal import Decimal
@@ -916,6 +916,95 @@ def sync_index_constituent_universe(
     }
 
 
+ADJ_FACTOR_QUANT = Decimal('0.000001')
+PRICE_QUANT = Decimal('0.0001')
+VOL_HAND_TO_SHARES = 100
+
+
+def _adj_factor_by_date(factor_frame):
+    """``trade_date -> adj_factor`` with blank and non-finite rows dropped.
+
+    pandas widens a column that holds a null to float and fills it with NaN, and a
+    NaN read back as ``Decimal('NaN')`` compares unequal to every other value -- so
+    an unfiltered blank would later look like an ex-dividend event on that date.
+    """
+    factors = {}
+    if factor_frame is None or factor_frame.empty:
+        return factors
+    for record in factor_frame.sort_values('trade_date').itertuples(index=False):
+        factor = _safe_decimal(getattr(record, 'adj_factor', None))
+        if factor is None or not factor.is_finite():
+            continue
+        trade_date = _parse_tushare_date(record.trade_date)
+        if trade_date is not None:
+            factors[trade_date] = factor
+    return factors
+
+
+def _carry_forward_factors(dates, factors, seed_factor):
+    """Fill sessions TuShare has no factor for by inheriting the previous one.
+
+    ``adj_factor`` only moves on a distribution, so an absent date is not a new
+    factor. Same reasoning as ``apps.etf_rotation.tasks._carry_forward_adj_factors``.
+    """
+    carried = {}
+    last = seed_factor
+    for trade_date in dates:
+        factor = factors.get(trade_date, last)
+        if factor is not None:
+            last = factor
+            carried[trade_date] = factor
+    return carried
+
+
+def _resolve_adj_basis(window_dates, carried_factors, latest_bar):
+    """The adjustment basis every row of this asset must share.
+
+    Prefer the stored newest bar when it is newer than the window: a repair window
+    reaching back to 2010 must still write rows on the *current* basis, or the
+    repaired prefix and the untouched suffix land on different scales and the sync
+    manufactures the very seam it is meant to avoid.
+    """
+    newest_window_date = window_dates[-1]
+    if (latest_bar is not None and latest_bar.date > newest_window_date
+            and latest_bar.adj_factor is not None):
+        return latest_bar.adj_factor
+    return carried_factors.get(newest_window_date)
+
+
+def _rebase_pre_window_bars(asset, window_start, prior_basis, basis):
+    """Move the rows this sync did not rewrite onto the new adjustment basis.
+
+    Re-basing is all-or-nothing per asset. Forward adjustment is a property of the
+    whole series, so re-scaling only the rows that happen to carry ``raw_close``
+    while leaving legacy rows on the old basis does not remove a seam -- it adds one
+    and leaves the asset worse than before the sync ran.
+
+    The step is a single uniform multiply rather than a per-row recomputation: every
+    re-basable row shares one basis by construction, which is also why the raw
+    open/high/low columns were not needed.
+    """
+    if prior_basis is None or prior_basis == basis:
+        return {'rebased': 0, 'stale_legacy_rows': 0}
+
+    outside = OHLCV.objects.filter(asset=asset, date__lt=window_start)
+    stale = outside.filter(raw_close__isnull=True).count()
+    if stale:
+        return {'rebased': 0, 'stale_legacy_rows': stale}
+
+    ratio = prior_basis / basis
+    return {
+        'rebased': outside.update(
+            open=F('open') * ratio,
+            high=F('high') * ratio,
+            low=F('low') * ratio,
+            close=F('close') * ratio,
+            adj_close=F('adj_close') * ratio,
+        ),
+        'stale_legacy_rows': 0,
+    }
+
+
 @shared_task
 def sync_asset_history(
     stock_code,
@@ -999,50 +1088,117 @@ def sync_asset_history(
         start_date = start_dt.strftime('%Y%m%d')
         end_date = end_dt.strftime('%Y%m%d')
 
-        ohlcv_df = ts.pro_bar(
-            ts_code=ts_code,
-            adj='qfq',
-            start_date=start_date,
-            end_date=end_date,
-            api=pro,
+        raw_df = _call_tushare_with_retry(
+            lambda: pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date),
+            f'ohlcv_daily:{ts_code}',
         )
 
-        if ohlcv_df is None or ohlcv_df.empty:
+        if raw_df is None or raw_df.empty:
             print(f"No historical data found for {ts_code}. Skipping.")
             return f"No data for {ts_code}"
 
+        factor_df = _call_tushare_with_retry(
+            lambda: pro.adj_factor(ts_code=ts_code, start_date=start_date, end_date=end_date),
+            f'ohlcv_adj_factor:{ts_code}',
+        )
+
+        window_dates = sorted({
+            parsed for parsed in (_parse_tushare_date(value) for value in raw_df['trade_date'])
+            if parsed is not None
+        })
+        adj_factors = _carry_forward_factors(
+            window_dates,
+            _adj_factor_by_date(factor_df),
+            latest.adj_factor if latest is not None else None,
+        )
+        basis = _resolve_adj_basis(window_dates, adj_factors, latest)
+        if basis is None:
+            # Guessing a basis is how the series drifted in the first place, so refuse
+            # rather than write another silently mis-scaled row.
+            return f"No adjustment factor for {ts_code}: skipping"
+        prior_basis = latest.adj_factor if latest is not None else None
+
         rows = []
-        for _, ohlcv_row in ohlcv_df.iterrows():
+        dropped_incomplete_ohlc = 0
+        dropped_no_factor = 0
+        for _, ohlcv_row in raw_df.iterrows():
             open_value = _safe_decimal(ohlcv_row.get('open'))
             high_value = _safe_decimal(ohlcv_row.get('high'))
             low_value = _safe_decimal(ohlcv_row.get('low'))
             close_value = _safe_decimal(ohlcv_row.get('close'))
             amount_value = _safe_decimal(ohlcv_row.get('amount'), Decimal('0'))
             if None in (open_value, high_value, low_value, close_value):
+                dropped_incomplete_ohlc += 1
                 continue
 
-            trade_date = pd.to_datetime(str(ohlcv_row['trade_date'])).date()
+            trade_date = _parse_tushare_date(ohlcv_row['trade_date'])
+            factor = adj_factors.get(trade_date)
+            if trade_date is None or factor is None:
+                # A session the factor feed never covered. Carrying forward only fills
+                # gaps *after* the first known factor, so a factor feed starting late
+                # drops the earliest sessions -- which would otherwise vanish silently
+                # and leave a hole indistinguishable from a suspension.
+                dropped_no_factor += 1
+                continue
+
+            scale = factor / basis
+            adjusted_close = (close_value * scale).quantize(PRICE_QUANT)
             rows.append(
                 OHLCV(
                     asset=asset,
                     date=trade_date,
-                    open=open_value,
-                    high=high_value,
-                    low=low_value,
-                    close=close_value,
-                    volume=_safe_int(ohlcv_row.get('vol'), default=0) * 100,
-                    adj_close=close_value,
+                    open=(open_value * scale).quantize(PRICE_QUANT),
+                    high=(high_value * scale).quantize(PRICE_QUANT),
+                    low=(low_value * scale).quantize(PRICE_QUANT),
+                    close=adjusted_close,
+                    volume=_safe_int(ohlcv_row.get('vol'), default=0) * VOL_HAND_TO_SHARES,
+                    adj_close=adjusted_close,
                     amount=amount_value,
+                    raw_close=close_value,
+                    adj_factor=factor.quantize(ADJ_FACTOR_QUANT),
                 )
             )
 
         before = OHLCV.objects.filter(asset=asset).count()
-        OHLCV.objects.bulk_create(rows, batch_size=2000, ignore_conflicts=True)
+        OHLCV.objects.bulk_create(
+            rows,
+            batch_size=2000,
+            update_conflicts=True,
+            unique_fields=['asset', 'date'],
+            update_fields=['open', 'high', 'low', 'close', 'adj_close', 'volume',
+                           'amount', 'raw_close', 'adj_factor'],
+        )
         after = OHLCV.objects.filter(asset=asset).count()
         ohlcv_count = max(0, after - before)
 
-        print(f"Processed {ts_code}: Saved {ohlcv_count} new OHLCV records.")
-        return f"Completed {ts_code}: {ohlcv_count} records"
+        rebase = _rebase_pre_window_bars(asset, start_dt, prior_basis, basis)
+        if rebase['rebased']:
+            logger.info('Re-based %s pre-window OHLCV row(s) for %s onto factor %s.',
+                        rebase['rebased'], ts_code, basis)
+        if rebase['stale_legacy_rows']:
+            logger.warning(
+                '%s: %s pre-window row(s) predate raw_close and cannot be re-based '
+                'locally, so the asset stays internally inconsistent until a full re-fetch.',
+                ts_code, rebase['stale_legacy_rows'],
+            )
+
+        if dropped_incomplete_ohlc or dropped_no_factor:
+            logger.warning(
+                '%s: dropped %s session(s) with incomplete OHLC and %s with no '
+                'adjustment factor coverage out of %s fetched.',
+                ts_code, dropped_incomplete_ohlc, dropped_no_factor, len(raw_df),
+            )
+
+        # "new" here is net inserts; with upsert semantics a sync that repairs every
+        # existing row reports 0 new, which reads as "nothing happened" unless the
+        # written total is stated alongside it.
+        print(f"Processed {ts_code}: wrote {len(rows)} OHLCV row(s), "
+              f"{ohlcv_count} newly inserted.")
+        return (
+            f"Completed {ts_code}: {len(rows)} written, {ohlcv_count} inserted, "
+            f"rebased={rebase['rebased']}, stale_legacy={rebase['stale_legacy_rows']}, "
+            f"dropped_ohlc={dropped_incomplete_ohlc}, dropped_nofactor={dropped_no_factor}"
+        )
 
     except Exception as e:
         print(f"Error processing {stock_code}: {e}")

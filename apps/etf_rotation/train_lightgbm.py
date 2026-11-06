@@ -1147,6 +1147,18 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
         'valid_rows': pooled['valid_rows'],
         'num_boost_round': int(num_boost_round),
     }
+    # Imported here rather than at module scope because this file reaches into `features`
+    # only from inside functions (see feature_columns and feature_schema_version), and the
+    # metadata below records which label schema the artifact was fitted against.
+    try:
+        from apps.etf_rotation import features
+    except ImportError as exc:
+        raise RuntimeError(
+            'apps.etf_rotation.features is not importable, so the label schema version cannot '
+            f'be resolved ({exc}). This trainer refuses to write an artifact whose label schema '
+            'is unlabelled, because a seed-averaged run could then not be reproduced.'
+        ) from exc
+
     metadata = {
         **base,
         'framework': 'expanding_window_walk_forward',

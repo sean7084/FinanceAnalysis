@@ -325,10 +325,27 @@ class MarketAdminAndBackfillTests(TestCase):
         self.assertIn('600001.SH 2024-01-02..2024-01-08: queued', output.getvalue())
         self.assertIn('600002.SH 2024-01-03..2024-01-04: queued', output.getvalue())
 
-    @patch('apps.markets.tasks.ts.pro_bar')
     @patch('apps.markets.tasks.ts.pro_api')
-    def test_sync_asset_history_honors_explicit_repair_window(self, mock_pro_api, mock_pro_bar):
-        mock_pro_api.return_value = object()
+    def test_sync_asset_history_honors_explicit_repair_window(self, mock_pro_api):
+        daily_kwargs = []
+
+        class StubPro:
+            def daily(self, **kwargs):
+                daily_kwargs.append(kwargs)
+                return pd.DataFrame([{
+                    'trade_date': '20240103',
+                    'open': 10.0,
+                    'high': 11.0,
+                    'low': 9.5,
+                    'close': 10.5,
+                    'vol': 12.0,
+                    'amount': 345.0,
+                }])
+
+            def adj_factor(self, **kwargs):
+                return pd.DataFrame([{'trade_date': '20240103', 'adj_factor': 1.05}])
+
+        mock_pro_api.return_value = StubPro()
         OHLCV.objects.create(
             asset=self.active_asset,
             date='2024-01-10',
@@ -340,17 +357,6 @@ class MarketAdminAndBackfillTests(TestCase):
             adj_close=Decimal('10.5'),
             amount=Decimal('10000.0'),
         )
-        mock_pro_bar.return_value = pd.DataFrame([
-            {
-                'trade_date': '20240103',
-                'open': 10.0,
-                'high': 11.0,
-                'low': 9.5,
-                'close': 10.5,
-                'vol': 12.0,
-                'amount': 345.0,
-            },
-        ])
 
         with patch('apps.markets.tasks.settings.TUSHARE_TOKEN', 'test-token'):
             from .tasks import sync_asset_history
@@ -365,25 +371,31 @@ class MarketAdminAndBackfillTests(TestCase):
             )
 
         self.assertIn('Completed 600001', result)
-        self.assertEqual(mock_pro_bar.call_args.kwargs['start_date'], '20240102')
-        self.assertEqual(mock_pro_bar.call_args.kwargs['end_date'], '20240105')
+        self.assertEqual(daily_kwargs[0]['start_date'], '20240102')
+        self.assertEqual(daily_kwargs[0]['end_date'], '20240105')
         self.assertTrue(OHLCV.objects.filter(asset=self.active_asset, date='2024-01-03').exists())
 
-    @patch('apps.markets.tasks.ts.pro_bar')
     @patch('apps.markets.tasks.ts.pro_api')
-    def test_sync_asset_history_can_honor_pre_floor_repair_window_when_allowed(self, mock_pro_api, mock_pro_bar):
-        mock_pro_api.return_value = object()
-        mock_pro_bar.return_value = pd.DataFrame([
-            {
-                'trade_date': '20091102',
-                'open': 10.0,
-                'high': 11.0,
-                'low': 9.5,
-                'close': 10.5,
-                'vol': 12.0,
-                'amount': 345.0,
-            },
-        ])
+    def test_sync_asset_history_can_honor_pre_floor_repair_window_when_allowed(self, mock_pro_api):
+        daily_kwargs = []
+
+        class StubPro:
+            def daily(self, **kwargs):
+                daily_kwargs.append(kwargs)
+                return pd.DataFrame([{
+                    'trade_date': '20091102',
+                    'open': 10.0,
+                    'high': 11.0,
+                    'low': 9.5,
+                    'close': 10.5,
+                    'vol': 12.0,
+                    'amount': 345.0,
+                }])
+
+            def adj_factor(self, **kwargs):
+                return pd.DataFrame([{'trade_date': '20091102', 'adj_factor': 1.0}])
+
+        mock_pro_api.return_value = StubPro()
 
         with patch('apps.markets.tasks.settings.TUSHARE_TOKEN', 'test-token'):
             from .tasks import sync_asset_history
@@ -399,8 +411,8 @@ class MarketAdminAndBackfillTests(TestCase):
             )
 
         self.assertIn('Completed 600001', result)
-        self.assertEqual(mock_pro_bar.call_args.kwargs['start_date'], '20091030')
-        self.assertEqual(mock_pro_bar.call_args.kwargs['end_date'], '20100105')
+        self.assertEqual(daily_kwargs[0]['start_date'], '20091030')
+        self.assertEqual(daily_kwargs[0]['end_date'], '20100105')
 
 
 class TradingCalendarAndSuspensionSyncTests(TestCase):

@@ -1,5 +1,144 @@
 # Changelog
 
+### version 0.1.51
+
+#### Changed:
+
+- **OHLCV now stores the unadjusted close and the adjustment factor.** The writer fetched
+  `ts.pro_bar(adj='qfq')` and put the forward-adjusted result in `open`/`high`/`low`/`close`,
+  then set `adj_close = close` -- two columns holding one value, with the traded price and
+  the factor both discarded. TuShare re-bases qfq to the **newest factor it knows at query
+  time**, verified by asking for identical dates under two `end_date` values and watching
+  every one of them move by a constant ratio. So after any ex-dividend event every price
+  TuShare would return for an earlier date shifts, while the rows already in the database
+  keep the basis they were written under -- and `bulk_create(ignore_conflicts=True)` plus
+  `start_dt = latest.date + 1 day` meant those rows were never touched again. The series
+  ends up on two bases with a step at the join, and nothing anywhere reported it.
+  `apps/markets/migrations/0014_*` adds nullable `raw_close` (12,4) and `adj_factor`
+  (12,6); `close`/`adj_close` keep their existing qfq meaning, because essentially every
+  computation in the project reads `close` as the adjusted price
+  (`apps/analytics/tasks.py`, `apps/backtest/tasks.py`, `apps/markets/benchmarking.py`,
+  factors, prediction) and re-semanticking it would have been a change to all of them.
+  Adding nullable columns without defaults is a metadata operation: **4.4 s on 6,299,867
+  rows**, and `sqlmigrate` confirms the DDL is two `ADD COLUMN ... NULL` and three no-ops.
+  - **`ignore_conflicts=True` became `update_conflicts=True` on the OHLCV upsert.** This is
+    the behaviour change to be aware of: re-syncing a date now *overwrites* the stored row
+    instead of leaving it alone. It is also the reason the defect was unfixable before --
+    an append-only writer cannot correct a row it has already written. There is no
+    manual price-editing workflow in this project, so "the provider is authoritative" is
+    the correct semantics rather than a convenience.
+  - **Re-basing an asset is all-or-nothing, deliberately.** `_rebase_pre_window_bars` moves
+    rows the current sync did not rewrite onto the new basis with one uniform multiply by
+    `prior_basis / basis` -- no provider call. It refuses entirely if any of those rows
+    lacks `raw_close`. The tempting partial fix ("rescale what you can") makes things worse:
+    forward adjustment is a whole-series property, so re-basing only the rows that carry the
+    data adds a second seam instead of removing the first. Verified on live data: 603596.SH
+    went from a 49.26% basis spread (1945 of 2065 rows off-basis) to 0.0007% with zero
+    violations of `close == raw_close × adj_factor ÷ newest_factor`, and its phantom
+    **−31.68% session on 2026-05-08 -- a bonus-issue ex-date, not a crash -- became +10.02%.**
+    Locally recomputing qfq matches TuShare's published values to a maximum absolute error
+    of 0.005 CNY on assets priced at 11, 40 and 1275 CNY alike. That flat residual is
+    *TuShare rounding its own output to two decimals*, not a formula difference: an error
+    that does not grow with price cannot be a scaling mistake. Our column keeps four, so
+    stored values will not bit-match the website, and a re-implementation must not be
+    judged against a tolerance tighter than the vendor's own.
+- **The LightGBM feature matrix could not be built over the repaired window, and now can.**
+  `_create_feature_matrix` fetched twelve result sets as `list(queryset.values())` and held every
+  one of them for the whole build, because they were plain function locals. Over
+  2010-01-01..2026-11-03 that is ~5.5M row-dicts per fetch — `parameters` is a JSON dict carried on
+  *every* indicator row — measured at roughly 700 bytes/row, so the build needed ~38 GB against a
+  23 GB host and was terminated at 22.9 GB, eight fetches of twelve in. Each fetch now narrows to
+  the columns the caller keeps and releases its row list before returning, which brought the same
+  build to **6.5 GB peak** and **29.8 minutes cold**.
+  - **The obvious fix was a trap.** Streaming with `.iterator(chunk_size=100_000)` cut memory just as
+    well and was catastrophically slower: the identical 5.7M-row RSI query returned in **86.1 s
+    bulk** and had still not finished after **432 s** through the cursor. A chunked iterator makes
+    Django open a named server-side cursor, and Postgres will not use a parallel plan through one;
+    `pg_stat_activity` confirms the fix by showing the parallel workers of a single scan again. Buy
+    memory by narrowing and releasing, never by cursoring.
+- **Retraining is now observable.** `_create_feature_matrix` and `_create_labels_for_training` emit a
+  `[label] elapsed peak_rss detail` heartbeat at every fetch and every 200 assets, flushed on each
+  line. The previous canary ran 28 hours, died, and left nothing readable: output was block-buffered
+  `print`, so a SIGKILL discarded the buffer, and the window from the version-tag print to the first
+  per-horizon print covered the entire feature build in silence.
+
+#### Added:
+
+- `apps/markets/price_limits.py` -- per-board daily price limits, **date-aware**: main
+  board ±10%, ChiNext ±20% only from the 2020-08-24 reform, STAR ±20% from its 2019-07-22
+  opening, Beijing Exchange ±30% from 2021-11-15, main-board special treatment ±5% while
+  ChiNext/STAR keep the board limit. `_market_code_for_ts_code` maps exchange suffixes only,
+  so board is inferred from the symbol prefix. Where the rule is genuinely uncertain it
+  returns "no limit" rather than guessing, because for an audit a skipped bar is cheap and an
+  invented anomaly is not.
+- `apps/markets/adjustment_basis.py` + `manage.py audit_adjustment_drift` -- censuses the
+  universe for multi-basis assets. A price-limit test **cannot** find this defect and was
+  tried first: a re-basing shifts the series by roughly the dividend yield, 1–3%, which is
+  *smaller than the narrowest limit the market imposes* (±5%). The working test compares each
+  row against one reference basis. Two traps, both encoded in the module: the reference must
+  be the factor on the asset's newest **stored** row, not the provider's newest factor
+  (otherwise a factor that moved after the last sync tilts every row and a clean asset reads
+  as 100% contaminated); and **coverage must be dense** -- a seam is a step that both sides
+  keep, so a sample lying entirely on one side of it sees perfect agreement. An evenly-spaced
+  nine-date preview reported 5% on a universe a dense pass put at 38%. Cost is two calls per
+  *trading day*, since `daily(trade_date=D)` and `adj_factor(trade_date=D)` each return every
+  listed stock: 479 days over the whole universe for 958 calls, against ~3,500 walking assets
+  individually. Measured 2026-11-03: **38% of 1,767 measurable assets carried a seam, and
+  54% of the 500 assets in the index-tagged sync scope** -- the population the models read.
+  Median basis spread 1.93%, p90 5.33%, max 71.4%, and 657 of the 679 had more than half
+  their rows off-basis.
+- `manage.py repair_ohlcv_adjustment_basis` -- pays down the backlog by re-fetching through
+  the new writer. Each asset is repaired from **its own earliest stored date**, not from
+  `HISTORICAL_DATA_FLOOR`: 212 assets hold 72,057 rows predating the floor, and leaving them
+  without a `raw_close` would strand them permanently, because the all-or-nothing rule above
+  then refuses to re-base them on every future ex-dividend event -- a one-way degradation
+  that quietly re-creates the defect being fixed. Only assets still missing a `raw_close` are
+  queued, so resuming an interrupted batch costs just the unfinished assets.
+- `docs/reference/price-adjustment.md` -- the semantics, the measurements and the two failure
+  modes. Nothing previously documented that `close` is an adjusted price; the column names
+  read as if they were traded prices.
+
+#### Notes:
+
+- **Cascade recompute and retrain are done; the models in use are the repaired-data ones.** The
+  stale-derived-rows consequence of the repair was paid down in `apps/catchup/registry.py`
+  dependency order — technical indicators, signal events, the point-in-time benchmark, model data —
+  and then every model was retrained on the repaired prices under `--version-tag adj-fix` over the
+  full 2010-01-01..2026-11-03 window. The five rows now active are
+  `lgb-3d/7d/30d-2026-11-03-adj-fix`, `lstm-2026-11-03-adj-fix` and `ensemble-2026-11-03`; the 45
+  stock model versions trained before the repair are `ARCHIVED` by
+  `apps/prediction/migrations/0008_*`, which is reversible in the same way `0007` is.
+  - **Ordering was load-bearing, not stylistic.** `ModelVersion(ENSEMBLE)` is refreshed only by the
+    LSTM path, which reads whichever `LightGBMModelArtifact` rows are active at that moment. Running
+    LSTM first would have baked the *old* LightGBM accuracies into the ensemble weights permanently.
+    Verified afterwards: the ensemble's `basis_metrics.lightgbm_accuracy` is the mean of the three new
+    `adj-fix` accuracies.
+  - Old predictions were **not** deleted, and cannot be: `PredictionResult`'s unique key includes
+    `model_version` and its FK is `on_delete=SET_NULL`, so deleting a version would blank the
+    reference on every prediction that records what was actually served. Archiving is the correct
+    action, and `is_active=False` is what stops the contaminated generations being used.
+- **The ETF track was contaminated by the same route and is now rebuilt too.**
+  `apps/prediction/features.py` builds ETF features from the constituents' `adj_close`, so all
+  2,647,301 `ETFFeatureSnapshot` rows inherited the mixed-basis prices; they were recomputed to
+  2,649,487 rows spanning 2016-01-04..2026-11-03 (22 min), the ETF rotation models were retrained
+  under `--version-tag adj-fix`, and `apps/prediction/migrations/0009_*` archives the 43 ETF
+  versions trained before the repair. Registry after both archive migrations: 98 rows, **exactly 8
+  active** (three stock LightGBM horizons, stock LSTM, ensemble, and the three ETF models), and
+  zero rows left `READY` but inactive.
+  - **Retraining the ETF models was impossible before this branch, for two unrelated bugs in the
+    ETF trainers that only running them exposed.** `apps/etf_rotation/train_lightgbm.py` referenced
+    `features.LABEL_SCHEMA_VERSION` at module level in a function where the file only ever imports
+    `features` inside other functions -- a plain `NameError`. `apps/etf_rotation/train_lstm.py`
+    guarded its feature/indicator pairing check with `panel['base_feature_names']`, a key
+    `_assemble_windows` has never returned (it returns `feature_names`; the base list lives in
+    `config`), so the guard raised `KeyError` on every non-empty panel and therefore **never once
+    got to run** -- a correctness check that had been dead since it was written. Both fixed;
+    452 ETF tests pass.
+- **`OHLCV.amount` is in 千元 and `ETFDaily.amount` is in 元** -- 1000× apart, recorded
+  because it was only discovered during this audit. Unchanged deliberately: converting would
+  break every reader of `amount` for no cleaning benefit. The unit is now in the field's
+  `help_text`. Do not join the two tables on `amount`.
+
 ### version 0.1.50
 
 #### Changed:

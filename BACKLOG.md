@@ -303,6 +303,118 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### `sentiment_score` is 0.5 on all 2,043,000 COMPOSITE factor rows, so it is a zero-variance feature
+
+`audit_model_data_quality --start-date 2010-01-01 --end-date 2026-11-03` (exit 0) reported, for the
+whole 2010-2026 window:
+
+```
+field=sentiment_score total=2043000 non_null=2043000 null=0 zero=0 half=2043000
+```
+
+Not one row differs from the neutral default. `FactorScore.technical_score` by comparison is fully
+populated and varied. The earlier full-universe `validate_data_quality` run independently logged
+`factor_score.sentiment_score.neutral_default_value` as an info item on 2,041,651 rows, so the two
+audits agree.
+
+Consequences worth deciding on:
+- `sentiment_score` is one of the 39 features in the LightGBM feature matrix and is used in
+  `feature_source_asof` checks. A constant column cannot split, so it contributes nothing and the
+  model pays for it in every training pass.
+- `SENTIMENT_7D` and `sentiment_7d_avg_20d` in the feature matrix derive from `SentimentScore` rows
+  that *do* exist (5,637,394 fetched for 2010..2026), so the raw sentiment data is present -- it is
+  the **composite factor's** sentiment component that is defaulted. Look for the scoring path that
+  should have written a non-neutral value and is not, rather than assuming sentiment is unavailable.
+- Either fix the composite scoring, or drop the feature and shrink the schema. Leaving it is the
+  worst option because it looks like a live signal in `docs/reference/models.md`.
+
+### The newest trading session is missing for 1,680 of 1,886 assets
+
+Measured 2026-11-06: per-date OHLCV counts run 1,759 / 1,759 / 1,760 / 1,760 / 1,760 / 1,758 for
+2026-10-26..2026-11-02, then collapse to **206** on 2026-11-03. By newest-row-per-asset, 1,552
+assets stop at 2026-11-02 and 1,680 predate 2026-11-03 entirely.
+
+This is an operational catch-up gap, not a value defect: `docs/reference/metrics.md` recorded OHLCV
+coverage ending at 2026-10-16 before the adjustment-basis work, and the beat and workers were then
+stopped for ~27 hours to keep the machine clear for the retrains, so no scheduled sync ran. The
+repair filled history through 2026-11-02 for the assets it walked.
+
+Expect `catch_up --trigger startup`, fired by `scripts/run_local_stack.sh`, to close it. Verify after
+restart that 2026-11-03 and 2026-11-06 each reach ~1,760 rows before trusting
+`validate_data_quality --effective-universe-only --fail-on-critical`, whose remaining 34,416
+`missing_ohlcv` criticals are partly this gap. Note the same run leaves a long tail of assets whose
+newest row is far older (3 assets end 2024-06-21, 2 end 2026-09-14) -- those are the delisted and
+suspended names and should be excused by `list_date`/`delist_date`, which is the NULL-list_date
+problem above.
+
+### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
+
+Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
+with the backend in `wait_event_type=IO, wait_event=DataFileRead` on
+`FETCH FORWARD 50000 FROM "_django_curs_12349"`. The quoted cursor name is the tell — the command
+iterates with `.iterator(chunk_size=...)`.
+
+That is exactly the pattern measured in the LightGBM trainer on 2026-11-05: a chunked iterator makes
+Django open a named server-side cursor, Postgres will not use a parallel plan through one, and the
+identical 5.7M-row query took **86.1 s bulk** versus **still unfinished at 432 s** through the cursor.
+A parallel plan shows up in `pg_stat_activity` as several backends sharing one `query_start`; a cursor
+shows up as a single backend doing `FETCH FORWARD` forever.
+
+Remedy is the one already applied in `apps/prediction/tasks_lightgbm.py`: narrow the selection to the
+columns actually needed and release the row list per call, rather than streaming the wide result. If a
+row count is only being *compared*, aggregate it in SQL instead of transferring rows at all. This also
+matters because the command is the release gate — a gate that takes an hour gets skipped, and the
+`--fail-on-critical` exit code above shows what happens when nobody has run it recently.
+
+### `list_date` is NULL on 1,591 of 1,912 assets, which makes `validate_data_quality` uninterpretable
+
+Measured 2026-11-06 while closing out the OHLCV adjustment-basis repair. Of the 1,886 assets that
+actually carry price rows, **1,590 have no `list_date`**.
+
+The consequence is that `manage.py validate_data_quality --fail-on-critical` cannot bound each
+asset's expected date range, so it demands rows from `HISTORICAL_DATA_FLOOR` (2010-01-01) for
+assets that did not exist yet, and reports the difference as critical. A bare run returned
+**exit 1 with 5,302,805 critical issues**, dominated by `missing_factor_score` 4,176,723 and
+`missing_ohlcv` 1,126,060 — plus its own `missing_list_date` warning on 1,590 assets, which is the
+cause sitting inside the same report. These are coverage gaps against an over-broad expectation, not
+wrong values: the repaired series passes the local adjustment invariant at 0 violations over all
+6,542,582 rows.
+
+`--effective-universe-only` restricts to asset/dates present in the PIT effective universe and is the
+correct way to invoke this gate; it was not used for the run above.
+
+To do:
+- Populate `list_date` from TuShare `stock_basic` / `stock_company` (`list_date`) for the assets that
+  have price history, which should collapse most of the 1.13M `missing_ohlcv` count on its own.
+- Then re-establish `validate_data_quality --effective-universe-only --fail-on-critical` as the
+  release gate, and record the passing counts so a future regression is distinguishable from the
+  current noise floor.
+- Consider whether the check should refuse to emit `missing_ohlcv` as **critical** for an asset whose
+  `list_date` is unknown, since it cannot know the expected start at all — a warning with a stated
+  reason would be more honest than a critical built on an assumption.
+
+### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
+
+Observed twice on 2026-11-05. Signature, from three independent sources that all have to agree
+before "hung" is a safe conclusion: the server backend sits in `wait_event_type=Client,
+wait_event=ClientWrite`; the client is in `poll_schedule_timeout` at **zero CPU**; and `ss -tnp`
+shows the socket `ESTAB` with **both** `Recv-Q` and `Send-Q` at 0. Nothing times out, so it never
+recovers on its own.
+
+The trigger was a `COUNT(*)` over the 174M-row `analytics_technicalindicator` table running
+concurrently with a large result-set fetch. A controlled test ruled out a structural fault: the same
+link moved 500,000 rows in 1.5 s (**331k rows/s**) when nothing else was running. So the rule is
+concurrency, not capacity.
+
+Two consequences that are still open:
+- A killed client does **not** free its backend. Orphans were seen sitting in `ClientWrite` **1,068 s**
+  after the client died, because `tcp_keepalives_idle=600` does not fire on a backend actively blocked
+  writing. Against `max_connections=100` this is a slow leak, and `pg_terminate_backend(pid)` plus a
+  `pg_stat_activity` emptiness check before each launch is the only current remedy.
+- Long training and audit jobs need a client-side read timeout, or at minimum a watchdog that
+  compares CPU ticks against `pg_stat_activity` and fails loudly instead of waiting for a human to
+  notice a flat log.
+
 ### The reference RULE parameter set is window-specific
 
 Phase 4 ran a CLI-only walk-forward over 2016–2023 (four expanding folds,
@@ -812,6 +924,37 @@ Also: `torch` installs as a **CPU-only** build from the default index on Windows
 which conflicts with the `windows_gpu` LightGBM inference backend and the
 WSL2-as-NVIDIA-owner framing. Document which runtimes actually have GPU.
 
+### Unpinned *transitive* dependencies broke CI on every branch (fixed for kombu, the class remains)
+
+On 2026-11-06 PR #79 failed CI with three errors that looked like Celery broker exhaustion:
+`IndexError: pop from empty list` in `kombu/transport/virtual/base.py:create_channel`. That frame is
+a red herring — it is kombu's normal lazy-init path, and the real terminal exception was buried
+~40 frames deeper:
+
+```
+kombu.exceptions.VersionMismatch: Redis transport requires redis-py versions 6.1.0 or later.
+You have 5.0.4
+```
+
+`requirements/base.txt` pins `celery==5.4.0` and `redis==5.0.4`, but celery only constrains kombu to
+`<6.0,>=5.3.4`, so a fresh resolve floats kombu to whatever has been released. **kombu 5.7.0 shipped
+on 2026-11-03 and tightened its redis extra to `>=6.4.0`.** `main`'s last green run was 2026-11-02 —
+one day earlier — so the breakage was invisible until an unrelated branch happened to run CI after
+the release, and then presented as that branch's regression. Local runs passed the whole time because
+the local venv had resolved kombu 5.6.2, which declares `redis>=4.5.2,<6.5`.
+
+Fixed by pinning `kombu==5.6.2` beside `celery` and `redis`. What is **not** fixed is the class:
+every transitively-resolved package can do this, and the failure surfaces as an unrelated PR going
+red. Two things would contain it:
+
+- A lockfile (`pip-compile` / `uv lock`) committed alongside `requirements/*.txt`, so CI installs a
+  resolved set rather than re-resolving against today's PyPI.
+- Until then, pin any package that a hard runtime check depends on — kombu was only caught because it
+  *raises*; a silent behaviour change in a floated dependency would have been worse.
+
+Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of the
+above exception" chain is rarely the cause.
+
 ### `requirements/production.txt` cannot support the documented deployment
 
 It is a single `-r base.txt` line. No `gunicorn`, `uvicorn`, or `daphne`
@@ -834,6 +977,26 @@ and `htmlcov/` but nothing generates them.
 ---
 
 ## Open — documentation
+
+- **`CONTRIBUTING.md` §6 misdescribes where model artifacts live, and the error is
+  dangerous.** It says "`models/` is **tracked in git** — 132 files including `.pkl`,
+  `.pt`" and instructs "Commit a new artifact family together with the registry change that
+  activates it." In fact `git ls-files models/` returns **0** and `.gitignore:102` has ignored
+  the tree since 2026-10-10, because artifacts live in the object store
+  (`ARTIFACT_STORE_BACKEND = s3`). Following the published instruction would commit multi-MB
+  binaries. The correct step is `migrate_artifacts_to_store --execute` followed by
+  `verify_artifact_store`. Found on 2026-11-05 while publishing the `adj-fix` families.
+- **`CONTRIBUTING.md` §1 says there is no branch or PR workflow, which the history
+  contradicts.** It states "Work happens on `main`. There is no protected-branch workflow, no
+  PR template, and no CI." `.github/PULL_REQUEST_TEMPLATE.md` exists, and PRs #56-#78 each
+  merged a `<type>/<slug>` branch. The branching convention is therefore inferable only from
+  git history, which is exactly what §1 claims is unnecessary.
+- **`export_documentation_facts --check` reports drift in an order that invites a false
+  green.** The `CommandError` is written before the per-sheet `Building …` lines, so checking a
+  log with `tail` can show a clean run for a sheet that failed. Verified the hard way:
+  `--check` flagged `commands.md`, a regeneration invoked with a mistyped flag
+  (`--sheets`, which the parser rejects) exited non-zero, and a `tail -4` of the follow-up
+  `--check` showed no error at all. Use `--only <sheet>` and read the whole output.
 
 - Correct the `relative_volume_*` gap values in `TECHNICAL_GUIDE.md` (see above).
 - Add docstrings to `apps/backtest/` (19 non-test files, ~4,100 lines, zero
@@ -867,12 +1030,53 @@ unvalidated.
 
 ### Data semantics
 
-- **OHLCV adjustment semantics.** `close` is already qfq and `adj_close` holds the
-  same value; the unadjusted original close is not retained. Add a `raw_close`
-  column so the two stop being "same value, different name".
+- **OHLCV adjustment semantics — measured, no longer a tidy-up.** `close` is
+  already qfq and `adj_close` holds the same value; the unadjusted original close
+  and the `adj_factor` are not retained, so a stored row cannot be re-based or
+  audited locally. Because TuShare re-bases qfq to the newest factor at query time
+  and the writer only ever appends (`ignore_conflicts=True` plus
+  `start_dt = latest.date + 1`), each ex-dividend event leaves the asset's history
+  on two bases. A 2026-11-03 census (479 trading dates, 1,767 measurable assets)
+  found **38% of the universe** carrying a seam — and **54% of the 500 assets in
+  the synced universe**, which is the population the models actually read. The
+  metric is the total spread of bases inside one asset's series, not a single day's
+  step: median 1.93%, p90 5.33%, max 71.4%, and 657 of the 679 drifted assets have
+  more than half their rows off-basis. Damage to return series is therefore not
+  "one bad day" but a majority of rows on a basis the newest rows no longer use.
+  See `docs/reference/price-adjustment.md` and `manage.py audit_adjustment_drift`;
+  remediation is the approved `raw_close` + `adj_factor` schema change plus a
+  per-asset re-fetch.
+- **`OHLCV.amount` and `ETFDaily.amount` differ by 1000x.** The stock table stores
+  TuShare's raw 千元 unchanged (`markets/tasks.py`, `_safe_decimal(row['amount'])`),
+  the ETF table converts to 元 via `TUSHARE_AMOUNT_QIAN_YUAN_TO_YUAN`. Deliberately
+  left alone for now: converting would break every reader of `amount` for no
+  cleaning benefit. Record the unit in `OHLCV.amount`'s `help_text` when the schema
+  is next touched, and do not join the two tables on `amount`.
 - **No limit-up / limit-down rules.** Nothing judges 10% / 20% / ST limits against
   the previous close, distinguishes main board / ChiNext / STAR / BSE regimes, or
   flags return-based price anomalies. Limit-up days are not marked.
+- **PIT union benchmark: two write-path defects, both pre-existing.**
+  (a) `refresh_point_in_time_union_benchmark(start, end, initial_nav)` treats
+  `start_date` as a seed row and writes it with `daily_return = 0`. Its only
+  caller for the daily path,
+  `refresh_latest_point_in_time_union_benchmark`, passes the *previous* row's date
+  as `start` -- so every daily refresh zeroes the previous session's PIT return,
+  and that date is never revisited. Observed directly: refreshing 2010-01-07 rewrote
+  2010-01-06's `daily_return` from -0.00083720 to 0 with `nav` unchanged.
+  (b) The first trading day of 2011-2016 all carry a flat NAV (`daily_return = 0`)
+  while the index itself moved (2016-01-04: -8.33%). Data coverage on those dates is
+  normal (461-492 computable members, same as neighbouring sessions), and it
+  reproduces with a single whole-range build, so it is build logic, not a chunking
+  artefact and not missing data. Six dates out of 4,084, and a flat day shifts the
+  NAV *level* rather than corrupting later returns, so the impact is bounded -- but
+  `PIT vs 000905.SH daily-return correlation` sits at 0.9529 and should be
+  re-measured after a fix.
+- **`TechnicalIndicator.timestamp` is stored as midnight in the active `TIME_ZONE`,
+  so reading it back with `datetime.date()` is wrong.** `.date()` on the UTC value
+  truncates in UTC, which for a Beijing-midnight row returns the *previous* day --
+  every session, not occasionally. `apps/core/date_floor.session_midnight`'s
+  docstring documents the SQL-side hazard (non-sargable `timestamp__date`) but not
+  this one. Convert with `django.utils.timezone.localtime()` first.
 - **Macro snapshot alignment.** The yield curve uses each month's first-day data
   and CNY/USD uses the monthly open. Switch to the previous month's OHLCV, and
   align snapshots and market context by publication/availability date rather than

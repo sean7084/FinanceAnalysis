@@ -201,16 +201,32 @@ class PointInTimeBenchmarkDaily(models.Model):
 class OHLCV(models.Model):
     """
     Stores daily Open, High, Low, Close, and Volume data for an asset.
+
+    ``open``/``high``/``low``/``close``/``adj_close`` hold the forward-adjusted (qfq)
+    price; ``raw_close`` holds the price that actually traded. See
+    ``docs/reference/price-adjustment.md`` -- the adjusted columns are only
+    self-consistent when every row of an asset shares one ``adj_factor`` basis.
     """
     asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='ohlcv_data', verbose_name=_("Asset"))
     date = models.DateField(_("Date"))
     open = models.DecimalField(_("Open"), max_digits=12, decimal_places=4)
     high = models.DecimalField(_("High"), max_digits=12, decimal_places=4)
     low = models.DecimalField(_("Low"), max_digits=12, decimal_places=4)
-    close = models.DecimalField(_("Close"), max_digits=12, decimal_places=4)
-    adj_close = models.DecimalField(_("Adjusted Close"), max_digits=12, decimal_places=4)
+    close = models.DecimalField(_("Close"), max_digits=12, decimal_places=4,
+                                help_text=_("Forward-adjusted (qfq) close, not the traded price."))
+    adj_close = models.DecimalField(_("Adjusted Close"), max_digits=12, decimal_places=4,
+                                    help_text=_("Equal to close under the qfq convention; retained for API compatibility."))
     volume = models.BigIntegerField(_("Volume"))
-    amount = models.DecimalField(_("Amount"), max_digits=20, decimal_places=4, help_text=_("Turnover amount"))
+    amount = models.DecimalField(_("Amount"), max_digits=20, decimal_places=4,
+                                 help_text=_("Turnover amount in 千元 (TuShare's raw unit). ETFDaily.amount is in 元: 1000x apart, do not join."))
+    raw_close = models.DecimalField(
+        _("Raw Close"), max_digits=12, decimal_places=4, null=True, blank=True,
+        help_text=_("Unadjusted traded close. Null on rows written before this column existed."),
+    )
+    adj_factor = models.DecimalField(
+        _("Adjustment Factor"), max_digits=12, decimal_places=6, null=True, blank=True,
+        help_text=_("TuShare adj_factor for the session; close = raw_close * adj_factor / basis."),
+    )
 
     class Meta:
         verbose_name = _("OHLCV Data")
