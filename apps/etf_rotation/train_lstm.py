@@ -1457,12 +1457,15 @@ def train_walk_forward(*, model_type_label=MODEL_TYPE_LABEL, start_date=None, en
         frame=frame, base_feature_names=base_feature_names, calendar_dates=calendar,
         sequence_length=config['sequence_length'], require_labels=True, horizon_days=config['horizon_days'],
     )
-    if panel and len(panel['feature_names']) != 2 * len(panel['base_feature_names']):
+    if panel and len(panel['feature_names']) != 2 * len(base_feature_names):
         # Each base column pairs with its missingness indicator. A subset that changed one
         # list but not the other would only fail later, when the scaler and input_size disagree.
+        # `base_feature_names` is the caller's own list, not a panel key: `_assemble_windows`
+        # returns `feature_names` only, so reading it off the panel raised KeyError on every
+        # non-empty panel and this guard never once got to run.
         raise ETFRotationLSTMTrainingError(
             f'panel columns are unpaired: {len(panel["feature_names"])} inputs for '
-            f'{len(panel["base_feature_names"])} base columns.'
+            f'{len(base_feature_names)} base columns.'
         )
     del frame
     if panel['starts'].size == 0:
