@@ -303,6 +303,25 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
+
+Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
+with the backend in `wait_event_type=IO, wait_event=DataFileRead` on
+`FETCH FORWARD 50000 FROM "_django_curs_12349"`. The quoted cursor name is the tell — the command
+iterates with `.iterator(chunk_size=...)`.
+
+That is exactly the pattern measured in the LightGBM trainer on 2026-11-05: a chunked iterator makes
+Django open a named server-side cursor, Postgres will not use a parallel plan through one, and the
+identical 5.7M-row query took **86.1 s bulk** versus **still unfinished at 432 s** through the cursor.
+A parallel plan shows up in `pg_stat_activity` as several backends sharing one `query_start`; a cursor
+shows up as a single backend doing `FETCH FORWARD` forever.
+
+Remedy is the one already applied in `apps/prediction/tasks_lightgbm.py`: narrow the selection to the
+columns actually needed and release the row list per call, rather than streaming the wide result. If a
+row count is only being *compared*, aggregate it in SQL instead of transferring rows at all. This also
+matters because the command is the release gate — a gate that takes an hour gets skipped, and the
+`--fail-on-critical` exit code above shows what happens when nobody has run it recently.
+
 ### `list_date` is NULL on 1,591 of 1,912 assets, which makes `validate_data_quality` uninterpretable
 
 Measured 2026-11-06 while closing out the OHLCV adjustment-basis repair. Of the 1,886 assets that
