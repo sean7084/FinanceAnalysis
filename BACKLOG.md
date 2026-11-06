@@ -924,6 +924,37 @@ Also: `torch` installs as a **CPU-only** build from the default index on Windows
 which conflicts with the `windows_gpu` LightGBM inference backend and the
 WSL2-as-NVIDIA-owner framing. Document which runtimes actually have GPU.
 
+### Unpinned *transitive* dependencies broke CI on every branch (fixed for kombu, the class remains)
+
+On 2026-11-06 PR #79 failed CI with three errors that looked like Celery broker exhaustion:
+`IndexError: pop from empty list` in `kombu/transport/virtual/base.py:create_channel`. That frame is
+a red herring — it is kombu's normal lazy-init path, and the real terminal exception was buried
+~40 frames deeper:
+
+```
+kombu.exceptions.VersionMismatch: Redis transport requires redis-py versions 6.1.0 or later.
+You have 5.0.4
+```
+
+`requirements/base.txt` pins `celery==5.4.0` and `redis==5.0.4`, but celery only constrains kombu to
+`<6.0,>=5.3.4`, so a fresh resolve floats kombu to whatever has been released. **kombu 5.7.0 shipped
+on 2026-11-03 and tightened its redis extra to `>=6.4.0`.** `main`'s last green run was 2026-11-02 —
+one day earlier — so the breakage was invisible until an unrelated branch happened to run CI after
+the release, and then presented as that branch's regression. Local runs passed the whole time because
+the local venv had resolved kombu 5.6.2, which declares `redis>=4.5.2,<6.5`.
+
+Fixed by pinning `kombu==5.6.2` beside `celery` and `redis`. What is **not** fixed is the class:
+every transitively-resolved package can do this, and the failure surfaces as an unrelated PR going
+red. Two things would contain it:
+
+- A lockfile (`pip-compile` / `uv lock`) committed alongside `requirements/*.txt`, so CI installs a
+  resolved set rather than re-resolving against today's PyPI.
+- Until then, pin any package that a hard runtime check depends on — kombu was only caught because it
+  *raises*; a silent behaviour change in a floated dependency would have been worse.
+
+Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of the
+above exception" chain is rarely the cause.
+
 ### `requirements/production.txt` cannot support the documented deployment
 
 It is a single `-r base.txt` line. No `gunicorn`, `uvicorn`, or `daphne`
