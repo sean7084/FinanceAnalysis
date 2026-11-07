@@ -153,6 +153,7 @@ export function DashboardPage() {
     alertTriggers: 0,
     completedBacktests: 0,
     avgBottomProbability: 0,
+    degraded: true,
   }
   const dashboardRows = rowsResource.data ?? EMPTY_DASHBOARD_ROWS
   const loadFailed = summaryResource.error !== null || rowsResource.error !== null
@@ -193,13 +194,19 @@ export function DashboardPage() {
       : null,
   ].filter((item): item is { label: string; value: string } => item !== null)
 
+  // A summary that did not answer has no numbers to show. Rendering the fallback
+  // zeros reads as "the market is flat", which is a different and much more
+  // misleading claim than "nothing came back".
+  const summaryValue = (value: string) => (dashboard.degraded ? t('common.na') : value)
+  const summaryPending = summaryResource.loading || summaryResource.isRetrying
+
   const translatedMetrics = [
-    { label: t('dash.macro'), value: dashboard.macroPhase, pending: summaryResource.loading },
-    { label: t('dash.hotConcepts'), value: dashboard.hotConcepts, pending: summaryResource.loading },
-    { label: t('dash.predSignals'), value: `${dashboard.predictionSignals} ${t('dash.today')}`, pending: summaryResource.loading },
-    { label: t('dash.alertTriggers'), value: `${dashboard.alertTriggers} ${t('dash.live')}`, pending: summaryResource.loading },
-    { label: t('dash.completedBacktests'), value: String(dashboard.completedBacktests), pending: summaryResource.loading },
-    { label: t('dash.avgBottomProb'), value: `${(dashboard.avgBottomProbability * 100).toFixed(1)}%`, pending: summaryResource.loading },
+    { label: t('dash.macro'), value: summaryValue(dashboard.macroPhase), pending: summaryPending },
+    { label: t('dash.hotConcepts'), value: summaryValue(dashboard.hotConcepts), pending: summaryPending },
+    { label: t('dash.predSignals'), value: summaryValue(`${dashboard.predictionSignals} ${t('dash.today')}`), pending: summaryPending },
+    { label: t('dash.alertTriggers'), value: summaryValue(`${dashboard.alertTriggers} ${t('dash.live')}`), pending: summaryPending },
+    { label: t('dash.completedBacktests'), value: summaryValue(String(dashboard.completedBacktests)), pending: summaryPending },
+    { label: t('dash.avgBottomProb'), value: summaryValue(`${(dashboard.avgBottomProbability * 100).toFixed(1)}%`), pending: summaryPending },
     {
       label: t('dash.suggestedSetups'),
       value: String(dashboardRows.filter((row) => Boolean(row[selectedSuggestedField])).length),
@@ -284,7 +291,7 @@ export function DashboardPage() {
 
       {loadFailed && (
         <p className="status disconnected">
-          {t('dash.loadError')}
+          {rowsResource.backendUnavailable ? t('dash.backendDown') : t('dash.loadError')}
         </p>
       )}
 

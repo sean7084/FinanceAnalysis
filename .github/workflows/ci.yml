@@ -361,8 +361,15 @@ jobs:
       # trade table and the latest signals, and leaves realised pnl blank when no
       # closed row carries a priced pnl. 77 -> 79: the workbench form launches with the
       # backend's ``max_positions=3`` default, and the ledger card renders ``--`` (not
-      # 0.00) when every closed row lacks a share count.
-      MIN_TEST_COUNT: "79"
+      # 0.00) when every closed row lacks a share count. 79 -> 87: the cold-start
+      # retry budget and the failure copy it feeds. Four in useApiResource.test.tsx
+      # (recovery after a startup 502, no retry on a 4xx, a bounded budget then
+      # backend-unreachable, and no data-tti stamp at the first failure it intends
+      # to retry); three in DashboardPage.test.tsx (a degraded summary renders N/A
+      # rather than zeros, the backend-down banner only after the budget is spent,
+      # the generic copy for a 4xx); one in IndicatorBoardPage.test.tsx (the same
+      # backend-down banner on the board that reads the same endpoint).
+      MIN_TEST_COUNT: "87"
 
     steps:
       - uses: actions/checkout@v4

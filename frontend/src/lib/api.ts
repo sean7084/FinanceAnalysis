@@ -545,14 +545,21 @@ const DASHBOARD_SUMMARY_FALLBACK: DashboardSummaryDto = {
  * capped page (200 and 50 rows) and so silently saturated. `completedBacktests`
  * is the visible one -- it reported at most 50 against a real total of 431.
  *
- * Uses `apiGetSafe` rather than `apiGet` to keep the legacy behaviour of
- * degrading to placeholder values instead of failing the whole page.
+ * Uses `apiGet` directly rather than `apiGetSafe`, and degrades explicitly, because
+ * swallowing the failure into placeholder zeros made a completely dead backend look
+ * like a working dashboard with no data: the six KPI cards rendered `0` and `N/A`
+ * with no error anywhere, and only the table below noticed. `degraded` separates
+ * "the endpoint did not answer" from "these are the numbers".
  */
 export async function fetchDashboardData() {
-  const summary = await apiGetSafe<DashboardSummaryDto>(
-    '/dashboard/stocks/summary/',
-    DASHBOARD_SUMMARY_FALLBACK,
-  )
+  let degraded = false
+  let summary: DashboardSummaryDto
+  try {
+    summary = await apiGet<DashboardSummaryDto>('/dashboard/stocks/summary/')
+  } catch {
+    summary = DASHBOARD_SUMMARY_FALLBACK
+    degraded = true
+  }
 
   return {
     macroPhase: summary.macro_phase || 'N/A',
@@ -561,6 +568,7 @@ export async function fetchDashboardData() {
     alertTriggers: summary.alert_triggers ?? 0,
     completedBacktests: summary.completed_backtests ?? 0,
     avgBottomProbability: summary.avg_bottom_probability ?? 0,
+    degraded,
   }
 }
 
