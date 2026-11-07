@@ -1,5 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ApiRequestError } from '../lib/api'
 import { cacheSnapshot, cachedGet, subscribeToCache, type CachedGetOptions } from '../lib/queryCache'
+
+/**
+ * Backoff for a first load that failed because the stack was still coming up.
+ *
+ * The dashboard used to latch its error permanently: a page opened seconds before
+ * Django answered kept showing "Failed to load dashboard data" after the backend
+ * became healthy, because nothing re-asked until the key remounted. Four attempts
+ * over ~15s covers a cold start without turning a real outage into a spinner.
+ */
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000]
+
+/**
+ * Did the backend fail to answer, as opposed to answering and refusing?
+ *
+ * A TypeError is fetch's own signal for a transport failure -- connection refused,
+ * DNS, a proxy that could not reach its target. A 5xx is the backend admitting it
+ * could not serve. Both are worth retrying and both mean "the backend is down" to
+ * the reader, so they share one classifier rather than drifting apart.
+ *
+ * A 4xx is deliberately excluded: retrying a 404 or a permission refusal only
+ * delays the error the user needs. So is a bare Error -- that is a loader throwing
+ * on malformed data or a coding bug, which no amount of waiting fixes.
+ */
+function backendUnavailable(error: unknown): boolean {
+  if (error instanceof TypeError) return true
+  return error instanceof ApiRequestError && error.status >= 500
+}
 
 export interface ApiResource<T> {
   /** Last known value, retained while a background revalidation is running. */
@@ -8,8 +36,12 @@ export interface ApiResource<T> {
   loading: boolean
   /** True while a revalidation runs on top of an existing value. */
   isRefreshing: boolean
+  /** True while a retry backoff is waiting between attempts. */
+  isRetrying: boolean
   /** Non-null only when nothing could be loaded; pages substitute their own localised copy. */
   error: string | null
+  /** True when that failure was the backend not answering, so pages can say so. */
+  backendUnavailable: boolean
   refresh: () => void
 }
 
@@ -147,9 +179,12 @@ export function useApiResource<T>(
   const [loading, setLoading] = useState(!initial.hasValue)
   const [error, setError] = useState<string | null>(null)
   const [revalidating, setRevalidating] = useState(initial.revalidating)
+  const [retrying, setRetrying] = useState(false)
+  const [unavailable, setUnavailable] = useState(false)
 
   useEffect(() => {
     let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
     const release = trackResource(
       typeof window === 'undefined' ? '' : window.location.pathname,
       key,
@@ -169,28 +204,57 @@ export function useApiResource<T>(
 
     const unsubscribe = subscribeToCache(key, publish)
 
-    void cachedGet<T>(key, () => loaderRef.current(), { ...optionsRef.current })
-      .then((value) => {
-        if (!alive) return
-        setData(value)
-        setLoading(false)
-        setError(null)
-        release()
+    const wait = (delay: number) =>
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, delay)
       })
-      .catch(() => {
-        // Only reachable when the cache holds no value at all for this key.
-        // Release regardless: a page that failed to load data is not waiting for
-        // it, and leaving the key pending would stall the stamp forever.
-        release()
-        if (alive && !cacheSnapshot<T>(key).hasValue) {
-          setError('request failed')
+
+    const load = async () => {
+      // One attempt per pass; a retry re-enters cachedGet rather than the loader,
+      // so an in-flight dedupe and the freshness window keep working the same way
+      // they do for a remount.
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const value = await cachedGet<T>(key, () => loaderRef.current(), { ...optionsRef.current })
+          if (!alive) return
+          setData(value)
+          setLoading(false)
+          setError(null)
+          setUnavailable(false)
+          setRetrying(false)
+          release()
+          return
+        } catch (caught) {
+          if (!alive) return
+          if (backendUnavailable(caught) && attempt < RETRY_DELAYS_MS.length) {
+            setRetrying(true)
+            await wait(RETRY_DELAYS_MS[attempt])
+            if (!alive) return
+            continue
+          }
+          // Only reachable when the cache holds no value at all for this key.
+          // Release regardless: a page that failed to load data is not waiting for
+          // it, and leaving the key pending would stall the stamp forever -- but
+          // only once the budget is spent, so data-tti does not stamp at the first
+          // 502 and understate the wait the latency harness exists to price.
+          setRetrying(false)
+          release()
+          if (!cacheSnapshot<T>(key).hasValue) {
+            setError('request failed')
+            setUnavailable(backendUnavailable(caught))
+          }
+          return
         }
-      })
+      }
+    }
+
+    void load()
 
     publish()
 
     return () => {
       alive = false
+      if (timer !== undefined) clearTimeout(timer)
       unsubscribe()
       release()
     }
@@ -202,13 +266,27 @@ export function useApiResource<T>(
         setData(value)
         setLoading(false)
         setError(null)
+        setUnavailable(false)
       })
-      .catch(() => {
+      .catch((caught: unknown) => {
         if (!cacheSnapshot<T>(key).hasValue) {
           setError('request failed')
+          setUnavailable(backendUnavailable(caught))
         }
       })
   }, [key])
 
-  return { data, loading, isRefreshing: revalidating, error, refresh }
+  // The cache subscription publishes the first failure as soon as it lands, which
+  // is mid-retry: without this the page shows its error banner for the whole ~15s
+  // backoff and only then swaps to the backend-down copy. A load still in progress
+  // has not failed yet, so it reports no error.
+  return {
+    data,
+    loading,
+    isRefreshing: revalidating,
+    isRetrying: retrying,
+    error: retrying ? null : error,
+    backendUnavailable: unavailable,
+    refresh,
+  }
 }

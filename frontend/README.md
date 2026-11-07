@@ -97,6 +97,12 @@ and `{% vite_asset 'src/main.tsx' %}`. Which URLs those tags produce depends on
 | `True` (dev) | `http://localhost:5173/@vite/client`, `http://localhost:5173/src/main.tsx`, React Refresh preamble | Vite dev server running |
 | `False` (prod) | `/static/assets/main-<hash>.js`, `/static/assets/main-<hash>.css`, modulepreload links | `frontend/dist/.vite/manifest.json` (produced by `npm run build`) |
 
+The default is `False`, so Django serves the built bundle and no Vite process is
+needed. Set `DJANGO_VITE_DEV_MODE=True` in `.env` for a Django-served HMR session;
+the setting lives in `../config/settings/base.py` rather than in a launcher script
+so that a bare `manage.py runserver` and `scripts/restart_cold_stack.sh` agree with
+`scripts/run_local_stack.sh`.
+
 `../config/urls.py` mounts the shell at `/` and at a negative-lookahead
 catch-all `^(?!api/|admin/|static/|media/|ws/).*$`, so every
 client-side route (`/dashboard`, `/stock/<symbol>`, `/macro`, ...) resolves to

@@ -1,9 +1,11 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import { I18nProvider } from '../i18n'
+import { ApiRequestError } from '../lib/api'
+import { resetQueryCache } from '../lib/queryCache'
 import { DashboardPage } from './DashboardPage'
 
 const apiMocks = vi.hoisted(() => ({
@@ -98,6 +100,13 @@ function renderDashboard(initialEntry = '/') {
     </I18nProvider>,
   )
 }
+
+// A fresh (<60s) cache entry is served without calling the loader at all, so a
+// failure test that inherits the previous test's healthy summary would assert
+// against a value it never asked for.
+beforeEach(() => {
+  resetQueryCache()
+})
 
 describe('DashboardPage', () => {
   beforeEach(() => {
@@ -215,5 +224,101 @@ describe('DashboardPage', () => {
     await user.click(within(table).getByRole('button', { name: 'Trade Score' }))
 
     expect(within(table).getAllByRole('row')[1]).toHaveTextContent('600099')
+  })
+})
+
+const BACKEND_DOWN = 'The backend is not answering. Check that ./scripts/run_local_stack.sh is running (the SPA and the API are both on http://localhost:8000/).'
+const LOAD_ERROR = 'Failed to load dashboard data.'
+
+const degradedSummary = {
+  macroPhase: 'N/A',
+  hotConcepts: 'N/A',
+  predictionSignals: 0,
+  alertTriggers: 0,
+  completedBacktests: 0,
+  avgBottomProbability: 0,
+  degraded: true,
+}
+
+function metricCard(label: string) {
+  return within(screen.getByText(label).closest('article')!)
+}
+
+// The retry backoff is real setTimeout, so the budget has to be driven rather than
+// waited out. RTL's waitFor polls on those same timers and would never advance.
+const flush = async (ms: number) => {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+}
+
+describe('DashboardPage failure states', () => {
+  beforeEach(() => {
+    localStorage.setItem('finance_locale', 'en-US')
+    apiMocks.fetchDashboardData.mockReset()
+    apiMocks.fetchDashboardStocks.mockReset()
+    apiMocks.fetchDashboardData.mockResolvedValue({ ...degradedSummary, degraded: false })
+    apiMocks.fetchDashboardStocks.mockResolvedValue([dashboardRow])
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders N/A on the KPI cards when the summary endpoint degrades', async () => {
+    // The old apiGetSafe path turned a failed summary into zeros, which read as a
+    // real measurement: no backtests ever run, no bottom probability. N/A is the
+    // honest answer, and it is the only thing separating the two on screen.
+    apiMocks.fetchDashboardData.mockResolvedValue(degradedSummary)
+    renderDashboard()
+    await flush(0)
+
+    expect(metricCard('Completed Backtests').getByText('N/A')).toBeInTheDocument()
+    expect(metricCard('Completed Backtests').queryByText('0')).not.toBeInTheDocument()
+    expect(metricCard('Avg Bottom Probability').getByText('N/A')).toBeInTheDocument()
+    expect(metricCard('Avg Bottom Probability').queryByText('0.0%')).not.toBeInTheDocument()
+
+    // Degradation is card-scoped. fetchDashboardData resolves rather than rejects,
+    // so the candidates still render and no banner is claimed.
+    expect(screen.getByText('Sample Asset')).toBeInTheDocument()
+    expect(screen.queryByText(LOAD_ERROR)).not.toBeInTheDocument()
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+  })
+
+  it('shows the backend-down banner after the retry budget is spent', async () => {
+    apiMocks.fetchDashboardData.mockResolvedValue(degradedSummary)
+    apiMocks.fetchDashboardStocks.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderDashboard()
+    await flush(0)
+
+    // A page opened while Django is still starting must not accuse the backend of
+    // being down on the first refused connection: it retries for ~15s first.
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+    expect(screen.queryByText(LOAD_ERROR)).not.toBeInTheDocument()
+    expect(metricCard('Suggested Setups').getByText('Loading...')).toBeInTheDocument()
+    expect(apiMocks.fetchDashboardStocks).toHaveBeenCalledTimes(1)
+
+    await flush(20_000)
+
+    expect(screen.getByText(BACKEND_DOWN)).toBeInTheDocument()
+    expect(apiMocks.fetchDashboardStocks).toHaveBeenCalledTimes(5)
+    expect(apiMocks.fetchDashboardData).toHaveBeenCalledTimes(1)
+    expect(metricCard('Completed Backtests').getByText('N/A')).toBeInTheDocument()
+  })
+
+  it('keeps the generic load-error copy for a 4xx refusal', async () => {
+    // A 404 is the backend answering and refusing. Retrying it only delays the
+    // error, and telling the reader to go start a stack that is already running
+    // sends them after the wrong problem.
+    apiMocks.fetchDashboardStocks.mockRejectedValue(
+      new ApiRequestError('GET /api/v1/dashboard/stocks/ failed: 404', 404),
+    )
+    renderDashboard()
+    await flush(0)
+
+    expect(screen.getByText(LOAD_ERROR)).toBeInTheDocument()
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+    expect(apiMocks.fetchDashboardStocks).toHaveBeenCalledTimes(1)
   })
 })

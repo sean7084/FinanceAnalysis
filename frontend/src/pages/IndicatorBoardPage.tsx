@@ -111,7 +111,7 @@ export function IndicatorBoardPage() {
 
       {rowsResource.error && (
         <p className="status disconnected">
-          {t('dash.loadError')}
+          {rowsResource.backendUnavailable ? t('dash.backendDown') : t('dash.loadError')}
         </p>
       )}
 

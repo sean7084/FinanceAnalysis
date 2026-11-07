@@ -588,12 +588,19 @@ Django now ships the SPA itself (see `apps/core/views.py`,
 
 | Flow | URL | Vite needed? | HMR? | When to use |
 | --- | --- | --- | --- | --- |
-| Pure Vite (unchanged) | `http://localhost:5173/` | Yes | Yes | Frontend-only work; Vite serves `frontend/index.html` and proxies `/api` and `/ws` to Django on `:8000`. |
-| Django-served, dev mode | `http://localhost:8000/` | Yes | Yes | You want the dashboard and the API on one origin during development — same-origin `/api` and WebSockets, with no proxy in the path. No cookies or CSRF tokens are involved; the API is unauthenticated. Set `DJANGO_VITE_DEV_MODE=True` (default when `DJANGO_DEBUG=True`); Django renders the shell, `<script>` tags point at Vite on `:5173`. |
-| Django-served, prod mode | `http://localhost:8000/` | No | No | Verifying the built bundle. Run `npm run build` once, set `DJANGO_VITE_DEV_MODE=False`; Django reads `frontend/dist/.vite/manifest.json` and emits hashed `/static/` URLs. |
+| Pure Vite (unchanged) | `http://localhost:5173/` | Yes | Yes | Frontend-only work; Vite serves `frontend/index.html` and proxies `/api` and `/ws` to Django on `:8000`. Reach it with `STACK_FRONTEND=1 ./scripts/run_local_stack.sh`, or `scripts/run_frontend.sh` alone. |
+| Django-served, dev mode | `http://localhost:8000/` | Yes | Yes | You want HMR *and* one origin. Set `DJANGO_VITE_DEV_MODE=True` explicitly in `.env` — `config/settings/base.py` defaults it to `False` so the day-to-day stack needs no second port. Django renders the shell and the `<script>` tags point at Vite on `:5173`. |
+| Django-served, prod mode | `http://localhost:8000/` | No | No | **The default now.** `config/settings/base.py` defaults `DJANGO_VITE_DEV_MODE=False`, so every launcher — `run_local_stack.sh`, `restart_cold_stack.sh`, a bare `manage.py runserver` — serves the SPA from `:8000` with no Vite at all. Requires `npm run build`; `run_local_stack.sh` refuses to start without `frontend/dist/.vite/manifest.json`. |
 
-In production (Docker), `DJANGO_VITE_DEV_MODE` is unset and `DEBUG=False`, so
-`dev_mode` resolves to `False` automatically. The multi-stage Dockerfile builds
+The local default moved to prod mode deliberately. Under Pure Vite, the proxy answered `/api`
+with 502 and an empty body while Django was still starting, and the dashboard surfaced that as
+"Failed to load dashboard data" — a message about the dashboard for a problem that was a port in
+front of a process that had not come up. One origin makes that state unrepresentable: if the
+backend is down, the page does not load either. See
+[`wsl-services.md`](wsl-services.md) for the startup and teardown behaviour that changed with it.
+
+In production (Docker), `DJANGO_VITE_DEV_MODE` is unset and the settings default
+of `False` applies, exactly as it does locally. The multi-stage Dockerfile builds
 `frontend/dist` in a `node:22-alpine` stage and copies it into the runtime
 image; `entrypoint.sh` runs `collectstatic` so WhiteNoise serves the hashed
 assets from `STATIC_ROOT`.
@@ -721,30 +728,32 @@ the core startup flow but are useful for specific tasks:
 
 ### `run_local_stack.sh`
 
-Runs the local services (backend, one Celery worker per queue group, celery-beat, and the
-frontend when npm is present) in parallel with prefixed output. Useful for development when
-you want everything running in a single terminal. This is the day-to-day start command in
-WSL2 — see [`wsl-services.md`](wsl-services.md).
+Runs the local services (backend, one Celery worker per queue group, and celery-beat) in
+parallel with prefixed output, and serves the built SPA from the backend's own port. Useful
+for development when you want everything running in a single terminal. This is the day-to-day
+start command in WSL2 — see [`wsl-services.md`](wsl-services.md).
 
-> **The frontend is optional and auto-skipped.** The script detects npm and starts the
-> frontend only when npm is available. Where npm is absent (e.g. a WSL2 clone without a
-> current Node.js) it starts the backend services and skips the frontend rather than failing.
-> An earlier version started the frontend unconditionally: `run_frontend.sh` exited 1 where
-> Node.js was absent, `wait -n` returned on that first exit, and the `EXIT` trap killed the
-> backend and workers with it. That teardown no longer happens. To run the whole stack,
-> frontend included, in WSL2, install Node 22 and `npm ci` in the clone — see
-> [`wsl-services.md`](wsl-services.md).
+> **Vite is opt-in.** The day-to-day stack needs no second port: Django serves the built bundle
+> from `frontend/dist`, so the script refuses to start without `frontend/dist/.vite/manifest.json`
+> (`cd frontend && npm run build`). Set `STACK_FRONTEND=1` to also start the Vite dev server for
+> an HMR session; it is then treated as optional, so if npm is missing or Vite exits, the backend
+> and workers keep running. An earlier version started the frontend unconditionally:
+> `run_frontend.sh` exited 1 where Node.js was absent, `wait -n` returned on that first exit, and
+> the `EXIT` trap killed the backend and workers with it. That teardown no longer happens.
 
 ```bash
-./scripts/run_local_stack.sh                     # backend + ops/backtest/train workers + beat
+./scripts/run_local_stack.sh                     # backend + ops/backtest/train/etf workers + beat
 STACK_ALL_QUEUES=0 ./scripts/run_local_stack.sh  # lighter: only the ops worker
+STACK_FRONTEND=1 ./scripts/run_local_stack.sh    # also start Vite on :5173 for HMR
 ./scripts/run_local_stack.sh --check             # preflight only: report what would start
 ```
 
-Each service's output is prefixed with its name (e.g., `[backend]`, `[celery-worker-ops]`)
-so you can distinguish log lines. Press Ctrl+C to stop all services. By default it covers the
-`ops`, `backtest`, and `train-lightgbm`/`train-lstm` queues; set `STACK_ALL_QUEUES=0` to run
-only `ops` (see [`wsl-services.md`](wsl-services.md)).
+Each service runs in its own process group, with output prefixed by its name (e.g. `[backend]`,
+`[celery-worker-ops]`) and appended to `tmp/cold_stack/<service>.log`. `Ctrl+C` signals every
+group, waits up to `STACK_STOP_TIMEOUT` (15s) for them to drain, then escalates to `SIGKILL` —
+so no orphan is left holding a port against the next start. By default it covers the `ops`,
+`backtest`, `train-lightgbm`/`train-lstm` and `etf-rotation` queues; set `STACK_ALL_QUEUES=0` to
+run only `ops` (see [`wsl-services.md`](wsl-services.md)).
 
 ### `smoke_api_check.sh`
 

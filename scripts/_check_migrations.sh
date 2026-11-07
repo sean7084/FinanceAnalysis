@@ -21,12 +21,21 @@ if ! output="$(cd "$PROJECT_ROOT" && "$PYTHON_BIN" manage.py showmigrations --li
   exit 0
 fi
 
-pending="$(printf '%s\n' "$output" | grep '^\[ \]' || true)"
-if [ -n "$pending" ]; then
-  echo "Pending migrations: the code expects a schema this database does not have." >&2
-  printf '%s\n' "$pending" >&2
-  echo "Apply them first:  $PYTHON_BIN manage.py migrate" >&2
-  exit 1
+# migrate --check is the decider. It parses no text, so it cannot be fooled by
+# output formatting, and the reachability question was settled above, which leaves
+# exactly one reason for it to fail here.
+if (cd "$PROJECT_ROOT" && "$PYTHON_BIN" manage.py migrate --check >/dev/null 2>&1); then
+  echo "Migrations: all applied"
+  exit 0
 fi
 
-echo "Migrations: all applied"
+# Reporting only. showmigrations --list indents every row (" [ ] 0002_foo"), so the
+# pattern must not be anchored at column 0. Anchoring it as '^\[ \]' is what made
+# this guard inert for its whole life: it printed "all applied" against exactly the
+# four-migrations-behind database it was written for. The unanchored form is the one
+# docs/how-to/wsl-services.md has always shown.
+pending="$(printf '%s\n' "$output" | grep -E '^[[:space:]]*\[ \]' || true)"
+echo "Pending migrations: the code expects a schema this database does not have." >&2
+printf '%s\n' "${pending:-$output}" >&2
+echo "Apply them first:  $PYTHON_BIN manage.py migrate" >&2
+exit 1

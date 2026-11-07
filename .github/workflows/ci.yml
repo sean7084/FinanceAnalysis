@@ -192,7 +192,14 @@ jobs:
       # were measured rather than argued. The purge cutoff is Beijing midnight, the only boundary
       # in that command that moves with TIME_ZONE; and correcting a row drags the hourly
       # backfill's provider label eight hours back, which skips one morning session once.
-      MIN_TEST_COUNT: "941"
+      # 941 -> 1023: the launcher-script guards. apps/core/tests_scripts.py adds 12
+      # tests in four classes: the migration guard's verdict run against a stub
+      # interpreter (3), the run_backend handoff actually reaching exec runserver
+      # (1), the supervisor's teardown invariants (7), and the native-env exports
+      # (1). The floor was already stale -- PR #79 measured 1011 against a floor of
+      # 941 -- so this raises it to the measured total, as with 844 -> 939, to make
+      # the floor bite again.
+      MIN_TEST_COUNT: "1023"
 
     steps:
       - uses: actions/checkout@v4
@@ -354,8 +361,15 @@ jobs:
       # trade table and the latest signals, and leaves realised pnl blank when no
       # closed row carries a priced pnl. 77 -> 79: the workbench form launches with the
       # backend's ``max_positions=3`` default, and the ledger card renders ``--`` (not
-      # 0.00) when every closed row lacks a share count.
-      MIN_TEST_COUNT: "79"
+      # 0.00) when every closed row lacks a share count. 79 -> 87: the cold-start
+      # retry budget and the failure copy it feeds. Four in useApiResource.test.tsx
+      # (recovery after a startup 502, no retry on a 4xx, a bounded budget then
+      # backend-unreachable, and no data-tti stamp at the first failure it intends
+      # to retry); three in DashboardPage.test.tsx (a degraded summary renders N/A
+      # rather than zeros, the backend-down banner only after the budget is spent,
+      # the generic copy for a 4xx); one in IndicatorBoardPage.test.tsx (the same
+      # backend-down banner on the board that reads the same endpoint).
+      MIN_TEST_COUNT: "87"
 
     steps:
       - uses: actions/checkout@v4

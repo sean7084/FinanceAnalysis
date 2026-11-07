@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-11-01T16:52:25Z_
+_Generated: 2026-11-07T02:19:03Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -43,7 +43,7 @@ _Generated: 2026-11-01T16:52:25Z_
 | `DJANGO_EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | local.py:17 |
 | `DJANGO_READ_DOT_ENV_FILE` | `bool` | `False` | yes | base.py:25 |
 | `DJANGO_SECRET_KEY` | `str` | `'django-insecure-local-secret-key'` | yes | local.py:7 |
-| `DJANGO_VITE_DEV_MODE` | `bool` | `DEBUG` | yes | base.py:733 |
+| `DJANGO_VITE_DEV_MODE` | `bool` | `False` | yes | base.py:733 |
 | `DJANGO_VITE_DEV_SERVER_HOST` | `str` | `'localhost'` | yes | base.py:737 |
 | `DJANGO_VITE_DEV_SERVER_PORT` | `int` | `5173` | yes | base.py:738 |
 | `EMAIL_BACKEND` | `str` | `'django.core.mail.backends.console.EmailBackend'` | yes | base.py:692 |

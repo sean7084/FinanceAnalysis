@@ -727,10 +727,10 @@ EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 # keeps working even when the page itself is served by Django on :8000.
 # dev_mode=False makes django-vite read FRONTEND_DIST_DIR/.vite/manifest.json
 # and emit hashed /static/ asset URLs served by WhiteNoise.
-# Defaults to DEBUG so a fresh `runserver` with Vite running alongside works
-# out of the box, while production (DEBUG=False) automatically switches to the
-# built manifest.
-DJANGO_VITE_DEV_MODE = env.bool('DJANGO_VITE_DEV_MODE', default=DEBUG)
+# Defaults to False for every launcher -- a bare `runserver` and
+# restart_cold_stack.sh never source scripts/_native_env.sh, so a default set
+# there would not reach them. Prod mode needs `npm run build`; HMR is opt-in.
+DJANGO_VITE_DEV_MODE = env.bool('DJANGO_VITE_DEV_MODE', default=False)
 DJANGO_VITE = {
     'default': {
         'dev_mode': DJANGO_VITE_DEV_MODE,

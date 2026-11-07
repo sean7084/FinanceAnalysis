@@ -1,7 +1,8 @@
 # How to run the services in WSL2
 
-Everything — backend, Celery workers, beat, **and the frontend** — runs inside the WSL2 ext4
-clone. The only thing on the Windows side is the browser you view the dashboard in.
+Everything — backend, Celery workers, beat, and the built SPA the backend serves — runs inside
+the WSL2 ext4 clone. The only thing on the Windows side is the browser you view the dashboard
+in. Vite is opt-in (`STACK_FRONTEND=1`); the day-to-day flow needs no second port.
 
 ## Quick start
 
@@ -11,24 +12,35 @@ cd ~/Armillary-wsl2
 ```
 
 That is the whole day-to-day flow. It starts the full stack in one terminal, each service with
-prefixed logs, and `Ctrl+C` stops them together:
+prefixed logs both on screen and in `tmp/cold_stack/<service>.log`, and `Ctrl+C` stops them
+together:
 
 | Service | What it is |
 | --- | --- |
-| `backend` | Django on `0.0.0.0:8000` |
+| `backend` | Django on `0.0.0.0:8000` — the API **and** the SPA |
 | `celery-worker-ops` | `ops` queue — syncs, indicators, sentiment, daily predictions |
 | `celery-worker-backtest` | `backtest` queue — queued backtests |
 | `celery-worker-train` | `train-lightgbm` + `train-lstm` queues — model retrains |
+| `celery-worker-etf` | `etf-rotation` queue — ETF rotation signals and backtests |
 | `celery-beat` | the periodic-task scheduler |
-| `frontend` | Vite dev server on `0.0.0.0:5173` (started when npm is present) |
 
-Then open **`http://localhost:5173/`** in the Windows browser. Queued backtests and retrains
-are consumed with no extra steps; to start a lighter stack that covers only `ops`, set
-`STACK_ALL_QUEUES=0` (see [Workers and queues](#workers-and-queues)).
+Then open **`http://localhost:8000/`** in the Windows browser. There is no second port in the
+day-to-day flow: `config/settings/base.py` defaults `DJANGO_VITE_DEV_MODE=False`, so
+`{% vite_asset %}` reads `frontend/dist/.vite/manifest.json` and Django serves the built bundle
+from `/static/` itself. Queued backtests and retrains are consumed with no extra steps; to start
+a lighter stack that covers only `ops`, set `STACK_ALL_QUEUES=0` (see
+[Workers and queues](#workers-and-queues)).
 
-`run_local_stack.sh` starts the frontend only when it detects npm. If you instead see
-`npm not found — frontend will be skipped`, Node.js is missing or too old — see
-[Prerequisites](#prerequisites-one-time). A first run or a stale clone also needs the
+Because the SPA is served from a build, **a frontend change needs `npm run build`** before a
+refresh shows it — see [Traps](#traps). To get HMR back for a frontend session, start the Vite
+dev server alongside everything else:
+
+```bash
+STACK_FRONTEND=1 ./scripts/run_local_stack.sh    # then open http://localhost:5173/
+```
+
+That requires npm; if you see `STACK_FRONTEND=1 but npm not found`, Node.js is missing or too old
+— see [Prerequisites](#prerequisites-one-time). A first run or a stale clone also needs the
 [Preflight](#preflight-first-run-or-after-a-pull).
 
 ---
@@ -142,16 +154,34 @@ not about git sync.
 
 ## Frontend in WSL
 
-With npm present, `run_local_stack.sh` starts Vite alongside the backend, so the entire stack —
-including the SPA — runs in WSL. Open `http://localhost:5173/` from the Windows browser.
+By default there is nothing to run: Django serves the built SPA on `:8000` from
+`frontend/dist`, so the page and the API are one process on one port. Build it once and after
+every frontend change:
 
-Vite binds `0.0.0.0:5173` (`strictPort`, so it errors rather than drifting to another port if
-5173 is taken) and proxies `/api` and `/ws` to `127.0.0.1:8000` — now the backend in the *same*
-WSL host, so there is no cross-OS hop for API calls. Browse via `localhost`, never via the WSL
-IP: `vite.config.ts` sets `server.origin` to `http://localhost:5173`, so asset and HMR URLs are
-emitted as absolute `localhost` references.
+```bash
+cd frontend && npm run build      # tsc -b then vite build; writes dist/.vite/manifest.json
+```
 
-To run the frontend on its own, without the rest of the stack:
+`run_local_stack.sh` refuses to start without that manifest, because `{% vite_asset %}` raises
+without it and every page answers 500 — a dead SPA that looks like a data failure. `collectstatic`
+is **not** part of this loop: with `DEBUG=True`, `django.contrib.staticfiles` resolves the hashed
+chunk straight out of `frontend/dist` through `STATICFILES_DIRS`. Run it only if you set
+`DJANGO_DEBUG=False`, which moves `/static/` behind WhiteNoise at `STATIC_ROOT`.
+
+For an HMR session, `STACK_FRONTEND=1` starts Vite alongside everything else and you browse
+`http://localhost:5173/` instead. Vite binds `0.0.0.0:5173` (`strictPort`, so it errors rather
+than drifting to another port if 5173 is taken) and proxies `/api` and `/ws` to
+`127.0.0.1:8000`. Browse via `localhost`, never via the WSL IP: `vite.config.ts` sets
+`server.origin` to `http://localhost:5173`, so asset and HMR URLs are emitted as absolute
+`localhost` references.
+
+That proxy is the reason the SPA is no longer the default entry point. While Django was still
+starting it answered `/api/...` with **502 and an empty body**, and the dashboard read that as
+"Failed to load dashboard data" — a message about the dashboard, for a problem that was a port in
+front of a process that had not come up yet. Serving from `:8000` makes the failure honest: if the
+backend is down, the page itself will not load.
+
+To run the frontend dev server on its own, without the rest of the stack:
 
 ```bash
 ./scripts/run_frontend.sh
@@ -202,10 +232,10 @@ WSL2 — the Windows launcher pins `--pool solo --concurrency 1`.
 
 ## Reaching WSL services from the Windows browser
 
-Both the Vite dev server (`:5173`) and Django (`:8000`) listen inside WSL; whether Windows
-reaches them depends on the networking mode. **`.wslconfig` is read only at VM start**, so an
-edit is inert until you restart with `wsl --shutdown` (from PowerShell — it kills every process
-in every distro).
+Django (`:8000`) listens inside WSL, and serves the SPA from it; `:5173` exists only for an
+`STACK_FRONTEND=1` session. Whether Windows reaches them depends on the networking mode.
+**`.wslconfig` is read only at VM start**, so an edit is inert until you restart with
+`wsl --shutdown` (from PowerShell — it kills every process in every distro).
 
 | Mode | Windows → WSL | Notes |
 | --- | --- | --- |
@@ -233,7 +263,8 @@ portproxy rule, or switch to mirrored mode.
 .venv/bin/python manage.py check
 .venv/bin/python manage.py showmigrations | grep -c '\[ \]'    # expect 0
 curl -s http://localhost:8000/api/v1/markets/ | head -c 400
-curl -sI http://localhost:5173/ | head -n 1                    # expect HTTP/1.1 200
+curl -sI http://localhost:8000/ | head -n 1                    # expect HTTP/1.1 200 -- the SPA
+curl -s http://localhost:8000/ | grep -o 'assets/main-[A-Za-z0-9]*\.js' | head -1
 ```
 
 The `:8000` call is anonymous and read-only, so it exercises routing, pagination and the cache
@@ -244,40 +275,64 @@ without a credential. It returns an empty result set until the database is popul
 
 ## Stopping and restarting
 
-`Ctrl+C` in the `run_local_stack.sh` terminal stops every service together. `runserver`
-autoreloads on Python changes; **Celery workers and beat do not**, so restart the stack after
-editing any code they import. Frontend changes are picked up by Vite HMR without a restart.
+`Ctrl+C` in the `run_local_stack.sh` terminal stops every service together. Each one runs in its
+own process group (`setsid`), and teardown signals the **group**, not the pid the script happened
+to record — which matters because `run_backend.sh` execs into `runserver` (whose autoreload child
+owns the listening socket) and `run_frontend.sh` execs into npm (whose grandchild is Vite).
+Signalling only the recorded pid left both serving as orphans, and that is exactly what this
+replaced.
+
+Consequences worth knowing:
+
+- Teardown is now ordered rather than instantaneous. `Ctrl+C` sends TERM, waits up to
+  `STACK_STOP_TIMEOUT` (15s) for each group to empty, then escalates to `KILL`. A Celery worker
+  finishing an in-flight task can legitimately exceed that; raise the timeout rather than let it
+  be killed mid-write if that matters to you.
+- A second `Ctrl+C` during teardown is deliberately ignored. An interrupted teardown is how
+  orphans got created in the first place.
+- `runserver` autoreloads on Python changes; **Celery workers and beat do not**, so restart the
+  stack after editing any code they import. Frontend changes need `npm run build` (or HMR, above).
+- Every service also appends to `tmp/cold_stack/<name>.log`, appended rather than truncated, so a
+  restart never erases the evidence about what failed before it.
 
 ### Recovering an orphaned stack
 
-If the supervisor dies instead of being interrupted, the services survive it. The teardown runs
-from an `INT TERM EXIT` trap in `run_local_stack.sh`, so a closed terminal, a lost SSH session or
-a `wsl --shutdown` kills the supervisor and never fires the trap: the workers and beat are
-reparented to init and keep serving, silently, for as long as the distro stays up.
+If the supervisor is killed outright rather than interrupted, the services survive it. The
+teardown runs from an `INT TERM EXIT` trap in `run_local_stack.sh`, so a closed terminal, a lost
+SSH session or a `wsl --shutdown` kills the supervisor and never fires the trap: the workers and
+beat keep their own process groups and keep serving, silently, for as long as the distro stays up.
 
-The next start then refuses, and that refusal is correct — it is not a lock to be worked around:
+The next start then refuses, and that refusal is correct — it is not a lock to be worked around.
+Since `check_stack` now also pre-flights the ports, a stale listener is named with its pid and
+age *before* anything starts, instead of aborting a second in and taking the new stack down with
+it:
 
 ```
-[stack] refusing to start celery-beat: scheduler(s) already live: pid 43190.
-[stack] two beats double-dispatch every scheduled job. Stop that process first,
-[stack] or set STACK_SKIP_BEAT=1 to start the rest of the stack without one.
+[stack] port 5173 is already held; starting here would collide with a stack this script cannot stop.
+[stack]   pid 9068 (29:22 node) -- kill -TERM -- -8986
+[stack] stop it first, or set STACK_RECLAIM_PORTS=1 to reclaim the port.
 ```
 
-Confirm the ownership before deciding — `ppid 9` (or anything that is not your shell) is the
+Confirm the ownership before deciding — `ppid` equal to init's (often `9`, sometimes `262`) is the
 signature of an orphan, as is an `etime` far longer than the current session:
 
 ```bash
-ps -eo pid,ppid,etime,cmd | grep -E 'celery -A config.celery|runserver' | grep -v grep
+ps -eo pid,ppid,pgid,etime,cmd | grep -E 'celery -A config.celery|manage.py runserver|vite' | grep -v grep
 ```
 
-Then stop the orphans and start once:
+Then stop the orphans **by process group**, which is precise, and start once:
 
 ```bash
-pkill -TERM -f 'celery -A config.celery'      # workers and beat, graceful
-pkill -TERM -f 'manage.py runserver'          # if this stack included the web process
-pgrep -af 'celery -A config.celery'           # must print nothing before retrying
+for g in $(ps -eo pgid=,cmd= | grep -E 'celery -A config\.celery|manage\.py runserver|vite/bin/vite\.js' \
+           | grep -v grep | awk '{print $1}' | sort -u); do kill -TERM -- "-$g"; done
+pgrep -af 'celery -A config\.celery'           # must print nothing before retrying
 ./scripts/run_local_stack.sh
 ```
+
+Prefer the group kill over `pkill -TERM -f <pattern>`. `-f` matches the **entire command line of
+every process**, including the shell you are typing in: a `bash -c` whose text happens to contain
+`manage.py runserver` is a legitimate target and gets taken out along with everything else in its
+group. That has already misfired here once.
 
 Celery deletes its own `celerybeat.pid` on a clean exit, so give beat a few seconds. Only remove
 a leftover pidfile by hand if it survives and blocks the new start.
@@ -324,6 +379,21 @@ an unsupported Node API.
 **`node_modules` is per-clone.** The WSL clone does not share `node_modules` with the Windows
 checkout, and native modules are not interchangeable across OSes. Run `npm ci` inside
 `~/Armillary-wsl2/frontend` after cloning and after any `package-lock.json` change.
+
+**A stale `frontend/dist` serves old JS with no error at all.** Now that Django serves the bundle
+instead of compiling on demand, every frontend change needs `npm run build`, and the browser can
+be running a chunk you edited an hour ago. The failure is silent because the manifest and the
+hashed filenames are internally consistent — they are just both out of date. `run_local_stack.sh`
+refuse to start when the manifest is *missing*; it cannot tell that it is *stale*.
+`scripts/measure_browser_time_to_data.sh` can: it checks that the served HTML references the
+manifest's current entry chunk, and says so when the two disagree.
+
+**The migration guard is a startup failure, not a warning.** `run_backend.sh` refuses to serve a
+schema the database does not have. Until 2026-11-06 that guard could never fire: it grepped
+`'^\[ \]'` while `showmigrations --list` indents every row with a space, so it printed "all
+applied" against exactly the four-migrations-behind database it was written for. It now asks
+`manage.py migrate --check` directly, which parses nothing. If you edit that script, keep the
+grep for *reporting* and the exit code for *deciding* — that split is the whole fix.
 
 **The launcher scripts are executable in git.** Every `scripts/*.sh` is committed mode `100755`,
 so `./scripts/run_local_stack.sh` works with no `chmod`. If a future reset drops the bits and

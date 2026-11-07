@@ -146,8 +146,9 @@ start_prod_server() {
 	fi
 
 	# Dev mode would measure the wrong thing: hundreds of unbundled ESM requests
-	# make a cold browser figure meaningless, and DJANGO_VITE_DEV_MODE defaults to
-	# DEBUG, so a config change here silently changes what this harness proves.
+	# make a cold browser figure meaningless. Settings already default
+	# DJANGO_VITE_DEV_MODE to False; the override above and the checks below keep
+	# an explicit True in .env from silently changing what this harness proves.
 	# The manifest's own hashed entry chunk is the positive check; Vite's client
 	# script is the negative one.
 	local html entry

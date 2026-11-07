@@ -1,5 +1,125 @@
 # Changelog
 
+### version 0.1.52
+
+#### Changed:
+
+- **The local stack now stops and restarts without leaving orphans.** Each service ran in a
+  pipeline subshell, so the pid the supervisor recorded was the subshell's, not the process
+  group's. `kill` reached the wrapper and left the Celery workers and Vite running, holding
+  8000 and 5173 against the next start -- which is why "restart the stack" never cleared the
+  dashboard banner. Services now run under `setsid`, the recorded pid **is** the pgid, and
+  teardown signals the group (TERM, `STACK_STOP_TIMEOUT`=15s, then KILL) and polls group
+  membership through `ps -e -o pgid=` rather than the pid.
+  - **Two design bugs were caught by running the teardown, not by reasoning about it.**
+    Re-deriving the pgid from the recorded pid looked safer and left **four orphan workers
+    alive**: the recorded pid is the group leader, the leader dies first, so `ps` returned
+    nothing and the fallback signalled a dead pid. And `kill -0` on a wrapper reports gone
+    while Celery is still draining a task, so the liveness probe had to become `group_alive`.
+    `signal_groups` also skips `SELF_PGID`, because signalling the supervisor's own group
+    kills it mid-teardown. Verified: **zero orphans after two consecutive teardowns**, the
+    beat pidfile removed, both ports free.
+  - **A dead service no longer reports exit 0.** The pipeline wrapper returned the status of
+    its last element (`sed`), so a service that died at startup looked healthy and the
+    supervisor's `kill -0` guessing loop named the wrong one. `bash -o pipefail` inside the
+    `setsid` child and `wait -n -p` now report the real status and the real service. Vite is
+    optional: killing it mid-run logged `status 143` and "optional, leaving the rest running"
+    with the backend still answering 200.
+- **The backend can start again: launcher variables now cross the process boundary.**
+  `scripts/_native_env.sh` assigned `PYTHON_BIN` and `PROJECT_ROOT` without exporting them.
+  `run_backend.sh` invokes `_check_migrations.sh` as a **child** bash, whose `${PYTHON_BIN:?}`
+  aborted, whose caller's `set -e` aborted with it, so `exec runserver` was never reached --
+  on **every** start, not only after a reboot. A parent-vs-child probe printed
+  `child: PYTHON_BIN=[UNSET]`. This was masked for months because `restart_cold_stack.sh`
+  starts runserver directly and bypasses `run_backend.sh` entirely, so the documented recovery
+  path appeared to work while the day-to-day path could not. The same unexported variables
+  broke `verify_local_stack.sh`.
+- **The migration guard decides by exit code, not by grep.** It matched `'^\[ \]'` against
+  `showmigrations --list`, but Django indents those rows (` [ ] 0002_add_column`), so the
+  anchored pattern never matched and an unapplied migration passed the guard silently.
+  `manage.py migrate --check` now decides; the grep only formats the list it reports.
+  `showmigrations` is kept as the reachability probe, so an unreachable database warns and
+  passes rather than blocking a start.
+- **The SPA is served from Django's port by default, for every launcher.**
+  `DJANGO_VITE_DEV_MODE` now defaults to `False` in `config/settings/base.py` instead of
+  `DEBUG`. The first cut put that default in `_native_env.sh`, which only reaches scripts that
+  source it: `restart_cold_stack.sh:105` starts `manage.py runserver` directly and sources only
+  `.env`, so with `DJANGO_DEBUG=True` it still emitted `<script>` URLs against a Vite server the
+  stack no longer starts -- the same dead-proxy page, on the operator recovery path and on a
+  bare `runserver`. `.env.example` shipped `True` and would have given it to every fresh
+  checkout. Verified under the env `restart_cold_stack.sh` actually uses: the setting and the
+  loader's `dev_mode` are both `False`.
+  - **Operator consequence: serving `/` now requires `npm run build`.** Without the manifest a
+    bare runserver raises instead of emitting URLs for a port nothing answers, which is the
+    louder and more honest failure; `run_local_stack.sh` already refuses to start without
+    `frontend/dist/.vite/manifest.json`, and that guard runs **before** the port checks so a
+    stale clone is told to build rather than to kill something. HMR is opt-in:
+    `DJANGO_VITE_DEV_MODE=True` for the Django-served flow, `STACK_FRONTEND=1` for pure Vite on
+    `:5173`. Docker is unchanged -- it already resolved `False` through `DEBUG=False`.
+- **The dashboard survives a cold start and tells the truth when it cannot.**
+  `useApiResource` asked once and latched the error permanently, so a page opened seconds before
+  Django answered kept showing "Failed to load dashboard data" after the backend became healthy.
+  First loads now retry a transport failure (`TypeError`) or a 5xx four times over ~15s
+  (`[1, 2, 4, 8]s`). A 4xx is deliberately not retried -- it is the backend answering and
+  refusing -- and neither is a bare `Error`, which no amount of waiting fixes.
+  - **The copy was the other half of the defect.** `fetchDashboardData` went through
+    `apiGetSafe`, which turns a failed summary into zeros, and zeros read as a measurement: no
+    backtests ever run, no bottom probability. It now returns a `degraded` flag and the cards
+    render `N/A`. When the rows endpoint is unreachable the banner names the backend and the
+    script to check; Indicator Board reads the same endpoint through the same hook and gets the
+    same distinction.
+  - **Writing the page tests caught a defect in the first cut.** The cache subscription
+    publishes the first failure as soon as it lands, which is *mid-retry*, so the page wore the
+    generic banner for the whole backoff and only then swapped to the honest one. `error` is now
+    null while `isRetrying` -- what the field already claimed, since a load still in progress has
+    not failed. `release()` is likewise deferred until the budget is spent, so `data-tti` cannot
+    stamp at the first 502 and understate the wait the latency harness exists to price.
+
+#### Added:
+
+- **`apps/core/tests_scripts.py` — 12 tests in four classes.** They run the *real* scripts
+  against a stub interpreter rather than asserting on their text alone: the migration guard's
+  verdict for unapplied, applied and unreachable databases (3); `run_backend.sh` actually
+  reaching `exec runserver`, which is the reproduction of the export defect (1); the
+  supervisor's teardown invariants (7); and the native-env exports (1). The handoff test stubs
+  `CELERY_BIN` as well as `PYTHON_BIN`, because `_native_env.sh` refuses to run without it and
+  CI has no `.venv` -- caught before it could fail on `ubuntu-latest`. The teardown assertions
+  are on text because signalling a real process group cannot be done from inside the suite.
+- **Eight frontend tests.** Four on the retry budget (recovery after a startup 502, no retry on
+  a 4xx, a bounded budget then backend-unreachable, and no `data-tti` stamp at the first failure
+  it intends to retry); three on the dashboard's failure states (a degraded summary renders
+  `N/A` rather than zeros, the backend-down banner only after the budget is spent, the generic
+  copy for a 4xx); one on Indicator Board's banner. The page tests reset the query cache,
+  because a fresh entry is served without calling the loader at all and a failure test would
+  otherwise assert against the previous test's healthy value.
+- **CI discovery floors raised to the measured totals:** backend `941 -> 1023`, frontend
+  `79 -> 87`.
+
+#### Verified:
+
+- **In a real browser, not inferred from curl.** Headless Chrome against the default-mode stack
+  rendered live values -- 宏观阶段 `RECOVERY`, 热门概念 `芯片, AI, 银行`, 完成回测数 `431`,
+  平均底部概率 `74.5%`, eight candidate rows with real prices -- with **no error banner**, and
+  the app stamped `data-tti-path="/" data-tti-open="882" data-tti="10"`. `/`,
+  `/api/v1/dashboard/stocks/` and `/api/v1/dashboard/stocks/summary/` all answered **200** while
+  `:5173` was **not listening**. `API ready` precedes `started frontend` in the log, so Vite
+  cannot proxy to a backend that has not come up. A held port is refused before anything starts,
+  naming the pid, its elapsed time and the exact group-kill command.
+- **Suites and gates:** backend **1023 tests, OK**; frontend **87 passed**; both static-baseline
+  ratchet gates clean (0 errors, the same 3 pinned warnings); `ruff check`, `manage.py check`,
+  `makemigrations --check` and `export_documentation_facts --check` all pass. `env.md`
+  regenerates to a **one-row** diff because the comment above the setting keeps its line count
+  and the generator records the AST line number of every env read.
+
+#### Notes:
+
+- The backend floor was already stale -- PR #79 measured 1011 against a floor of 941 -- so it is
+  raised to the measured total rather than by the delta, as with `844 -> 939`, to make it bite
+  again.
+- `BACKLOG.md`'s claim that `run_local_stack.sh`, `smoke_api_check.sh` and
+  `run_staged_news_backfill.sh` are referenced by no document was already false at HEAD:
+  `docs/how-to/local-setup.md` documents all three. The bullet is removed.
+
 ### version 0.1.51
 
 #### Changed:

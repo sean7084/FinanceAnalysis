@@ -1007,8 +1007,6 @@ and `htmlcov/` but nothing generates them.
   outstanding.
 - Duplicate `import json` at
   `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.
-- `scripts/run_local_stack.sh`, `scripts/smoke_api_check.sh`, and
-  `scripts/run_staged_news_backfill.sh` are referenced by no document.
 - `CHANGELOG.md` 0.1.13 is an audit scratch pad, not release notes — mixed
   Chinese/English checklist with unchecked items and no
   `Objective`/`Implemented Features`/`Key Files` structure. Convert before

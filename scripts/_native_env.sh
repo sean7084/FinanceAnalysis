@@ -30,6 +30,15 @@ VENV_BIN="${VENV_BIN:-$DEFAULT_VENV_BIN}"
 PYTHON_BIN="${PYTHON_BIN:-$VENV_BIN/python}"
 CELERY_BIN="${CELERY_BIN:-$VENV_BIN/celery}"
 
+# Exported, not merely assigned. run_backend.sh and verify_local_stack.sh invoke
+# _check_migrations.sh as a CHILD bash, and that script asserts these two with
+# ${PYTHON_BIN:?}; unexported assignments stop at the process boundary, the child
+# aborts, the caller's set -e aborts with it, and runserver is never exec'd. The
+# backend died on every start through run_backend.sh for exactly that reason, and
+# nothing surfaced it because the pipeline wrapper reported the status of its last
+# element rather than the service's.
+export PROJECT_ROOT PYTHON_BIN CELERY_BIN VENV_BIN
+
 if [[ ! -x "$PYTHON_BIN" && -x "$VENV_BIN/python.exe" ]]; then
   PYTHON_BIN="$VENV_BIN/python.exe"
 fi
@@ -81,5 +90,8 @@ export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$CELERY_BROKER_URL}"
 
 export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings.local}"
 export DJANGO_READ_DOT_ENV_FILE="${DJANGO_READ_DOT_ENV_FILE:-True}"
+
+# SPA asset mode is decided in config/settings/base.py (DJANGO_VITE_DEV_MODE,
+# default False). Set it to True in .env for a Django-served HMR session.
 
 cd "$PROJECT_ROOT"

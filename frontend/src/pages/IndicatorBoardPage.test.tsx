@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import { I18nProvider } from '../i18n'
+import { resetQueryCache } from '../lib/queryCache'
 import { IndicatorBoardPage } from './IndicatorBoardPage'
 
 const apiMocks = vi.hoisted(() => ({
@@ -17,9 +18,24 @@ vi.mock('../lib/api', async () => {
   }
 })
 
+function renderBoard() {
+  return render(
+    <I18nProvider>
+      <MemoryRouter initialEntries={['/indicator-board']}>
+        <Routes>
+          <Route path="/indicator-board" element={<IndicatorBoardPage />} />
+        </Routes>
+      </MemoryRouter>
+    </I18nProvider>,
+  )
+}
+
 describe('IndicatorBoardPage', () => {
   beforeEach(() => {
     localStorage.setItem('finance_locale', 'en-US')
+    // A fresh cache entry is served without calling the loader, so the failure
+    // test below would otherwise read the healthy rows the first one cached.
+    resetQueryCache()
     apiMocks.fetchDashboardStocks.mockReset()
     apiMocks.fetchDashboardStocks.mockResolvedValue([
       {
@@ -67,16 +83,12 @@ describe('IndicatorBoardPage', () => {
     ])
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('renders the standalone indicator board and loads dashboard rows', async () => {
-    render(
-      <I18nProvider>
-        <MemoryRouter initialEntries={['/indicator-board']}>
-          <Routes>
-            <Route path="/indicator-board" element={<IndicatorBoardPage />} />
-          </Routes>
-        </MemoryRouter>
-      </I18nProvider>,
-    )
+    renderBoard()
 
     await waitFor(() => {
       expect(apiMocks.fetchDashboardStocks).toHaveBeenCalledWith({ predictionHorizon: 7, pageSize: 120 })
@@ -84,5 +96,27 @@ describe('IndicatorBoardPage', () => {
 
     expect(screen.getByText('All Stocks Indicator Board')).toBeInTheDocument()
     expect(screen.getByText('Indicator Asset')).toBeInTheDocument()
+  })
+
+  it('shows the backend-down banner when the rows endpoint is unreachable', async () => {
+    // Same copy as the dashboard: this board reads the same endpoint through the
+    // same hook, so an unreachable backend must not read as a generic load error
+    // that gives the reader nothing to act on.
+    vi.useFakeTimers()
+    apiMocks.fetchDashboardStocks.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderBoard()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.queryByText(/The backend is not answering/)).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect(screen.getByText(/The backend is not answering/)).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load dashboard data.')).not.toBeInTheDocument()
+    expect(apiMocks.fetchDashboardStocks).toHaveBeenCalledTimes(5)
   })
 })
