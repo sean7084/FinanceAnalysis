@@ -12,6 +12,7 @@ from datetime import datetime
 
 from django.conf import settings
 from django.core.cache import cache
+from django.utils import timezone
 from django.views.generic import TemplateView
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -241,7 +242,7 @@ def _build_data_limits():
             'values': [entry['value'] for entry in max_positions],
             'entries': max_positions,
         },
-        'generated_at': datetime.now().isoformat(timespec='seconds'),
+        'generated_at': timezone.now().isoformat(timespec='seconds'),
     }
 
 
