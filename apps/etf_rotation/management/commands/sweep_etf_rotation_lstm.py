@@ -61,6 +61,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Min
 from django.utils import timezone
 
+from apps.core.date_contract import ASSET_ETF, STAGE_TRAINING, enforce_date_contract
 from apps.etf_rotation.models import ETFFeatureSnapshot, ETFRotationBacktest
 
 #: The model type the sweep tunes. Kept as a literal so ``--plan`` works on a host without
@@ -240,6 +241,12 @@ def resolve_window(options: dict[str, Any]) -> dict[str, str]:
         )
     if end < start:
         raise CommandError(f'--end {end} is before the panel start {start}.')
+    start = enforce_date_contract(
+        asset_class=ASSET_ETF,
+        stage=STAGE_TRAINING,
+        requested_start=start,
+        allow_pre_contract=bool(options.get('allow_pre_contract_history')),
+    )
     # No refusal for the released window: it is training data now. The keys of this dict feed
     # the trial fingerprint, so nothing is added here -- a post-release run is self-describing
     # through ``metadata['sweep']['tuning_window']``, and a new key would re-run all 32 trials.
@@ -250,7 +257,9 @@ class Command(BaseCommand):
     help = 'Bounded, resumable LSTM hyperparameter sweep over the ETF tuning window.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--start', help='Tuning window start (ISO). Default: earliest eligible snapshot date.')
+        parser.add_argument('--start', help='Tuning window start (ISO). Default: the ETF date-contract boundary.')
+        parser.add_argument('--allow-pre-contract-history', action='store_true',
+                            help='Tune on snapshots before the ETF date-contract boundary. Research only.')
         parser.add_argument('--end', help=f'Tuning window end (ISO). Default: {TUNING_WINDOW_END.isoformat()}.')
         parser.add_argument('--folds', type=int, default=DEFAULT_FOLDS,
                             help='Walk-forward steps per trial (default 6). Part of the fingerprint.')

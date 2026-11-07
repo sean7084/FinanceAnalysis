@@ -22,6 +22,7 @@ from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.core.date_contract import ASSET_ETF, STAGE_TRAINING, enforce_date_contract
 from apps.etf_rotation import features
 from apps.etf_rotation.train_lightgbm import (
     DEFAULT_OBJECTIVE,
@@ -47,7 +48,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--type', default='lightgbm', choices=['lightgbm', 'lstm', 'ensemble', 'all'],
                             help='Which ETF model to act on (default lightgbm).')
-        parser.add_argument('--start', help='First snapshot date to consider (ISO). Default: earliest eligible row.')
+        parser.add_argument('--start', help='First snapshot date to consider (ISO). Default: the ETF date-contract boundary.')
+        parser.add_argument('--allow-pre-contract-history', action='store_true',
+                            help='Train on snapshots before the ETF date-contract boundary. Research only.')
         parser.add_argument('--end', help='Last snapshot date to consider (ISO). Default: latest eligible row.')
         parser.add_argument('--folds', type=int, default=6,
                             help='Number of expanding-window validation steps (default 6).')
@@ -84,6 +87,12 @@ class Command(BaseCommand):
             return
 
         start = _parse_date('start', options['start']) if options.get('start') else None
+        start = enforce_date_contract(
+            asset_class=ASSET_ETF,
+            stage=STAGE_TRAINING,
+            requested_start=start,
+            allow_pre_contract=bool(options.get('allow_pre_contract_history')),
+        )
         end = _parse_date('end', options['end']) if options.get('end') else None
         common = {
             'start_date': start,

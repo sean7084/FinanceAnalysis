@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-05T18:21:02Z_
+_Generated: 2026-11-07T08:10:44Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -377,6 +377,7 @@ Run a single ETF rotation backtest, or the 144-combination RULE grid search.
 | --- | --- | --- | --- | --- |
 | `--start` | value | &mdash; |  | YYYY-MM-DD, inclusive. |
 | `--end` | value | &mdash; |  | YYYY-MM-DD, inclusive. Required with --start. |
+| `--allow-pre-contract-history` | flag | `False` |  | Evaluate before the ETF date-contract boundary. Research only. |
 | `--model` | value | &mdash; |  | Ranker to use. Default: RULE. |
 | `--frequency` | value | &mdash; |  | Rebalance frequency. Default: BacktestConfig (MONTHLY). |
 | `--max-positions` | value | &mdash; |  | Holding count. Default: BacktestConfig (5). |
@@ -437,7 +438,8 @@ Bounded, resumable LSTM hyperparameter sweep over the ETF tuning window.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
-| `--start` | value | &mdash; |  | Tuning window start (ISO). Default: earliest eligible snapshot date. |
+| `--start` | value | &mdash; |  | Tuning window start (ISO). Default: the ETF date-contract boundary. |
+| `--allow-pre-contract-history` | flag | `False` |  | Tune on snapshots before the ETF date-contract boundary. Research only. |
 | `--end` | value | &mdash; |  | Tuning window end (ISO). Default: 2023-12-31. |
 | `--folds` | value | `6` |  | Walk-forward steps per trial (default 6). Part of the fingerprint. |
 | `--horizon` | value | &mdash; |  | Label horizon in sessions. Default: settings.ETF_LABEL_HORIZON_DAYS. |
@@ -522,7 +524,8 @@ Walk-forward training and reporting for the ETF rotation models.
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--type` | value | `lightgbm` |  | Which ETF model to act on (default lightgbm). |
-| `--start` | value | &mdash; |  | First snapshot date to consider (ISO). Default: earliest eligible row. |
+| `--start` | value | &mdash; |  | First snapshot date to consider (ISO). Default: the ETF date-contract boundary. |
+| `--allow-pre-contract-history` | flag | `False` |  | Train on snapshots before the ETF date-contract boundary. Research only. |
 | `--end` | value | &mdash; |  | Last snapshot date to consider (ISO). Default: latest eligible row. |
 | `--folds` | value | `6` |  | Number of expanding-window validation steps (default 6). |
 | `--label` | value | `rank_pct` |  | Which stored label the model fits (default rank_pct). dd_rank trains on the safety rank (smallest forward drawdown ranks highest); LightGBM only, the LSTM has its own multi-horizon labels. |
@@ -840,7 +843,8 @@ Backfill features and retrain 3/7/30-day LightGBM models end-to-end.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
-| `--start-date` | value | `2010-01-01` |  | Training start date (YYYY-MM-DD). Defaults to HISTORICAL_DATA_FLOOR. |
+| `--start-date` | value | `2016-06-01` |  | Training start date (YYYY-MM-DD). Defaults to the stocks date-contract boundary. |
+| `--allow-pre-contract-history` | flag | `False` |  | Train from before the stocks date-contract boundary. Research only. |
 | `--end-date` | value | `<dynamic-date>` |  | Training end date (YYYY-MM-DD). Defaults to yesterday. |
 | `--horizons` | value | `3,7,30` |  | Comma-separated horizons to train (subset of 3,7,30). |
 | `--skip-backfill` | flag | `False` |  | Skip model data backfill and retrain directly. |
@@ -855,7 +859,8 @@ Backfill features and retrain 3/7/30-day LSTM models end-to-end.
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
-| `--start-date` | value | `2010-01-01` |  | Training start date (YYYY-MM-DD). Defaults to HISTORICAL_DATA_FLOOR. |
+| `--start-date` | value | `2016-06-01` |  | Training start date (YYYY-MM-DD). Defaults to the stocks date-contract boundary. |
+| `--allow-pre-contract-history` | flag | `False` |  | Train from before the stocks date-contract boundary. Research only. |
 | `--end-date` | value | `<dynamic-date>` |  | Training end date (YYYY-MM-DD). Defaults to yesterday. |
 | `--horizons` | value | `3,7,30` |  | Comma-separated horizons to train (subset of 3,7,30). |
 | `--sequence-length` | value | `20` |  | LSTM lookback window length in trading rows. |

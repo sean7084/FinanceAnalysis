@@ -1247,3 +1247,64 @@ export async function fetchEtfComparisonCurve(
   const query = params.toString()
   return await apiGet<EtfComparisonPayloadDto>(`/etf/backtests/${runId}/comparison_curve/${query ? `?${query}` : ''}`)
 }
+
+export interface DateContractAssetDto {
+  key: string
+  raw_data_from: string | null
+  training_start: string
+  backtest_start: string
+}
+
+export interface DateContractDto {
+  escape_hatch_flag: string
+  note: string
+  asset_classes: DateContractAssetDto[]
+}
+
+export interface DataExtentRowDto {
+  label: string
+  model: string
+  field: string
+  earliest: string | null
+  latest: string | null
+  rows_estimate: number | null
+  note: string
+}
+
+export interface ThresholdDto {
+  key: string
+  label: string
+  value: number
+  unit: string
+  source: string
+  configured_in: string
+  trainer?: string
+}
+
+export interface EtfCoverageDto {
+  listed_funds: number
+  funds_with_first_trade_date: number
+  earliest_first_trade_date: string | null
+  latest_first_trade_date: string | null
+  eligible_on_latest_snapshot: number
+}
+
+export interface DataLimitsDto {
+  datasets: DataExtentRowDto[]
+  etf_coverage: EtfCoverageDto
+  thresholds: ThresholdDto[]
+  max_positions_conflict: {
+    values: number[]
+    entries: ThresholdDto[]
+  }
+  generated_at: string
+  contract: DateContractDto
+}
+
+export async function fetchDateContract(): Promise<DateContractDto> {
+  return await apiGet<DateContractDto>('/system/date-contract/')
+}
+
+export async function fetchDataLimits(): Promise<DataLimitsDto> {
+  return await apiGet<DataLimitsDto>('/system/data-limits/')
+}

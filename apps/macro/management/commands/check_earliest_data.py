@@ -4,6 +4,14 @@ import tushare as ts
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from apps.core.date_contract import (
+    ETF_BACKTEST_START,
+    ETF_RAW_DATA_FROM,
+    ETF_TRAINING_START,
+    STOCK_BACKTEST_START,
+    STOCK_RAW_DATA_FROM,
+    STOCK_TRAINING_START,
+)
 from apps.core.date_floor import get_historical_data_floor
 from apps.macro.models import MacroSnapshot
 from apps.macro.providers import fetch_earliest_macro_availability
@@ -43,6 +51,21 @@ class Command(BaseCommand):
             'macro_snapshot_max_date': str(MacroSnapshot.objects.order_by('-date').values_list('date', flat=True).first()),
             'ohlcv_min_date': str(OHLCV.objects.order_by('date').values_list('date', flat=True).first()),
             'ohlcv_max_date': str(OHLCV.objects.order_by('-date').values_list('date', flat=True).first()),
+        }
+
+        # Retention and model windows are different things; a run that starts before
+        # these is research, so report both against the observed extent above.
+        report['date_contract'] = {
+            'stocks': {
+                'raw_data_from': STOCK_RAW_DATA_FROM.isoformat(),
+                'training_start': STOCK_TRAINING_START.isoformat(),
+                'backtest_start': STOCK_BACKTEST_START.isoformat(),
+            },
+            'etf': {
+                'raw_data_from': ETF_RAW_DATA_FROM.isoformat(),
+                'training_start': ETF_TRAINING_START.isoformat(),
+                'backtest_start': ETF_BACKTEST_START.isoformat(),
+            },
         }
 
         self.stdout.write(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True))

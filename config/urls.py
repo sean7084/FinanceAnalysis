@@ -13,7 +13,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
 )
 
-from apps.core.views import spa_fallback
+from apps.core.views import SystemInfoViewSet, spa_fallback
 from apps.markets.views import MarketViewSet, AssetViewSet, OHLCVViewSet
 from apps.analytics.views import (
     TechnicalIndicatorViewSet,
@@ -106,6 +106,9 @@ router.register(r'etf/signals', ETFRotationSignalViewSet, basename='etf-signal')
 router.register(r'etf/positions', ETFRotationPositionViewSet, basename='etf-position')
 router.register(r'etf/backtests', ETFRotationBacktestViewSet, basename='etf-backtest')
 router.register(r'developer/changelog', ChangelogEntryViewSet, basename='developer-changelog')
+# Read-only introspection of the date contract and stored-data limits. Not a model
+# viewset: it has no queryset, so the router needs an explicit basename.
+router.register(r'system', SystemInfoViewSet, basename='system')
 
 urlpatterns = [
     # Bare origin serves the SPA shell. Registered first so `/` never falls

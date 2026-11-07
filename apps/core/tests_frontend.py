@@ -134,7 +134,7 @@ class PageLoadLatencyHarnessTests(SimpleTestCase):
         Path(__file__).resolve().parents[2] / "scripts" / "measure_browser_time_to_data.sh"
     )
 
-    # The ten routed pages, per the router in frontend/src/App.tsx.
+    # The eleven routed pages, per the router in frontend/src/App.tsx.
     EXPECTED_GROUPS = {
         "Dashboard",
         "Indicator Board",
@@ -146,6 +146,7 @@ class PageLoadLatencyHarnessTests(SimpleTestCase):
         "ETF Workbench",
         "Alert Center",
         "Settings",
+        "Data Limits",
     }
 
     def _page_files(self):

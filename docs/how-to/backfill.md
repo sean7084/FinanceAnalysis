@@ -4,6 +4,15 @@ The option surface for every command below is generated in
 [`../reference/commands.md`](../reference/commands.md). This document covers
 **ordering**, **why** the order matters, and **how to resume** long runs.
 
+> **Retention is not the training window.** Backfilling as far back as the source
+> allows is always correct, and older bars are never deleted by the date contract.
+> But `apps/core/date_contract.py` fixes where *training* and *walk-forward
+> evaluation* may start (stocks `2016-06-01` / `2018-01-02`; ETFs `2020-01-02` /
+> `2021-01-13`), and the enforced commands refuse an earlier `--start` unless
+> `--allow-pre-contract-history` is passed. A result produced with that flag is
+> research output, not comparable with a production headline metric. See
+> `TECHNICAL_GUIDE.md` section 8.
+
 ---
 
 ## 1. The two rules that govern everything

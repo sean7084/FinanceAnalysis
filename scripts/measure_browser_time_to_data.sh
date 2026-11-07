@@ -202,7 +202,7 @@ if [[ -z "$STOCK_SYMBOL" ]]; then
 	exit 1
 fi
 
-ROUTES=("/" "/indicator-board" "/stock/$STOCK_SYMBOL" "/macro" "/models" "/backtest" "/etf" "/etf/backtest" "/alerts" "/settings")
+ROUTES=("/" "/indicator-board" "/stock/$STOCK_SYMBOL" "/macro" "/models" "/backtest" "/etf" "/etf/backtest" "/alerts" "/settings" "/data-limits")
 RAW="$OUT_DIR/raw.jsonl"
 : >"$RAW"
 ITERATIONS="${ITERATIONS:-$([[ "$COLD" == "1" ]] && echo 1 || echo 3)}"

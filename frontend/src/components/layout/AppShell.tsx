@@ -14,6 +14,7 @@ const navItems = [
   { to: '/etf/backtest', key: 'nav.etfBacktest', exact: true },
   { to: '/alerts', key: 'nav.alerts', exact: true },
   { to: '/settings', key: 'nav.settings', exact: true },
+  { to: '/data-limits', key: 'nav.dataLimits', exact: true },
 ]
 
 export function AppShell() {

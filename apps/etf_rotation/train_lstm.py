@@ -79,6 +79,7 @@ from torch.nn.functional import binary_cross_entropy_with_logits, softplus
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Dataset
 
+from apps.core.date_contract import ETF_TRAINING_START
 from apps.core.date_floor import get_historical_data_floor
 from apps.prediction.artifact_store import get_artifact_store, to_store_key
 from apps.prediction.models import ModelVersion
@@ -331,9 +332,9 @@ def _resolve_window(start_date=None, end_date=None):
         return None, None
     start = _as_date(start)
     end = _as_date(end)
-    floor = get_historical_data_floor()
+    floor = max(get_historical_data_floor(), ETF_TRAINING_START)
     if start < floor:
-        logger.info('ETF LSTM training start %s raised to HISTORICAL_DATA_FLOOR %s.', start, floor)
+        logger.info('ETF LSTM training start %s raised to date-contract floor %s.', start, floor)
         start = floor
     if end < start:
         raise ETFRotationLSTMTrainingError(f'end_date {end} is before start_date {start}.')
