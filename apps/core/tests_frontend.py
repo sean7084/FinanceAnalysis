@@ -1,12 +1,11 @@
 """Tests for the SPA fallback view and the URLConf ordering that guards it.
 
-Django's test runner forces ``DEBUG=False`` regardless of the developer's
-``.env``. Combined with ``DJANGO_VITE_DEV_MODE`` defaulting to ``DEBUG`` in
-``config/settings/base.py``, that would leave the tests in prod mode, which
-requires ``frontend/dist/.vite/manifest.json`` to exist. CI machines and fresh
-checkouts do not always have a built frontend, so these tests force the
-django-vite singleton into dev mode for their duration -- dev mode never reads
-the manifest, only emits URLs against ``http://localhost:5173``.
+``DJANGO_VITE_DEV_MODE`` defaults to ``False`` in ``config/settings/base.py``,
+which leaves the tests in prod mode, and that requires
+``frontend/dist/.vite/manifest.json`` to exist. CI machines and fresh checkouts
+do not always have a built frontend, so these tests force the django-vite
+singleton into dev mode for their duration -- dev mode never reads the
+manifest, only emits URLs against ``http://localhost:5173``.
 
 Overriding ``settings.DJANGO_VITE`` via ``override_settings`` would NOT work
 here: ``DjangoViteAssetLoader.instance()`` is a singleton populated once at

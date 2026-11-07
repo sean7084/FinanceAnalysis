@@ -91,13 +91,7 @@ export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$CELERY_BROKER_URL}"
 export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings.local}"
 export DJANGO_READ_DOT_ENV_FILE="${DJANGO_READ_DOT_ENV_FILE:-True}"
 
-# Serve the SPA from Django's own port rather than from a Vite dev server in front
-# of it. With dev mode off, django-vite reads frontend/dist/.vite/manifest.json and
-# emits hashed /static/ URLs, so one process answers both the page and the API and
-# there is no proxy that can hand the browser a 502 while Django is still starting.
-# Set DJANGO_VITE_DEV_MODE=True in .env (or browse the Vite server that
-# STACK_FRONTEND=1 starts, which does not consult this setting) to get HMR back.
-# Assigned after .env is sourced so an explicit value in .env still wins.
-export DJANGO_VITE_DEV_MODE="${DJANGO_VITE_DEV_MODE:-False}"
+# SPA asset mode is decided in config/settings/base.py (DJANGO_VITE_DEV_MODE,
+# default False). Set it to True in .env for a Django-served HMR session.
 
 cd "$PROJECT_ROOT"
