@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 
 import { I18nProvider } from '../i18n'
+import { ApiRequestError } from '../lib/api'
 import { resetQueryCache } from '../lib/queryCache'
 import { SettingsPage } from './SettingsPage'
 
@@ -81,5 +82,60 @@ describe('SettingsPage date contract', () => {
     await waitFor(() =>
       expect(screen.getByText('Failed to load the date contract.')).toBeInTheDocument(),
     )
+  })
+})
+
+const BACKEND_DOWN =
+  'The backend is not answering. Check that ./scripts/run_local_stack.sh is running (the SPA and the API are both on http://localhost:8000/).'
+const LOAD_ERROR = 'Failed to load the date contract.'
+
+const flush = async (ms: number) => {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+}
+
+describe('SettingsPage contract failure states', () => {
+  beforeEach(() => {
+    localStorage.setItem('finance_locale', 'en-US')
+    apiMocks.fetchDateContract.mockReset()
+    resetQueryCache()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('retries a cold-start refusal before claiming the backend is down', async () => {
+    // /settings is a plausible first tab while Django is still booting, so it must
+    // not accuse the backend on the first refused connection.
+    apiMocks.fetchDateContract.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderPage()
+    await flush(0)
+
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+    expect(screen.queryByText(LOAD_ERROR)).not.toBeInTheDocument()
+    expect(apiMocks.fetchDateContract).toHaveBeenCalledTimes(1)
+
+    await flush(20_000)
+
+    expect(screen.getByText(BACKEND_DOWN)).toBeInTheDocument()
+    expect(apiMocks.fetchDateContract).toHaveBeenCalledTimes(5)
+  })
+
+  it('keeps the generic copy for a 4xx refusal', async () => {
+    // A 404 is the backend answering and refusing; retrying only delays it, and
+    // telling the reader to start a stack that is already running sends them after
+    // the wrong problem.
+    apiMocks.fetchDateContract.mockRejectedValue(
+      new ApiRequestError('GET /api/v1/system/date-contract/ failed: 404', 404),
+    )
+    renderPage()
+    await flush(0)
+
+    expect(screen.getByText(LOAD_ERROR)).toBeInTheDocument()
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+    expect(apiMocks.fetchDateContract).toHaveBeenCalledTimes(1)
   })
 })

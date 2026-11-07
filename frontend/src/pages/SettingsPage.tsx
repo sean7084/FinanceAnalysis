@@ -35,7 +35,11 @@ export function SettingsPage() {
         <p>{t('settings.contractDesc')}</p>
         {contractResource.loading && <TableSkeleton columns={4} rows={2} />}
         {contractResource.error && (
-          <p className="status disconnected">{t('settings.contractLoadError')}</p>
+          <p className="status disconnected">
+            {contractResource.backendUnavailable
+              ? t('dash.backendDown')
+              : t('settings.contractLoadError')}
+          </p>
         )}
         <div className="table-wrap">
           <table className="data-table">

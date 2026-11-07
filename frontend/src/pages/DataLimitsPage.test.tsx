@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 
 import { I18nProvider } from '../i18n'
+import { ApiRequestError } from '../lib/api'
 import { resetQueryCache } from '../lib/queryCache'
 import { DataLimitsPage } from './DataLimitsPage'
 
@@ -103,5 +104,57 @@ describe('DataLimitsPage', () => {
     await waitFor(() =>
       expect(screen.getByText('Failed to load data limits.')).toBeInTheDocument(),
     )
+  })
+})
+
+const BACKEND_DOWN =
+  'The backend is not answering. Check that ./scripts/run_local_stack.sh is running (the SPA and the API are both on http://localhost:8000/).'
+const LOAD_ERROR = 'Failed to load data limits.'
+
+const flush = async (ms: number) => {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+}
+
+describe('DataLimitsPage failure states', () => {
+  beforeEach(() => {
+    localStorage.setItem('finance_locale', 'en-US')
+    apiMocks.fetchDataLimits.mockReset()
+    resetQueryCache()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('retries a cold-start refusal before claiming the backend is down', async () => {
+    // This page is the first thing an operator opens when the stack looks wrong,
+    // so a premature "backend is down" here is actively misleading.
+    apiMocks.fetchDataLimits.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderPage()
+    await flush(0)
+
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+    expect(screen.queryByText(LOAD_ERROR)).not.toBeInTheDocument()
+    expect(apiMocks.fetchDataLimits).toHaveBeenCalledTimes(1)
+
+    await flush(20_000)
+
+    expect(screen.getByText(BACKEND_DOWN)).toBeInTheDocument()
+    expect(apiMocks.fetchDataLimits).toHaveBeenCalledTimes(5)
+  })
+
+  it('keeps the generic copy for a 4xx refusal', async () => {
+    apiMocks.fetchDataLimits.mockRejectedValue(
+      new ApiRequestError('GET /api/v1/system/data-limits/ failed: 404', 404),
+    )
+    renderPage()
+    await flush(0)
+
+    expect(screen.getByText(LOAD_ERROR)).toBeInTheDocument()
+    expect(screen.queryByText(BACKEND_DOWN)).not.toBeInTheDocument()
+    expect(apiMocks.fetchDataLimits).toHaveBeenCalledTimes(1)
   })
 })

@@ -26,7 +26,9 @@ export function DataLimitsPage() {
       {resource.loading && <TableSkeleton columns={6} rows={8} />}
       {resource.error && (
         <div className="card">
-          <p className="status disconnected">{t('dataLimits.loadError')}</p>
+          <p className="status disconnected">
+            {resource.backendUnavailable ? t('dash.backendDown') : t('dataLimits.loadError')}
+          </p>
         </div>
       )}
 
