@@ -30,6 +30,15 @@ VENV_BIN="${VENV_BIN:-$DEFAULT_VENV_BIN}"
 PYTHON_BIN="${PYTHON_BIN:-$VENV_BIN/python}"
 CELERY_BIN="${CELERY_BIN:-$VENV_BIN/celery}"
 
+# Exported, not merely assigned. run_backend.sh and verify_local_stack.sh invoke
+# _check_migrations.sh as a CHILD bash, and that script asserts these two with
+# ${PYTHON_BIN:?}; unexported assignments stop at the process boundary, the child
+# aborts, the caller's set -e aborts with it, and runserver is never exec'd. The
+# backend died on every start through run_backend.sh for exactly that reason, and
+# nothing surfaced it because the pipeline wrapper reported the status of its last
+# element rather than the service's.
+export PROJECT_ROOT PYTHON_BIN CELERY_BIN VENV_BIN
+
 if [[ ! -x "$PYTHON_BIN" && -x "$VENV_BIN/python.exe" ]]; then
   PYTHON_BIN="$VENV_BIN/python.exe"
 fi
@@ -81,5 +90,14 @@ export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-$CELERY_BROKER_URL}"
 
 export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings.local}"
 export DJANGO_READ_DOT_ENV_FILE="${DJANGO_READ_DOT_ENV_FILE:-True}"
+
+# Serve the SPA from Django's own port rather than from a Vite dev server in front
+# of it. With dev mode off, django-vite reads frontend/dist/.vite/manifest.json and
+# emits hashed /static/ URLs, so one process answers both the page and the API and
+# there is no proxy that can hand the browser a 502 while Django is still starting.
+# Set DJANGO_VITE_DEV_MODE=True in .env (or browse the Vite server that
+# STACK_FRONTEND=1 starts, which does not consult this setting) to get HMR back.
+# Assigned after .env is sourced so an explicit value in .env still wins.
+export DJANGO_VITE_DEV_MODE="${DJANGO_VITE_DEV_MODE:-False}"
 
 cd "$PROJECT_ROOT"
