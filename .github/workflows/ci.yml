@@ -204,10 +204,11 @@ jobs:
       # watchdog's classifier, the session-key idempotence and dedupe cases, the
       # purged-holdout split and metrics, the gate-severity split, the single-source
       # version pin, and the catchup command path that no test had ever reached.
-      # 1170 -> 1181: the lockfile checker's nine tests and two that exercise the wedge
-      # watchdog's terminate action against a real backend. Measured on the tree with every
-      # branch merged: 1181.
-      MIN_TEST_COUNT: "1181"
+      # 1170 -> 1185: the lockfile checker's nine tests, two that exercise the wedge
+      # watchdog's terminate action against a real backend, and four for the gate's
+      # pipeline-watermark rule. Measured on the tree with every branch merged, after
+      # fix/list-date-gate-severity absorbed the B2 scan rewrite: 1185.
+      MIN_TEST_COUNT: "1185"
 
     steps:
       - uses: actions/checkout@v4
