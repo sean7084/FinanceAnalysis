@@ -488,15 +488,32 @@ now **exits 1 with 1,530 criticals, and the split is the point**:
 `missing_ohlcv_unknown_list_date` — the warning added alongside this — does not even appear, because
 only one asset is left in that state.
 
+**Then `missing_factor_score` was attributed, and it was the same class of mistake.** The 1,497
+rows were 499 assets × exactly the last three sessions, because `FactorScore` stopped at
+2026-11-03 while OHLCV ran on: the factor pipeline simply had not reached those sessions yet. The
+gate compared against the calendar and had no notion of how far the pipeline had got — the same
+error as demanding OHLCV from 2010 for an asset listed in 2020.
+
+So `missing_factor_score` is now a **warning named `missing_factor_score_pipeline_lag`** for any
+date after the newest date *any* asset carries a composite score for, with the watermark named in
+the detail row. A hole *before* the watermark stays critical, because that one is real. One
+aggregate computes the watermark per run, not per asset.
+
+That took the gate from **1,530 criticals to 33**, and every one of the 33 is a concrete claim:
+
+| issue | count |
+| --- | --- |
+| `missing_ohlcv` | 12 |
+| `stale_macro_snapshot` | 11 |
+| `usable_asset_count_cliff` | 9 |
+| `etf_index_valuation_index_coverage` | 1 |
+
 Still open, deliberately:
-- **`missing_factor_score` is the next class to attribute** (1,497 over 602 assets x ~240 sessions is
-  roughly 1%, so it looks like real gaps rather than an over-broad expectation — but that has not
-  been checked).
-- **The gate is still too slow to run at full history** (>90 minutes; see the `perf/validate-data-quality-scans`
-  notes — it is cold-block-I/O bound on per-asset reads). Until that is addressed, a one-year window
-  is the only practically runnable form.
-- `missing_ohlcv` remains critical for a known listing date, which is correct: the window is real
-  then. The downgrade only applies where the gate cannot justify its own expectation.
+- **Those 33 are the real backlog of the data layer**, and each needs its own look. None is an
+  artefact of an assumption any more.
+- **The gate is still too slow to run at full history** (>90 minutes; see the
+  `perf/validate-data-quality-scans` notes — it is cold-block-I/O bound on per-asset reads). Until
+  that is addressed, a one-year window is the only practically runnable form.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
