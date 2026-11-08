@@ -1,0 +1,58 @@
+# Direct dependency intent. The matching .txt beside this file is GENERATED from it by
+# pip-compile and must not be hand-edited; scripts/check_requirements_lockfile.py fails CI
+# if the two disagree, and the lockfile check runs before anything is installed.
+#
+# The .txt exists because a transitive dependency cannot be allowed to float between CI
+# runs: celery only constrains kombu to <6.0, and kombu 5.7.0's redis extra rejects the
+# redis==5.0.4 pinned below, so a fresh resolve on 2026-11-03 turned every branch red
+# without a code change. The lockfile pins the whole closure and carries a hash per wheel.
+#
+# Regenerate (about twenty minutes per file; needs the network):
+#   pip install pip-tools
+#   pip-compile --generate-hashes --allow-unsafe --no-emit-index-url #       --no-emit-trusted-host requirements/<name>.in
+# --allow-unsafe pins setuptools, which pip otherwise refuses to hash-check.
+#
+django-environ==0.12.0
+psycopg2-binary==2.9.12
+django==6.0.1
+djangorestframework==3.15.1
+channels==4.1.0
+channels-redis==4.2.0
+django-filter==24.2
+celery==5.4.0
+redis==5.0.4
+# Pinned because celery==5.4.0 only constrains kombu to <6.0,>=5.3.4, so a fresh resolve floats
+# to whatever kombu has released. 5.7.0 (2026-11-03) tightened its redis extra to >=6.4.0 and
+# its transport raises VersionMismatch against the redis==5.0.4 pinned above, which broke CI on
+# every branch from that date -- not on any code change. 5.6.2 declares redis>=4.5.2,<6.5, so it
+# is the newest kombu that still accepts this redis client. Move this pin only together with the
+# redis one.
+kombu==5.6.2
+django-modeltranslation==0.18.12
+akshare==1.18.63
+tushare==1.4.29
+pandas==2.3.3
+django-celery-beat==2.9.0
+numpy==2.4.6
+TA-Lib==0.6.8
+lightgbm==4.6.0
+torch==2.12.0
+scikit-learn==1.8.0
+mlflow==3.12.0
+# Chinese word segmentation for the sentiment scorer. It was imported by
+# apps/sentiment/tasks.py behind a try/except but never declared, so every environment --
+# including CI -- silently took the unsegmented fallback. That fallback's character class
+# was also broken until 2026-11-08, which is how all 6.5M stored sentiment scores came out
+# as exactly zero. Declared now so the intended segmented path runs; the fallback still
+# works and logs once when it is taken.
+jieba==0.42.1
+drf-spectacular==0.27.2
+django-vite==3.1.0
+whitenoise==6.8.2
+# S3-compatible object-store client for the model artifact backend (MinIO on the NAS).
+# Imported lazily by apps/prediction/artifact_store.py; only exercised when ARTIFACT_STORE_BACKEND=s3.
+boto3==1.43.110
+# IANA timezone database for zoneinfo. Debian and the CI runner ship it as a
+# system package, but a Windows-native checkout has no source for it and
+# ZoneInfo('Asia/Shanghai') raises there.
+tzdata==2025.3

@@ -24,6 +24,7 @@ from apps.core.date_contract import (
     ETF_BACKTEST_START,
     ETF_RAW_DATA_FROM,
     ETF_TRAINING_START,
+    MIN_TRAIN_SESSIONS,
     PRE_CONTRACT_FLAG,
     STOCK_BACKTEST_START,
     STOCK_RAW_DATA_FROM,
@@ -130,9 +131,6 @@ def _build_data_limits():
     from apps.analytics.indicator_warmup import MINIMUM_HISTORY_PREFILL_CALENDAR_DAYS
     from apps.analytics.models import SignalEvent, TechnicalIndicator
     from apps.etf_rotation.backtest_engine import CALENDAR_WARMUP_CALENDAR_DAYS
-    from apps.etf_rotation.management.commands.run_etf_rotation_backtest import (
-        WALK_FORWARD_MIN_TRAIN_SESSIONS,
-    )
     from apps.etf_rotation.models import (
         ETFDaily, ETFFeatureSnapshot, ETFUniverse, IndexValuationDaily, IndexWeightSnapshot,
     )
@@ -200,13 +198,12 @@ def _build_data_limits():
                    50_000_000, 'yuan', 'config/settings/base.py'),
         _threshold('etf_label_horizon_days', 'Label horizon', 'ETF_LABEL_HORIZON_DAYS',
                    20, 'trading sessions', 'config/settings/base.py'),
-        _threshold('etf_min_train_days', 'Minimum training rows', 'ETF_MIN_TRAIN_DAYS',
-                   250, 'trading sessions', train_lightgbm),
+        _threshold('min_train_sessions', 'Minimum training window', 'MIN_TRAIN_SESSIONS',
+                   MIN_TRAIN_SESSIONS, 'trading sessions', 'apps/core/date_contract.py'),
         _threshold('etf_min_train_rows', 'Minimum training samples', 'ETF_MIN_TRAIN_ROWS',
                    200, 'rows', train_lightgbm),
-        _threshold('walk_forward_min_train_sessions', 'Walk-forward minimum train',
-                   'WALK_FORWARD_MIN_TRAIN_SESSIONS', WALK_FORWARD_MIN_TRAIN_SESSIONS,
-                   'trading sessions', 'run_etf_rotation_backtest.py'),
+        # Cross-check, not a second source: the signature default must equal the
+        # contract constant. If someone re-hardcodes it, this row diverges again.
         _threshold('expanding_folds_min_train_days', 'expanding_folds default',
                    'EXPANDING_FOLDS_MIN_TRAIN_DAYS',
                    inspect.signature(expanding_folds).parameters['min_train_days'].default,
@@ -222,26 +219,21 @@ def _build_data_limits():
                    'calendar days', 'apps/etf_rotation/backtest_engine.py'),
     ]
 
-    # The two ETF trainers read different names for the same knob and disagree: the
-    # LSTM sees the configured 3, LightGBM sees an unset name and keeps its 5.
-    # Reported as-is so the divergence is visible instead of silently normalised.
-    max_positions = [
-        dict(_threshold('etf_max_positions', 'Max holdings (LSTM trainer)',
-                        'ETF_MAX_POSITIONS', 3, 'positions', 'config/settings/base.py'),
-             trainer='train_lstm.py'),
-        dict(_threshold('etf_rotation_max_positions', 'Max holdings (LightGBM trainer)',
-                        'ETF_ROTATION_MAX_POSITIONS', 5, 'positions', 'hardcoded fallback'),
-             trainer='train_lightgbm.py'),
-    ]
+    # Both trainers read ETF_MAX_POSITIONS. They used to read different names -- the
+    # LSTM saw the configured 3 while LightGBM saw an unset ETF_ROTATION_MAX_POSITIONS
+    # and kept a fallback of 5 -- so two models of one strategy sized different
+    # portfolios and every comparison between them was invalid.
+    max_positions = dict(
+        _threshold('etf_max_positions', 'Max holdings', 'ETF_MAX_POSITIONS',
+                   3, 'positions', 'config/settings/base.py'),
+        trainers=['train_lightgbm.py', 'train_lstm.py'],
+    )
 
     return {
         'datasets': datasets,
         'etf_coverage': etf_coverage,
         'thresholds': thresholds,
-        'max_positions_conflict': {
-            'values': [entry['value'] for entry in max_positions],
-            'entries': max_positions,
-        },
+        'max_positions': max_positions,
         'generated_at': timezone.now().isoformat(timespec='seconds'),
     }
 

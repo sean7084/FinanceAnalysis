@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import tomllib
+
 import environ
 from pathlib import Path
 from celery.schedules import crontab
@@ -18,6 +20,12 @@ from kombu import Queue
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+# pyproject.toml owns the project version. Read once here so the API schema, the CHANGELOG
+# and frontend/package.json cannot drift apart again; apps/core/tests_version.py fails if
+# they do.
+with open(BASE_DIR / 'pyproject.toml', 'rb') as _pyproject:
+    PROJECT_VERSION = tomllib.load(_pyproject)['project']['version']
 APPS_DIR = BASE_DIR / "apps"
 
 env = environ.Env()
@@ -129,6 +137,40 @@ ASGI_APPLICATION = 'config.asgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 DATABASES = {"default": env.db("DATABASE_URL")}
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
+
+# Close per request/task rather than persisting. Under Celery a persistent
+# connection makes a wedged link worse: close_old_connections fires on HTTP request
+# boundaries, not task boundaries, so one bad query would be inherited by every
+# later task in that worker and turn into a dead worker. Over a LAN the per-request
+# connect cost is milliseconds. Exposed so the decision is reversible, not hidden.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=0)
+
+# The NAS-hosted Postgres is reached over a WSL2 link that can go silent without
+# either side noticing. Client-side keepalives turn a dead link (NAS reboot, WSL2
+# NAT reset) into an OperationalError after roughly idle + interval*count seconds,
+# which the retry paths already handle; connect_timeout bounds the connect phase.
+#
+# These do NOT break the wedge observed on 2026-11-05: backend blocked in
+# ClientWrite, client in poll_schedule_timeout at zero CPU, socket ESTAB with both
+# queues empty and ACKed. TCP sees a healthy connection, so keepalive probes are
+# answered by the peer's stack without ever reaching the blocked backend process.
+# Interrupting that needs a server-side statement_timeout or an external watchdog.
+#
+# application_name is what lets a watchdog select this project's own backends out
+# of pg_stat_activity instead of guessing by client address.
+if DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql":
+    _db_options = {
+        "connect_timeout": env.int("DB_CONNECT_TIMEOUT_SECONDS", default=10),
+        "keepalives": 1,
+        "keepalives_idle": env.int("DB_TCP_KEEPALIVE_IDLE_SECONDS", default=30),
+        "keepalives_interval": env.int("DB_TCP_KEEPALIVE_INTERVAL_SECONDS", default=10),
+        "keepalives_count": env.int("DB_TCP_KEEPALIVE_COUNT", default=3),
+        "application_name": "finance_analysis",
+    }
+    # Anything supplied on DATABASE_URL itself wins, so a deployment can tune the
+    # link without a code change.
+    _db_options.update(DATABASES["default"].get("OPTIONS") or {})
+    DATABASES["default"]["OPTIONS"] = _db_options
 
 
 # Password validation
@@ -704,7 +746,7 @@ SPECTACULAR_SETTINGS = {
         'Bilingual Financial Data SaaS Platform for Chinese Markets (CSI 500).\n\n'
         'This API is unauthenticated: no credential is required for any endpoint.\n'
     ),
-    'VERSION': '0.2.0',
+    'VERSION': PROJECT_VERSION,
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
     'SWAGGER_UI_SETTINGS': {

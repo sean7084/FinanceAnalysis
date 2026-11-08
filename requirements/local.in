@@ -1,0 +1,24 @@
+# Direct dependency intent. The matching .txt beside this file is GENERATED from it by
+# pip-compile and must not be hand-edited; scripts/check_requirements_lockfile.py fails CI
+# if the two disagree, and the lockfile check runs before anything is installed.
+#
+# The .txt exists because a transitive dependency cannot be allowed to float between CI
+# runs: celery only constrains kombu to <6.0, and kombu 5.7.0's redis extra rejects the
+# redis==5.0.4 pinned below, so a fresh resolve on 2026-11-03 turned every branch red
+# without a code change. The lockfile pins the whole closure and carries a hash per wheel.
+#
+# Regenerate (about twenty minutes per file; needs the network):
+#   pip install pip-tools
+#   pip-compile --generate-hashes --allow-unsafe --no-emit-index-url #       --no-emit-trusted-host requirements/<name>.in
+# --allow-unsafe pins setuptools, which pip otherwise refuses to hash-check.
+#
+-r base.in
+
+# Development and testing tools
+coverage==7.6.4
+django-extensions==3.2.3
+ipython==8.29.0
+werkzeug==3.1.3
+# Timezone guardrail. Only the DTZ rules in ruff.toml are enabled; see that file
+# for why the others are left off.
+ruff==0.17.3

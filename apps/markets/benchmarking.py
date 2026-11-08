@@ -306,7 +306,20 @@ def _benchmark_weight(row, current_close):
     return None, None
 
 
-def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None):
+def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None, emit_seed_row=True):
+    """Build the NAV chain over ``[start_date, end_date]``.
+
+    The range's first date is structurally a seed: it has no predecessor inside the
+    range, so its return is zero and its nav is ``initial_nav``. It must stay in
+    ``trading_dates`` either way, because the second date's return is computed from
+    its prices and the nav chain starts there.
+
+    ``emit_seed_row=False`` drops that seed from the returned rows while still using
+    it as the price/nav anchor. An incremental refresh needs this: it seeds from an
+    already-stored row, and re-emitting that row would upsert its ``daily_return``
+    back to zero (the upsert's ``update_fields`` includes it) while leaving its nav
+    untouched -- silently destroying a return that was already correct.
+    """
     trading_dates = list(
         OHLCV.objects.filter(date__gte=start_date, date__lte=end_date)
         .values_list('date', flat=True)
@@ -365,31 +378,32 @@ def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=D
                 daily_return = weighted_sum / total_weight
                 nav *= (DECIMAL_1 + daily_return)
         
-        rows.append(
-            PointInTimeBenchmarkDaily(
-                benchmark_code=PIT_BENCHMARK_CODE,
-                benchmark_name=PIT_BENCHMARK_NAME,
-                trade_date=trade_date,
-                daily_return=daily_return,
-                nav=nav,
-                constituent_count=membership['constituent_count'],
-                overlap_count=membership['overlap_count'],
-                weighting_method=PIT_UNION_WEIGHTING_METHOD,
-                metadata={
-                    'index_codes': list(resolved_index_codes),
-                    'snapshot_dates': membership['snapshot_dates'],
-                    'weighted_constituent_count': weighted_constituent_count,
-                    'missing_prices': missing_prices,
-                    'missing_market_cap': missing_market_cap,
-                    'weight_sources': weight_sources,
-                },
+        if index > 0 or emit_seed_row:
+            rows.append(
+                PointInTimeBenchmarkDaily(
+                    benchmark_code=PIT_BENCHMARK_CODE,
+                    benchmark_name=PIT_BENCHMARK_NAME,
+                    trade_date=trade_date,
+                    daily_return=daily_return,
+                    nav=nav,
+                    constituent_count=membership['constituent_count'],
+                    overlap_count=membership['overlap_count'],
+                    weighting_method=PIT_UNION_WEIGHTING_METHOD,
+                    metadata={
+                        'index_codes': list(resolved_index_codes),
+                        'snapshot_dates': membership['snapshot_dates'],
+                        'weighted_constituent_count': weighted_constituent_count,
+                        'missing_prices': missing_prices,
+                        'missing_market_cap': missing_market_cap,
+                        'weight_sources': weight_sources,
+                    },
+                )
             )
-        )
 
     return rows
 
 
-def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None):
+def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None, emit_seed_row=True):
     if isinstance(start_date, str):
         start_date = date.fromisoformat(start_date)
     if isinstance(end_date, str):
@@ -400,6 +414,7 @@ def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Deci
         end_date=end_date,
         initial_nav=initial_nav,
         index_codes=index_codes,
+        emit_seed_row=emit_seed_row,
     )
     if not rows:
         return {
@@ -452,6 +467,7 @@ def refresh_latest_point_in_time_union_benchmark(target_date, initial_nav=Decima
         end_date=target_date,
         initial_nav=previous_row.nav,
         index_codes=index_codes,
+        emit_seed_row=False,
     )
     summary['refresh_mode'] = 'incremental'
     summary['seed_trade_date'] = previous_row.trade_date.isoformat()
