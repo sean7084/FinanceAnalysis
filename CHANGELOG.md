@@ -1,5 +1,18 @@
 # Changelog
 
+- **Dependencies are locked, with a hash per wheel.** `requirements/*.in` now carry the direct
+  intent and the matching `.txt` are `pip-compile` lockfiles holding the full transitive closure;
+  CI installs `pip install --require-hashes -r requirements/local.txt`. Before this, every CI run
+  re-resolved against whatever PyPI held that morning, which is how kombu 5.7.0 turned every
+  branch red on 2026-11-03: celery only constrains it to `<6.0`, the fresh resolve floated it onto
+  a version whose redis extra rejects `redis==5.0.4`, and the failure surfaced in unrelated PRs.
+  `scripts/check_requirements_lockfile.py` runs before the install and fails if an `.in` and its
+  `.txt` disagree, if any package line lacks a `--hash`, or if a `.txt` still carries a `-r`
+  include — cheaply and offline, because a CI `pip-compile --dry-run` would re-resolve torch,
+  mlflow and akshare (about twenty minutes per file here) to catch that same forgotten-recompile
+  mistake. `jieba` is declared and pinned at last: it was imported behind a `try/except` but never
+  listed, so every environment silently took the unsegmented sentiment fallback.
+
 ### version 0.1.53
 
 #### Changed:
