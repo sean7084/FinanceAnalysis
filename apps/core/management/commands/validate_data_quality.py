@@ -995,6 +995,11 @@ class Command(BaseCommand):
                 ordered_trading_dates,
                 asset_suspensions,
             )
+        # Deliberately still strict when list_date is unknown: an absent indicator row for
+        # a date we do hold prices for is a fact about the data, not an artefact of an
+        # assumption. The asymmetry with _validate_continuity is intentional -- the two
+        # checks make opposite kinds of claim, so "cannot know" points in opposite
+        # directions. Excusing here would hide real gaps.
         if asset.list_date is None or not ordered_trading_dates:
             return False
         if asset.list_date < ordered_trading_dates[0]:
@@ -1479,8 +1484,21 @@ class Command(BaseCommand):
         if not missing_dates:
             return
 
-        self._increment(counters, 'missing_ohlcv', 'critical', len(missing_dates))
-        table_counters[('ohlcv', 'critical', 'missing_ohlcv')] += len(missing_dates)
+        # When list_date is unknown the expected window starts at HISTORICAL_DATA_FLOOR,
+        # so most of this "gap" is the pre-listing period measured against an assumption
+        # the gate cannot justify. Reporting that as critical is how a release gate ends up
+        # ignored: a bare run returns 5.3M critical issues dominated by it. Downgrade to a
+        # warning that names the reason, and let the separate missing_list_date warning
+        # point at the cause.
+        if asset.list_date is None:
+            issue_type, severity = 'missing_ohlcv_unknown_list_date', 'warning'
+        else:
+            # A known listing date means the window is real, so an absent row is a genuine
+            # hole in a series the models read.
+            issue_type, severity = 'missing_ohlcv', 'critical'
+
+        self._increment(counters, issue_type, severity, len(missing_dates))
+        table_counters[('ohlcv', severity, issue_type)] += len(missing_dates)
         first_observed = min(actual_dates) if actual_dates else None
         last_observed = max(actual_dates) if actual_dates else None
         missing_pct = (len(missing_dates) / expected_count) if expected_count else 0
