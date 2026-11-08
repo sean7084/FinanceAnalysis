@@ -30,6 +30,28 @@ hour 0. So the exposure is latent, not realised: this command is the guard for t
 post-fix recompute of a pre-flip date, and it must be run then. The key-space doubling the
 backlog warned about had not happened yet.
 
+**Trigger: run this guard ONLY after a recompute that touched pre-flip dates** -- any
+backfill_technical_indicators run, or per-indicator task recompute, whose range
+includes sessions before 2026-11-02. The historical risk is
+backfill_technical_indicators's delete-then-recreate per chunk
+(apps/analytics/management/commands/backfill_technical_indicators.py:415-424), which is
+the one writer that revisits history. Always --dry-run first; run for real only if it
+reports pairs.
+
+Verification afterwards -- idle link only, wedge watcher up, inside an explicit
+statement_timeout, because timestamp is not the leading column of the
+(asset_id, timestamp, indicator_type) index and this scans wide on a 179M-row table::
+
+    SET statement_timeout = '10min';
+    SELECT (timestamp AT TIME ZONE 'Asia/Shanghai')::time AS beijing_tod, count(*)
+      FROM analytics_technicalindicator
+     WHERE timestamp >= '2026-10-01' AND timestamp < '2026-11-10'
+     GROUP BY 1;
+
+Only 00:00:00 may appear. Any 08:00:00 bucket is an old-convention (pre-flip UTC)
+row; a lone one is kept by design, since deletion happens only when the new-convention
+twin (d-1) 16:00Z exists for the same (asset, indicator_type, parameters, session_day).
+
 Usage::
 
     python manage.py dedupe_technical_indicator_session_keys --dry-run
