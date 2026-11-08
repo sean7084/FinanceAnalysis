@@ -462,6 +462,25 @@ So the next change should collapse those per-asset queries into a few batched re
 Python — the same shape `_write_effective_universe_daily_coverage` already uses. Expected effect
 is roughly an order of magnitude, because the cost is per round trip rather than per row.
 
+**Then the micro-benchmark corrected the cause, and it is worse than "round trips".** EXPLAIN
+(ANALYZE, BUFFERS) on the per-asset technical-indicator read, same window:
+
+| read | execution | shared buffers |
+| --- | --- | --- |
+| first (cold) | 700-900 ms | `read=170..290`, `hit≈4,100` |
+| re-read (warm) | 12-27 ms | `read=0`, `hit≈4,600` |
+
+Same plan, same rows (6,692), and a variant without the `timestamp__date` cast changed nothing.
+The 800 ms is **cold block reads over the NAS link** — not planning, not the cast, not the filter.
+~35x between cold and warm.
+
+That advantage does not survive a whole run. Two consecutive one-year invocations measured **91 s
+and 87 s**, so the second got nothing, because the working set exceeds shared_buffers and early
+blocks are evicted before the run ends. (A profiled run of that same window took 812 s while the
+cache was cold — a ~9x spread attributable to cache state, not to code.) So the answer is not
+"run it twice": it is to read each block **once** in a batched pass and consume the rows while
+they are hot.
+
 Not attempted here on purpose. This is the release gate, its failure mode is silent under-reporting
 rather than a crash, and the change needs an old-vs-new equivalence run on a fixed window (the
 method used for the coverage scans) before it can be trusted. A subtly wrong gate is worse than a
