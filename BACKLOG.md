@@ -12,6 +12,15 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Resolved
 
+- **LICENSE decided: proprietary, confirmed (2026-11).** The choice is now deliberate
+  rather than incidental, and four places say the same thing: the root NOTICE file
+  ("This is not an open-source project. No licence is granted, by implication, estoppel,
+  or otherwise"), `README.md`'s "Private and proprietary -- all rights reserved",
+  `pyproject.toml`'s `license = { text = "Proprietary" }`, and `frontend/package.json`'s
+  `"license": "UNLICENSED"`. No trove classifiers on purpose: the project is deployed
+  from a checkout and never packaged, so `License :: Other/Proprietary License` would be
+  dead metadata.
+
 - **App-label test discovery failure — and a silent no-op test run.**
   `python manage.py test apps.sentiment` failed with `ImportError: attempted
   relative import with no known parent package` while the fully qualified
@@ -1102,9 +1111,6 @@ about why the page-load budget works and a scan budget cannot.
   reversed by the single-`.env` consolidation. Unlike the duplicate-`0.1.7`
   entry, which carries an explicit historical note, this one has no forward
   pointer.
-- Decide `LICENSE`. `README.md` declares the project private and proprietary and
-  a proprietary notice file now exists, but the choice should be conscious
-  rather than incidental.
 
 ---
 
