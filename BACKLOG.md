@@ -432,6 +432,61 @@ problem above.
 
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
+**Measured outcome 2026-11-08 — the cursor fix landed, and it was not the main cost.** The
+rewrite replaced every `.iterator(chunk_size=...)` with a windowed bulk fetch and narrowed the
+largest scan from `indicator_type__in=<19>` to `indicator_type='RS_SCORE'` (105x fewer rows, a
+bitmap index instead of a seq scan; EXPLAIN and a byte-identical six-month A/B are recorded in
+`apps/core/db_scans.py`). Then the full range was run with that rewrite in place:
+`--effective-universe-only` over the whole history was **killed at the 90-minute timeout without
+finishing** (`VALIDATE_RC=124`). Sampling `pg_stat_activity` through the run showed the bulk of
+the time in the **per-asset** OHLCV continuity phase, which the rewrite does not touch.
+
+So the premise in this entry — that the coverage scans drive the 16-year runtime — is wrong. The
+gate is dominated by validating 1,886 assets across ~4,000 sessions one asset at a time. Making
+it usable needs that phase addressed (restrict to sessions where the asset is in the effective
+universe, or parallelise across assets), which is separate work.
+
+What did land is still worth having: no named cursor anywhere in the command, 105x fewer rows in
+the largest scan, one window of peak memory instead of one history of rows, and the long read
+transaction that pinned xmin is gone. **Do not quote a full-range speedup — there is not one.**
+
+**Profiled 2026-11-08: it is round-trip bound, and the fix is batching, not scanning.** One year
+of data under `cProfile` (`tmp/vdq.prof`): `cursor.execute` accounts for **722 s of 812 s — 89%
+of the run — across only 7,327 calls**, i.e. **~99 ms per query**. That is latency on the
+WSL2<->NAS link, not row volume or CPU. `_write_feature_continuity_gaps` alone is 484 s (60% of
+the total) over 602 assets, and it issues **six queries per asset**: `FundamentalFactorSnapshot`,
+`CapitalFlowSnapshot`, `AssetMoneyFlowSnapshot`, two `AssetMarginDetailSnapshot` reads, and
+`TechnicalIndicator`. 602 x 6 = ~3,600 round trips for one year; 16 years is the 90-minute run.
+
+So the next change should collapse those per-asset queries into a few batched reads grouped in
+Python — the same shape `_write_effective_universe_daily_coverage` already uses. Expected effect
+is roughly an order of magnitude, because the cost is per round trip rather than per row.
+
+**Then the micro-benchmark corrected the cause, and it is worse than "round trips".** EXPLAIN
+(ANALYZE, BUFFERS) on the per-asset technical-indicator read, same window:
+
+| read | execution | shared buffers |
+| --- | --- | --- |
+| first (cold) | 700-900 ms | `read=170..290`, `hit≈4,100` |
+| re-read (warm) | 12-27 ms | `read=0`, `hit≈4,600` |
+
+Same plan, same rows (6,692), and a variant without the `timestamp__date` cast changed nothing.
+The 800 ms is **cold block reads over the NAS link** — not planning, not the cast, not the filter.
+~35x between cold and warm.
+
+That advantage does not survive a whole run. Two consecutive one-year invocations measured **91 s
+and 87 s**, so the second got nothing, because the working set exceeds shared_buffers and early
+blocks are evicted before the run ends. (A profiled run of that same window took 812 s while the
+cache was cold — a ~9x spread attributable to cache state, not to code.) So the answer is not
+"run it twice": it is to read each block **once** in a batched pass and consume the rows while
+they are hot.
+
+Not attempted here on purpose. This is the release gate, its failure mode is silent under-reporting
+rather than a crash, and the change needs an old-vs-new equivalence run on a fixed window (the
+method used for the coverage scans) before it can be trusted. A subtly wrong gate is worse than a
+slow one.
+
+
 Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
 with the backend in `wait_event_type=IO, wait_event=DataFileRead` on
 `FETCH FORWARD 50000 FROM "_django_curs_12349"`. The quoted cursor name is the tell — the command
