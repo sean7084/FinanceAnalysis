@@ -199,7 +199,13 @@ jobs:
       # (1). The floor was already stale -- PR #79 measured 1011 against a floor of
       # 941 -- so this raises it to the measured total, as with 844 -> 939, to make
       # the floor bite again.
-      MIN_TEST_COUNT: "1023"
+      # 1023 -> 1170: the batch merged ahead of this commit added 147 tests -- the
+      # data-quality scan rewrite's window/equivalence/registry guards, the wedge
+      # watchdog's classifier, the session-key idempotence and dedupe cases, the
+      # purged-holdout split and metrics, the gate-severity split, the single-source
+      # version pin, and the catchup command path that no test had ever reached.
+      # Measured on the tree with every branch merged: 1170.
+      MIN_TEST_COUNT: "1170"
 
     steps:
       - uses: actions/checkout@v4
@@ -369,7 +375,11 @@ jobs:
       # rather than zeros, the backend-down banner only after the budget is spent,
       # the generic copy for a 4xx); one in IndicatorBoardPage.test.tsx (the same
       # backend-down banner on the board that reads the same endpoint).
-      MIN_TEST_COUNT: "87"
+      # 87 -> 100: the floor had been stale -- the suite measured 100 across 13 files
+      # well before this batch, which added no frontend tests but did remove three lint
+      # warnings and the ratchet that tolerated them. Raised to the measured total so the
+      # floor bites again.
+      MIN_TEST_COUNT: "100"
 
     steps:
       - uses: actions/checkout@v4
