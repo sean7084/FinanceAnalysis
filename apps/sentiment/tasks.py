@@ -8,12 +8,20 @@ ingestion is windowed by ``_compute_historical_backfill_window`` against
 ``NEWS_BACKFILL_FLOOR`` so an hourly job advances through history in bounded chunks
 rather than re-fetching everything.
 
-**Scoring.** ``_tokenize`` / ``_score_text`` / ``_label`` are a rule-based,
-lexicon-driven Chinese finance scorer. It is deliberately simple and its output is
-**neutral-heavy**: most articles score near zero because the lexicon does not match,
-not because the news was neutral. Treat a neutral score as "no evidence" rather than
-"no signal". Replacing this with a finance-oriented Chinese BERT model is tracked in
-``BACKLOG.md``.
+**Scoring.** ``_tokenize`` / ``_lexicon_hits`` / ``_score_text`` / ``_label`` are a
+rule-based, lexicon-driven Chinese finance scorer. It is deliberately simple, and a
+neutral score means "the lexicon found no evidence", not "the news was neutral".
+CJK terms are matched as substrings so the lexicon fires with or without jieba;
+jieba is optional and only affects the token-count denominator.
+
+This used to be described as "neutral-heavy because the lexicon does not match",
+which rationalised a defect rather than documenting a design choice: the fallback
+tokenizer's character class was double-escaped (``[\\\\w\\\\u4e00-\\\\u9fff]``), so it
+matched no Chinese at all, every article tokenized to nothing, and all 6,522,270
+stored scores were exactly zero. ``FactorScore.sentiment_score`` was therefore a
+constant 0.5 -- arithmetically correct, since ``(0 + 1) / 2``, and carrying no
+information. Replacing the lexicon with a finance-oriented Chinese BERT model is
+tracked in ``BACKLOG.md``.
 
 **Asset attribution.** ``_build_asset_match_index`` and ``_match_related_assets``
 resolve articles to assets through name aliases rather than ticker mentions, because
@@ -32,6 +40,7 @@ as "no news today". See ``docs/how-to/runbook-provider-blackout.md``.
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import logging
 import re
 
 from celery import shared_task
@@ -47,6 +56,13 @@ try:
     import jieba  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     jieba = None
+    logging.getLogger(__name__).warning(
+        'jieba is not installed, so the sentiment scorer tokenizes Chinese into '
+        'unsegmented runs. Lexicon terms still match (as substrings), but the '
+        'token-count denominator is small and scores saturate more readily than '
+        'with word segmentation. Declare jieba in requirements to get the '
+        'segmented path.'
+    )
 
 
 POSITIVE_WORDS = {
@@ -99,7 +115,33 @@ def _tokenize(text):
         return []
     if jieba is not None:
         return [t.strip().lower() for t in jieba.lcut(text) if t.strip()]
-    return [t.lower() for t in re.findall(r'[\\w\\u4e00-\\u9fff]+', text)]
+    return [t.lower() for t in re.findall(r'[\w\u4e00-\u9fff]+', text)]
+
+
+_CJK_CHARACTER = re.compile(r'[\u4e00-\u9fff]')
+
+
+def _lexicon_hits(text, tokens, lexicon):
+    """Count lexicon occurrences whether or not the text was segmented.
+
+    A CJK term is counted as a substring, the same way ``_infer_concepts`` matches
+    ``CONCEPT_KEYWORDS``. Without jieba the fallback tokenizer yields whole CJK runs
+    (``公司业绩大幅增长``), so testing set membership against a two-character word
+    never fires -- which is how every article in the database came to score exactly
+    zero while the lexicon already contained 增长 / 利好 / 亏损 / 利空.
+
+    An ASCII term is counted on tokens instead, so ``buy`` does not match inside
+    ``buyer``. Both paths therefore agree on the hit count; jieba only changes the
+    token-count denominator that normalises it.
+    """
+    lowered = text.lower()
+    hits = 0
+    for word in lexicon:
+        if _CJK_CHARACTER.search(word):
+            hits += lowered.count(word)
+        else:
+            hits += sum(1 for token in tokens if token == word)
+    return hits
 
 
 def _score_text(text):
@@ -107,8 +149,8 @@ def _score_text(text):
     if not tokens:
         return Decimal('0.333333'), Decimal('0.333333'), Decimal('0.333333'), Decimal('0')
 
-    pos = sum(1 for t in tokens if t in POSITIVE_WORDS)
-    neg = sum(1 for t in tokens if t in NEGATIVE_WORDS)
+    pos = _lexicon_hits(text, tokens, POSITIVE_WORDS)
+    neg = _lexicon_hits(text, tokens, NEGATIVE_WORDS)
     total = max(len(tokens), 1)
 
     raw = Decimal(pos - neg) / Decimal(total)
