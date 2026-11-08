@@ -179,12 +179,17 @@ drop prompt that fails in any non-interactive shell. Detail in
 
 ## Deployment
 
-**Not implemented.** There is no CI configuration, no infrastructure-as-code, and
-no ASGI/WSGI server in `requirements/production.txt` — which the WebSocket
-surface would require. The local stack runs `manage.py runserver`.
+**Not implemented.** There is no infrastructure-as-code and no cloud deployment. The
+local stack runs `manage.py runserver`, and `production.txt` now carries real ASGI/WSGI
+servers (`daphne`, `gunicorn`, `uvicorn`) for whoever wires one up — but nothing here
+deploys them.
+
+This section used to claim "there is no CI configuration … and no ASGI/WSGI server in
+`requirements/production.txt`". Both are stale: `.github/workflows/ci.yml` runs a
+blocking backend job and a blocking frontend job, and the servers are pinned.
 
 A cloud deployment (managed PostgreSQL and Redis, container orchestration, CI/CD,
-metrics, error tracking, object storage for artifacts and report exports) is a
+metrics, error tracking, and the artifact object store already in use locally) is a
 plan, not a capability. Tracked in [`BACKLOG.md`](BACKLOG.md).
 
 ---

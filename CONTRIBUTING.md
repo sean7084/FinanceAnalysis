@@ -11,9 +11,38 @@ months from now.
 
 ## 1. Branching and commits
 
-Work happens on `main`. There is no protected-branch workflow, no PR template, and
-no CI. That means **nothing checks your work except you** — the discipline below
-is what substitutes for a review gate.
+Work lands on `main` through a `<type>/<slug>` branch and a pull request. Every merge
+from #56 onward followed that shape (`feat/date-contract-and-data-limits`,
+`fix/ohlcv-adjustment-basis`, `refactor/timezone-unification`, …), and
+`.github/PULL_REQUEST_TEMPLATE.md` exists alongside issue templates, `LABELS.md` and
+`PROJECT_WORKFLOW.md`.
+
+This section previously claimed "Work happens on `main`. There is no protected-branch
+workflow, no PR template, and no CI", which the history contradicted — so the branching
+convention was inferable only from git log, which is exactly what the claim said was
+unnecessary.
+
+CI does run, and both jobs are **required status checks**:
+
+| Job | Required check name | What it gates |
+| --- | --- | --- |
+| `backend` | `Django checks and test suite` | ruff DTZ + a `time.strftime` grep, `manage.py check`, `makemigrations --check --dry-run`, `export_documentation_facts --check`, page-load budget tests, and the full suite |
+| `frontend` | `Frontend tests, type-check, and lint` | `npm ci`, the ratcheted type-check and lint, and vitest |
+
+Because those names are branch-protection rules, **renaming a job requires re-applying
+branch protection** — deleting or adding steps inside a job does not.
+
+Both test jobs assert a **minimum discovered test count** as well as a green result
+(`MIN_TEST_COUNT`, currently 1023 backend and 87 frontend, live only in
+`.github/workflows/ci.yml`). That floor is the load-bearing part: a workflow checking
+only the exit code reported success through the whole period when `manage.py test` was
+discovering **zero** tests, which is how 109 failures stayed hidden. Raise the floor when
+you add tests. Lowering one needs a stated reason, since the count can only fall if
+discovery breaks or tests are deleted.
+
+CI is a gate, not a review. It cannot tell whether a metric is honest, whether a window
+was already spent, or whether a commit message describes the staged diff — the
+discipline below is what covers those.
 
 ### Conventional Commits
 
@@ -276,24 +305,45 @@ Known non-hermetic tests are documented in
 
 ## 6. Model artifacts
 
-`models/` is **tracked in git** — 132 files including `.pkl`, `.pt`,
-`metadata.json`, and `summary.json`. This is deliberate: it makes trained artifacts
-portable across hosts without external storage, which matters because stored
-`artifact_path` values are absolute and do not survive a host change otherwise.
+`models/` is **not tracked in git**. `git ls-files models/` returns zero and
+`.gitignore:102` has ignored the tree since 2026-10-10. Artifacts live in the MinIO
+object store on the NAS (`ARTIFACT_STORE_BACKEND=s3`, bucket `armillary-artifacts`,
+versioning on); the local `models/` tree is a retrainable cache.
+
+This section previously said the opposite — "`models/` is tracked in git, 132 files
+including `.pkl` and `.pt`" — and instructed committing a new artifact family together
+with the registry change that activates it. **Following that instruction would commit
+multi-MB binaries into a repository that deliberately stopped carrying them.** The
+portability problem it was solving is solved differently now: new artifacts store
+`BASE_DIR`-relative paths, and that relative path doubles as the object-store key.
+
+The correct sequence for a new artifact family:
+
+```
+python manage.py migrate_artifacts_to_store --execute
+python manage.py verify_artifact_store
+```
+
+Then commit the **registry** change (and any migration), not the binaries. A fresh
+clone repopulates its cache with `sync_artifacts_from_store`.
 
 Consequences to respect:
 
-- Commit a new artifact family together with the registry change that activates
-  it, so the repository and the database agree.
 - Never overwrite an existing artifact directory. Retrain with a new
   `--version-tag`; `(horizon_days, version)` is unique and rollback depends on
-  every generation being retained.
-- Artifact binaries grow the repository permanently. Before adding a family, ask
-  whether it is a keeper or an experiment. Experiments belong on disk, not in git.
-- Regenerate `docs/reference/models.md` after any registry change.
+  every generation being retained. The object store's versioning is the backstop,
+  not a licence to reuse a version key.
+- Regenerate `docs/reference/models.md` after any registry change. It is a generated
+  sheet and is DB-gated, so CI's `--check` skips it — refresh it locally and commit it.
+- Legacy rows written on other hosts (`/app/...`, a Linux home dir, `C:\...`) do not
+  resolve. They are inactive; `migrate_artifacts_to_store --normalize-registry`
+  rewrites any that map under the current `BASE_DIR`.
+- An `ARCHIVED` `ModelVersion` cannot be active, and pinned loaders refuse archived
+  versions. Archive rather than delete when retiring a family.
 
-Whether this remains the right tradeoff versus object storage is an open question
-in `BACKLOG.md`.
+Procedure and ops: `docs/how-to/artifact-store.md`. NAS runbook: HomeServer
+`docs/runbooks/minio.md`. Forward-only note: existing git history still carries ~58 MB
+of blobs from before the cutover; `.git` simply stops growing one family per retrain.
 
 ---
 

@@ -11,8 +11,8 @@ class TechnicalIndicatorAdmin(admin.ModelAdmin):
 
 @admin.register(ScreenerTemplate)
 class ScreenerTemplateAdmin(admin.ModelAdmin):
-    list_display = ('name', 'screener_type', 'is_public', 'updated_at')
-    list_filter = ('screener_type', 'is_public')
+    list_display = ('name', 'screener_type', 'updated_at')
+    list_filter = ('screener_type',)
     search_fields = ('name',)
 
 

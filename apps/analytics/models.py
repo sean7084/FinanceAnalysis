@@ -59,7 +59,6 @@ class ScreenerTemplate(models.Model):
         default=ScreenerType.CUSTOM,
     )
     config = models.JSONField(_('Config'), default=dict)
-    is_public = models.BooleanField(_('Is Public'), default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -68,7 +67,6 @@ class ScreenerTemplate(models.Model):
         verbose_name_plural = _('Screener Templates')
         ordering = ['-updated_at']
         indexes = [
-            models.Index(fields=['is_public']),
             models.Index(fields=['screener_type']),
         ]
 

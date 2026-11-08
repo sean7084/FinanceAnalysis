@@ -15,7 +15,7 @@ from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.analytics.models import TechnicalIndicator
-from apps.core.date_floor import get_historical_data_floor
+from apps.core.date_floor import get_historical_data_floor, session_key_timestamp
 from apps.markets.models import Asset, OHLCV
 
 
@@ -72,7 +72,9 @@ def _parse_indicator_types(raw_value):
 
 
 def _make_timestamp(trading_date):
-    return timezone.make_aware(datetime.combine(trading_date, datetime.min.time()))
+    # Zone-stable: see apps/core/date_floor.session_key_timestamp. A key derived from the
+    # mutable TIME_ZONE makes a recomputed date insert a parallel row instead of updating.
+    return session_key_timestamp(trading_date)
 
 
 def _safe_decimal(value):
