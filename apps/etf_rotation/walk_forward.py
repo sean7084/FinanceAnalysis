@@ -40,6 +40,8 @@ from datetime import date, timedelta
 from itertools import combinations
 from math import ceil
 
+from apps.core.date_contract import MIN_TRAIN_SESSIONS
+
 __all__ = [
     'CombinatorialFold',
     'Fold',
@@ -229,7 +231,7 @@ def validation_blocks_for_any_fold(fold):
 
 
 def expanding_folds(first_date, last_date, n_folds: int = 6, *,
-                    horizon_days: int = 20, min_train_days: int = 250,
+                    horizon_days: int = 20, min_train_days: int = MIN_TRAIN_SESSIONS,
                     trade_dates=None) -> list:
     """Build ``n_folds`` expanding-window folds across a panel.
 

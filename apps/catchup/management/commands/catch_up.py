@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -42,7 +43,7 @@ class Command(BaseCommand):
                 f'Known: {", ".join(registry.all_names())}'
             )
         rows = run_catch_up(
-            as_of=options['as_of'] or None,
+            as_of=self._parse_as_of(options['as_of']),
             series=names,
             max_calls=options['max_calls'],
             max_seconds=options['max_seconds'],
@@ -66,6 +67,24 @@ class Command(BaseCommand):
             )
             if row.detail:
                 self.stdout.write(f'{"":<22}{row.detail[:160]}')
+
+    @staticmethod
+    def _parse_as_of(raw):
+        """Resolve --as-of to a date, or None to let the service pick the session date.
+
+        The service does ``as_of = as_of or session_today()``, so a non-empty string
+        survives it and reaches ``calendar_scan_start``, where ``as_of - timedelta``
+        raises TypeError before any detector runs. Parse here so a bad value is a
+        CommandError naming the flag rather than a traceback from the detectors.
+        """
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            raise CommandError(
+                f'--as-of must be a date in YYYY-MM-DD form, got {raw!r}.'
+            ) from None
 
     @staticmethod
     def _as_dict(row):

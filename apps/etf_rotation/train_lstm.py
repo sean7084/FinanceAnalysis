@@ -79,7 +79,7 @@ from torch.nn.functional import binary_cross_entropy_with_logits, softplus
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Dataset
 
-from apps.core.date_contract import ETF_TRAINING_START
+from apps.core.date_contract import ETF_TRAINING_START, MIN_TRAIN_SESSIONS
 from apps.core.date_floor import get_historical_data_floor
 from apps.prediction.artifact_store import get_artifact_store, to_store_key
 from apps.prediction.models import ModelVersion
@@ -1248,16 +1248,15 @@ def _build_config(*, model_type_label, start_date, end_date, n_folds, horizon_da
         'hidden_size': int(hidden_size), 'num_layers': int(num_layers), 'dropout': float(dropout),
         'epochs': int(epochs), 'batch_size': int(batch_size), 'learning_rate': float(learning_rate),
         'patience': int(patience),
-        'min_train_days': (_setting_int('ETF_MIN_TRAIN_DAYS', 250) if min_train_days is None
+        'min_train_days': (MIN_TRAIN_SESSIONS if min_train_days is None
                            else int(min_train_days)),
         'min_train_sequences': _setting_int('ETF_MIN_TRAIN_ROWS', 200),
         'min_scaler_rows': 256,
         'max_grad_norm': 5.0, 'seed': 7, 'loss': LOSS_BCE,
         'version_tag': _normalize_version_tag(version_tag or overrides.get('version_tag')),
-        # Top-N hit rate has to count the positions the engine actually holds. The
-        # sibling reads an unset ETF_ROTATION_MAX_POSITIONS and quietly stays at 5; this
-        # uses the knob that exists, and ``params={'top_n': 5}`` pins it if the two models
-        # must be compared on an identical cut.
+        # Top-N hit rate has to count the positions the engine actually holds. Both
+        # trainers read ETF_MAX_POSITIONS, so the two models are scored on an identical
+        # cut; ``params={'top_n': 5}`` still pins it for a deliberate comparison.
         'top_n': _setting_int('ETF_MAX_POSITIONS', 3),
         # Accepted only because ``train_etf_rotation_model`` passes them to whichever
         # trainer is named. They change nothing here -- the sequence head has no boosting

@@ -1810,7 +1810,22 @@ class RegistryFallbackScoringTests(TestCase):
         kwargs.setdefault('is_active', True)
         kwargs.setdefault('artifact_path', '')
         kwargs.setdefault('feature_schema', [])
-        return ModelVersion.objects.create(version=version, **kwargs)
+        # ModelVersion.save refuses is_active=True on an ARCHIVED row, because archiving
+        # means the artifact must not be selected. A bulk update can still produce that
+        # combination -- the archiving migrations are bulk updates -- and the loader's
+        # defence against it is what the ARCHIVED case of the fallback test exercises. So
+        # build it the way such a legacy row would look, rather than through save().
+        archived_but_active = (
+            kwargs.get('status') == ModelVersion.Status.ARCHIVED
+            and kwargs.get('is_active')
+        )
+        if archived_but_active:
+            kwargs['is_active'] = False
+        row = ModelVersion.objects.create(version=version, **kwargs)
+        if archived_but_active:
+            ModelVersion.objects.filter(pk=row.pk).update(is_active=True)
+            row.is_active = True
+        return row
 
     def test_an_empty_registry_yields_no_predictor(self):
         self.assertIsNone(train_lightgbm.load_active_predictor())
@@ -4896,6 +4911,28 @@ class MaxPositionsDefaultAlignmentTests(SimpleTestCase):
                 start_date=date(2024, 1, 2), end_date=date(2024, 12, 31),
             ).max_positions, 5,
         )
+
+    def test_both_trainers_score_top_n_on_the_same_cut(self):
+        """The gap the engine-level alignment above did not cover.
+
+        train_lightgbm read ETF_ROTATION_MAX_POSITIONS, which no settings module
+        defines, so it kept a fallback of 5 while train_lstm saw the configured 3.
+        Two serving models of one strategy held different numbers of positions, and
+        every LightGBM-vs-LSTM comparison was comparing different portfolios.
+        """
+        from apps.etf_rotation.train_lightgbm import _setting_int as lgb_setting_int
+        from apps.etf_rotation.train_lstm import _setting_int as lstm_setting_int
+
+        self.assertEqual(lgb_setting_int('ETF_MAX_POSITIONS', 3), 3)
+        self.assertEqual(lstm_setting_int('ETF_MAX_POSITIONS', 3), 3)
+
+    @override_settings(ETF_MAX_POSITIONS=5)
+    def test_both_trainers_honour_the_same_override(self):
+        from apps.etf_rotation.train_lightgbm import _setting_int as lgb_setting_int
+        from apps.etf_rotation.train_lstm import _setting_int as lstm_setting_int
+
+        self.assertEqual(lgb_setting_int('ETF_MAX_POSITIONS', 3), 5)
+        self.assertEqual(lstm_setting_int('ETF_MAX_POSITIONS', 3), 5)
 
 
 class CpcvCommandGuardTests(TestCase):
