@@ -1195,7 +1195,7 @@ Two things found while generating them, neither introduced by this change:
 Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of
 the above exception" chain is rarely the cause.
 
-
+---
 
 ## Open — documentation
 
