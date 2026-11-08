@@ -597,7 +597,24 @@ covered was incomplete. A range the pipeline never walked is therefore never rev
 in the system reports that. That is the durable lesson: **class-B series need a periodic range
 backfill, not only a watermark replay.**
 
-Remaining 21 criticals: `stale_macro_snapshot` 11, `usable_asset_count_cliff` 9, ETF index coverage 1.
+**The remaining 21, attributed. None of them is a code defect, and none was downgraded.**
+
+| issue | count | what it actually is |
+| --- | --- | --- |
+| `stale_macro_snapshot` | 11 | one outage. Every session 2026-07-17..07-31 saw its newest `MacroSnapshot` at `2026-06-01`, past the 45-day bound. Macro is current now (newest `2026-11-01`), so this is a historical hole, not a live one. |
+| `usable_asset_count_cliff` | 9 | single-day, single-family holes that zero the usable mask: 2026-05-28 `sentiment_score` 0 of 500, 2026-06-05 `factor_score` 0 of 500, 2026-09-24 `fundamental_snapshot` 57 of 500. |
+| `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows. |
+
+Deliberately **not** downgraded, unlike the `list_date` and pipeline-watermark cases above. Those two
+were the gate being unable to justify its own expectation (unknown listing date; a session the pipeline
+had not reached yet). Here the expectation is right and the data was genuinely absent on those dates.
+Downgrading would have hidden a real gap.
+
+That leaves an open policy question rather than a task: **should the release gate fail on a historical
+gap that has since closed?** Today it does, so 21 criticals stand between the current tree and a clean
+all-history run. The alternatives are (a) keep failing and backfill the three holes, (b) scope the gate
+to a recent window and treat all-history as a separate report, or (c) let the gate fail only on gaps
+newer than the last verified-clean date. Not decided here.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
