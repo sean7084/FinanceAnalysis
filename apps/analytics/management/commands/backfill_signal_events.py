@@ -18,7 +18,7 @@ from apps.analytics.technical_staleness import (
     trading_date_positions,
     trailing_indicator_window_is_fresh,
 )
-from apps.core.date_floor import get_historical_data_floor
+from apps.core.date_floor import get_historical_data_floor, session_key_timestamp
 from apps.markets.models import Asset, OHLCV
 
 
@@ -68,7 +68,8 @@ def _parse_signal_types(raw_value):
 
 
 def _make_timestamp(trading_date):
-    return timezone.make_aware(datetime.combine(trading_date, datetime.min.time()))
+    # Zone-stable write key; see apps/core/date_floor.session_key_timestamp.
+    return session_key_timestamp(trading_date)
 
 
 class Command(BaseCommand):

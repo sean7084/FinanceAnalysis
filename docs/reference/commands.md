@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-08T03:09:58Z_
+_Generated: 2026-11-08T16:14:14Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**58** project commands across **10** apps.
+**59** project commands across **10** apps.
 
 
 ## `apps.analytics`
@@ -50,6 +50,18 @@ Backfill historical TechnicalIndicator rows from OHLCV history for non-RS indica
 | `--chunk-size-days` | value | `365` |  | Maximum inclusive date span per delete/insert transaction. Use 0 to process the full range in one chunk. |
 | `--checkpoint-file` | value | `""` |  |  |
 | `--resume-from-checkpoint` | flag | `False` |  |  |
+
+
+### `dedupe_technical_indicator_session_keys`
+
+Delete TechnicalIndicator rows written under the pre-2026-11-02 UTC key when a new-convention twin exists for the same asset, type, parameters and session.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--dry-run` | flag | `False` |  | Report the duplicate set without deleting anything. |
+| `--start-date` | value | `<dynamic-date>` |  | First affected trade date (default 2026-11-02). |
+| `--batch-size` | value | `5000` |  | Rows per DELETE statement (default 5000). |
+| `--asset-batch-size` | value | `200` |  | Assets per progress checkpoint (default 200). |
 
 
 ## `apps.backtest`
@@ -443,7 +455,7 @@ Bounded, resumable LSTM hyperparameter sweep over the ETF tuning window.
 | `--end` | value | &mdash; |  | Tuning window end (ISO). Default: 2023-12-31. |
 | `--folds` | value | `6` |  | Walk-forward steps per trial (default 6). Part of the fingerprint. |
 | `--horizon` | value | &mdash; |  | Label horizon in sessions. Default: settings.ETF_LABEL_HORIZON_DAYS. |
-| `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: apps/core/date_contract.py MIN_TRAIN_SESSIONS (250). |
+| `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS. |
 | `--sequence-length` | value | `20` |  | Bars per sequence (default 20). Part of the fingerprint. |
 | `--limit` | value | &mdash; |  | Run only the first N configurations, for a smoke test. |
 | `--top` | value | `10` |  | Rows in the ranked table (default 10). |
@@ -533,7 +545,7 @@ Walk-forward training and reporting for the ETF rotation models.
 | `--objective` | value | `lambdarank` |  | lambdarank on label_rank_pct grades (default), binary on label_top_bucket, or regression on label_rank_pct. |
 | `--boost-rounds` | value | &mdash; |  | Fixed lgb.train round count; no early stopping. |
 | `--horizon` | value | &mdash; |  | Label horizon in trading sessions. Default: settings.ETF_LABEL_HORIZON_DAYS (20). |
-| `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: apps/core/date_contract.py MIN_TRAIN_SESSIONS (250). |
+| `--min-train-days` | value | &mdash; |  | Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS (250). |
 | `--version-tag` | value | `""` |  | Suffix appended to the ModelVersion key. |
 | `--no-activate` | flag | `False` |  | Register the trained row inactive and leave the serving model alone. Required for a post-release retrain: this command activates by default. |
 | `--dry-run` | flag | `False` |  | Build the frames and fold plan, print sample/group counts, train nothing, write nothing. |

@@ -1810,7 +1810,22 @@ class RegistryFallbackScoringTests(TestCase):
         kwargs.setdefault('is_active', True)
         kwargs.setdefault('artifact_path', '')
         kwargs.setdefault('feature_schema', [])
-        return ModelVersion.objects.create(version=version, **kwargs)
+        # ModelVersion.save refuses is_active=True on an ARCHIVED row, because archiving
+        # means the artifact must not be selected. A bulk update can still produce that
+        # combination -- the archiving migrations are bulk updates -- and the loader's
+        # defence against it is what the ARCHIVED case of the fallback test exercises. So
+        # build it the way such a legacy row would look, rather than through save().
+        archived_but_active = (
+            kwargs.get('status') == ModelVersion.Status.ARCHIVED
+            and kwargs.get('is_active')
+        )
+        if archived_but_active:
+            kwargs['is_active'] = False
+        row = ModelVersion.objects.create(version=version, **kwargs)
+        if archived_but_active:
+            ModelVersion.objects.filter(pk=row.pk).update(is_active=True)
+            row.is_active = True
+        return row
 
     def test_an_empty_registry_yields_no_predictor(self):
         self.assertIsNone(train_lightgbm.load_active_predictor())
