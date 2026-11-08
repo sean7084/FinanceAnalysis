@@ -521,15 +521,100 @@ wrong values: the repaired series passes the local adjustment invariant at 0 vio
 `--effective-universe-only` restricts to asset/dates present in the PIT effective universe and is the
 correct way to invoke this gate; it was not used for the run above.
 
-To do:
-- Populate `list_date` from TuShare `stock_basic` / `stock_company` (`list_date`) for the assets that
-  have price history, which should collapse most of the 1.13M `missing_ohlcv` count on its own.
-- Then re-establish `validate_data_quality --effective-universe-only --fail-on-critical` as the
-  release gate, and record the passing counts so a future regression is distinguishable from the
-  current noise floor.
-- Consider whether the check should refuse to emit `missing_ohlcv` as **critical** for an asset whose
-  `list_date` is unknown, since it cannot know the expected start at all — a warning with a stated
-  reason would be more honest than a critical built on an assumption.
+**Executed 2026-11-08, and the prediction held.** `backfill_asset_list_dates` processed 1,912
+assets and updated **1,383**, moving `null_list_date` from **1,385 to 2** (of which exactly 1 also
+has price rows). It costs three `stock_basic` calls plus an AkShare fallback, and writes only the
+fields whose value differs, so it is additive and idempotent — the earlier note about "spending
+quota" was wrong about this command.
+
+Re-running the gate on a one-year window with `--fail-if-critical` (`--effective-universe-only`)
+now **exits 1 with 1,530 criticals, and the split is the point**:
+
+| issue | count | before the backfill |
+| --- | --- | --- |
+| `missing_factor_score` | 1,497 | — |
+| `missing_ohlcv` | **12** | ~1,126,060 |
+| `stale_macro_snapshot` | 11 | — |
+| `usable_asset_count_cliff` | 9 | — |
+| `etf_index_valuation_index_coverage` | 1 | — |
+
+`missing_ohlcv` collapsed by five orders of magnitude, and the gate is now interpretable: 1,497 of
+1,530 criticals are one named, explainable class rather than 5.3M artefacts of an assumed range.
+`missing_ohlcv_unknown_list_date` — the warning added alongside this — does not even appear, because
+only one asset is left in that state.
+
+**Then `missing_factor_score` was attributed, and it was the same class of mistake.** The 1,497
+rows were 499 assets × exactly the last three sessions, because `FactorScore` stopped at
+2026-11-03 while OHLCV ran on: the factor pipeline simply had not reached those sessions yet. The
+gate compared against the calendar and had no notion of how far the pipeline had got — the same
+error as demanding OHLCV from 2010 for an asset listed in 2020.
+
+So `missing_factor_score` is now a **warning named `missing_factor_score_pipeline_lag`** for any
+date after the newest date *any* asset carries a composite score for, with the watermark named in
+the detail row. A hole *before* the watermark stays critical, because that one is real. One
+aggregate computes the watermark per run, not per asset.
+
+That took the gate from **1,530 criticals to 33**, and every one of the 33 is a concrete claim:
+
+| issue | count |
+| --- | --- |
+| `missing_ohlcv` | 12 |
+| `stale_macro_snapshot` | 11 |
+| `usable_asset_count_cliff` | 9 |
+| `etf_index_valuation_index_coverage` | 1 |
+
+Still open, deliberately:
+- **Those 33 are the real backlog of the data layer**, and each needs its own look. None is an
+  artefact of an assumption any more.
+- **The gate is still too slow to run at full history** (>90 minutes; see the
+  `perf/validate-data-quality-scans` notes — it is cold-block-I/O bound on per-asset reads). Until
+  that is addressed, a one-year window is the only practically runnable form.
+
+**The 33 attributed, and 12 of them traced to a missing suspension series — resolved 2026-11-08.**
+
+| issue | count | what it is |
+| --- | --- | --- |
+| `missing_ohlcv` | 12 | individual assets missing 1-5 consecutive sessions between 2026-07 and 2026-10 |
+| `stale_macro_snapshot` | 11 | macro series older than the 45-day bound |
+| `usable_asset_count_cliff` | 9 | coverage drops past the cliff ratio on 9 dates |
+| `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows |
+
+**The first read of the 12 was wrong, and the correction is the finding.** They looked like holes in
+the price series. They are not: `pro.daily` returns **no rows at all** for those assets on those
+dates, because the stocks were halted. And `pro.suspend_d` *does* return the halts — 600363
+`2026-09-29` type `S`, 002155 `2026-08-20/21/24` type `S`, 300567 `2026-07-09/10/13` type `S`,
+000582 `2026-10-08/09` type `S`. What was missing was **our** `AssetSuspension` rows: the table spans
+2001-2026 with 143,860 rows, so it is not a window limit, but those specific dates were absent.
+
+Backfilling that window (`backfill_asset_suspensions --start-date 2026-07-01 --end-date 2026-10-31`)
+wrote **196 rows, 171 of them full-day**, and the gate's criticals went **33 -> 21** with every
+`missing_ohlcv` gone. So the price series was never wrong; the excuse data was.
+
+Why the window was missing: the suspension series is **watermark-driven**, not row-presence driven —
+`detectors.py` class B — because a day with no suspensions legitimately has no rows. Catch-up replays
+it only when the *beat task itself* missed an occurrence, not when the provider window a past run
+covered was incomplete. A range the pipeline never walked is therefore never revisited, and nothing
+in the system reports that. That is the durable lesson: **class-B series need a periodic range
+backfill, not only a watermark replay.**
+
+**The remaining 21, attributed. None of them is a code defect, and none was downgraded.**
+
+| issue | count | what it actually is |
+| --- | --- | --- |
+| `stale_macro_snapshot` | 11 | one outage. Every session 2026-07-17..07-31 saw its newest `MacroSnapshot` at `2026-06-01`, past the 45-day bound. Macro is current now (newest `2026-11-01`), so this is a historical hole, not a live one. |
+| `usable_asset_count_cliff` | 9 | single-day, single-family holes that zero the usable mask: 2026-05-28 `sentiment_score` 0 of 500, 2026-06-05 `factor_score` 0 of 500, 2026-09-24 `fundamental_snapshot` 57 of 500. |
+| `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows. |
+
+Deliberately **not** downgraded, unlike the `list_date` and pipeline-watermark cases above. Those two
+were the gate being unable to justify its own expectation (unknown listing date; a session the pipeline
+had not reached yet). Here the expectation is right and the data was genuinely absent on those dates.
+Downgrading would have hidden a real gap.
+
+That leaves an open policy question rather than a task: **should the release gate fail on a historical
+gap that has since closed?** Today it does, so 21 criticals stand between the current tree and a clean
+all-history run. The alternatives are (a) keep failing and backfill the three holes, (b) scope the gate
+to a recent window and treat all-history as a separate report, or (c) let the gate fail only on gaps
+newer than the last verified-clean date. Not decided here.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 

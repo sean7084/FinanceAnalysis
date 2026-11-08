@@ -15,7 +15,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, connections
-from django.db.models import Q
+from django.db.models import Max, Q
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
@@ -62,6 +62,10 @@ from apps.sentiment.models import SentimentScore
 from apps.etf_rotation import valuation_qc
 from apps.etf_rotation.models import ETFIndexMapping, IndexValuationDaily
 
+
+#: Distinct from ``None``, which is a real answer ("the factor table is empty"). Lets the
+#: pipeline watermark be computed once per run instead of once per asset.
+_UNSET = object()
 
 DEFAULT_TECHNICAL_INDICATORS = (
     'ADX',
@@ -994,6 +998,11 @@ class Command(BaseCommand):
                 ordered_trading_dates,
                 asset_suspensions,
             )
+        # Deliberately still strict when list_date is unknown: an absent indicator row for
+        # a date we do hold prices for is a fact about the data, not an artefact of an
+        # assumption. The asymmetry with _validate_continuity is intentional -- the two
+        # checks make opposite kinds of claim, so "cannot know" points in opposite
+        # directions. Excusing here would hide real gaps.
         if asset.list_date is None or not ordered_trading_dates:
             return False
         if asset.list_date < ordered_trading_dates[0]:
@@ -1478,8 +1487,21 @@ class Command(BaseCommand):
         if not missing_dates:
             return
 
-        self._increment(counters, 'missing_ohlcv', 'critical', len(missing_dates))
-        table_counters[('ohlcv', 'critical', 'missing_ohlcv')] += len(missing_dates)
+        # When list_date is unknown the expected window starts at HISTORICAL_DATA_FLOOR,
+        # so most of this "gap" is the pre-listing period measured against an assumption
+        # the gate cannot justify. Reporting that as critical is how a release gate ends up
+        # ignored: a bare run returns 5.3M critical issues dominated by it. Downgrade to a
+        # warning that names the reason, and let the separate missing_list_date warning
+        # point at the cause.
+        if asset.list_date is None:
+            issue_type, severity = 'missing_ohlcv_unknown_list_date', 'warning'
+        else:
+            # A known listing date means the window is real, so an absent row is a genuine
+            # hole in a series the models read.
+            issue_type, severity = 'missing_ohlcv', 'critical'
+
+        self._increment(counters, issue_type, severity, len(missing_dates))
+        table_counters[('ohlcv', severity, issue_type)] += len(missing_dates)
         first_observed = min(actual_dates) if actual_dates else None
         last_observed = max(actual_dates) if actual_dates else None
         missing_pct = (len(missing_dates) / expected_count) if expected_count else 0
@@ -2102,15 +2124,37 @@ class Command(BaseCommand):
                 'OHLCV exists for asset/date but required SentimentScore row is missing.',
             ),
         )
+        # The newest date ANY asset carries a composite score for. A row missing after this
+        # date means the factor pipeline simply has not reached that session yet, which is the
+        # normal state of a gate run before the nightly chain finishes -- not a defect in the
+        # data. Measured 2026-11-08: 499 assets x the last three sessions were reported as
+        # critical for exactly this reason, and a gate that fires on the ordinary daily state
+        # is a gate that gets ignored. A hole *before* the watermark stays critical.
+        watermark = getattr(self, '_factor_score_watermark', _UNSET)
+        if watermark is _UNSET:
+            watermark = FactorScore.objects.filter(
+                mode=FactorScore.FactorMode.COMPOSITE,
+            ).aggregate(newest=Max('date'))['newest']
+            self._factor_score_watermark = watermark
+
         for trading_date in sorted(baseline_dates):
             for issue_type, severity, table, field, available_dates, details in checks:
                 if trading_date in available_dates:
                     continue
+                issue_details = details
+                if (issue_type == 'missing_factor_score'
+                        and watermark is not None and trading_date > watermark):
+                    issue_type = 'missing_factor_score_pipeline_lag'
+                    severity = 'warning'
+                    issue_details = (
+                        f'No FactorScore row, and no asset has one after {watermark}: the '
+                        'factor pipeline has not reached this session yet.'
+                    )
                 self._record_asset_cross_gap(
                     writer, counters, table_counters, field_counters,
                     issue_type=issue_type, severity=severity, table=table, field=field,
                     asset=asset, trading_date=trading_date,
-                    details=details,
+                    details=issue_details,
                 )
 
     def _validate_null_fields(self, assets, start_date, end_date, writer, counters, field_counters, reason_counters):
