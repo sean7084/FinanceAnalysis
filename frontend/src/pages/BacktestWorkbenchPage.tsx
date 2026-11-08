@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createBacktestRun,
@@ -407,12 +407,18 @@ export function BacktestWorkbenchPage() {
     runsRef.current = runs
   }, [runs])
 
+  // loadRuns is a fresh closure every render, so listing it as a dependency of the
+  // mount-only effect below would re-create the interval on every render and reset its
+  // phase. A ref carries the latest one in instead; runsRef does the same for state.
+  const loadRunsRef = useRef(loadRuns)
+  loadRunsRef.current = loadRuns
+
   useEffect(() => {
     isMountedRef.current = true
     // The 10s poll re-asks for the same key, so only the first load is registered
     // with the time-to-data view; without this the route has no measurement at all.
     const release = trackViewResource('backtest/runs?limit=100')
-    void loadRuns({ resetPage: true, showLoading: true }).finally(release)
+    void loadRunsRef.current({ resetPage: true, showLoading: true }).finally(release)
     const intervalId = window.setInterval(() => {
       // A hidden tab has no observer, and each tick refetches up to 100 runs.
       if (document.visibilityState !== 'visible') {
@@ -423,7 +429,7 @@ export function BacktestWorkbenchPage() {
       if (!hasLiveRun) {
         return
       }
-      void loadRuns({ showLoading: false })
+      void loadRunsRef.current({ showLoading: false })
     }, BACKTEST_AUTO_REFRESH_INTERVAL_MS)
 
     return () => {
@@ -588,7 +594,10 @@ export function BacktestWorkbenchPage() {
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? null
   const selectedCompletedRunId = selectedRun?.status === 'COMPLETED' ? selectedRun.id : null
   const selectedRunCompareTargetId = parsePositiveRunId(selectedRun?.parameters?.compare_backtest_run_id)
-  const extraComparisonOptions = selectedRun
+  // Memoised so the effect below keys on the candidate set rather than on a new array
+  // identity every render; without it that effect ran on every render and re-filtered the
+  // selection each time.
+  const extraComparisonOptions = useMemo(() => (selectedRun
     ? runs
         .filter((run) => (
           run.status === 'COMPLETED'
@@ -597,7 +606,7 @@ export function BacktestWorkbenchPage() {
           && run.id !== selectedRunCompareTargetId
         ))
         .sort((left, right) => right.id - left.id)
-    : []
+    : []), [selectedRun, runs, selectedRunCompareTargetId])
 
   useEffect(() => {
     setExtraComparisonRunIds((current) => {

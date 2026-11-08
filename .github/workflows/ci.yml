@@ -397,30 +397,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Both steps go through a ratchet instead of calling the npm scripts directly.
-      # frontend/scripts/check-static-baseline.mjs runs the command, parses its
-      # diagnostics and compares them against frontend/static-baseline.json, failing only
-      # on something beyond what is recorded.
+      # These used to go through frontend/scripts/check-static-baseline.mjs, a ratchet that
+      # compared diagnostics against static-baseline.json. It existed to make a FOURTH
+      # react-hooks/exhaustive-deps warning fail: eslint exits 0 with warnings present
+      # because nothing passed --max-warnings, so a new one arrived silently. The three
+      # known warnings are fixed, so the ratchet and its baseline are gone and the plain
+      # scripts are back -- with `--max-warnings 0` in the lint script itself, which gives
+      # the same guarantee locally and in CI with nothing to maintain.
       #
-      # The recorded baseline is zero TypeScript errors and zero ESLint errors, so the
-      # type-check is exactly as strict as the bare `npm run build` this replaces. The
-      # part that was ungated is the nine react-hooks/exhaustive-deps warnings: eslint
-      # exits 0 with all nine present because nothing passes --max-warnings, so a tenth
-      # would have arrived silently. It cannot now.
-      #
-      # The build gate clears tsc's incremental .tsbuildinfo before running. A warm
-      # `tsc --build` can skip a project it considers up to date, or replay diagnostics
-      # recorded against an older revision of the source -- it once reported six errors
-      # this tree did not have. A cold run is the only honest measurement, and it is what
-      # `npm ci` above gives this job anyway.
-      #
-      # Clear the nine warnings and the ratchet is pure overhead: delete the script and
-      # the baseline file, and put `npm run build` and `npm run lint` back here.
+      # The type-check is `npm run build`, which is `tsc -b` followed by vite. A warm tsc
+      # can skip a project it considers current or replay diagnostics recorded against an
+      # older revision of the source -- it once reported six errors this tree did not have.
+      # `npm ci` above starts cold, so this job always gets an honest measurement; a local
+      # re-check should delete node_modules/.tmp/*.tsbuildinfo first.
       - name: Type-check and build
-        run: node scripts/check-static-baseline.mjs build
+        run: npm run build
 
       - name: Lint
-        run: node scripts/check-static-baseline.mjs lint
+        run: npm run lint
 
       - name: Unit tests, with a discovery floor
         run: |

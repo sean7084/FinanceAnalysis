@@ -12,7 +12,14 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 
 from apps.core.date_floor import session_midnight
-from apps.core.timez import SESSION_TZ, session_date_of, session_today
+from apps.core.timez import (
+    MARKET_CLOSE,
+    SESSION_TZ,
+    session_close_instant,
+    session_date_of,
+    session_has_closed,
+    session_today,
+)
 
 UTC = ZoneInfo('UTC')
 
@@ -91,3 +98,63 @@ class SessionMidnightTests(SimpleTestCase):
         self.assertLess(inside, end)
         self.assertEqual(timezone.localtime(inside).date(),
                          timezone.localtime(start).date())
+
+
+class SessionHasClosedTests(SimpleTestCase):
+    """The repair-path guard for catch-up's in-progress-session false gap."""
+
+    def test_close_instant_is_fifteen_hundred_beijing(self):
+        instant = session_close_instant(date(2026, 10, 30))
+        self.assertTrue(timezone.is_aware(instant))
+        self.assertEqual(instant.astimezone(SESSION_TZ).time(), MARKET_CLOSE)
+        self.assertEqual(instant.astimezone(UTC), datetime(2026, 10, 30, 7, 0, tzinfo=UTC))
+
+    def test_before_close_is_open_and_at_close_is_closed(self):
+        day = date(2026, 10, 30)
+        self.assertFalse(session_has_closed(day, datetime(2026, 10, 30, 6, 59, tzinfo=UTC)))
+        self.assertTrue(session_has_closed(day, datetime(2026, 10, 30, 7, 0, tzinfo=UTC)))
+        self.assertTrue(session_has_closed(day, datetime(2026, 10, 30, 7, 1, tzinfo=UTC)))
+
+    def test_a_past_session_is_closed_at_any_hour(self):
+        # --as-of overrides and the nightly pipeline both name a finished session.
+        self.assertTrue(session_has_closed(
+            date(2026, 10, 29), datetime(2026, 10, 30, 2, 0, tzinfo=UTC)))
+
+    def test_a_future_session_is_not_closed(self):
+        self.assertFalse(session_has_closed(
+            date(2026, 11, 2), datetime(2026, 10, 30, 12, 0, tzinfo=UTC)))
+
+    def test_rejects_a_naive_datetime(self):
+        with self.assertRaises(ValueError):
+            session_has_closed(date(2026, 10, 30), datetime(2026, 10, 30, 12))
+
+    def test_the_exposure_window_is_seven_hours_not_fifteen(self):
+        """Pins why the guard belongs on the repair path and not on ``as_of``.
+
+        Catch-up derives ``as_of`` from ``session_today()``. Hour by hour across a
+        day, that session is still open for exactly the 08:00-15:00 Beijing window
+        -- seven hours. Deriving it from ``timezone.localdate()`` instead would
+        leave it open from 00:00, widening the window to fifteen hours while
+        looking more "correct". The guard must cover the seven, not the fifteen.
+        """
+        probes = _hourly_probes(datetime(2026, 10, 29, 16, 0, tzinfo=UTC), 24)
+        session_open = [
+            m for m in probes if not session_has_closed(session_date_of(m), m)
+        ]
+        calendar_open = [
+            m for m in probes if not session_has_closed(m.astimezone(SESSION_TZ).date(), m)
+        ]
+        self.assertEqual(len(session_open), 7)
+        self.assertEqual(len(calendar_open), 15)
+        self.assertEqual(
+            [m.astimezone(SESSION_TZ).hour for m in session_open], list(range(8, 15)))
+
+    def test_is_independent_of_the_time_zone_setting(self):
+        from django.test import override_settings
+
+        day = date(2026, 10, 30)
+        moment = datetime(2026, 10, 30, 6, 0, tzinfo=UTC)  # 14:00 Beijing, still open
+        with override_settings(TIME_ZONE='UTC'):
+            self.assertFalse(session_has_closed(day, moment))
+        with override_settings(TIME_ZONE='America/New_York'):
+            self.assertFalse(session_has_closed(day, moment))
