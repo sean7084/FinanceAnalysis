@@ -831,6 +831,20 @@ class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
         if self.action == 'list':
             return TechnicalIndicatorListSerializer
         return TechnicalIndicatorSerializer
+
+    def list(self, request, *args, **kwargs):
+        """Bound the pagination COUNT as well as the page fetch.
+
+        Page-number pagination counts the whole queryset. Unfiltered, this table is
+        ~166M rows, and a COUNT(*) over it running concurrently with a large fetch is
+        what wedged the WSL2<->NAS link on 2026-11-05. An interactive request must fail
+        fast rather than sit on a full scan; the trainers and the data-quality gate are
+        the legitimate long jobs and are covered by the watchdog instead.
+        """
+        from apps.core.db_guard import short_statement_timeout
+
+        with short_statement_timeout():
+            return super().list(request, *args, **kwargs)
     
     def get_queryset(self):
         """
@@ -920,13 +934,19 @@ class TechnicalIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
         Get list of all available indicator types with counts.
         """
         from django.db.models import Count
-        
-        indicator_summary = TechnicalIndicator.objects.values(
-            'indicator_type'
-        ).annotate(
-            count=Count('id')
-        ).order_by('indicator_type')
-        
+
+        from apps.core.db_guard import short_statement_timeout
+
+        # An unfiltered GROUP BY over ~166M rows is the same full-scan class as the
+        # pagination COUNT. Evaluate inside the block -- the queryset is lazy, so
+        # wrapping only its construction would bound nothing.
+        with short_statement_timeout():
+            indicator_summary = list(
+                TechnicalIndicator.objects.values('indicator_type')
+                .annotate(count=Count('id'))
+                .order_by('indicator_type')
+            )
+
         return Response(indicator_summary)
     
     @action(detail=False, methods=['get'])
