@@ -466,15 +466,37 @@ wrong values: the repaired series passes the local adjustment invariant at 0 vio
 `--effective-universe-only` restricts to asset/dates present in the PIT effective universe and is the
 correct way to invoke this gate; it was not used for the run above.
 
-To do:
-- Populate `list_date` from TuShare `stock_basic` / `stock_company` (`list_date`) for the assets that
-  have price history, which should collapse most of the 1.13M `missing_ohlcv` count on its own.
-- Then re-establish `validate_data_quality --effective-universe-only --fail-on-critical` as the
-  release gate, and record the passing counts so a future regression is distinguishable from the
-  current noise floor.
-- Consider whether the check should refuse to emit `missing_ohlcv` as **critical** for an asset whose
-  `list_date` is unknown, since it cannot know the expected start at all — a warning with a stated
-  reason would be more honest than a critical built on an assumption.
+**Executed 2026-11-08, and the prediction held.** `backfill_asset_list_dates` processed 1,912
+assets and updated **1,383**, moving `null_list_date` from **1,385 to 2** (of which exactly 1 also
+has price rows). It costs three `stock_basic` calls plus an AkShare fallback, and writes only the
+fields whose value differs, so it is additive and idempotent — the earlier note about "spending
+quota" was wrong about this command.
+
+Re-running the gate on a one-year window with `--fail-if-critical` (`--effective-universe-only`)
+now **exits 1 with 1,530 criticals, and the split is the point**:
+
+| issue | count | before the backfill |
+| --- | --- | --- |
+| `missing_factor_score` | 1,497 | — |
+| `missing_ohlcv` | **12** | ~1,126,060 |
+| `stale_macro_snapshot` | 11 | — |
+| `usable_asset_count_cliff` | 9 | — |
+| `etf_index_valuation_index_coverage` | 1 | — |
+
+`missing_ohlcv` collapsed by five orders of magnitude, and the gate is now interpretable: 1,497 of
+1,530 criticals are one named, explainable class rather than 5.3M artefacts of an assumed range.
+`missing_ohlcv_unknown_list_date` — the warning added alongside this — does not even appear, because
+only one asset is left in that state.
+
+Still open, deliberately:
+- **`missing_factor_score` is the next class to attribute** (1,497 over 602 assets x ~240 sessions is
+  roughly 1%, so it looks like real gaps rather than an over-broad expectation — but that has not
+  been checked).
+- **The gate is still too slow to run at full history** (>90 minutes; see the `perf/validate-data-quality-scans`
+  notes — it is cold-block-I/O bound on per-asset reads). Until that is addressed, a one-year window
+  is the only practically runnable form.
+- `missing_ohlcv` remains critical for a known listing date, which is correct: the window is real
+  then. The downgrade only applies where the gate cannot justify its own expectation.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
