@@ -1900,13 +1900,16 @@ def _create_feature_matrix(
     return df
 
 
-def _create_labels_for_training(start_date, end_date, horizon_days):
-    """
-    Create direction labels for training based on future returns.
-    
+def _label_records_for_training(start_date, end_date, horizon_days):
+    """Direction label *and* forward return for each trainable (date, asset).
+
     UP:   forward_return >= +2%
     DOWN: forward_return <= -2%
     FLAT: -2% < return < +2%
+
+    The return is carried alongside the label because an out-of-sample rank IC has to be
+    measured against the realised return; a three-class bucket is a coarse lossy view of
+    it. ``_create_labels_for_training`` is the label-only view for existing callers.
     """
     labels = {}
     timer = _BuildTimer(f'labels-{horizon_days}d')
@@ -1982,15 +1985,125 @@ def _create_labels_for_training(start_date, end_date, horizon_days):
             else:
                 label = 'FLAT'
 
-            labels[(target_date, asset_id, horizon_days)] = label
+            labels[(target_date, asset_id, horizon_days)] = (label, forward_return)
 
     timer.tick(f'done labels={len(labels)}')
     return labels
 
 
+def _create_labels_for_training(start_date, end_date, horizon_days):
+    """Label-only view of :func:`_label_records_for_training`, for existing callers."""
+    return {
+        key: record[0]
+        for key, record in _label_records_for_training(
+            start_date, end_date, horizon_days).items()
+    }
+
+
 # ============================================================================
 # LightGBM Training
 # ============================================================================
+
+HOLDOUT_SESSIONS = 250
+
+
+def _purged_holdout_split(frame, horizon_days, holdout_sessions=HOLDOUT_SESSIONS):
+    """Carve a time-ordered holdout tail out of ``frame``, purging label overlap.
+
+    A sample dated ``holdout_start - 1`` has a label built from prices at
+    ``holdout_start + horizon - 1``, i.e. from inside the holdout. So the last
+    ``horizon_days`` training sessions are dropped: without that purge the 30-day horizon
+    leaks up to 30 sessions across the boundary and the holdout measures a model that has
+    seen its own future.
+
+    No embargo is needed on the other side: every feature here is strictly backward
+    looking (``sentiment_7d_avg_20d`` looks back 20 sessions, the interactions are
+    same-row products). If a forward-looking feature is ever added, this is the place that
+    must be revisited.
+
+    Returns ``(train, holdout, holdout_start)`` or ``None`` when the window is too short
+    to hold out anything after the purge.
+    """
+    dates = sorted(frame['date'].unique())
+    holdout_index = len(dates) - holdout_sessions
+    if holdout_index - horizon_days <= 0:
+        return None
+    purge_cutoff = dates[holdout_index - horizon_days]
+    holdout_start = dates[holdout_index]
+    train = frame[frame['date'] < purge_cutoff]
+    holdout = frame[frame['date'] >= holdout_start]
+    if train.empty or holdout.empty:
+        return None
+    return train, holdout, holdout_start
+
+
+def _rankdata(values):
+    """Average ranks, 1-based, matching scipy.stats.rankdata's default."""
+    order = np.argsort(values, kind='mergesort')
+    ranks = np.empty(len(values), dtype=float)
+    ranks[order] = np.arange(1, len(values) + 1)
+    # Average ties so a constant or heavily repeated score does not imply an ordering.
+    sorted_values = values[order]
+    start = 0
+    while start < len(sorted_values):
+        end = start + 1
+        while end < len(sorted_values) and sorted_values[end] == sorted_values[start]:
+            end += 1
+        if end - start > 1:
+            ranks[order[start:end]] = (start + 1 + end) / 2.0
+        start = end
+    return ranks
+
+
+def _spearman(a, b):
+    if len(a) < 3:
+        return None
+    rank_a, rank_b = _rankdata(np.asarray(a, dtype=float)), _rankdata(np.asarray(b, dtype=float))
+    if rank_a.std() == 0 or rank_b.std() == 0:
+        return None
+    return float(np.corrcoef(rank_a, rank_b)[0, 1])
+
+
+def _holdout_metrics(y_true, proba, dates, forward_returns):
+    """Out-of-sample metrics that can tell noise from an inverted signal.
+
+    ``accuracy`` alone cannot: 0.4874 is either sampling noise around 0.5 or a model whose
+    ordering is backwards, and those imply opposite responses. ``rank_ic_tstat`` separates
+    them -- |t| < 2 is indistinguishable from noise, a significantly negative t means the
+    score ranks outcomes in reverse.
+
+    The score is ``P(UP) - P(DOWN)``, and IC is computed per session and averaged, never
+    pooled across dates: pooling would measure cross-sectional scale differences between
+    days rather than within-day ranking skill.
+    """
+    y_true = np.asarray(y_true)
+    proba = np.asarray(proba, dtype=float)
+    score = proba[:, 2] - proba[:, 0]
+    metrics = {
+        'accuracy': float(np.mean(np.argmax(proba, axis=1) == y_true)),
+        'holdout_samples': int(len(y_true)),
+        'holdout_dates': int(len(set(dates))),
+    }
+
+    by_date = {}
+    for index, session_date in enumerate(dates):
+        by_date.setdefault(session_date, []).append(index)
+    daily_ic = []
+    for indices in by_date.values():
+        ic = _spearman(score[indices], np.asarray(forward_returns)[indices])
+        if ic is not None:
+            daily_ic.append(ic)
+
+    if daily_ic:
+        daily = np.asarray(daily_ic, dtype=float)
+        metrics['rank_ic'] = float(daily.mean())
+        metrics['rank_ic_dates'] = int(len(daily))
+        if len(daily) > 1 and daily.std(ddof=1) > 0:
+            metrics['icir'] = float(daily.mean() / daily.std(ddof=1))
+            metrics['rank_ic_tstat'] = float(
+                daily.mean() / (daily.std(ddof=1) / np.sqrt(len(daily))))
+    return metrics
+
 
 @shared_task
 def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None, version_tag='', use_snapshot_pruning=False):
@@ -2078,17 +2191,19 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
             pruned_feature_names = pruning_plan['pruned_features']
             pruning_audit = pruning_plan['audit']
 
-            labels_dict = _create_labels_for_training(training_start, training_end, horizon)
-            if labels_dict:
+            label_records = _label_records_for_training(training_start, training_end, horizon)
+            if label_records:
                 labels_df = pd.DataFrame([
-                    {'date': key[0], 'asset_id': key[1], 'label': value}
-                    for key, value in labels_dict.items()
+                    {'date': key[0], 'asset_id': key[1],
+                     'label': record[0], 'fwd_return': record[1]}
+                    for key, record in label_records.items()
                 ])
                 X_train_aligned = X_df.merge(labels_df, on=['date', 'asset_id'], how='left')
             else:
                 X_train_aligned = X_df.copy()
                 X_train_aligned['label'] = None
-            X_train_aligned = X_train_aligned.dropna(subset=['label'])
+                X_train_aligned['fwd_return'] = None
+            X_train_aligned = X_train_aligned.dropna(subset=['label', 'fwd_return'])
             training_samples = len(X_train_aligned)
             results[horizon].update({
                 'training_samples': training_samples,
@@ -2104,10 +2219,25 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 })
                 continue
 
-            X_train = X_train_aligned[selected_feature_names].values
-            y_train = X_train_aligned['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
+            split = _purged_holdout_split(X_train_aligned, horizon)
+            holdout_frame = None
+            holdout_start = None
+            if split is None:
+                # Too short to hold anything out after the purge. Train on everything and
+                # say so, rather than reporting an in-sample number as if it were honest.
+                train_frame = X_train_aligned
+                results[horizon]['holdout_status'] = 'unavailable_window_too_short'
+            else:
+                train_frame, holdout_frame, holdout_start = split
+                results[horizon]['holdout_status'] = 'purged_tail'
+
+            X_train = train_frame[selected_feature_names].values
+            y_train = train_frame['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
 
             scaler = StandardScaler()
+            # Fit on the training slice only. The scaler is persisted in the artifact and
+            # used for inference, so fitting it on the holdout would both leak and leave
+            # deployment transforming inputs with statistics it will never see.
             X_train_scaled = scaler.fit_transform(X_train)
 
             lgb_params = {
@@ -2138,7 +2268,37 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
 
             y_pred_proba = calibrator.predict_proba(X_train_scaled)
             y_pred = np.argmax(y_pred_proba, axis=1)
-            accuracy = np.mean(y_pred == y_train)
+            train_accuracy = float(np.mean(y_pred == y_train))
+
+            if holdout_frame is not None:
+                X_holdout_scaled = scaler.transform(
+                    holdout_frame[selected_feature_names].values)
+                y_holdout = holdout_frame['label'].map(
+                    {'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
+                holdout_metrics = _holdout_metrics(
+                    y_holdout,
+                    calibrator.predict_proba(X_holdout_scaled),
+                    list(holdout_frame['date']),
+                    list(holdout_frame['fwd_return']),
+                )
+                # ``accuracy`` is the OUT-OF-SAMPLE number from here on. The in-sample one
+                # stays available as ``train_accuracy`` so the gap is visible instead of
+                # being replaced by the flattering figure.
+                accuracy = holdout_metrics['accuracy']
+                evaluation_mode = 'purged_holdout'
+            else:
+                holdout_metrics = {}
+                accuracy = train_accuracy
+                evaluation_mode = 'in_sample'
+            results[horizon]['train_accuracy'] = train_accuracy
+            results[horizon]['evaluation_mode'] = evaluation_mode
+            results[horizon]['holdout_start'] = (
+                holdout_start.isoformat() if holdout_start is not None else None)
+            results[horizon]['metrics'] = {
+                'accuracy': float(accuracy),
+                'train_accuracy': train_accuracy,
+                **holdout_metrics,
+            }
 
             importance = model.feature_importance('gain')
             top_features = sorted(
@@ -2176,6 +2336,10 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                     'version_tag': normalized_version_tag,
                     'lgb_params': dict(lgb_params),
                     'pruning': pruning_audit,
+                    'evaluation_mode': evaluation_mode,
+                    'holdout_start': (holdout_start.isoformat()
+                                      if holdout_start is not None else None),
+                    'purge_sessions': horizon,
                 },
             )
 
@@ -2189,8 +2353,14 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 'artifact_path': _get_model_relative_path(horizon, model_version),
                 'metrics_json': {
                     'accuracy': float(accuracy),
+                    'train_accuracy': train_accuracy,
                     'training_samples': len(X_train),
                     'feature_count': len(selected_feature_names),
+                    'evaluation_mode': evaluation_mode,
+                    'holdout_start': (holdout_start.isoformat()
+                                      if holdout_start is not None else None),
+                    'purge_sessions': horizon,
+                    **holdout_metrics,
                 },
                 'feature_names': selected_feature_names,
                 'training_window_start': training_start,
@@ -2215,8 +2385,16 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 training_end=training_end,
                 metrics={
                     'accuracy': float(accuracy),
+                    # test_accuracy is the explicit alias the activation guard and the
+                    # cross-arm comparisons look for; accuracy already holds the holdout
+                    # number, and train_accuracy is deliberately NOT in ACCURACY_KEYS so
+                    # the honest gap stays visible without tripping the bound.
+                    'test_accuracy': float(accuracy),
+                    'train_accuracy': train_accuracy,
                     'training_samples': len(X_train),
                     'feature_count': len(selected_feature_names),
+                    'evaluation_mode': evaluation_mode,
+                    **holdout_metrics,
                 },
                 feature_names=selected_feature_names,
                 metadata={
