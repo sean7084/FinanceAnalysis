@@ -1,5 +1,95 @@
 # Changelog
 
+### Unreleased
+
+#### Fixed:
+
+- **The incremental PIT benchmark refresh no longer destroys the previous session's
+  return.** `refresh_latest_point_in_time_union_benchmark` seeded the range builder from
+  the previous stored row, so that row was re-emitted as the range's index-0 seed and
+  upserted with `daily_return=0` while its nav was left untouched — and never revisited.
+  Measured on the live series: 2026-11-02 holds nav 820833.13 against a 799248.52
+  predecessor with a zero return, and it is the only row in 4,089 whose return disagrees
+  with `nav/lag(nav)-1`. `build_point_in_time_union_benchmark_rows` now takes
+  `emit_seed_row`; the incremental branch passes `False` while the seed date stays in
+  `trading_dates` as the price/nav anchor. Whole-range builds keep their legitimate
+  zero-return first row. Tests snapshot the seed row and assert both fields survive,
+  plus a chain-invariant test over successive refreshes.
+- **The sentiment lexicon fires on Chinese instead of scoring everything zero.** Every row
+  in `sentiment_sentimentscore` was exactly `0.000000` — 6,349,798 ASSET_7D, 168,460 ARTICLE
+  and 4,012 MARKET_7D, one distinct value across 6,522,270 rows. `_tokenize`'s fallback
+  character class was double-escaped (`r'[\\w\\u4e00-\\u9fff]+'`), which matches a literal
+  backslash, `w`, `u` and an ASCII range — and no Chinese at all. `jieba` is not declared in
+  requirements and not installed, so that fallback was the only path in every environment
+  including CI. Chinese text tokenized to `[]` and `_score_text` returned its empty-text
+  signature; 74,139 ARTICLE rows still carry it. The class is corrected and CJK lexicon terms
+  are counted as substrings, the way `_infer_concepts` already matches `CONCEPT_KEYWORDS`,
+  so the existing vocabulary (增长/利好/亏损/利空) works without segmentation. ASCII terms stay
+  token-equality so `buy` does not match inside `buyer`. A positive sample now scores +1 and
+  a negative one −1. The module docstring no longer rationalises the defect as
+  "neutral-heavy because the lexicon does not match", and a missing `jieba` logs a warning
+  instead of degrading silently. **The stored scores still need a recompute** before the
+  three sentiment-derived LightGBM features carry information.
+- **`FactorScore.sentiment_score` being a constant 0.5 was a symptom, not the bug.** All
+  2,043,000 COMPOSITE rows carry `metadata.source='phase11_scoring_with_sentiment'` — the
+  daily path, whose sentiment link has worked since v0.1.12 — and 0.5 is arithmetically
+  correct as `(0 + 1) / 2`. The earlier diagnosis blaming the historical fast path was wrong.
+- **The ensemble basis is now bounded, and an ARCHIVED version cannot be active.**
+  `ACCURACY_KEYS` covered only per-model names, so `lightgbm_accuracy`, `heuristic_accuracy`
+  and `lstm_accuracy` reached both `EnsembleWeightSnapshot.basis_metrics` and the ENSEMBLE
+  `ModelVersion` unguarded — snapshot id 1 carried `lightgbm_accuracy=0.916278`. The snapshot
+  was also written *before* the ModelVersion, so a refused basis still left the leaked value
+  behind. The basis is validated once before either write and the same dict feeds both.
+  `ModelVersion.save` no longer exempts ARCHIVED rows from validation; it refuses
+  `is_active=True` on them outright. Verified against the live registry: no active version
+  violates the widened bound.
+- **`catch_up --as-of` is parsed, and catch-up no longer repairs a session that has not
+  closed.** The flag was forwarded as a raw string, survived `as_of or session_today()`
+  because a non-empty string is truthy, and raised `TypeError` at `as_of - timedelta` before
+  any detector ran; no test went through the command. Separately, `session_today()` names the
+  in-progress session from 08:00 Beijing, so the hourly `:25` tick spent TuShare quota
+  repairing a date that cannot have a bar yet and wrote a permanent `FAILED`/`PROVIDER_GAP`
+  row each time. `apps/core/timez.session_has_closed` now guards the **repair** path and
+  narrows the gap, so a real multi-day hole with today appended still repairs the real days;
+  a gap of only today records deduped `SKIPPED`. `as_of` deliberately stays on
+  `session_today()` — switching to `timezone.localdate()` would widen the exposure from ~7h
+  to ~15h per day while looking more correct, and a test pins both windows hour by hour.
+
+#### Changed:
+
+- **The 250-session minimum training window and the ETF max-position count each have one
+  source.** The window was seven duplicated literals, and `ETF_BACKTEST_START` is derived
+  from it, so moving one copy silently broke the contract's coherence. It is now
+  `MIN_TRAIN_SESSIONS` in `apps/core/date_contract.py`; `ETF_MIN_TRAIN_DAYS` is deleted rather
+  than added to settings, because an env var could move the fold arithmetic away from the
+  committed boundary without a reviewable change to that file. `WALK_FORWARD_MIN_TRAIN_SESSIONS`
+  is gone, so `/data-limits` no longer imports a management command to read a constant; the
+  `expanding_folds` signature row remains as a divergence cross-check.
+  `train_lightgbm` read `ETF_ROTATION_MAX_POSITIONS`, which no settings module defines, and
+  kept a fallback of 5 while `train_lstm` read the configured 3 — two serving models of one
+  strategy sized different portfolios, invalidating every comparison between them. Both now
+  read `ETF_MAX_POSITIONS` with the same fallback of 3. `/data-limits` reports one resolved
+  value instead of a conflict pair; the frontend card, DTO and both dictionaries follow.
+- **The database connection has timeouts and a selectable name.** `DATABASES` was two lines
+  with no `OPTIONS` at all — no `connect_timeout`, no keepalives, no `statement_timeout`
+  anywhere in the project. libpq client keepalives and a connect timeout are now set (only for
+  the PostgreSQL backend, merged so URL-supplied options still win), with five `DB_*` env keys
+  declared in `.env.example`. `CONN_MAX_AGE` stays 0 and is now explicit: under Celery a
+  persistent connection lets one wedged query be inherited by every later task in the worker.
+  `application_name='finance_analysis'` lets a watchdog select this project's backends, and two
+  tests prove it reaches the server rather than sitting in the settings dict. **Keepalives do
+  not interrupt the observed wedge** — both socket queues empty and ACKed means TCP sees a
+  healthy connection — they recover the adjacent dead-link failure class.
+- **`BACKLOG.md` was calibrated against the code.** Roughly a dozen entries listed as Open had
+  been fixed, some by `5883eaf` in September: the mock-inspection shim, the gitignored macro
+  fixture, non-hermetic sentiment tests, the `TECHNICAL_GUIDE` staleness disagreement,
+  `BACKTEST_STALE_TASK_MAX_AGE_SECONDS`, and the activation bound itself. "No CI" contradicted
+  two other entries in the same file describing the CI that exists; "No coverage measurement"
+  was half stale (the dependency and `.coveragerc` exist, no step runs them). The OHLCV
+  adjustment entry described a defect in present tense that the same file recorded as repaired
+  300 lines earlier. The `TechnicalIndicator` `.date()` read-side claim has no surviving call
+  sites. Resolved correctness narratives moved out of Open into their own section, keeping the
+  reasoning that is the durable part.
 - **Dependencies are locked, with a hash per wheel.** `requirements/*.in` now carry the direct
   intent and the matching `.txt` are `pip-compile` lockfiles holding the full transitive closure;
   CI installs `pip install --require-hashes -r requirements/local.txt`. Before this, every CI run
