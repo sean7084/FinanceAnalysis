@@ -56,13 +56,12 @@ try:
     import jieba  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     jieba = None
-    logging.getLogger(__name__).warning(
-        'jieba is not installed, so the sentiment scorer tokenizes Chinese into '
-        'unsegmented runs. Lexicon terms still match (as substrings), but the '
-        'token-count denominator is small and scores saturate more readily than '
-        'with word segmentation. Declare jieba in requirements to get the '
-        'segmented path.'
-    )
+
+#: Emitted on first use of the fallback tokenizer, not at import. A module-level warning
+#: fires in every process that imports this module -- including `manage.py check` and
+#: `makemigrations`, which never score anything -- and a warning that appears on every
+#: command is noise, not visibility.
+_JIEBA_ABSENT_WARNED = False
 
 
 POSITIVE_WORDS = {
@@ -111,10 +110,21 @@ ASSET_ALIAS_OVERRIDES = {
 
 
 def _tokenize(text):
+    global _JIEBA_ABSENT_WARNED
+
     if not text:
         return []
     if jieba is not None:
         return [t.strip().lower() for t in jieba.lcut(text) if t.strip()]
+    if not _JIEBA_ABSENT_WARNED:
+        _JIEBA_ABSENT_WARNED = True
+        logging.getLogger(__name__).warning(
+            'jieba is not installed, so the sentiment scorer tokenizes Chinese into '
+            'unsegmented runs. Lexicon terms still match (as substrings), but the '
+            'token-count denominator is small and scores saturate more readily than '
+            'with word segmentation. Declare jieba in requirements to get the '
+            'segmented path.'
+        )
     return [t.lower() for t in re.findall(r'[\w\u4e00-\u9fff]+', text)]
 
 

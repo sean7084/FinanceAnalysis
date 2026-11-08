@@ -36,6 +36,19 @@ class TokenizeTests(SimpleTestCase):
             self.assertEqual(tasks._tokenize(''), [])
             self.assertEqual(tasks._tokenize(None), [])
 
+    def test_the_absent_jieba_warning_fires_once_and_only_when_scoring(self):
+        """A module-level warning fired in every process, including `manage.py check`.
+
+        It is a degradation notice, so it belongs at first use: a warning that appears on
+        every command tells nobody anything and buries the log.
+        """
+        with patch.object(tasks, 'jieba', None), \
+                patch.object(tasks, '_JIEBA_ABSENT_WARNED', False):
+            with self.assertLogs('apps.sentiment.tasks', level='WARNING') as captured:
+                self.assertEqual(tasks._tokenize('业绩增长利好'), ['业绩增长利好'])
+                tasks._tokenize('业绩增长利好')
+        self.assertEqual(len(captured.output), 1)
+
     def test_a_segmented_path_is_used_when_jieba_is_present(self):
         class FakeJieba:
             @staticmethod
