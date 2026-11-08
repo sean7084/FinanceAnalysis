@@ -999,15 +999,22 @@ enough to dominate the job runtime.
 the setting is never defined and never read from the environment. Changing the
 stale-run threshold currently requires a code edit. Wire it through `env.int()`.
 
-### OpenAPI schema metadata is stale
+### OpenAPI schema metadata — version resolved
 
-- `SPECTACULAR_SETTINGS['VERSION'] = '0.2.0'` — a third version scheme alongside
-  the project version and the README footer, cross-referenced by nothing. v0.1.17
-  bumped it `1.2.0` → `0.2.0` because removing the authentication module is a
-  breaking schema change, which narrowed but did not close the gap: it still does
-  not track `pyproject`/README.
-- ~~The schema description says "Chinese Markets **(CSI 300)**", omitting CSI
-  A500.~~ The description now reads "(CSI 500)", matching the migrated universe.
+`pyproject.toml` now owns the project version; `config/settings/base.py` reads it at import
+and `SPECTACULAR_SETTINGS['VERSION']` uses it, so the schema reports the version the
+artifacts were released under instead of a number cross-referenced by nothing. This entry
+used to record three schemes that disagreed — schema `0.2.0`, the CHANGELOG's newest
+heading `0.1.53`, and `frontend/package.json` `0.0.0` — with no connection between them.
+v0.1.17's lowering from `1.2.0` to `0.2.0` (removing the authentication module is a
+breaking schema change) had narrowed the gap without closing it.
+
+`frontend/package.json` is aligned to the same number, and `apps/core/tests_version.py`
+fails if either it or the newest CHANGELOG heading drifts from `pyproject.toml`. That test
+is the connection the three numbers never had.
+
+The schema description reads "(CSI 500)", matching the migrated universe — that half was
+already fixed.
 
 ### Unpinned ML dependencies
 
