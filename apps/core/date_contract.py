@@ -52,6 +52,17 @@ STOCK_BACKTEST_START = date(2018, 1, 2)
 ETF_TRAINING_START = date(2020, 1, 2)
 ETF_BACKTEST_START = date(2021, 1, 13)
 
+#: Minimum training sessions before a walk-forward fold may validate. Single source
+#: for the trainers, ``expanding_folds``, the backtest command and ``/data-limits``:
+#: it used to be seven duplicated literals, and ``ETF_BACKTEST_START`` is derived
+#: from it (the 251st eligible session after ``ETF_TRAINING_START``), so moving one
+#: copy without the others silently broke the contract's coherence.
+#:
+#: Deliberately not env-overridable, for the same reason as the dates above: an
+#: ``ETF_MIN_TRAIN_DAYS`` environment variable could move the fold arithmetic away
+#: from the committed boundary without any change to this file being reviewed.
+MIN_TRAIN_SESSIONS = 250
+
 TRAINING_FLOORS = {ASSET_STOCKS: STOCK_TRAINING_START, ASSET_ETF: ETF_TRAINING_START}
 BACKTEST_FLOORS = {ASSET_STOCKS: STOCK_BACKTEST_START, ASSET_ETF: ETF_BACKTEST_START}
 

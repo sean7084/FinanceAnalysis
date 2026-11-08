@@ -48,3 +48,35 @@ def session_date_of(moment: datetime) -> date:
 def session_today() -> date:
     """The session date of the current instant."""
     return session_date_of(timezone.now())
+
+
+# A-share continuous trading ends at 15:00 Beijing. Before that instant the
+# session named by ``session_today()`` is still in progress, so it cannot have a
+# complete daily bar yet and asking a provider for one is a guaranteed miss.
+MARKET_CLOSE = time(15, 0)
+
+
+def session_close_instant(session_day: date) -> datetime:
+    """The aware instant at which ``session_day`` stops trading."""
+    return datetime.combine(session_day, MARKET_CLOSE, tzinfo=SESSION_TZ)
+
+
+def session_has_closed(session_day: date, moment: datetime | None = None) -> bool:
+    """Whether ``session_day`` is finished trading as of ``moment`` (default now).
+
+    This is a repair-path guard, not an alternative ``as_of``. Catch-up derives
+    ``as_of`` from ``session_today()``, which names the in-progress session from
+    08:00 Beijing onward; the detectors then legitimately report it as missing
+    because no row can exist yet. Repairing that date spends provider quota on a
+    hole the nightly sync fills by itself, and records a permanent FAILED /
+    PROVIDER_GAP row for it every hour.
+
+    Do not "fix" this by switching ``as_of`` to ``timezone.localdate()``: that
+    widens the exposure from ~7h/day (08:00-15:00) to ~15h/day (00:00-15:00),
+    because the calendar date names the unfinished session for longer.
+    """
+    if moment is None:
+        moment = timezone.now()
+    if timezone.is_naive(moment):
+        raise ValueError('session_has_closed requires an aware datetime')
+    return moment >= session_close_instant(session_day)

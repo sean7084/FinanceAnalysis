@@ -68,7 +68,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.core import finance_metrics
-from apps.core.date_contract import ASSET_ETF, STAGE_BACKTEST, enforce_date_contract
+from apps.core.date_contract import ASSET_ETF, MIN_TRAIN_SESSIONS, STAGE_BACKTEST, enforce_date_contract
 from apps.etf_rotation import evidence, rank_ic, tasks
 from apps.etf_rotation.backtest_engine import (
     MODEL_TYPES,
@@ -124,11 +124,12 @@ GRID_COST_FLAGS = (
 
 #: Walk-forward knobs handed to ``walk_forward.expanding_folds``. The RULE ranker fits no
 #: label, so a one-session horizon is enough to keep a fold's last training session from
-#: reaching its validation block; 250 sessions is roughly a year of the short list's
-#: three-year lookback. The rebalance floor is the plan's reading rule: below it a fold's
-#: OOS number is too thin to interpret and the run should drop to fewer, longer folds.
+#: reaching its validation block; the minimum training window is roughly a year of the
+#: short list's three-year lookback and lives in the date contract, because
+#: ``ETF_BACKTEST_START`` is derived from it. The rebalance floor is the plan's reading
+#: rule: below it a fold's OOS number is too thin to interpret and the run should drop to
+#: fewer, longer folds.
 WALK_FORWARD_LABEL_HORIZON = 1
-WALK_FORWARD_MIN_TRAIN_SESSIONS = 250
 WALK_FORWARD_MIN_FOLD_REBALANCES = 20
 
 #: CPCV (combinatorial purged cross-validation) defaults. Six blocks choosing two gives
@@ -268,7 +269,7 @@ def walk_forward_folds(sessions, n_folds: int, fold_plan: str = 'expanding',
                 folds = expanding_folds(
                     ordered[0], ordered[-1], candidate,
                     horizon_days=WALK_FORWARD_LABEL_HORIZON,
-                    min_train_days=WALK_FORWARD_MIN_TRAIN_SESSIONS,
+                    min_train_days=MIN_TRAIN_SESSIONS,
                     trade_dates=ordered,
                 )
         except WalkForwardError:
@@ -1421,7 +1422,7 @@ class Command(BaseCommand):
         if not folds:
             raise CommandError(
                 f'the session calendar in {start}..{end} cannot seat one fold: '
-                f'{WALK_FORWARD_MIN_TRAIN_SESSIONS} training sessions plus a '
+                f'{MIN_TRAIN_SESSIONS} training sessions plus a '
                 f'{WALK_FORWARD_LABEL_HORIZON}-session label tail plus one validation session are needed.'
             )
         if len(folds) < requested:
@@ -1434,7 +1435,7 @@ class Command(BaseCommand):
             + (
                 f'train_window={int(options["rolling_train_days"])} sessions (fixed), '
                 if fold_plan == 'rolling'
-                else f'min_train={WALK_FORWARD_MIN_TRAIN_SESSIONS} sessions, '
+                else f'min_train={MIN_TRAIN_SESSIONS} sessions, '
             )
             + f'label_tail={WALK_FORWARD_LABEL_HORIZON} session'
         )

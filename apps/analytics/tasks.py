@@ -15,6 +15,7 @@ import json
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
+from apps.core.date_floor import session_key_timestamp
 from apps.markets.benchmarking import ensure_pit_membership_coverage, point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from .consumers import ALERTS_GROUP
@@ -100,8 +101,7 @@ def calculate_rsi_for_asset(asset_id, timeperiod=14):
     latest_date = last_valid_index
     
     # Convert date to datetime for TechnicalIndicator model
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
     
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
@@ -151,8 +151,7 @@ def calculate_macd_for_asset(asset_id, fastperiod=12, slowperiod=26, signalperio
     latest_date = last_valid_index
     
     # Convert date to datetime for TechnicalIndicator model
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
 
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
@@ -195,8 +194,7 @@ def calculate_bollinger_bands_for_asset(asset_id, timeperiod=20, nbdevup=2, nbde
         return
         
     latest_date = last_valid_index
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
     
     # Store all three bands as separate records or as JSON value
     # Using middle band as primary value, storing all three in parameters
@@ -243,7 +241,6 @@ def calculate_sma_for_asset(asset_id, timeperiods=[5, 10, 20, 50, 100, 200]):
         print(f"Not enough data for SMA calculation for asset {asset_id}.")
         return
 
-    from django.utils import timezone as tz
     
     for period in timeperiods:
         if len(df) < period:
@@ -265,7 +262,7 @@ def calculate_sma_for_asset(asset_id, timeperiods=[5, 10, 20, 50, 100, 200]):
             
         latest_sma = sma_values[last_valid_index]
         latest_date = last_valid_index
-        latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+        latest_timestamp = session_key_timestamp(latest_date)
         
         obj, created = TechnicalIndicator.objects.get_or_create(
             asset=asset,
@@ -291,7 +288,6 @@ def calculate_ema_for_asset(asset_id, timeperiods=[5, 10, 20, 50, 100, 200]):
         print(f"Not enough data for EMA calculation for asset {asset_id}.")
         return
 
-    from django.utils import timezone as tz
     
     for period in timeperiods:
         if len(df) < period:
@@ -313,7 +309,7 @@ def calculate_ema_for_asset(asset_id, timeperiods=[5, 10, 20, 50, 100, 200]):
             
         latest_ema = ema_values[last_valid_index]
         latest_date = last_valid_index
-        latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+        latest_timestamp = session_key_timestamp(latest_date)
         
         obj, created = TechnicalIndicator.objects.get_or_create(
             asset=asset,
@@ -369,8 +365,7 @@ def calculate_stochastic_for_asset(asset_id, fastk_period=14, slowk_period=3, sl
         return
         
     latest_date = last_valid_index
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
     
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
@@ -437,8 +432,7 @@ def calculate_adx_for_asset(asset_id, timeperiod=14):
         return
         
     latest_date = last_valid_index
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
     
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
@@ -498,8 +492,7 @@ def calculate_obv_for_asset(asset_id):
         
     latest_obv = obv_values[last_valid_index]
     latest_date = last_valid_index
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
     
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
@@ -556,8 +549,7 @@ def calculate_fibonacci_retracement_for_asset(asset_id, lookback_days=60):
 
     latest = candles[0]
     latest_date = latest.date
-    from django.utils import timezone as tz
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
 
     levels = {
         '0.236': period_high - price_range * 0.236,
@@ -760,7 +752,6 @@ def calculate_ma_signals_for_asset(asset_id):
     ):
         return
 
-    from django.utils import timezone as tz
 
     ma5 = talib.SMA(df['close'], timeperiod=5)
     ma10 = talib.SMA(df['close'], timeperiod=10)
@@ -780,7 +771,7 @@ def calculate_ma_signals_for_asset(asset_id):
     today_ma60 = float(ma60.iloc[-1]) if not pd.isna(ma60.iloc[-1]) else None
 
     latest_date = df.index[-1]
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
     close_today = float(df['close'].iloc[-1])
 
     # Golden cross: MA5 crosses above MA20
@@ -837,7 +828,6 @@ def calculate_bollinger_signals_for_asset(asset_id, timeperiod=20, nbdevup=2, nb
     ):
         return
 
-    from django.utils import timezone as tz
 
     upper, middle, lower = talib.BBANDS(
         df['close'], timeperiod=timeperiod, nbdevup=nbdevup, nbdevdn=nbdevdn
@@ -862,7 +852,7 @@ def calculate_bollinger_signals_for_asset(asset_id, timeperiod=20, nbdevup=2, nb
     l = float(lower[latest_date])
     bandwidth = (u - l) / m if m > 0 else 0
     rsi_val = float(rsi[latest_date]) if rsi is not None and not pd.isna(rsi[latest_date]) else None
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
 
     if bandwidth < 0.05:
         _save_signal_event(
@@ -920,13 +910,12 @@ def calculate_volume_signals_for_asset(asset_id, avg_period=20, spike_multiplier
     ):
         return
 
-    from django.utils import timezone as tz
 
     avg_volume = df['volume'].iloc[-(avg_period + 1):-1].mean()
     latest_volume = float(df['volume'].iloc[-1])
     latest_close = float(df['close'].iloc[-1])
     latest_date = df.index[-1]
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
 
     if avg_volume > 0:
         volume_ratio = latest_volume / avg_volume
@@ -972,11 +961,10 @@ def calculate_momentum_signals_for_asset(asset_id):
     if df.empty or len(df) < 22:
         return
 
-    from django.utils import timezone as tz
 
     latest_close = float(df['close'].iloc[-1])
     latest_date = df.index[-1]
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
 
     for n_days in [5, 10, 20]:
         if len(df) <= n_days:
@@ -1056,7 +1044,6 @@ def calculate_reversal_signals_for_asset(asset_id, timeperiod_bb=20, timeperiod_
     ):
         return
 
-    from django.utils import timezone as tz
 
     upper, middle, lower = talib.BBANDS(df['close'], timeperiod=timeperiod_bb)
     rsi = talib.RSI(df['close'], timeperiod=timeperiod_rsi)
@@ -1070,7 +1057,7 @@ def calculate_reversal_signals_for_asset(asset_id, timeperiod_bb=20, timeperiod_
     rsi_val = float(rsi[latest_date])
     avg_volume = df['volume'].iloc[-21:-1].mean()
     latest_volume = float(df['volume'].iloc[-1])
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(latest_date, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(latest_date)
 
     near_lower = close <= l * 1.02
     volume_contraction = avg_volume > 0 and (latest_volume < avg_volume * 0.8)
@@ -1094,7 +1081,6 @@ def calculate_rs_scores_for_all_assets():
     Cross-asset task: ranks all assets by 20-day return and assigns RS_SCORE.
     Top 20% also receive a HIGH_RS_SCORE SignalEvent.
     """
-    from django.utils import timezone as tz
 
     today = timezone.now().date()
     ensure_pit_membership_coverage([today], context=f'Daily RS refresh for {today}')
@@ -1136,7 +1122,7 @@ def calculate_rs_scores_for_all_assets():
         return
 
     scores.sort(key=lambda x: x[1], reverse=True)
-    latest_timestamp = tz.make_aware(pd.Timestamp.combine(today, pd.Timestamp.min.time()))
+    latest_timestamp = session_key_timestamp(today)
     result = persist_ranked_rs_scores(
         [(asset_id, momentum_20d) for asset_id, momentum_20d, _close in scores],
         latest_timestamp,

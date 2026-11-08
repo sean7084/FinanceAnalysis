@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.core.date_contract import (
     ASSET_ETF,
@@ -23,6 +23,7 @@ from apps.core.date_contract import (
     ETF_BACKTEST_START,
     ETF_RAW_DATA_FROM,
     ETF_TRAINING_START,
+    MIN_TRAIN_SESSIONS,
     PRE_CONTRACT_FLAG,
     STOCK_BACKTEST_START,
     STOCK_RAW_DATA_FROM,
@@ -32,8 +33,6 @@ from apps.core.date_contract import (
     enforce_date_contract,
 )
 from apps.etf_rotation.walk_forward import expanding_folds
-
-WALK_FORWARD_MIN_TRAIN_SESSIONS = 250
 
 
 def weekday_sessions(start, count):
@@ -148,21 +147,21 @@ class BacktestStartArithmeticTests(SimpleTestCase):
     """
 
     def test_first_validation_date_is_one_past_the_training_reserve(self):
-        sessions = weekday_sessions(ETF_TRAINING_START, WALK_FORWARD_MIN_TRAIN_SESSIONS + 40)
+        sessions = weekday_sessions(ETF_TRAINING_START, MIN_TRAIN_SESSIONS + 40)
         folds = expanding_folds(
             sessions[0], sessions[-1], n_folds=4,
-            min_train_days=WALK_FORWARD_MIN_TRAIN_SESSIONS, trade_dates=sessions,
+            min_train_days=MIN_TRAIN_SESSIONS, trade_dates=sessions,
         )
         self.assertTrue(folds, 'a panel with the reserve plus validation room must yield folds')
-        self.assertEqual(folds[0].valid_start, sessions[WALK_FORWARD_MIN_TRAIN_SESSIONS])
-        self.assertEqual(folds[0].train_end, sessions[WALK_FORWARD_MIN_TRAIN_SESSIONS - 1])
+        self.assertEqual(folds[0].valid_start, sessions[MIN_TRAIN_SESSIONS])
+        self.assertEqual(folds[0].train_end, sessions[MIN_TRAIN_SESSIONS - 1])
 
     def test_a_window_shorter_than_the_reserve_yields_nothing(self):
-        sessions = weekday_sessions(ETF_TRAINING_START, WALK_FORWARD_MIN_TRAIN_SESSIONS - 1)
+        sessions = weekday_sessions(ETF_TRAINING_START, MIN_TRAIN_SESSIONS - 1)
         self.assertEqual(
             expanding_folds(
                 sessions[0], sessions[-1], n_folds=4,
-                min_train_days=WALK_FORWARD_MIN_TRAIN_SESSIONS, trade_dates=sessions,
+                min_train_days=MIN_TRAIN_SESSIONS, trade_dates=sessions,
             ),
             [],
         )
@@ -272,3 +271,72 @@ class SystemEndpointsTests(SimpleTestCase):
 
         self.assertIn('Descriptive only', date_contract.__doc__)
         self.assertIn('observation', _contract_payload()['note'].lower())
+
+
+class SharedThresholdTests(SimpleTestCase):
+    """The 250-session window and the held-position count each have one source.
+
+    Both used to be duplicated: seven copies of the 250 literal (one of which feeds
+    ``ETF_BACKTEST_START``'s derivation), and two setting names for max positions
+    that resolved to 3 and 5, so the two ETF trainers sized different portfolios
+    while being compared as one strategy. These pins fail if a copy comes back.
+    """
+
+    def test_expanding_folds_default_is_the_contract_constant(self):
+        import inspect
+
+        from apps.etf_rotation.walk_forward import expanding_folds
+
+        default = inspect.signature(expanding_folds).parameters['min_train_days'].default
+        self.assertEqual(default, MIN_TRAIN_SESSIONS)
+
+    def test_no_consumer_reads_a_retired_setting_name(self):
+        """Scan for the quoted names, so the contract's prose about them is allowed."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        retired = ("'ETF_MIN_TRAIN_DAYS'", '"ETF_MIN_TRAIN_DAYS"',
+                   "'ETF_ROTATION_MAX_POSITIONS'", '"ETF_ROTATION_MAX_POSITIONS"',
+                   'WALK_FORWARD_MIN_TRAIN_SESSIONS')
+        offenders = []
+        for path in (root / 'apps').rglob('*.py'):
+            if path.name == 'tests_date_contract.py':
+                continue
+            text = path.read_text(encoding='utf-8')
+            for needle in retired:
+                if needle in text:
+                    offenders.append(f'{path.relative_to(root)}: {needle}')
+        self.assertEqual(offenders, [], 'a retired threshold name came back')
+
+    def test_both_trainers_read_the_same_max_positions_name_and_fallback(self):
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        pattern = re.compile(r"_setting_int\('ETF_MAX_POSITIONS',\s*(\d+)\)")
+        resolved = {}
+        for name in ('train_lightgbm.py', 'train_lstm.py'):
+            text = (root / 'apps' / 'etf_rotation' / name).read_text(encoding='utf-8')
+            match = pattern.search(text)
+            self.assertIsNotNone(match, f'{name} no longer reads ETF_MAX_POSITIONS')
+            resolved[name] = int(match.group(1))
+        self.assertEqual(len(set(resolved.values())), 1,
+                         f'trainers disagree on the fallback: {resolved}')
+
+
+class DataLimitsPayloadTests(TestCase):
+    """``_build_data_limits`` reads live row estimates, so it needs a database."""
+
+    def test_reports_one_max_positions_value_and_one_training_window(self):
+        from apps.core.views import _build_data_limits
+
+        payload = _build_data_limits()
+        self.assertNotIn('max_positions_conflict', payload)
+        self.assertEqual(payload['max_positions']['value'], 3)
+        self.assertEqual(payload['max_positions']['trainers'],
+                         ['train_lightgbm.py', 'train_lstm.py'])
+        by_key = {entry['key']: entry for entry in payload['thresholds']}
+        self.assertEqual(by_key['min_train_sessions']['value'], MIN_TRAIN_SESSIONS)
+        self.assertEqual(by_key['expanding_folds_min_train_days']['value'], MIN_TRAIN_SESSIONS)
+        self.assertNotIn('etf_min_train_days', by_key)
+        self.assertNotIn('walk_forward_min_train_sessions', by_key)

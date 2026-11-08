@@ -22,7 +22,7 @@ from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.core.date_contract import ASSET_ETF, STAGE_TRAINING, enforce_date_contract
+from apps.core.date_contract import ASSET_ETF, MIN_TRAIN_SESSIONS, STAGE_TRAINING, enforce_date_contract
 from apps.etf_rotation import features
 from apps.etf_rotation.train_lightgbm import (
     DEFAULT_OBJECTIVE,
@@ -71,7 +71,8 @@ class Command(BaseCommand):
         parser.add_argument('--horizon', type=int,
                             help='Label horizon in trading sessions. Default: settings.ETF_LABEL_HORIZON_DAYS (20).')
         parser.add_argument('--min-train-days', type=int,
-                            help='Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS (250).')
+                            help=f'Minimum dates in the first training window. Default: '
+                                 f'apps/core/date_contract.py MIN_TRAIN_SESSIONS ({MIN_TRAIN_SESSIONS}).')
         parser.add_argument('--version-tag', default='', help='Suffix appended to the ModelVersion key.')
         parser.add_argument('--no-activate', action='store_true',
                             help='Register the trained row inactive and leave the serving model alone. '

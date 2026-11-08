@@ -33,14 +33,15 @@ const payload = {
   },
   thresholds: [
     {
-      key: 'walk_forward_min_train_sessions', label: 'Walk-forward minimum train',
-      value: 250, unit: 'trading sessions', source: 'run_etf_rotation_backtest.py',
+      key: 'min_train_sessions', label: 'Minimum training window',
+      value: 250, unit: 'trading sessions', source: 'apps/core/date_contract.py',
       configured_in: 'hardcoded fallback',
     },
   ],
-  max_positions_conflict: {
-    values: [3, 5],
-    entries: [],
+  max_positions: {
+    key: 'etf_max_positions', label: 'Max holdings', value: 3, unit: 'positions',
+    source: 'config/settings/base.py', configured_in: 'ETF_MAX_POSITIONS',
+    trainers: ['train_lightgbm.py', 'train_lstm.py'],
   },
   generated_at: '2026-11-06T10:00:00',
   contract: { escape_hatch_flag: 'allow-pre-contract-history', note: '', asset_classes: [] },
@@ -81,11 +82,13 @@ describe('DataLimitsPage', () => {
     expect(screen.getByText('Rows (est.)')).toBeInTheDocument()
   })
 
-  it('surfaces the max-positions divergence between the two trainers', async () => {
+  it('shows the single resolved max holdings both trainers read', async () => {
     apiMocks.fetchDataLimits.mockResolvedValue(payload)
     renderPage()
 
-    await waitFor(() => expect(screen.getByText('3 vs 5')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Max holdings')).toBeInTheDocument())
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.queryByText('3 vs 5')).not.toBeInTheDocument()
   })
 
   it('keeps reporting table extent instead of inventing a coverage figure', async () => {
