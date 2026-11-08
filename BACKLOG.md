@@ -432,6 +432,25 @@ problem above.
 
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
+**Measured outcome 2026-11-08 — the cursor fix landed, and it was not the main cost.** The
+rewrite replaced every `.iterator(chunk_size=...)` with a windowed bulk fetch and narrowed the
+largest scan from `indicator_type__in=<19>` to `indicator_type='RS_SCORE'` (105x fewer rows, a
+bitmap index instead of a seq scan; EXPLAIN and a byte-identical six-month A/B are recorded in
+`apps/core/db_scans.py`). Then the full range was run with that rewrite in place:
+`--effective-universe-only` over the whole history was **killed at the 90-minute timeout without
+finishing** (`VALIDATE_RC=124`). Sampling `pg_stat_activity` through the run showed the bulk of
+the time in the **per-asset** OHLCV continuity phase, which the rewrite does not touch.
+
+So the premise in this entry — that the coverage scans drive the 16-year runtime — is wrong. The
+gate is dominated by validating 1,886 assets across ~4,000 sessions one asset at a time. Making
+it usable needs that phase addressed (restrict to sessions where the asset is in the effective
+universe, or parallelise across assets), which is separate work.
+
+What did land is still worth having: no named cursor anywhere in the command, 105x fewer rows in
+the largest scan, one window of peak memory instead of one history of rows, and the long read
+transaction that pinned xmin is gone. **Do not quote a full-range speedup — there is not one.**
+
+
 Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
 with the backend in `wait_event_type=IO, wait_event=DataFileRead` on
 `FETCH FORWARD 50000 FROM "_django_curs_12349"`. The quoted cursor name is the tell — the command

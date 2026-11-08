@@ -49,12 +49,27 @@ at ``main`` against new code here: **58 s -> 53 s**, with **byte-identical outpu
 
 That is a ~9% win, not an order of magnitude, and the reason matters: on a six-month
 window the coverage scans are not the dominant cost -- the per-asset continuity and
-cross-table validators are, and this module does not touch them. The 58-minute figure
-in ``BACKLOG.md`` was the 16-year range, where the coverage scans dominate because the
-old filter seq-scanned the whole 179M-row table regardless of the window. So the
-predicted large win is real but has not been demonstrated end-to-end yet: it needs the
-full-range run, which is still the multi-minute job. Do not quote a speedup number
-until that run exists.
+cross-table validators are, and this module does not touch them.
+
+**The full-range run settles it, and refutes the expectation.** Measured 2026-11-08 with
+the whole rewrite in place, ``--effective-universe-only`` over the entire history: the
+command was killed at the **90-minute** timeout without finishing
+(``VALIDATE_RC=124``, ``WALL_SECONDS=5401``). Sampling ``pg_stat_activity`` through the
+run showed it spending the bulk of that time in the **per-asset** OHLCV continuity phase,
+not in the coverage scans. So the earlier assumption -- that the 16-year run was dominated
+by the seq-scanned coverage loop, and that narrowing it would take the gate to single-digit
+minutes -- was wrong. It is dominated by validating 1,886 assets across ~4,000 sessions
+one asset at a time.
+
+What the rewrite did buy, and this part is real: the largest single scan now reads 105x
+fewer rows through a bitmap index instead of a sequential scan, peak memory is one quarter
+rather than one history, and the six-month A/B is byte-identical and slightly faster. What
+it did not buy is a usable full-range gate.
+
+Making the gate usable needs the per-asset phase addressed -- narrowing it to sessions
+where the asset is actually in the effective universe, or parallelising across assets --
+which is separate work with its own verification. **Do not quote a full-range speedup:
+there is not one yet.**
 """
 from __future__ import annotations
 
