@@ -130,6 +130,40 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {"default": env.db("DATABASE_URL")}
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
 
+# Close per request/task rather than persisting. Under Celery a persistent
+# connection makes a wedged link worse: close_old_connections fires on HTTP request
+# boundaries, not task boundaries, so one bad query would be inherited by every
+# later task in that worker and turn into a dead worker. Over a LAN the per-request
+# connect cost is milliseconds. Exposed so the decision is reversible, not hidden.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=0)
+
+# The NAS-hosted Postgres is reached over a WSL2 link that can go silent without
+# either side noticing. Client-side keepalives turn a dead link (NAS reboot, WSL2
+# NAT reset) into an OperationalError after roughly idle + interval*count seconds,
+# which the retry paths already handle; connect_timeout bounds the connect phase.
+#
+# These do NOT break the wedge observed on 2026-11-05: backend blocked in
+# ClientWrite, client in poll_schedule_timeout at zero CPU, socket ESTAB with both
+# queues empty and ACKed. TCP sees a healthy connection, so keepalive probes are
+# answered by the peer's stack without ever reaching the blocked backend process.
+# Interrupting that needs a server-side statement_timeout or an external watchdog.
+#
+# application_name is what lets a watchdog select this project's own backends out
+# of pg_stat_activity instead of guessing by client address.
+if DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql":
+    _db_options = {
+        "connect_timeout": env.int("DB_CONNECT_TIMEOUT_SECONDS", default=10),
+        "keepalives": 1,
+        "keepalives_idle": env.int("DB_TCP_KEEPALIVE_IDLE_SECONDS", default=30),
+        "keepalives_interval": env.int("DB_TCP_KEEPALIVE_INTERVAL_SECONDS", default=10),
+        "keepalives_count": env.int("DB_TCP_KEEPALIVE_COUNT", default=3),
+        "application_name": "finance_analysis",
+    }
+    # Anything supplied on DATABASE_URL itself wins, so a deployment can tune the
+    # link without a code change.
+    _db_options.update(DATABASES["default"].get("OPTIONS") or {})
+    DATABASES["default"]["OPTIONS"] = _db_options
+
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
