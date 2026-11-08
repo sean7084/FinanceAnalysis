@@ -139,9 +139,11 @@ def terminate(database_url, pid):
     connection = _connect(database_url)
     try:
         with connection.cursor() as cursor:
-            # Permitted for backends owned by the same role; no superuser needed.
-            cursor.execute('SELECT pg_terminate_backend(%s)', [pid])
-            return bool(cursor.fetchone()[0])
+            # Named explicitly: the connection uses RealDictCursor, so fetchone() returns a
+            # dict and a positional index raises KeyError. That is how the terminate path
+            # failed on its first live run -- the classifier was right and the action threw.
+            cursor.execute('SELECT pg_terminate_backend(%s) AS terminated', [pid])
+            return bool(cursor.fetchone()['terminated'])
     finally:
         connection.close()
 

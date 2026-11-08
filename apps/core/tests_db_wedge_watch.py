@@ -51,6 +51,53 @@ def _backend(**overrides):
     return row
 
 
+class TerminateActionTests(TestCase):
+    """The action, not the decision — and not mocked.
+
+    The first live run of the watchdog classified an idle-in-transaction backend correctly
+    and then raised ``KeyError: 0`` from ``terminate``: the connection uses RealDictCursor,
+    so ``fetchone()`` returns a dict and a positional index fails. Every unit test had
+    mocked ``terminate``, so the action itself was never executed. This asserts it against a
+    real backend, which is the only way that class of bug surfaces.
+    """
+
+    def test_it_terminates_a_real_backend_and_reports_true(self):
+        import psycopg2
+
+        from django.db import connection
+
+        if connection.vendor != 'postgresql':
+            self.skipTest('pg_terminate_backend is PostgreSQL-specific')
+
+        url = watch._database_url()
+        victim = psycopg2.connect(url, connect_timeout=5)
+        try:
+            pid = victim.get_backend_pid()
+            self.assertTrue(watch.terminate(url, pid))
+            # And the backend really is gone: its next statement cannot run.
+            with self.assertRaises(psycopg2.Error):
+                with victim.cursor() as cursor:
+                    cursor.execute('SELECT 1')
+                    cursor.fetchone()
+        finally:
+            try:
+                victim.close()
+            except Exception:
+                pass
+
+    def test_the_watcher_can_reach_its_own_project_backends(self):
+        """The filter the watchdog depends on, exercised against the live server."""
+        from django.db import connection
+
+        if connection.vendor != 'postgresql':
+            self.skipTest('libpq options only apply to PostgreSQL')
+        samples = watch.sample(watch._database_url())
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT pg_backend_pid()')
+            own_pid = cursor.fetchone()[0]
+        self.assertIn(own_pid, samples)
+
+
 class ClassifyBackendTests(SimpleTestCase):
     def test_the_observed_signature_is_wedged(self):
         previous, current = _backend(), _backend()
