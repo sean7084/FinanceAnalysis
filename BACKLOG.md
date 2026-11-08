@@ -12,6 +12,16 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Resolved
 
+- **The dependency lockfiles now carry an ASGI server (`#16`, landed in #97).**
+  `requirements/production.in` declares `daphne==4.1.2`, `gunicorn==23.0.0` and
+  `uvicorn[standard]==0.32.0`, and the compiled `production.txt` pins them with hashes.
+  The README deployment section that promised Kubernetes, RDS, Prometheus, Sentry and
+  ELK is now labelled a plan, because it is one.
+- **Coverage is measured, report-only (#14, landed in #95).**
+  `coverage==7.6.4` and `.coveragerc` were already on main; what was missing was a CI
+  step that ran them. It is reporting-only on purpose: a threshold invented before the
+  first real numbers gets bypassed the way a wall-clock gate on an empty CI database
+  would. Look at a round of numbers, then decide whether to gate.
 - **LICENSE decided: proprietary, confirmed (2026-11).** The choice is now deliberate
   rather than incidental, and four places say the same thing: the root NOTICE file
   ("This is not an open-source project. No licence is granted, by implication, estoppel,
@@ -20,7 +30,6 @@ Items here have no commitment attached. When something is done, move it to
   `"license": "UNLICENSED"`. No trove classifiers on purpose: the project is deployed
   from a checkout and never packaged, so `License :: Other/Proprietary License` would be
   dead metadata.
-
 - **App-label test discovery failure — and a silent no-op test run.**
   `python manage.py test apps.sentiment` failed with `ImportError: attempted
   relative import with no known parent package` while the fully qualified
@@ -1186,26 +1195,7 @@ Two things found while generating them, neither introduced by this change:
 Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of
 the above exception" chain is rarely the cause.
 
-### `requirements/production.txt` cannot support the documented deployment
 
-It is a single `-r base.txt` line. No `gunicorn`, `uvicorn`, or `daphne`
-anywhere — and the WebSocket surface requires an ASGI server. The README's
-production section describes Kubernetes, RDS, CDN, CI/CD, Prometheus, Sentry, and
-ELK, none of which exists. Relabelled as a plan; still unbuilt.
-
-### CI installs coverage but never runs it
-
-`coverage==7.6.4` is in `requirements/local.txt:4`, CI installs it (`ci.yml:218`), and
-`.coveragerc` exists at the root with `source = apps`, `branch = True` and the usual
-omissions. **No CI step executes it.** The earlier "no coverage dependency, no
-`.coveragerc`" wording was stale and is deleted; what remains is one missing step.
-
-Add it reporting-only first and look at a round of real numbers before choosing a
-threshold. A coverage gate set from nothing gets bypassed the same way a wall-clock
-gate on an empty CI database would — see the note in `perf/validate-data-quality-scans`
-about why the page-load budget works and a scan budget cannot.
-
----
 
 ## Open — documentation
 
@@ -1596,6 +1586,18 @@ The bar the model work is aiming at, against the 3.2 baseline:
   `apps/core/date_floor.py:18-29`, or a real `DateField`) rather than `make_aware` on a wall
   midnight. Check after the first new-code indicator run: for the seam trade date, count
   `(asset_id, indicator_type, parameters)` groups holding two rows exactly eight hours apart.
+  That check is now a command and it has been run: PR #88 landed
+  `session_key_timestamp` as the write key, `core.E001` refuses to boot on a drifted
+  `TIME_ZONE`, and `dedupe_technical_indicator_session_keys` is the guard for the
+  cross-convention rows. The 2026-11-08 live dry-run found **zero pairs**, which is the
+  expected state -- since the flip every write has used one convention, and a pair only
+  appears when a recompute revisits a date the old code already wrote. In practice that
+  means one event: a `backfill_technical_indicators` run whose range includes sessions
+  before 2026-11-02, because it deletes and re-creates per chunk. When it fires, run
+  `--dry-run` first, delete only if it reports pairs, then group by Beijing time-of-day
+  over the affected window -- only `00:00:00` may appear; an `08:00:00` bucket is a
+  pre-flip row. Both the trigger and that query are recorded in the command's docstring,
+  so the guard cannot be mistaken for a chore to run today.
 - `sentiment.0003`'s `RunPython` is `elidable=True`, so a future `squashmigrations` over the
   sentiment apps drops the −8h correction silently. A freshly built database does not need it —
   that is why it is elidable — but the flag also means the correction survives only as long as
