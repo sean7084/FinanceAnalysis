@@ -14,7 +14,7 @@ import tushare as ts
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, connections, transaction
+from django.db import connection, connections
 from django.db.models import Q
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
@@ -27,6 +27,7 @@ from apps.analytics.management.commands.backfill_technical_indicators import (
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import TechnicalIndicator
 from apps.core.date_floor import get_historical_data_floor, session_midnight
+from apps.core.db_scans import iter_windowed, windowed_rows
 from apps.factors.fundamental_materialization import (
     iter_date_windows,
     materialize_fundamental_snapshot_rows,
@@ -739,31 +740,29 @@ class Command(BaseCommand):
                 field_counters,
                 reason_counters,
             )
-            # Stream the big coverage / cross-section scans inside a transaction. In
-            # autocommit, psycopg2 declares .iterator()'s server-side cursor WITH HOLD,
-            # so PostgreSQL MATERIALISES the whole result before the client sees a row --
-            # for the ~100M-row TechnicalIndicator coverage scan the client sits app-idle
-            # for >10 min and the WSL2<->NAS connection times out (the server logs "could
-            # not receive data from client: Connection timed out" and drops the backend).
-            # Inside atomic() psycopg2 uses a plain streaming cursor (FETCH per chunk), so
-            # rows flow continuously and the connection never goes idle long enough to drop.
-            with transaction.atomic():
-                self._write_effective_universe_daily_coverage(
-                    writer,
-                    start_date,
-                    end_date,
-                    trading_dates,
-                    effective_universe_by_date,
-                    technical_indicators,
-                    counters,
-                    table_counters,
-                    field_counters,
-                )
-                self._write_cross_section_audit(
-                    writer,
-                    cross_section_audit_dates,
-                    effective_universe_by_date,
-                )
+            # No enclosing transaction. It used to be load-bearing: in autocommit psycopg2
+            # declares .iterator()'s server-side cursor WITH HOLD, so PostgreSQL materialised
+            # the whole result before the client saw a row, the client sat app-idle for
+            # >10 min on the ~100M-row TechnicalIndicator scan, and the WSL2<->NAS link
+            # dropped. Every scan here is now a windowed bulk fetch (apps/core/db_scans.py),
+            # so there is no named cursor to declare WITH HOLD -- and keeping a 30-60 minute
+            # read transaction would pin xmin on the NAS and bloat vacuum for no benefit.
+            self._write_effective_universe_daily_coverage(
+                writer,
+                start_date,
+                end_date,
+                trading_dates,
+                effective_universe_by_date,
+                technical_indicators,
+                counters,
+                table_counters,
+                field_counters,
+            )
+            self._write_cross_section_audit(
+                writer,
+                cross_section_audit_dates,
+                effective_universe_by_date,
+            )
             self._write_summary_reports(
                 writer,
                 counters,
@@ -2469,44 +2468,55 @@ class Command(BaseCommand):
                 time.sleep(retry_sleep_seconds)
 
     def _validate_capital_flow_null_fields(self, asset_ids, start_date, end_date, writer, counters, field_counters, reason_counters):
+        # _classify_capital_flow_null reads only asset_id and date, so neither the join
+        # nor the full model rows are needed. Bulk list() rather than .iterator(): the
+        # loops below retain every row in a dict anyway, so a chunked iterator saved no
+        # memory and only cost PostgreSQL the parallel plan.
         queryset = CapitalFlowSnapshot.objects.filter(
             asset_id__in=asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).select_related('asset')
+        )
         if not queryset.filter(Q(main_force_net_5d__isnull=True) | Q(margin_balance_change_5d__isnull=True)).exists():
             return
 
         moneyflow_dates_by_asset = defaultdict(set)
-        for asset_id, trading_date in AssetMoneyFlowSnapshot.objects.filter(
+        moneyflow_rows = list(AssetMoneyFlowSnapshot.objects.filter(
             asset_id__in=asset_ids,
             date__gte=start_date,
             date__lte=end_date,
-        ).order_by().values_list('asset_id', 'date').iterator(chunk_size=5000):
+        ).order_by().values_list('asset_id', 'date'))
+        for asset_id, trading_date in moneyflow_rows:
             moneyflow_dates_by_asset[asset_id].add(trading_date)
+        del moneyflow_rows
 
         margin_history_by_asset = defaultdict(lambda: {'index_by_date': {}, 'rzrqye': []})
-        for asset_id, trading_date, rzrqye in AssetMarginDetailSnapshot.objects.filter(
+        # order_by('asset_id', 'date') is semantic here, not Meta.ordering: the history
+        # list is appended in date order and index_by_date maps to positions in it.
+        margin_rows = list(AssetMarginDetailSnapshot.objects.filter(
             asset_id__in=asset_ids,
             date__lte=end_date,
-        ).order_by('asset_id', 'date').values_list('asset_id', 'date', 'rzrqye').iterator(chunk_size=5000):
+        ).order_by('asset_id', 'date').values_list('asset_id', 'date', 'rzrqye'))
+        for asset_id, trading_date, rzrqye in margin_rows:
             history = margin_history_by_asset[asset_id]
             history['index_by_date'][trading_date] = len(history['rzrqye'])
             history['rzrqye'].append(rzrqye)
+        del margin_rows
 
         for field in CAPITAL_FLOW_FIELDS:
-            null_queryset = queryset.filter(**{f'{field}__isnull': True})
-            for row in null_queryset.iterator(chunk_size=1000):
+            null_rows = list(queryset.filter(**{f'{field}__isnull': True}).values('asset_id', 'date'))
+            for row in null_rows:
                 issue_type, reason, details = self._classify_capital_flow_null(
                     field,
-                    row.asset_id,
-                    row.date,
+                    row['asset_id'],
+                    row['date'],
                     moneyflow_dates_by_asset,
                     margin_history_by_asset,
                 )
                 self._increment(counters, f'capital_flow_snapshot.{field}.{issue_type}', 'warning', 1)
                 field_counters[('capital_flow_snapshot', field, issue_type, 'warning')] += 1
                 reason_counters[('capital_flow_snapshot', field, reason, 'warning')] += 1
+            del null_rows
 
     def _classify_capital_flow_null(self, field, asset_id, trading_date, moneyflow_dates_by_asset, margin_history_by_asset):
         if field == 'main_force_net_5d':
@@ -2828,52 +2838,75 @@ class Command(BaseCommand):
 
         asset_map = Asset.objects.in_bulk(union_asset_ids)
 
-        # Each streaming scan below calls .order_by() to CLEAR the model's default
-        # Meta.ordering. These loops only OR bits into feature_bitmaps (order-independent),
-        # so an ORDER BY buys nothing and forces PostgreSQL to fully sort the entire matched
-        # set -- the TechnicalIndicator scan alone matches ~140M rows over a 16-year range --
-        # before the first row can stream. That multi-minute silent sort is what gets the
-        # WSL<->NAS connection dropped (server closed the connection unexpectedly). Clearing
-        # the ordering lets the server-side cursor stream rows immediately and continuously.
-        for row_date, asset_id in OHLCV.objects.filter(
-            asset_id__in=union_asset_ids,
-            date__gte=start_date,
-            date__lte=end_date,
-        ).order_by().values_list('date', 'asset_id').iterator(chunk_size=50000):
-            if asset_id not in effective_universe_by_date.get(row_date, set()):
-                continue
-            self._set_feature_presence(feature_bitmaps, 'ohlcv', row_date, asset_id, bit_positions)
+        # Each scan below is a windowed BULK fetch, not .iterator(chunk_size=...). A chunked
+        # iterator opens a named server-side cursor and PostgreSQL will not use a parallel
+        # plan through one: the same 5.7M-row RSI query measured 86.1s bulk against still
+        # unfinished at 432s through a cursor (apps/core/db_scans.py records both). Windowing
+        # bounds peak RSS to one quarter rather than one 16-year frame.
+        #
+        # .order_by() still CLEARS the model's default Meta.ordering. These loops only OR
+        # bits into feature_bitmaps (order-independent), so an ORDER BY buys nothing and
+        # forces PostgreSQL to fully sort the matched set before returning a row.
+        for rows in windowed_rows(
+            lambda lo, hi: OHLCV.objects.filter(
+                asset_id__in=union_asset_ids,
+                date__gte=lo,
+                date__lte=hi,
+            ).order_by().values_list('date', 'asset_id'),
+            start_date, end_date,
+        ):
+            for row_date, asset_id in rows:
+                if asset_id not in effective_universe_by_date.get(row_date, set()):
+                    continue
+                self._set_feature_presence(feature_bitmaps, 'ohlcv', row_date, asset_id, bit_positions)
 
-        for row in TechnicalIndicator.objects.filter(
-            asset_id__in=union_asset_ids,
-            timestamp__gte=session_midnight(start_date),
-            timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-            indicator_type__in=technical_indicators,
-        ).order_by().values('timestamp__date', 'asset_id', 'indicator_type').iterator(chunk_size=50000):
-            row_date = row['timestamp__date']
-            asset_id = row['asset_id']
-            if asset_id not in effective_universe_by_date.get(row_date, set()):
-                continue
-            if row['indicator_type'] == 'RS_SCORE':
-                self._set_feature_presence(feature_bitmaps, 'rs_score', row_date, asset_id, bit_positions)
+        # Only RS_SCORE is consumed here, so filter on it in SQL. The previous filter was
+        # indicator_type__in=technical_indicators, which matched ~140M rows over a 16-year
+        # range and then discarded every one that was not RS_SCORE -- roughly 96% of the
+        # largest scan in this command transferred for nothing.
+        if 'RS_SCORE' in technical_indicators:
+            for rows in windowed_rows(
+                lambda lo, hi: TechnicalIndicator.objects.filter(
+                    asset_id__in=union_asset_ids,
+                    timestamp__gte=session_midnight(lo),
+                    timestamp__lt=session_midnight(hi + timedelta(days=1)),
+                    indicator_type='RS_SCORE',
+                ).order_by().values('timestamp__date', 'asset_id'),
+                start_date, end_date,
+            ):
+                for row in rows:
+                    row_date = row['timestamp__date']
+                    asset_id = row['asset_id']
+                    if asset_id not in effective_universe_by_date.get(row_date, set()):
+                        continue
+                    self._set_feature_presence(feature_bitmaps, 'rs_score', row_date, asset_id, bit_positions)
 
-        for row in SentimentScore.objects.filter(
-            asset_id__in=union_asset_ids,
-            date__gte=start_date,
-            date__lte=end_date,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-        ).order_by().values('date', 'asset_id').iterator(chunk_size=50000):
-            row_date = row['date']
-            asset_id = row['asset_id']
-            if asset_id not in effective_universe_by_date.get(row_date, set()):
-                continue
-            self._set_feature_presence(feature_bitmaps, 'sentiment_score', row_date, asset_id, bit_positions)
+        for rows in windowed_rows(
+            lambda lo, hi: SentimentScore.objects.filter(
+                asset_id__in=union_asset_ids,
+                date__gte=lo,
+                date__lte=hi,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+            ).order_by().values('date', 'asset_id'),
+            start_date, end_date,
+        ):
+            for row in rows:
+                row_date = row['date']
+                asset_id = row['asset_id']
+                if asset_id not in effective_universe_by_date.get(row_date, set()):
+                    continue
+                self._set_feature_presence(feature_bitmaps, 'sentiment_score', row_date, asset_id, bit_positions)
 
-        for row in FundamentalFactorSnapshot.objects.filter(
-            asset_id__in=union_asset_ids,
-            date__gte=start_date,
-            date__lte=end_date,
-        ).order_by().select_related('asset').values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata').iterator(chunk_size=50000):
+        # select_related('asset') was a no-op on a .values() queryset; the asset lookup
+        # below already goes through asset_map.
+        for row in iter_windowed(
+            lambda lo, hi: FundamentalFactorSnapshot.objects.filter(
+                asset_id__in=union_asset_ids,
+                date__gte=lo,
+                date__lte=hi,
+            ).order_by().values('date', 'asset_id', 'pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq', 'metadata'),
+            start_date, end_date,
+        ):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2923,11 +2956,14 @@ class Command(BaseCommand):
                         details=f'Fundamental snapshot on {row_date} references report end date {report_end_date} in the future.',
                     )
 
-        for row in CapitalFlowSnapshot.objects.filter(
-            asset_id__in=union_asset_ids,
-            date__gte=start_date,
-            date__lte=end_date,
-        ).order_by().values('date', 'asset_id', 'main_force_net_5d', 'margin_balance_change_5d').iterator(chunk_size=50000):
+        for row in iter_windowed(
+            lambda lo, hi: CapitalFlowSnapshot.objects.filter(
+                asset_id__in=union_asset_ids,
+                date__gte=lo,
+                date__lte=hi,
+            ).order_by().values('date', 'asset_id', 'main_force_net_5d', 'margin_balance_change_5d'),
+            start_date, end_date,
+        ):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -2939,12 +2975,15 @@ class Command(BaseCommand):
             if row.get('margin_balance_change_5d') is not None:
                 self._set_feature_presence(feature_bitmaps, 'margin_balance_change_5d', row_date, asset_id, bit_positions)
 
-        for row in FactorScore.objects.filter(
-            asset_id__in=union_asset_ids,
-            date__gte=start_date,
-            date__lte=end_date,
-            mode=FactorScore.FactorMode.COMPOSITE,
-        ).order_by().values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score').iterator(chunk_size=50000):
+        for row in iter_windowed(
+            lambda lo, hi: FactorScore.objects.filter(
+                asset_id__in=union_asset_ids,
+                date__gte=lo,
+                date__lte=hi,
+                mode=FactorScore.FactorMode.COMPOSITE,
+            ).order_by().values('date', 'asset_id', 'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score'),
+            start_date, end_date,
+        ):
             row_date = row['date']
             asset_id = row['asset_id']
             if asset_id not in effective_universe_by_date.get(row_date, set()):
@@ -3033,12 +3072,17 @@ class Command(BaseCommand):
 
         # Same Meta.ordering trap as the coverage scans above: these cross-section scans
         # only populate participant_payload dicts (order-independent), so clear the default
-        # ordering to avoid a full sort before the server-side cursor can stream the rows.
-        for row in TechnicalIndicator.objects.filter(
-            timestamp__gte=session_midnight(min(audit_dates)),
-            timestamp__lt=session_midnight(max(audit_dates) + timedelta(days=1)),
-            indicator_type='RS_SCORE',
-        ).order_by().select_related('asset').values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value').iterator(chunk_size=5000):
+        # ordering to avoid a full sort. Windowed bulk rather than a server-side cursor, so
+        # no named cursor remains anywhere in this command and the enclosing atomic() --
+        # which existed only to stop psycopg2 declaring one WITH HOLD -- is gone.
+        for row in iter_windowed(
+            lambda lo, hi: TechnicalIndicator.objects.filter(
+                timestamp__gte=session_midnight(lo),
+                timestamp__lt=session_midnight(hi + timedelta(days=1)),
+                indicator_type='RS_SCORE',
+            ).order_by().values('timestamp__date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name', 'value'),
+            min(audit_dates), max(audit_dates),
+        ):
             if row['timestamp__date'] not in audit_dates_set:
                 continue
             participant_payload[row['timestamp__date']]['RS_SCORE'][row['asset_id']] = {
@@ -3049,13 +3093,13 @@ class Command(BaseCommand):
                 'value': float(row['value']),
             }
 
-        for row in FactorScore.objects.filter(
+        for row in list(FactorScore.objects.filter(
             date__in=audit_dates,
             mode=FactorScore.FactorMode.COMPOSITE,
-        ).order_by().select_related('asset').values(
+        ).order_by().values(
             'date', 'asset_id', 'asset__symbol', 'asset__ts_code', 'asset__name',
             'pe_ttm_percentile_score', 'pb_percentile_score', 'composite_score',
-        ).iterator(chunk_size=5000):
+        )):
             payload = {
                 'asset_id': row['asset_id'],
                 'symbol': row['asset__symbol'],
