@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-08T03:59:05Z_
+_Generated: 2026-11-08T16:14:14Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**58** project commands across **10** apps.
+**59** project commands across **10** apps.
 
 
 ## `apps.analytics`
@@ -50,6 +50,18 @@ Backfill historical TechnicalIndicator rows from OHLCV history for non-RS indica
 | `--chunk-size-days` | value | `365` |  | Maximum inclusive date span per delete/insert transaction. Use 0 to process the full range in one chunk. |
 | `--checkpoint-file` | value | `""` |  |  |
 | `--resume-from-checkpoint` | flag | `False` |  |  |
+
+
+### `dedupe_technical_indicator_session_keys`
+
+Delete TechnicalIndicator rows written under the pre-2026-11-02 UTC key when a new-convention twin exists for the same asset, type, parameters and session.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--dry-run` | flag | `False` |  | Report the duplicate set without deleting anything. |
+| `--start-date` | value | `<dynamic-date>` |  | First affected trade date (default 2026-11-02). |
+| `--batch-size` | value | `5000` |  | Rows per DELETE statement (default 5000). |
+| `--asset-batch-size` | value | `200` |  | Assets per progress checkpoint (default 200). |
 
 
 ## `apps.backtest`
