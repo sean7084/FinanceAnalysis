@@ -1897,3 +1897,61 @@ class ActivationBoundTests(TestCase):
             validate_activation_metrics({'mean_ic': 0.85})
         # A plausible metric activates; the guard is a bound, not a ban.
         validate_activation_metrics({'accuracy': 0.55, 'mean_ic': 0.04})
+
+    def test_the_ensemble_basis_keys_are_bounded_too(self):
+        """A leaked per-model accuracy must not reach the blend weights.
+
+        ``_refresh_ensemble_weights`` writes these three keys into both
+        ``EnsembleWeightSnapshot.basis_metrics`` and the ENSEMBLE ``ModelVersion``.
+        None of them used to be in ACCURACY_KEYS, so snapshot id 1 carried
+        ``lightgbm_accuracy=0.916278`` while the same value on a model's own row
+        would have been refused.
+        """
+        from django.core.exceptions import ValidationError
+
+        from apps.prediction.activation import activation_violations, validate_activation_metrics
+
+        for key in ('lightgbm_accuracy', 'heuristic_accuracy', 'lstm_accuracy'):
+            with self.subTest(key=key):
+                violations = activation_violations({key: 0.916278})
+                self.assertTrue(violations)
+                self.assertIn(key, violations[0])
+                with self.assertRaises(ValidationError):
+                    validate_activation_metrics({key: 0.916278})
+                validate_activation_metrics({key: 0.53})
+
+    def test_an_archived_version_cannot_be_active(self):
+        from django.core.exceptions import ValidationError
+
+        row = ModelVersion(
+            model_type=ModelVersion.ModelType.LIGHTGBM,
+            version='archived-but-active-test',
+            status=ModelVersion.Status.ARCHIVED,
+            is_active=True,
+            metrics={'accuracy': 0.55},
+        )
+        with self.assertRaisesMessage(ValidationError, 'ARCHIVED'):
+            row.save()
+        # Archiving with is_active cleared is the legitimate shape.
+        row.is_active = False
+        row.save()
+        self.assertTrue(ModelVersion.objects.filter(version=row.version).exists())
+
+    def test_the_ensemble_refuses_a_leaked_basis_before_writing_either_row(self):
+        """The snapshot used to be written first, so a refusal left it behind."""
+        from datetime import date
+
+        from django.core.exceptions import ValidationError
+
+        from apps.prediction.models_lightgbm import EnsembleWeightSnapshot
+        from apps.prediction.tasks_lightgbm import _refresh_ensemble_weights
+
+        before = EnsembleWeightSnapshot.objects.count()
+        with self.assertRaises(ValidationError):
+            _refresh_ensemble_weights(
+                date(2026, 11, 8),
+                {'3': {'status': 'success', 'accuracy': 0.9497}},
+            )
+        self.assertEqual(EnsembleWeightSnapshot.objects.count(), before)
+        self.assertFalse(
+            ModelVersion.objects.filter(version='ensemble-2026-11-08').exists())
