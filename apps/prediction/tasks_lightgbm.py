@@ -719,6 +719,19 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
             Decimal(str(heuristic_accuracy / total)).quantize(Decimal('0.0001')),
         )
 
+    basis_metrics = {
+        'lightgbm_accuracy': lightgbm_accuracy,
+        'heuristic_accuracy': heuristic_accuracy,
+        'lstm_accuracy': lstm_accuracy,
+    }
+    # Validate before EITHER write. The snapshot used to be persisted first and the
+    # ENSEMBLE ModelVersion second, so a basis the registry refused still left a
+    # snapshot carrying the leaked value behind -- and EnsembleWeightSnapshot has no
+    # save() hook of its own to catch it.
+    from apps.prediction.activation import validate_activation_metrics
+
+    validate_activation_metrics(basis_metrics)
+
     EnsembleWeightSnapshot.objects.update_or_create(
         date=snapshot_date,
         defaults={
@@ -726,11 +739,7 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
             'lstm_weight': weights[1],
             'heuristic_weight': weights[2],
             'basis_lookback_days': 60,
-            'basis_metrics': {
-                'lightgbm_accuracy': lightgbm_accuracy,
-                'heuristic_accuracy': heuristic_accuracy,
-                'lstm_accuracy': lstm_accuracy,
-            },
+            'basis_metrics': basis_metrics,
         },
     )
 
@@ -753,11 +762,7 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
         defaults={
             'status': ModelVersion.Status.READY,
             'artifact_path': 'models/ensemble/latest.json',
-            'metrics': {
-                'lightgbm_accuracy': lightgbm_accuracy,
-                'heuristic_accuracy': heuristic_accuracy,
-                'lstm_accuracy': lstm_accuracy,
-            },
+            'metrics': basis_metrics,
             'feature_schema': [
                 'rsi',
                 'mom_5d',
