@@ -80,7 +80,7 @@ class ScreenerTemplateSerializer(serializers.ModelSerializer):
         model = ScreenerTemplate
         fields = [
             'id', 'name', 'description',
-            'screener_type', 'config', 'is_public', 'created_at', 'updated_at',
+            'screener_type', 'config', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
 

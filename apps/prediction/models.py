@@ -46,9 +46,17 @@ class ModelVersion(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        if self.is_active and self.status != self.Status.ARCHIVED:
-            from apps.prediction.activation import validate_activation_metrics
+        from django.core.exceptions import ValidationError
 
+        from apps.prediction.activation import validate_activation_metrics
+
+        if self.is_active and self.status == self.Status.ARCHIVED:
+            raise ValidationError(
+                f'{self.model_type} {self.version} is ARCHIVED and cannot be active. '
+                'Archiving means the artifact must not be selected; clear is_active '
+                'in the same write. Pinned loaders already refuse archived versions.'
+            )
+        if self.is_active:
             validate_activation_metrics(self.metrics)
         super().save(*args, **kwargs)
 

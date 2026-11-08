@@ -14,7 +14,15 @@ MAX_PLAUSIBLE_ACCURACY = 0.75
 #: A rank IC above this on this universe is the same kind of artefact.
 MAX_PLAUSIBLE_IC = 0.30
 
-ACCURACY_KEYS = ('accuracy', 'direction_accuracy', 'val_accuracy', 'test_accuracy', 'hit_rate')
+#: The ensemble basis keys are here because ``_refresh_ensemble_weights`` writes them
+#: into both ``EnsembleWeightSnapshot.basis_metrics`` and the ENSEMBLE ``ModelVersion``.
+#: Without them a leaked per-model accuracy propagated into the blend weights even
+#: though the same value would have been refused on the model's own row: snapshot id 1
+#: carried ``lightgbm_accuracy=0.916278``.
+ACCURACY_KEYS = (
+    'accuracy', 'direction_accuracy', 'val_accuracy', 'test_accuracy', 'hit_rate',
+    'lightgbm_accuracy', 'heuristic_accuracy', 'lstm_accuracy',
+)
 IC_KEYS = ('ic', 'mean_ic', 'rank_ic', 'ic_mean')
 
 

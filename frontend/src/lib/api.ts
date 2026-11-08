@@ -1278,7 +1278,7 @@ export interface ThresholdDto {
   unit: string
   source: string
   configured_in: string
-  trainer?: string
+  trainers?: string[]
 }
 
 export interface EtfCoverageDto {
@@ -1293,10 +1293,7 @@ export interface DataLimitsDto {
   datasets: DataExtentRowDto[]
   etf_coverage: EtfCoverageDto
   thresholds: ThresholdDto[]
-  max_positions_conflict: {
-    values: number[]
-    entries: ThresholdDto[]
-  }
+  max_positions: ThresholdDto
   generated_at: string
   contract: DateContractDto
 }
