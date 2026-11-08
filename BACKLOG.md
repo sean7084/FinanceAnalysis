@@ -1219,6 +1219,18 @@ and `htmlcov/` but nothing generates them.
   `apps/sentiment/` (13 files, ~1 docstring). Module-level docstrings were added
   in this pass; the deep function-level coverage of `backtest/tasks.py` is still
   outstanding.
+- Duplicate `import json` at
+  `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.
+- `CHANGELOG.md` 0.1.13 (557 lines, `:2486-3042`) is an audit checklist rather than release
+  notes. **Re-scoped, not converted:** the section already opens with its own note
+  (`:2488-2491`) saying it is an audit workflow record and "will be converted to standard
+  release-note format before the 0.1.13 tag is created". That tag never came — the project
+  is at 0.1.53 — so the condition the note sets has passed rather than been missed.
+  Rewriting it now would mean writing release notes for a release many versions ago,
+  claiming what shipped without the artefacts to check it against; a labelled historical
+  document is worth more than a reconstruction. Leave it, and do not treat it as a template
+  for new entries.
+- `CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
 - ~~Duplicate `import json` at
   `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.~~
   Stale: `grep -n "import json"` returns exactly one line (32). Nothing to remove.
