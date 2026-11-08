@@ -1629,14 +1629,101 @@ class PointInTimeBenchmarkPrecomputeTests(TestCase):
             ),
         ])
 
+        seed_before = PointInTimeBenchmarkDaily.objects.get(trade_date='2026-04-21')
+        seed_return_before = seed_before.daily_return
+        seed_nav_before = seed_before.nav
+
         summary = refresh_latest_point_in_time_union_benchmark(target_date='2026-04-22')
 
         latest_row = PointInTimeBenchmarkDaily.objects.get(trade_date='2026-04-22')
         self.assertEqual(summary['refresh_mode'], 'incremental')
         self.assertEqual(summary['seed_trade_date'], '2026-04-21')
-        self.assertEqual(summary['rows_written'], 2)
+        self.assertEqual(summary['rows_written'], 1)
         self.assertAlmostEqual(float(latest_row.daily_return), 0.1, places=8)
         self.assertAlmostEqual(float(latest_row.nav), 115500.0, places=6)
+
+        # The seed row is the price/nav anchor, not a row to rewrite. Re-emitting it
+        # used to upsert daily_return back to zero while leaving nav untouched, which
+        # destroyed a return that was already correct and was never revisited.
+        seed_after = PointInTimeBenchmarkDaily.objects.get(trade_date='2026-04-21')
+        self.assertEqual(seed_after.daily_return, seed_return_before)
+        self.assertEqual(seed_after.nav, seed_nav_before)
+        self.assertNotEqual(float(seed_after.daily_return), 0.0)
+
+    def _seed_ohlcv_and_fundamentals(self, trade_date, overlap_close, csi300_close):
+        from apps.factors.models import FundamentalFactorSnapshot
+
+        for asset, close in ((self.overlap_asset, overlap_close), (self.csi300_only_asset, csi300_close)):
+            OHLCV.objects.create(
+                asset=asset,
+                date=trade_date,
+                open=Decimal(close),
+                high=Decimal(close),
+                low=Decimal(close),
+                close=Decimal(close),
+                adj_close=Decimal(close),
+                volume=1000000,
+                amount=Decimal(close) * Decimal('1000000'),
+            )
+            FundamentalFactorSnapshot.objects.create(
+                asset=asset,
+                date=trade_date,
+                pe=Decimal('8.1'),
+                pb=Decimal('1.1'),
+                free_share=Decimal('60.0'),
+                circ_mv=Decimal('792.0'),
+                roe=Decimal('0.1'),
+                roe_qoq=Decimal('0.01'),
+            )
+
+    def test_incremental_refresh_preserves_nav_return_chain(self):
+        """Only the true series start may carry a zero return, and nav must chain."""
+        refresh_point_in_time_union_benchmark(
+            start_date='2026-04-20', end_date='2026-04-21', initial_nav=Decimal('100000'),
+        )
+        self._seed_ohlcv_and_fundamentals('2026-04-22', '13.2', '19.8')
+        self._seed_ohlcv_and_fundamentals('2026-04-23', '14.0', '19.0')
+
+        refresh_latest_point_in_time_union_benchmark(target_date='2026-04-22')
+        refresh_latest_point_in_time_union_benchmark(target_date='2026-04-23')
+        # Re-running the same target must be a no-op, not another seed rewrite.
+        again = refresh_latest_point_in_time_union_benchmark(target_date='2026-04-23')
+        self.assertEqual(again['rows_written'], 1)
+
+        rows = list(
+            PointInTimeBenchmarkDaily.objects.order_by('trade_date')
+            .values_list('trade_date', 'daily_return', 'nav')
+        )
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0][0].isoformat(), '2026-04-20')
+        self.assertEqual(float(rows[0][1]), 0.0)
+        for trade_date, daily_return, nav in rows[1:]:
+            self.assertNotEqual(float(daily_return), 0.0, f'{trade_date} lost its return')
+        for (_, _, prev_nav), (trade_date, daily_return, nav) in zip(rows, rows[1:]):
+            expected = prev_nav * (Decimal(1) + daily_return)
+            self.assertLess(
+                abs(nav - expected) / nav, Decimal('1e-7'),
+                f'{trade_date}: nav {nav} != prev_nav*(1+r) {expected}',
+            )
+
+    def test_whole_range_refresh_still_emits_its_zero_return_seed(self):
+        """A range build legitimately seeds its first date; only incremental skips it."""
+        summary = refresh_point_in_time_union_benchmark(
+            start_date='2026-04-20', end_date='2026-04-21', initial_nav=Decimal('100000'),
+        )
+        self.assertEqual(summary['rows_written'], 2)
+        first = PointInTimeBenchmarkDaily.objects.get(trade_date='2026-04-20')
+        self.assertEqual(float(first.daily_return), 0.0)
+        self.assertEqual(first.nav, Decimal('100000'))
+
+        skipped = build_point_in_time_union_benchmark_rows(
+            start_date='2026-04-20', end_date='2026-04-21',
+            initial_nav=Decimal('100000'), emit_seed_row=False,
+        )
+        self.assertEqual([r.trade_date.isoformat() for r in skipped], ['2026-04-21'])
+        # The anchor still drove the chain: the emitted row's nav is seeded from 100000.
+        self.assertEqual(skipped[0].nav, PointInTimeBenchmarkDaily.objects.get(
+            trade_date='2026-04-21').nav)
 
 
 class UniverseOnboardingCommandTests(TestCase):
