@@ -4897,6 +4897,28 @@ class MaxPositionsDefaultAlignmentTests(SimpleTestCase):
             ).max_positions, 5,
         )
 
+    def test_both_trainers_score_top_n_on_the_same_cut(self):
+        """The gap the engine-level alignment above did not cover.
+
+        train_lightgbm read ETF_ROTATION_MAX_POSITIONS, which no settings module
+        defines, so it kept a fallback of 5 while train_lstm saw the configured 3.
+        Two serving models of one strategy held different numbers of positions, and
+        every LightGBM-vs-LSTM comparison was comparing different portfolios.
+        """
+        from apps.etf_rotation.train_lightgbm import _setting_int as lgb_setting_int
+        from apps.etf_rotation.train_lstm import _setting_int as lstm_setting_int
+
+        self.assertEqual(lgb_setting_int('ETF_MAX_POSITIONS', 3), 3)
+        self.assertEqual(lstm_setting_int('ETF_MAX_POSITIONS', 3), 3)
+
+    @override_settings(ETF_MAX_POSITIONS=5)
+    def test_both_trainers_honour_the_same_override(self):
+        from apps.etf_rotation.train_lightgbm import _setting_int as lgb_setting_int
+        from apps.etf_rotation.train_lstm import _setting_int as lstm_setting_int
+
+        self.assertEqual(lgb_setting_int('ETF_MAX_POSITIONS', 3), 5)
+        self.assertEqual(lstm_setting_int('ETF_MAX_POSITIONS', 3), 5)
+
 
 class CpcvCommandGuardTests(TestCase):
     """Phase 8: the CLI refuses anything that would turn the tuning window into a holdout.
