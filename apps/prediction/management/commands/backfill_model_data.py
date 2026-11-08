@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Min
 from django.utils import timezone
 
-from apps.core.date_floor import get_historical_data_floor
+from apps.core.date_floor import get_historical_data_floor, session_key_timestamp
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.analytics.tasks import persist_ranked_rs_scores
 from apps.analytics.technical_staleness import (
@@ -471,7 +471,8 @@ class Command(BaseCommand):
                 continue
 
             descending = sorted(ranked_scores, key=lambda item: item[1], reverse=True)
-            timestamp = timezone.make_aware(datetime.combine(trading_date, datetime.min.time()))
+            # Zone-stable key; see apps/core/date_floor.session_key_timestamp.
+            timestamp = session_key_timestamp(trading_date)
             result = persist_ranked_rs_scores(descending, timestamp)
             attempted_indicators += result['indicator_rows']
             attempted_signals += result['signal_rows']
