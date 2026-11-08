@@ -29,6 +29,12 @@ samples. Duration alone cannot tell those apart, so duration is only a floor on 
 signature match. No local CPU-tick cross-check is needed once the server-side
 signature is sampled twice; it would add a dependency without discriminating power.
 
+Verified live twice at different scales: with a 12-second query running it reports
+"clean (1 backend(s) for finance_analysis)" instead of condemning it, and across a
+90-minute full-range ``validate_data_quality`` run it made **328 clean passes with zero
+findings and zero terminations**. That second one is the false-positive case at the scale
+that matters, because an hour-long gate is exactly the job a duration-based rule would kill.
+
 Usage::
 
     python scripts/db_wedge_watch.py --once --dry-run   # classify, terminate nothing
@@ -213,6 +219,15 @@ def run_pass(database_url, previous, *, client_write_max_age, idle_in_txn_max_ag
 
 
 def main(argv=None):
+    # Line-buffered when stdout is a pipe or file: Python block-buffers there, and a
+    # 90-minute run's log stayed empty the whole time -- the only way to tell the watcher was
+    # alive was to inspect the process table. A monitoring tool whose output appears only
+    # when it exits is not monitoring anything.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # pragma: no cover - non-standard stream
+        pass
+
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--once', action='store_true',
                         help='Sample twice one interval apart, report, and exit.')
