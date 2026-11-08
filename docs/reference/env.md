@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-11-08T03:22:42Z_
+_Generated: 2026-11-08T03:59:05Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -125,3 +125,7 @@ These are not Django settings. A key consumed by a launcher under `scripts/` or 
 | --- | --- |
 | `CELERY_RESULT_BACKEND` | read by `scripts/_native_env.ps1`, `scripts/_native_env.sh` |
 | `CELERY_WORKER_QUEUES` | read by `scripts/restart_cold_stack.sh`, `scripts/run_celery_worker.ps1`, `scripts/run_celery_worker.sh`, `scripts/run_local_stack.sh`, `compose/local/django/start-celeryworker` |
+| `DB_WEDGE_CLIENT_WRITE_MAX_AGE_SECONDS` | **no consumer found -- inert** |
+| `DB_WEDGE_IDLE_IN_TXN_MAX_AGE_SECONDS` | **no consumer found -- inert** |
+| `DB_WEDGE_TERMINATE` | read by `scripts/run_local_stack.sh` |
+| `DB_WEDGE_WATCH_INTERVAL_SECONDS` | **no consumer found -- inert** |
