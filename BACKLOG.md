@@ -1125,10 +1125,12 @@ and `htmlcov/` but nothing generates them.
   Chinese/English checklist with unchecked items and no
   `Objective`/`Implemented Features`/`Key Files` structure. Convert before
   tagging.
-- `CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
+- ~~`CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
   reversed by the single-`.env` consolidation. Unlike the duplicate-`0.1.7`
   entry, which carries an explicit historical note, this one has no forward
-  pointer.
+  pointer.~~ Stale: it has one. `CHANGELOG.md:3081-3083` carries "**Note (0.1.13)**:
+  This was later reversed by the single-`.env` consolidation", pointing at
+  `docs/reference/env.md`.
 - Decide `LICENSE`. `README.md` declares the project private and proprietary and
   a proprietary notice file now exists, but the choice should be conscious
   rather than incidental.
