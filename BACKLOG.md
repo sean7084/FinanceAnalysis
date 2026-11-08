@@ -457,6 +457,61 @@ problem above.
 
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
+**Measured outcome 2026-11-08 — the cursor fix landed, and it was not the main cost.** The
+rewrite replaced every `.iterator(chunk_size=...)` with a windowed bulk fetch and narrowed the
+largest scan from `indicator_type__in=<19>` to `indicator_type='RS_SCORE'` (105x fewer rows, a
+bitmap index instead of a seq scan; EXPLAIN and a byte-identical six-month A/B are recorded in
+`apps/core/db_scans.py`). Then the full range was run with that rewrite in place:
+`--effective-universe-only` over the whole history was **killed at the 90-minute timeout without
+finishing** (`VALIDATE_RC=124`). Sampling `pg_stat_activity` through the run showed the bulk of
+the time in the **per-asset** OHLCV continuity phase, which the rewrite does not touch.
+
+So the premise in this entry — that the coverage scans drive the 16-year runtime — is wrong. The
+gate is dominated by validating 1,886 assets across ~4,000 sessions one asset at a time. Making
+it usable needs that phase addressed (restrict to sessions where the asset is in the effective
+universe, or parallelise across assets), which is separate work.
+
+What did land is still worth having: no named cursor anywhere in the command, 105x fewer rows in
+the largest scan, one window of peak memory instead of one history of rows, and the long read
+transaction that pinned xmin is gone. **Do not quote a full-range speedup — there is not one.**
+
+**Profiled 2026-11-08: it is round-trip bound, and the fix is batching, not scanning.** One year
+of data under `cProfile` (`tmp/vdq.prof`): `cursor.execute` accounts for **722 s of 812 s — 89%
+of the run — across only 7,327 calls**, i.e. **~99 ms per query**. That is latency on the
+WSL2<->NAS link, not row volume or CPU. `_write_feature_continuity_gaps` alone is 484 s (60% of
+the total) over 602 assets, and it issues **six queries per asset**: `FundamentalFactorSnapshot`,
+`CapitalFlowSnapshot`, `AssetMoneyFlowSnapshot`, two `AssetMarginDetailSnapshot` reads, and
+`TechnicalIndicator`. 602 x 6 = ~3,600 round trips for one year; 16 years is the 90-minute run.
+
+So the next change should collapse those per-asset queries into a few batched reads grouped in
+Python — the same shape `_write_effective_universe_daily_coverage` already uses. Expected effect
+is roughly an order of magnitude, because the cost is per round trip rather than per row.
+
+**Then the micro-benchmark corrected the cause, and it is worse than "round trips".** EXPLAIN
+(ANALYZE, BUFFERS) on the per-asset technical-indicator read, same window:
+
+| read | execution | shared buffers |
+| --- | --- | --- |
+| first (cold) | 700-900 ms | `read=170..290`, `hit≈4,100` |
+| re-read (warm) | 12-27 ms | `read=0`, `hit≈4,600` |
+
+Same plan, same rows (6,692), and a variant without the `timestamp__date` cast changed nothing.
+The 800 ms is **cold block reads over the NAS link** — not planning, not the cast, not the filter.
+~35x between cold and warm.
+
+That advantage does not survive a whole run. Two consecutive one-year invocations measured **91 s
+and 87 s**, so the second got nothing, because the working set exceeds shared_buffers and early
+blocks are evicted before the run ends. (A profiled run of that same window took 812 s while the
+cache was cold — a ~9x spread attributable to cache state, not to code.) So the answer is not
+"run it twice": it is to read each block **once** in a batched pass and consume the rows while
+they are hot.
+
+Not attempted here on purpose. This is the release gate, its failure mode is silent under-reporting
+rather than a crash, and the change needs an old-vs-new equivalence run on a fixed window (the
+method used for the coverage scans) before it can be trusted. A subtly wrong gate is worse than a
+slow one.
+
+
 Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
 with the backend in `wait_event_type=IO, wait_event=DataFileRead` on
 `FETCH FORWARD 50000 FROM "_django_curs_12349"`. The quoted cursor name is the tell — the command
@@ -510,6 +565,100 @@ To do:
 - Then re-establish `--effective-universe-only --fail-on-critical` as the release gate and record
   the passing counts, so a future regression is distinguishable from the current noise floor.
   This depends on the scan-performance fix below — a gate that takes an hour gets skipped.
+**Executed 2026-11-08, and the prediction held.** `backfill_asset_list_dates` processed 1,912
+assets and updated **1,383**, moving `null_list_date` from **1,385 to 2** (of which exactly 1 also
+has price rows). It costs three `stock_basic` calls plus an AkShare fallback, and writes only the
+fields whose value differs, so it is additive and idempotent — the earlier note about "spending
+quota" was wrong about this command.
+
+Re-running the gate on a one-year window with `--fail-if-critical` (`--effective-universe-only`)
+now **exits 1 with 1,530 criticals, and the split is the point**:
+
+| issue | count | before the backfill |
+| --- | --- | --- |
+| `missing_factor_score` | 1,497 | — |
+| `missing_ohlcv` | **12** | ~1,126,060 |
+| `stale_macro_snapshot` | 11 | — |
+| `usable_asset_count_cliff` | 9 | — |
+| `etf_index_valuation_index_coverage` | 1 | — |
+
+`missing_ohlcv` collapsed by five orders of magnitude, and the gate is now interpretable: 1,497 of
+1,530 criticals are one named, explainable class rather than 5.3M artefacts of an assumed range.
+`missing_ohlcv_unknown_list_date` — the warning added alongside this — does not even appear, because
+only one asset is left in that state.
+
+**Then `missing_factor_score` was attributed, and it was the same class of mistake.** The 1,497
+rows were 499 assets × exactly the last three sessions, because `FactorScore` stopped at
+2026-11-03 while OHLCV ran on: the factor pipeline simply had not reached those sessions yet. The
+gate compared against the calendar and had no notion of how far the pipeline had got — the same
+error as demanding OHLCV from 2010 for an asset listed in 2020.
+
+So `missing_factor_score` is now a **warning named `missing_factor_score_pipeline_lag`** for any
+date after the newest date *any* asset carries a composite score for, with the watermark named in
+the detail row. A hole *before* the watermark stays critical, because that one is real. One
+aggregate computes the watermark per run, not per asset.
+
+That took the gate from **1,530 criticals to 33**, and every one of the 33 is a concrete claim:
+
+| issue | count |
+| --- | --- |
+| `missing_ohlcv` | 12 |
+| `stale_macro_snapshot` | 11 |
+| `usable_asset_count_cliff` | 9 |
+| `etf_index_valuation_index_coverage` | 1 |
+
+Still open, deliberately:
+- **Those 33 are the real backlog of the data layer**, and each needs its own look. None is an
+  artefact of an assumption any more.
+- **The gate is still too slow to run at full history** (>90 minutes; see the
+  `perf/validate-data-quality-scans` notes — it is cold-block-I/O bound on per-asset reads). Until
+  that is addressed, a one-year window is the only practically runnable form.
+
+**The 33 attributed, and 12 of them traced to a missing suspension series — resolved 2026-11-08.**
+
+| issue | count | what it is |
+| --- | --- | --- |
+| `missing_ohlcv` | 12 | individual assets missing 1-5 consecutive sessions between 2026-07 and 2026-10 |
+| `stale_macro_snapshot` | 11 | macro series older than the 45-day bound |
+| `usable_asset_count_cliff` | 9 | coverage drops past the cliff ratio on 9 dates |
+| `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows |
+
+**The first read of the 12 was wrong, and the correction is the finding.** They looked like holes in
+the price series. They are not: `pro.daily` returns **no rows at all** for those assets on those
+dates, because the stocks were halted. And `pro.suspend_d` *does* return the halts — 600363
+`2026-09-29` type `S`, 002155 `2026-08-20/21/24` type `S`, 300567 `2026-07-09/10/13` type `S`,
+000582 `2026-10-08/09` type `S`. What was missing was **our** `AssetSuspension` rows: the table spans
+2001-2026 with 143,860 rows, so it is not a window limit, but those specific dates were absent.
+
+Backfilling that window (`backfill_asset_suspensions --start-date 2026-07-01 --end-date 2026-10-31`)
+wrote **196 rows, 171 of them full-day**, and the gate's criticals went **33 -> 21** with every
+`missing_ohlcv` gone. So the price series was never wrong; the excuse data was.
+
+Why the window was missing: the suspension series is **watermark-driven**, not row-presence driven —
+`detectors.py` class B — because a day with no suspensions legitimately has no rows. Catch-up replays
+it only when the *beat task itself* missed an occurrence, not when the provider window a past run
+covered was incomplete. A range the pipeline never walked is therefore never revisited, and nothing
+in the system reports that. That is the durable lesson: **class-B series need a periodic range
+backfill, not only a watermark replay.**
+
+**The remaining 21, attributed. None of them is a code defect, and none was downgraded.**
+
+| issue | count | what it actually is |
+| --- | --- | --- |
+| `stale_macro_snapshot` | 11 | one outage. Every session 2026-07-17..07-31 saw its newest `MacroSnapshot` at `2026-06-01`, past the 45-day bound. Macro is current now (newest `2026-11-01`), so this is a historical hole, not a live one. |
+| `usable_asset_count_cliff` | 9 | single-day, single-family holes that zero the usable mask: 2026-05-28 `sentiment_score` 0 of 500, 2026-06-05 `factor_score` 0 of 500, 2026-09-24 `fundamental_snapshot` 57 of 500. |
+| `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows. |
+
+Deliberately **not** downgraded, unlike the `list_date` and pipeline-watermark cases above. Those two
+were the gate being unable to justify its own expectation (unknown listing date; a session the pipeline
+had not reached yet). Here the expectation is right and the data was genuinely absent on those dates.
+Downgrading would have hidden a real gap.
+
+That leaves an open policy question rather than a task: **should the release gate fail on a historical
+gap that has since closed?** Today it does, so 21 criticals stand between the current tree and a clean
+all-history run. The alternatives are (a) keep failing and backfill the three holes, (b) scope the gate
+to a recent window and treat all-history as a separate report, or (c) let the gate fail only on gaps
+newer than the last verified-clean date. Not decided here.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
@@ -856,98 +1005,67 @@ repopulate via `sync_artifacts_from_store`. Procedure + ops:
 
 ### Empty tables behind live features
 
-`analytics_alertrule`, `analytics_alertevent`,
-`analytics_screenertemplate`, and `macro_eventimpactstat` all have **0 rows**.
+Measured 0 rows: `analytics_alertrule`, `analytics_alertevent`,
+`analytics_screenertemplate`, `macro_eventimpactstat`.
 
-- `check_alert_rules` runs every 5 minutes against no rules, so the WebSocket
-  alert stream connects and stays permanently silent.
-- The Alert Center page combines a live socket with `/alert-events/` history and
-  has nothing to show.
-- Screener templates are a documented API surface with no templates.
+**Partly resolved since.** `check_alert_rules` now seeds one active `FEED_STALE` rule
+(`'ETF data feed health'`) on first run via `_ensure_feed_stale_rule`, so
+`analytics_alertrule` no longer stays at zero and the alert stream has something to fire
+on. `analytics_alertevent` fills only when a rule triggers, which is correct.
 
-Either seed reference data, or document these as user-provisioned and empty by
-design. Right now the features look broken rather than unconfigured.
+**`ScreenerTemplate.is_public` is gone.** It gated nothing: there is no `owner` field
+since the auth module was removed, `ScreenerTemplateViewSet.get_queryset` returns every
+row, and the flag existed only in the serializer, the admin list and an index. A checkbox
+in the admin that changes no behaviour is worse than no checkbox. Dropped in migration
+`analytics/0010`, along with its index and the serializer/admin references.
+
+**Still open, and it is a product decision rather than a cleanup:**
+`macro_eventimpactstat` has no production writer. It is not quite dead code — it has an
+API endpoint (`apps/macro/views.py`), a serializer, an admin registration, a purge
+command reference, and tests that create rows directly — so removing it is removing an
+API surface, not deleting an unused model. Two honest options: implement the writer that
+populates it from news/policy events, or remove the model, endpoint, serializer, admin and
+those tests together. Leaving it as an endpoint that can only ever return nothing is the
+option least worth keeping.
+
+No seed/fixture mechanism exists anywhere in the repo (`find apps -type d -name fixtures`
+is empty, no seed command), so "seed reference data" would mean building one first.
+Documenting the remaining surfaces as user-provisioned is the cheaper path, and the Alert
+Center already has an empty-state string (`alerts.noLive`).
 
 ---
 
 ## Open — frontend
 
-### Three lint warnings remain, and the ratchet already tolerates them
+### Frontend static checks — resolved; the ratchet is gone
 
-`npm run build` exits 0 and `npm run lint` exits 0. This entry previously recorded six
-TypeScript errors and one ESLint error, and both claims are now false: commit `5883eaf`
-(PR #17) fixed all seven, and `src/i18n.tsx` is 620 lines long, so the `629:17` it cited
-cannot exist. `frontend/dist` rebuilds from a clean checkout again.
+All three `react-hooks/exhaustive-deps` warnings are fixed and `npm run lint` reports zero.
+With nothing left to tolerate, `frontend/scripts/check-static-baseline.mjs` and
+`frontend/static-baseline.json` are deleted and CI calls `npm run build` and `npm run lint`
+directly again.
 
-It also claimed nine `react-hooks/exhaustive-deps` warnings, and that number is what this
-revision corrects: `node scripts/check-static-baseline.mjs lint` now reports **three**,
-and `static-baseline.json` has recorded three since `13848f7` restructured the page
-effects. The six that went away were the missing-`t` class; the entry kept asserting them
-because nobody re-read the file after that commit. ESLint still exits 0 with all three
-present because nothing passes `--max-warnings`, so a fourth would arrive silently —
-which is the same blind-spot class as `manage.py test` once discovering zero tests and
-exiting 0, and what the ratchet in the next section closes.
+The ratchet's real value was that a FOURTH warning could not arrive silently: eslint exits
+0 with warnings present unless `--max-warnings` is passed, the same blind-spot class as
+`manage.py test` once discovering zero tests and exiting 0. That guarantee is preserved more
+cheaply — the `lint` script itself is now `eslint . --max-warnings 0`, so a new warning
+fails locally and in CI with no baseline file to maintain.
 
-| Where | Diagnostic | Assessment |
+How each was fixed, because two were not the shape they looked like:
+
+| Where | Diagnostic | Fix |
 | --- | --- | --- |
-| `StockDetailPage:157` | missing dependency `t` | The last survivor of the six. `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — adding it makes the effect re-run on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but do it deliberately rather than to silence a warning |
-| `BacktestWorkbenchPage` (2) | missing `loadRuns`; conditional `extraComparisonOptions` | Neither is the `t` shape. One needs the callback in the array or wrapped in `useCallback`; the other needs its initialisation wrapped in `useMemo` so the effect's dependencies stop changing on every render |
+| `StockDetailPage` | missing dependency `t` | **Not** by adding `t`. The effect stores its failure message in state, so translating inside it would make `t` a dependency and a locale switch would re-run the whole load-and-poll cycle — which broke the test asserting "one load, one poll". The error is now stored as a `{key, status}` descriptor and translated at render, so the message follows the language with no refetch and the effect keeps `[symbol, reloadToken]` |
+| `BacktestWorkbenchPage` | missing `loadRuns` | A `loadRunsRef` carries the latest closure into the mount-only interval effect. Listing `loadRuns` directly would re-create the interval on every render and reset its phase; `runsRef` in the same file was already the pattern for state |
+| `BacktestWorkbenchPage` | conditional `extraComparisonOptions` | Wrapped in `useMemo` keyed on `[selectedRun, runs, selectedRunCompareTargetId]`, so the effect below keys on the candidate set rather than on a new array identity every render |
 
-The six fixed errors are worth keeping as a near-miss rather than as work outstanding. One
-of them — `BacktestWorkbenchPage.tsx` requiring `entry_weekdays` in the create payload —
-looked exactly like a dropped user selection, and was in fact the type being wrong:
-`BacktestWorkbenchPage.test.tsx` asserts
+The six TypeScript errors this entry used to record were fixed by `5883eaf` (PR #17), and one
+of them is worth keeping as a near-miss: `BacktestWorkbenchPage.tsx` appeared to require
+`entry_weekdays` in the create payload, looked exactly like a dropped user selection, and was
+in fact the type being wrong — `BacktestWorkbenchPage.test.tsx` asserts
 `expect(payload?.parameters).not.toHaveProperty('entry_weekdays')`, so omitting it is
 deliberate and tested. A required parameter silently missing from a payload is what a real
-bug looks like, and the test asserting its absence was the only thing distinguishing the
-two. Check for that before "fixing" a type error.
-
-### CI gates both static checks through a ratchet
-
-`.github/workflows/ci.yml` runs the type-check and the lint as blocking steps of the
-`frontend` job, but through `frontend/scripts/check-static-baseline.mjs` rather than
-directly. The script runs the command, parses its diagnostics, and fails only on something
-beyond what `frontend/static-baseline.json` records.
-
-The recorded baseline is **zero TypeScript errors, zero ESLint errors, three
-`react-hooks/exhaustive-deps` warnings** — the three itemised above. So the type-check is
-exactly as strict as the bare `npm run build` it replaced, and the known warnings are
-tolerated on arrival while a fourth fails the job.
-
-A diagnostic is keyed by file, rule code and a 40-character fingerprint of its message —
-deliberately not by line and column. Line numbers move whenever code is edited above them,
-and a position-keyed baseline would turn every unrelated change into a false regression,
-which is how gates get ignored. Forty characters separates every diagnostic currently
-recorded and stops before a TypeScript type dump, whose field order churns independently
-of the error it belongs to.
-
-Re-record one gate after fixing something:
-
-```
-cd frontend && node scripts/check-static-baseline.mjs <build|lint> --update
-```
-
-Lowering the baseline needs no ceremony. Raising it — adding a key or increasing a count —
-also requires `--allow-increase`, so absorbing a new failure stays a deliberate act with a
-reason in the commit rather than a reflex. The script also fails when a gate exits non-zero
-and parses *zero* diagnostics, because that means either a failure the parser does not
-understand or a parser that has gone stale, and neither may pass silently.
-
-One trap worth recording. The build gate deletes `node_modules/.tmp/*.tsbuildinfo` before
-running, because `tsc --build` is incremental and a warm run is not a measurement of the
-current tree: it can skip a project it considers up to date, or replay diagnostics
-recorded against an older revision of the source. Re-recording this baseline began with
-`npm run build` reporting six TypeScript errors, and the same command reporting none once
-the build-info files were removed — confirmed independently by
-`tsc -p tsconfig.app.json --noEmit` and `tsc -b --force`, both exiting 0. A baseline taken
-from that first reading would have enshrined six errors the tree did not have. CI never
-hits this, because `npm ci` starts cold; a local `--update` would have.
-
-Clear the three warnings and the ratchet is pure overhead: delete the script and the
-baseline file, and put the plain `npm run build` and `npm run lint` back into the two
-steps. The build half of that is already true — its baseline is 0 errors and 0 warnings,
-and `check-static-baseline.mjs build` says so and prints this same instruction. Only the
-lint gate still earns its keep.
+bug looks like, and the test asserting its absence was the only thing distinguishing the two.
+Check for that before "fixing" a type error.
 
 ### CI exists, and asserts a discovery floor
 
@@ -956,8 +1074,9 @@ lint gate still earns its keep.
 - **`backend`** (blocking) — PostgreSQL 15 and Redis 7 service containers, then
   `manage.py check`, `makemigrations --check --dry-run`,
   `export_documentation_facts --check`, and the full suite.
-- **`frontend`** (blocking, named "Frontend tests, type-check, and lint") — `npm ci`, the
-  ratcheted type-check and lint described above, and the vitest suite.
+- **`frontend`** (blocking, named "Frontend tests, type-check, and lint") — `npm ci`,
+  `npm run build`, `npm run lint` (which now fails on any warning via
+  `--max-warnings 0`), and the vitest suite.
 
 There used to be a third, `frontend-static`, holding the two static checks under
 `continue-on-error: true` while they failed. `5883eaf` fixed the errors and folded the
@@ -989,14 +1108,28 @@ enough to dominate the job runtime.
 ## Open — configuration and infrastructure
 
 ### OpenAPI schema metadata is stale
+### `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` is not configurable
 
-- `SPECTACULAR_SETTINGS['VERSION'] = '0.2.0'` — a third version scheme alongside
-  the project version and the README footer, cross-referenced by nothing. v0.1.17
-  bumped it `1.2.0` → `0.2.0` because removing the authentication module is a
-  breaking schema change, which narrowed but did not close the gap: it still does
-  not track `pyproject`/README.
-- ~~The schema description says "Chinese Markets **(CSI 300)**", omitting CSI
-  A500.~~ The description now reads "(CSI 500)", matching the migrated universe.
+`apps/core/task_health.py` reads it via `getattr(settings, ..., 2400)`, but
+the setting is never defined and never read from the environment. Changing the
+stale-run threshold currently requires a code edit. Wire it through `env.int()`.
+
+### OpenAPI schema metadata — version resolved
+
+`pyproject.toml` now owns the project version; `config/settings/base.py` reads it at import
+and `SPECTACULAR_SETTINGS['VERSION']` uses it, so the schema reports the version the
+artifacts were released under instead of a number cross-referenced by nothing. This entry
+used to record three schemes that disagreed — schema `0.2.0`, the CHANGELOG's newest
+heading `0.1.53`, and `frontend/package.json` `0.0.0` — with no connection between them.
+v0.1.17's lowering from `1.2.0` to `0.2.0` (removing the authentication module is a
+breaking schema change) had narrowed the gap without closing it.
+
+`frontend/package.json` is aligned to the same number, and `apps/core/tests_version.py`
+fails if either it or the newest CHANGELOG heading drifts from `pyproject.toml`. That test
+is the connection the three numbers never had.
+
+The schema description reads "(CSI 500)", matching the migrated universe — that half was
+already fixed.
 
 ### The ML stack is pinned; the transitive closure is not
 
@@ -1021,36 +1154,37 @@ and the WSL2-as-NVIDIA-owner framing. Document which runtimes actually have GPU.
 And `jieba` is **not declared at all**, which is not a pinning problem but a missing
 dependency with a silent degradation path — see the `sentiment_score` entry above.
 
-### Unpinned *transitive* dependencies broke CI on every branch (fixed for kombu, the class remains)
+### Transitive dependencies are now locked — resolved
 
-On 2026-11-06 PR #79 failed CI with three errors that looked like Celery broker exhaustion:
-`IndexError: pop from empty list` in `kombu/transport/virtual/base.py:create_channel`. That frame is
-a red herring — it is kombu's normal lazy-init path, and the real terminal exception was buried
-~40 frames deeper:
+`requirements/*.in` carry the direct intent; the matching `.txt` are `pip-compile` lockfiles
+with the full transitive closure and a hash per wheel, and CI installs
+`pip install --require-hashes -r requirements/local.txt`. A package released overnight can
+no longer turn an unrelated PR red, which is what kombu 5.7.0 did on 2026-11-03: celery only
+constrains it to `<6.0`, a fresh resolve floated it onto a version whose redis extra rejects
+`redis==5.0.4`, and every branch went red without a code change.
 
-```
-kombu.exceptions.VersionMismatch: Redis transport requires redis-py versions 6.1.0 or later.
-You have 5.0.4
-```
+`scripts/check_requirements_lockfile.py` runs first in the job and fails if an `.in` and its
+`.txt` disagree, if a package line has no `--hash`, or if a `.txt` still carries a `-r`
+include (a compiled file is flattened). It is a text comparison on purpose: a CI
+`pip-compile --dry-run` would re-resolve torch, mlflow and akshare with hashes -- about
+twenty minutes per file here -- to catch the one failure that actually happens, a forgotten
+recompile.
 
-`requirements/base.txt` pins `celery==5.4.0` and `redis==5.0.4`, but celery only constrains kombu to
-`<6.0,>=5.3.4`, so a fresh resolve floats kombu to whatever has been released. **kombu 5.7.0 shipped
-on 2026-11-03 and tightened its redis extra to `>=6.4.0`.** `main`'s last green run was 2026-11-02 —
-one day earlier — so the breakage was invisible until an unrelated branch happened to run CI after
-the release, and then presented as that branch's regression. Local runs passed the whole time because
-the local venv had resolved kombu 5.6.2, which declares `redis>=4.5.2,<6.5`.
+Two things found while generating them, neither introduced by this change:
 
-Fixed by pinning `kombu==5.6.2` beside `celery` and `redis`. What is **not** fixed is the class:
-every transitively-resolved package can do this, and the failure surfaces as an unrelated PR going
-red. Two things would contain it:
+- **`local.txt` and `production.txt` disagree on the server stack.** mlflow pulls
+  `gunicorn==25.3.0` and `uvicorn==0.54.0` transmissively, so the CI lockfile pins those,
+  while `production.txt` pins the declared `gunicorn==23.0.0` / `uvicorn[standard]==0.32.0`.
+  Each file is internally consistent; the two describe different environments. Worth
+  reconciling before a real deployment, because CI tests a gunicorn that production would
+  not run.
+- **The lockfiles are resolved on Python 3.12 and CI runs 3.14** (`setup-python`), because
+  the verified local interpreter is 3.12. Marker evaluation can differ between the two. A
+  hashed install on a different interpreter may legitimately reject a marker-excluded
+  package; if that happens, compile with `--python-version` matching CI.
 
-- A lockfile (`pip-compile` / `uv lock`) committed alongside `requirements/*.txt`, so CI installs a
-  resolved set rather than re-resolving against today's PyPI.
-- Until then, pin any package that a hard runtime check depends on — kombu was only caught because it
-  *raises*; a silent behaviour change in a floated dependency would have been worse.
-
-Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of the
-above exception" chain is rarely the cause.
+Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of
+the above exception" chain is rarely the cause.
 
 ### `requirements/production.txt` cannot support the documented deployment
 
@@ -1103,14 +1237,33 @@ about why the page-load budget works and a scan budget cannot.
   outstanding.
 - Duplicate `import json` at
   `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.
+- `CHANGELOG.md` 0.1.13 (557 lines, `:2486-3042`) is an audit checklist rather than release
+  notes. **Re-scoped, not converted:** the section already opens with its own note
+  (`:2488-2491`) saying it is an audit workflow record and "will be converted to standard
+  release-note format before the 0.1.13 tag is created". That tag never came — the project
+  is at 0.1.53 — so the condition the note sets has passed rather than been missed.
+  Rewriting it now would mean writing release notes for a release many versions ago,
+  claiming what shipped without the artefacts to check it against; a labelled historical
+  document is worth more than a reconstruction. Leave it, and do not treat it as a template
+  for new entries.
+- `CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
+- ~~Duplicate `import json` at
+  `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.~~
+  Stale: `grep -n "import json"` returns exactly one line (32). Nothing to remove.
 - `CHANGELOG.md` 0.1.13 is an audit scratch pad, not release notes — mixed
   Chinese/English checklist with unchecked items and no
   `Objective`/`Implemented Features`/`Key Files` structure. Convert before
   tagging.
-- `CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
+- ~~`CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
   reversed by the single-`.env` consolidation. Unlike the duplicate-`0.1.7`
   entry, which carries an explicit historical note, this one has no forward
   pointer.
+  pointer.~~ Stale: it has one. `CHANGELOG.md:3081-3083` carries "**Note (0.1.13)**:
+  This was later reversed by the single-`.env` consolidation", pointing at
+  `docs/reference/env.md`.
+- Decide `LICENSE`. `README.md` declares the project private and proprietary and
+  a proprietary notice file now exists, but the choice should be conscious
+  rather than incidental.
 
 ---
 

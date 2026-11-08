@@ -47,8 +47,8 @@ export function DataLimitsPage() {
             <strong>{coverage.earliest_first_trade_date ?? '-'}</strong>
           </div>
           <div className="metric-card">
-            <span>{t('dataLimits.conflictTitle')}</span>
-            <strong>{(data?.max_positions_conflict.values ?? []).join(' vs ')}</strong>
+            <span>{t('dataLimits.maxPositionsTitle')}</span>
+            <strong>{data?.max_positions.value ?? '-'}</strong>
           </div>
         </div>
       )}

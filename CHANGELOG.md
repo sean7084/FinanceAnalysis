@@ -90,6 +90,32 @@
   300 lines earlier. The `TechnicalIndicator` `.date()` read-side claim has no surviving call
   sites. Resolved correctness narratives moved out of Open into their own section, keeping the
   reasoning that is the durable part.
+- **Dependencies are locked, with a hash per wheel.** `requirements/*.in` now carry the direct
+  intent and the matching `.txt` are `pip-compile` lockfiles holding the full transitive closure;
+  CI installs `pip install --require-hashes -r requirements/local.txt`. Before this, every CI run
+  re-resolved against whatever PyPI held that morning, which is how kombu 5.7.0 turned every
+  branch red on 2026-11-03: celery only constrains it to `<6.0`, the fresh resolve floated it onto
+  a version whose redis extra rejects `redis==5.0.4`, and the failure surfaced in unrelated PRs.
+  `scripts/check_requirements_lockfile.py` runs before the install and fails if an `.in` and its
+  `.txt` disagree, if any package line lacks a `--hash`, or if a `.txt` still carries a `-r`
+  include — cheaply and offline, because a CI `pip-compile --dry-run` would re-resolve torch,
+  mlflow and akshare (about twenty minutes per file here) to catch that same forgotten-recompile
+  mistake. `jieba` is declared and pinned at last: it was imported behind a `try/except` but never
+  listed, so every environment silently took the unsegmented sentiment fallback.
+- **The frontend static-check ratchet is gone; `--max-warnings 0` replaces it.** The three
+  remaining `react-hooks/exhaustive-deps` warnings are fixed, so
+  `frontend/scripts/check-static-baseline.mjs` and `frontend/static-baseline.json` are
+  deleted and CI calls `npm run build` and `npm run lint` directly. The ratchet existed so a
+  fourth warning could not arrive silently; that guarantee is preserved in the `lint` script
+  itself, which now passes `--max-warnings 0`, so it holds locally too and there is no
+  baseline file to maintain. Two of the three were not the shape they looked like:
+  `StockDetailPage` did **not** get `t` added to its dependency array — that made the loader
+  effect re-run on the language switch and broke the "one load, one poll" test — instead its
+  error is stored as a `{key, status}` descriptor and translated at render, so the message
+  follows the locale with no refetch; `BacktestWorkbenchPage` reads the latest `loadRuns`
+  through a ref inside its mount-only interval effect, and memoises
+  `extraComparisonOptions` so the effect keys on the candidate set rather than a new array
+  identity every render.
 
 ### version 0.1.53
 
