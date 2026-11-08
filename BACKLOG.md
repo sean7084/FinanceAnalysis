@@ -570,6 +570,27 @@ Still open, deliberately:
   `perf/validate-data-quality-scans` notes — it is cold-block-I/O bound on per-asset reads). Until
   that is addressed, a one-year window is the only practically runnable form.
 
+**The 33 attributed 2026-11-08: 12 are real holes that catch-up cannot see.**
+
+| issue | count | what it is |
+| --- | --- | --- |
+| `missing_ohlcv` | 12 | individual assets missing 1-5 consecutive sessions between 2026-07 and 2026-10 |
+| `stale_macro_snapshot` | 11 | macro series older than the 45-day bound |
+| `usable_asset_count_cliff` | 9 | coverage drops past the cliff ratio on 9 dates |
+| `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows |
+
+The 12 are **not** suspensions, and that is the finding. `AssetSuspension` is current — 143,860 rows
+with newest `trade_date` 2026-11-06 — yet none of the gap dates are covered: 002155's newest
+suspension is 2026-01-26 against a 2026-08-20..26 hole, 300567's only suspension is 2016-11-22
+against a 2026-07-09..15 hole, and 600363 has no suspension row at all against its 2026-09-29 gap.
+
+They persist because **catch-up's OHLCV detector only fires when a whole session is empty**
+(`detectors.py`: `if count == 0`). One asset missing one to five bars never moves the cross-sectional
+count, so no repair is ever scheduled for it. That is a gap in the detector, not in the sync —
+`sync_asset_history` would fill these if asked. Repairing them is a per-asset re-fetch; making the
+detector see them needs a per-asset comparison against the calendar rather than a cross-sectional
+zero check, which changes the catch-up design and its quota-budget model.
+
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
 Observed twice on 2026-11-05. Signature, from three independent sources that all have to agree
