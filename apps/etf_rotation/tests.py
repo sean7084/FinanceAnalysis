@@ -7703,7 +7703,9 @@ class PinnedRuntimeTests(SimpleTestCase):
             line = line.strip()
             if '==' in line and not line.startswith('#'):
                 name, pinned = line.split('==', 1)
-                pins[name.strip().lower()] = pinned.strip()
+                # The file is a pip-compile lockfile, so a package line ends with a
+                # continuation backslash before its --hash lines: `lightgbm==4.6.0 \`.
+                pins[name.strip().lower()] = pinned.strip().rstrip('\\').strip()
         for name in ('lightgbm', 'torch', 'scikit-learn', 'numpy'):
             self.assertIn(name, pins, f'{name} must be pinned in requirements/base.txt')
             self.assertEqual(
