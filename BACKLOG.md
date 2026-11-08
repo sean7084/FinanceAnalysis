@@ -1001,17 +1001,33 @@ correcting.
 
 ### Empty tables behind live features
 
-`analytics_alertrule`, `analytics_alertevent`,
-`analytics_screenertemplate`, and `macro_eventimpactstat` all have **0 rows**.
+Measured 0 rows: `analytics_alertrule`, `analytics_alertevent`,
+`analytics_screenertemplate`, `macro_eventimpactstat`.
 
-- `check_alert_rules` runs every 5 minutes against no rules, so the WebSocket
-  alert stream connects and stays permanently silent.
-- The Alert Center page combines a live socket with `/alert-events/` history and
-  has nothing to show.
-- Screener templates are a documented API surface with no templates.
+**Partly resolved since.** `check_alert_rules` now seeds one active `FEED_STALE` rule
+(`'ETF data feed health'`) on first run via `_ensure_feed_stale_rule`, so
+`analytics_alertrule` no longer stays at zero and the alert stream has something to fire
+on. `analytics_alertevent` fills only when a rule triggers, which is correct.
 
-Either seed reference data, or document these as user-provisioned and empty by
-design. Right now the features look broken rather than unconfigured.
+**`ScreenerTemplate.is_public` is gone.** It gated nothing: there is no `owner` field
+since the auth module was removed, `ScreenerTemplateViewSet.get_queryset` returns every
+row, and the flag existed only in the serializer, the admin list and an index. A checkbox
+in the admin that changes no behaviour is worse than no checkbox. Dropped in migration
+`analytics/0010`, along with its index and the serializer/admin references.
+
+**Still open, and it is a product decision rather than a cleanup:**
+`macro_eventimpactstat` has no production writer. It is not quite dead code — it has an
+API endpoint (`apps/macro/views.py`), a serializer, an admin registration, a purge
+command reference, and tests that create rows directly — so removing it is removing an
+API surface, not deleting an unused model. Two honest options: implement the writer that
+populates it from news/policy events, or remove the model, endpoint, serializer, admin and
+those tests together. Leaving it as an endpoint that can only ever return nothing is the
+option least worth keeping.
+
+No seed/fixture mechanism exists anywhere in the repo (`find apps -type d -name fixtures`
+is empty, no seed command), so "seed reference data" would mean building one first.
+Documenting the remaining surfaces as user-provisioned is the cheaper path, and the Alert
+Center already has an empty-state string (`alerts.noLive`).
 
 ---
 
@@ -1203,16 +1219,19 @@ and `htmlcov/` but nothing generates them.
   `apps/sentiment/` (13 files, ~1 docstring). Module-level docstrings were added
   in this pass; the deep function-level coverage of `backtest/tasks.py` is still
   outstanding.
-- Duplicate `import json` at
-  `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.
+- ~~Duplicate `import json` at
+  `apps/backtest/management/commands/run_core_backtest_matrix.py` lines 28-29.~~
+  Stale: `grep -n "import json"` returns exactly one line (32). Nothing to remove.
 - `CHANGELOG.md` 0.1.13 is an audit scratch pad, not release notes — mixed
   Chinese/English checklist with unchecked items and no
   `Objective`/`Implemented Features`/`Key Files` structure. Convert before
   tagging.
-- `CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
+- ~~`CHANGELOG.md` 0.1.12 states env loading moved to `.envs/.local`; that was
   reversed by the single-`.env` consolidation. Unlike the duplicate-`0.1.7`
   entry, which carries an explicit historical note, this one has no forward
-  pointer.
+  pointer.~~ Stale: it has one. `CHANGELOG.md:3081-3083` carries "**Note (0.1.13)**:
+  This was later reversed by the single-`.env` consolidation", pointing at
+  `docs/reference/env.md`.
 - Decide `LICENSE`. `README.md` declares the project private and proprietary and
   a proprietary notice file now exists, but the choice should be conscious
   rather than incidental.

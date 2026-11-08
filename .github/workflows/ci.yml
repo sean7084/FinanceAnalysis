@@ -296,6 +296,20 @@ jobs:
 
           echo "Suite green: $count tests."
 
+      - name: Coverage (report only, main only)
+        # .coveragerc and coverage==7.6.4 have both existed since 5883eaf, but no step ever
+        # ran coverage, so the number was simply unknown. Report-only on purpose: a
+        # threshold picked before a single real measurement is a gate that gets routed
+        # around, and the same argument rules out a wall-clock budget for the data-quality
+        # gate. Watch this for a round or two, then decide whether a floor is worth having.
+        #
+        # main-only because this re-runs the whole suite; PR feedback should stay fast.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          # No --source: .coveragerc already says `source = apps` and `branch = True`.
+          coverage run manage.py test --noinput
+          coverage report
+
   frontend:
     name: Frontend tests, type-check, and lint
     runs-on: ubuntu-latest
