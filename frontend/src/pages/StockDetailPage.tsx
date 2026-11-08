@@ -73,7 +73,12 @@ export function StockDetailPage() {
   const navigate = useNavigate()
   const { symbol = '600519' } = useParams()
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // The failure is stored as a key, not as a translated string. Translating inside the
+  // loader effect would make `t` a dependency, so a locale switch would re-run the whole
+  // load-and-poll cycle -- and this page's cache and poll machinery is built around
+  // exactly one load per symbol. Keeping the key lets the message follow the language at
+  // render time with no refetch.
+  const [error, setError] = useState<{ key: string; status?: number } | null>(null)
   const [stockName, setStockName] = useState('')
   const [klineData, setKlineData] = useState<Array<{ time: string; open: number; high: number; low: number; close: number }>>([])
   const [predData, setPredData] = useState<Array<{ horizon: string; up: number; flat: number; down: number }>>([])
@@ -133,7 +138,7 @@ export function StockDetailPage() {
 
         if (!alive || !payload) {
           if (payload === null && alive) {
-            setError(t('stock.noAssetData'))
+            setError({ key: 'stock.noAssetData' })
             setStockName('')
             setKlineData([])
             setPredData([])
@@ -176,9 +181,9 @@ export function StockDetailPage() {
       } catch (err) {
         if (alive) {
           if (err instanceof ApiRequestError) {
-            setError(`${t('stock.loadError')} (HTTP ${err.status})`)
+            setError({ key: 'stock.loadError', status: err.status })
           } else {
-            setError(t('stock.loadError'))
+            setError({ key: 'stock.loadError' })
           }
         }
       } finally {
@@ -424,7 +429,11 @@ export function StockDetailPage() {
         </select>
       </div>
       {loading && <p className="status">{t('common.loading')}</p>}
-      {error && <p className="status disconnected">{error}</p>}
+      {error && (
+        <p className="status disconnected">
+          {t(error.key)}{error.status === undefined ? '' : ` (HTTP ${error.status})`}
+        </p>
+      )}
       <div className="card">
         <strong>{t('stock.sentiment')}: </strong>
         <span>{sentimentText}</span>

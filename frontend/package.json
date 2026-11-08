@@ -1,13 +1,14 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.53",
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js",
     "build": "node ./node_modules/typescript/bin/tsc -b && node ./node_modules/vite/bin/vite.js build",
     "test": "node ./node_modules/vitest/vitest.mjs run",
-    "lint": "node ./node_modules/eslint/bin/eslint.js .",
+    "lint": "node ./node_modules/eslint/bin/eslint.js . --max-warnings 0",
     "preview": "node ./node_modules/vite/bin/vite.js preview"
   },
   "dependencies": {

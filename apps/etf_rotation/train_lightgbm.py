@@ -38,7 +38,7 @@ from django.conf import settings
 from django.db.models import Max, Min
 from django.utils import timezone
 
-from apps.core.date_contract import ETF_TRAINING_START
+from apps.core.date_contract import ETF_TRAINING_START, MIN_TRAIN_SESSIONS
 from apps.core.date_floor import get_historical_data_floor
 from apps.prediction.artifact_store import get_artifact_store, to_store_key
 from apps.prediction.models import ModelVersion
@@ -179,9 +179,10 @@ ENGINE_SOURCE_NAMES = {'ETF_LIGHTGBM': 'LIGHTGBM', 'ETF_LSTM': 'LSTM'}
 def _setting_int(name, default: int) -> int:
     """First integer-valued setting among ``name`` (a name or an ordered list of names).
 
-    Aliases exist because the ETF app was written concurrently: ``rotation_engine`` and
-    ``train_lstm`` both read ``ETF_MAX_POSITIONS``, so the Top-N metric is keyed on that name
-    first and only falls back to the longer alias.
+    The alias list survives for callers that still pass one, but the ETF trainers now
+    agree on a single name per knob: ``ETF_MAX_POSITIONS`` for the held-position count.
+    A second name for the same knob is how the two trainers came to size different
+    portfolios while being compared as if they were the same strategy.
     """
     names = name if isinstance(name, (tuple, list)) else [name]
     for candidate in names:
@@ -972,7 +973,7 @@ def plan_walk_forward(*, start_date=None, end_date=None, n_folds: int = 6, horiz
     the panel is worth fitting at all. ``version_tag`` only shapes the previewed version key.
     """
     min_train_days = (
-        _setting_int('ETF_MIN_TRAIN_DAYS', 250) if min_train_days is None else int(min_train_days)
+        MIN_TRAIN_SESSIONS if min_train_days is None else int(min_train_days)
     )
     base, frame, _counts, folds, panel_dates = _prepare(
         start_date, end_date, n_folds, horizon_days, objective, min_train_days, label=label,
@@ -1039,7 +1040,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
         raise ValueError(f'model_type_label must be an ETF ModelVersion choice, got {model_type_label!r}.')
 
     min_train_days = (
-        _setting_int('ETF_MIN_TRAIN_DAYS', 250) if min_train_days is None else int(min_train_days)
+        MIN_TRAIN_SESSIONS if min_train_days is None else int(min_train_days)
     )
     num_boost_round = (
         _setting_int('ETF_LGB_NUM_BOOST_ROUND', 200) if num_boost_round is None else int(num_boost_round)
@@ -1057,7 +1058,7 @@ def train_walk_forward(*, model_type_label: str = 'ETF_LIGHTGBM', start_date=Non
     horizon_days = base['horizon_days']
     feature_columns = base['feature_columns']
     params = resolve_params(objective, params)
-    top_n = _setting_int('ETF_ROTATION_MAX_POSITIONS', 5)
+    top_n = _setting_int('ETF_MAX_POSITIONS', 3)
     min_train_rows = _setting_int('ETF_MIN_TRAIN_ROWS', 200)
     trail = {item['fold_index']: item for item in audit_folds(folds, panel_dates, horizon_days)}
 

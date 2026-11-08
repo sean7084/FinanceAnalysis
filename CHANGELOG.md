@@ -12,6 +12,20 @@
   mlflow and akshare (about twenty minutes per file here) to catch that same forgotten-recompile
   mistake. `jieba` is declared and pinned at last: it was imported behind a `try/except` but never
   listed, so every environment silently took the unsegmented sentiment fallback.
+- **The frontend static-check ratchet is gone; `--max-warnings 0` replaces it.** The three
+  remaining `react-hooks/exhaustive-deps` warnings are fixed, so
+  `frontend/scripts/check-static-baseline.mjs` and `frontend/static-baseline.json` are
+  deleted and CI calls `npm run build` and `npm run lint` directly. The ratchet existed so a
+  fourth warning could not arrive silently; that guarantee is preserved in the `lint` script
+  itself, which now passes `--max-warnings 0`, so it holds locally too and there is no
+  baseline file to maintain. Two of the three were not the shape they looked like:
+  `StockDetailPage` did **not** get `t` added to its dependency array — that made the loader
+  effect re-run on the language switch and broke the "one load, one poll" test — instead its
+  error is stored as a `{key, status}` descriptor and translated at render, so the message
+  follows the locale with no refetch; `BacktestWorkbenchPage` reads the latest `loadRuns`
+  through a ref inside its mount-only interval effect, and memoises
+  `extraComparisonOptions` so the effect keys on the candidate set rather than a new array
+  identity every render.
 
 ### version 0.1.53
 

@@ -132,6 +132,14 @@ build_services() {
     "backend|bash|$SCRIPT_DIR/run_backend.sh|"
     "celery-worker-ops|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=ops"
   )
+  # Started with the stack rather than as a beat task: django-celery-beat keeps its
+  # schedule in the database, so a wedged pool has no free worker to run the thing
+  # that would rescue it. It classifies by wait-event signature across two samples,
+  # not by duration, so the hour-long data-quality gate and the retrains survive.
+  # DB_WEDGE_TERMINATE=0 or --dry-run makes it observe-only.
+  if [[ "$STACK_SKIP_DB_WATCHDOG" != "1" ]]; then
+    SERVICES+=("db-wedge-watch|${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}|$SCRIPT_DIR/db_wedge_watch.py|")
+  fi
   if [[ "$STACK_ALL_QUEUES" == "1" ]]; then
     SERVICES+=(
       "celery-worker-backtest|bash|$SCRIPT_DIR/run_celery_worker.sh|CELERY_WORKER_QUEUES=backtest"

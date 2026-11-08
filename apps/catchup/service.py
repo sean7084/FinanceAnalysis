@@ -24,10 +24,10 @@ from django.utils import timezone
 
 from apps.core.tushare_client import is_throttle_error
 from apps.markets.calendar_utils import open_trading_dates
-from apps.core.timez import session_today
+from apps.core.timez import session_has_closed, session_today
 
 from . import registry
-from .detectors import CatchUpContext, calendar_scan_start
+from .detectors import KIND_RANGE, CatchUpContext, calendar_scan_start
 from .models import CatchUpRun
 from .replay import classify_cause
 from .repairs import RepairResult
@@ -199,6 +199,36 @@ def _blocking_upstream(descriptor, ctx, memo):
     return blocked
 
 
+def _without_unclosed_session(gap, ctx):
+    """Drop the still-trading session from a gap, keeping any genuine hole behind it.
+
+    ``ctx.as_of`` comes from ``session_today()``, which names the in-progress
+    session from 08:00 Beijing until it closes at 15:00. Detectors report that date
+    as missing because no daily bar can exist for it yet -- correctly, as a matter
+    of row presence, but it is not a hole an outage left. Repairing it spends
+    TuShare quota on a guaranteed miss and writes a permanent FAILED / PROVIDER_GAP
+    evidence row every hour, for a hole the 00:10 nightly sync fills by itself.
+
+    Narrowing rather than skipping the whole series matters: a real multi-day hole
+    with today appended must still repair the real days.
+    """
+    if session_has_closed(ctx.as_of):
+        return gap
+    if gap.kind == KIND_RANGE:
+        if gap.window_end != ctx.as_of:
+            return gap
+        prior = [day for day in ctx.open_dates if day < ctx.as_of]
+        end = prior[-1] if prior else None
+        start = gap.window_start
+        if end is None or (start is not None and start > end):
+            return replace(gap, window_start=None, window_end=None)
+        return replace(gap, window_end=end)
+    kept = tuple(day for day in gap.missing_dates if day != ctx.as_of)
+    if len(kept) == len(gap.missing_dates):
+        return gap
+    return replace(gap, missing_dates=kept)
+
+
 def _repair_series(descriptor, ctx, budget, memo):
     gap = _detect(descriptor, ctx, memo)
     if gap.is_empty:
@@ -209,6 +239,17 @@ def _repair_series(descriptor, ctx, budget, memo):
         return _record(descriptor, ctx, gap, memo, RepairResult(
             units_done=0, units_remaining=gap.unit_count, estimated_calls_spent=0,
             outcome=CatchUpRun.Outcome.SKIPPED, detail=f'dry run: {gap.detail}'))
+    narrowed = _without_unclosed_session(gap, ctx)
+    if narrowed.is_empty:
+        # SKIPPED, not NO_GAP: the data is not complete, it is not due yet. SKIPPED
+        # is in DEDUPED_OUTCOMES, so the hourly tick leaves no permanent evidence row.
+        return _record(descriptor, ctx, gap, memo, RepairResult(
+            units_done=0, units_remaining=0, estimated_calls_spent=0,
+            outcome=CatchUpRun.Outcome.SKIPPED,
+            detail=f'{ctx.as_of} has not closed trading; the nightly sync owns it'))
+    if narrowed is not gap:
+        memo[descriptor.name] = narrowed
+        gap = narrowed
     try:
         result = descriptor.repair(ctx, gap, budget)
     except SoftTimeLimitExceeded:
