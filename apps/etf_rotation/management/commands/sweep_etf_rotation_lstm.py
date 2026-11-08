@@ -61,7 +61,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Min
 from django.utils import timezone
 
-from apps.core.date_contract import ASSET_ETF, STAGE_TRAINING, enforce_date_contract
+from apps.core.date_contract import ASSET_ETF, MIN_TRAIN_SESSIONS, STAGE_TRAINING, enforce_date_contract
 from apps.etf_rotation.models import ETFFeatureSnapshot, ETFRotationBacktest
 
 #: The model type the sweep tunes. Kept as a literal so ``--plan`` works on a host without
@@ -266,7 +266,8 @@ class Command(BaseCommand):
         parser.add_argument('--horizon', type=int,
                             help='Label horizon in sessions. Default: settings.ETF_LABEL_HORIZON_DAYS.')
         parser.add_argument('--min-train-days', type=int,
-                            help='Minimum dates in the first training window. Default: settings.ETF_MIN_TRAIN_DAYS.')
+                            help=f'Minimum dates in the first training window. Default: '
+                                 f'apps/core/date_contract.py MIN_TRAIN_SESSIONS ({MIN_TRAIN_SESSIONS}).')
         parser.add_argument('--sequence-length', type=int, default=DEFAULT_SEQUENCE_LENGTH,
                             help='Bars per sequence (default 20). Part of the fingerprint.')
         parser.add_argument('--limit', type=int,
