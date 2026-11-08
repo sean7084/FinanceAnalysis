@@ -450,6 +450,23 @@ What did land is still worth having: no named cursor anywhere in the command, 10
 the largest scan, one window of peak memory instead of one history of rows, and the long read
 transaction that pinned xmin is gone. **Do not quote a full-range speedup — there is not one.**
 
+**Profiled 2026-11-08: it is round-trip bound, and the fix is batching, not scanning.** One year
+of data under `cProfile` (`tmp/vdq.prof`): `cursor.execute` accounts for **722 s of 812 s — 89%
+of the run — across only 7,327 calls**, i.e. **~99 ms per query**. That is latency on the
+WSL2<->NAS link, not row volume or CPU. `_write_feature_continuity_gaps` alone is 484 s (60% of
+the total) over 602 assets, and it issues **six queries per asset**: `FundamentalFactorSnapshot`,
+`CapitalFlowSnapshot`, `AssetMoneyFlowSnapshot`, two `AssetMarginDetailSnapshot` reads, and
+`TechnicalIndicator`. 602 x 6 = ~3,600 round trips for one year; 16 years is the 90-minute run.
+
+So the next change should collapse those per-asset queries into a few batched reads grouped in
+Python — the same shape `_write_effective_universe_daily_coverage` already uses. Expected effect
+is roughly an order of magnitude, because the cost is per round trip rather than per row.
+
+Not attempted here on purpose. This is the release gate, its failure mode is silent under-reporting
+rather than a crash, and the change needs an old-vs-new equivalence run on a fixed window (the
+method used for the coverage scans) before it can be trusted. A subtly wrong gate is worse than a
+slow one.
+
 
 Observed 2026-11-06 while running the gate: after ~58 minutes the command was still executing,
 with the backend in `wait_event_type=IO, wait_event=DataFileRead` on
