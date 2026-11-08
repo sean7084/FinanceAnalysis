@@ -1017,82 +1017,35 @@ design. Right now the features look broken rather than unconfigured.
 
 ## Open — frontend
 
-### Three lint warnings remain, and the ratchet already tolerates them
+### Frontend static checks — resolved; the ratchet is gone
 
-`npm run build` exits 0 and `npm run lint` exits 0. This entry previously recorded six
-TypeScript errors and one ESLint error, and both claims are now false: commit `5883eaf`
-(PR #17) fixed all seven, and `src/i18n.tsx` is 620 lines long, so the `629:17` it cited
-cannot exist. `frontend/dist` rebuilds from a clean checkout again.
+All three `react-hooks/exhaustive-deps` warnings are fixed and `npm run lint` reports zero.
+With nothing left to tolerate, `frontend/scripts/check-static-baseline.mjs` and
+`frontend/static-baseline.json` are deleted and CI calls `npm run build` and `npm run lint`
+directly again.
 
-It also claimed nine `react-hooks/exhaustive-deps` warnings, and that number is what this
-revision corrects: `node scripts/check-static-baseline.mjs lint` now reports **three**,
-and `static-baseline.json` has recorded three since `13848f7` restructured the page
-effects. The six that went away were the missing-`t` class; the entry kept asserting them
-because nobody re-read the file after that commit. ESLint still exits 0 with all three
-present because nothing passes `--max-warnings`, so a fourth would arrive silently —
-which is the same blind-spot class as `manage.py test` once discovering zero tests and
-exiting 0, and what the ratchet in the next section closes.
+The ratchet's real value was that a FOURTH warning could not arrive silently: eslint exits
+0 with warnings present unless `--max-warnings` is passed, the same blind-spot class as
+`manage.py test` once discovering zero tests and exiting 0. That guarantee is preserved more
+cheaply — the `lint` script itself is now `eslint . --max-warnings 0`, so a new warning
+fails locally and in CI with no baseline file to maintain.
 
-| Where | Diagnostic | Assessment |
+How each was fixed, because two were not the shape they looked like:
+
+| Where | Diagnostic | Fix |
 | --- | --- | --- |
-| `StockDetailPage:157` | missing dependency `t` | The last survivor of the six. `t` comes from a `useMemo` keyed on `[locale]` in `src/i18n.tsx`, so it is stable within a locale but changes identity when the user switches language — adding it makes the effect re-run on a locale change. That is probably correct, since an effect rendering translated text should re-run when the translation changes, but do it deliberately rather than to silence a warning |
-| `BacktestWorkbenchPage` (2) | missing `loadRuns`; conditional `extraComparisonOptions` | Neither is the `t` shape. One needs the callback in the array or wrapped in `useCallback`; the other needs its initialisation wrapped in `useMemo` so the effect's dependencies stop changing on every render |
+| `StockDetailPage` | missing dependency `t` | **Not** by adding `t`. The effect stores its failure message in state, so translating inside it would make `t` a dependency and a locale switch would re-run the whole load-and-poll cycle — which broke the test asserting "one load, one poll". The error is now stored as a `{key, status}` descriptor and translated at render, so the message follows the language with no refetch and the effect keeps `[symbol, reloadToken]` |
+| `BacktestWorkbenchPage` | missing `loadRuns` | A `loadRunsRef` carries the latest closure into the mount-only interval effect. Listing `loadRuns` directly would re-create the interval on every render and reset its phase; `runsRef` in the same file was already the pattern for state |
+| `BacktestWorkbenchPage` | conditional `extraComparisonOptions` | Wrapped in `useMemo` keyed on `[selectedRun, runs, selectedRunCompareTargetId]`, so the effect below keys on the candidate set rather than on a new array identity every render |
 
-The six fixed errors are worth keeping as a near-miss rather than as work outstanding. One
-of them — `BacktestWorkbenchPage.tsx` requiring `entry_weekdays` in the create payload —
-looked exactly like a dropped user selection, and was in fact the type being wrong:
-`BacktestWorkbenchPage.test.tsx` asserts
+The six TypeScript errors this entry used to record were fixed by `5883eaf` (PR #17), and one
+of them is worth keeping as a near-miss: `BacktestWorkbenchPage.tsx` appeared to require
+`entry_weekdays` in the create payload, looked exactly like a dropped user selection, and was
+in fact the type being wrong — `BacktestWorkbenchPage.test.tsx` asserts
 `expect(payload?.parameters).not.toHaveProperty('entry_weekdays')`, so omitting it is
 deliberate and tested. A required parameter silently missing from a payload is what a real
-bug looks like, and the test asserting its absence was the only thing distinguishing the
-two. Check for that before "fixing" a type error.
-
-### CI gates both static checks through a ratchet
-
-`.github/workflows/ci.yml` runs the type-check and the lint as blocking steps of the
-`frontend` job, but through `frontend/scripts/check-static-baseline.mjs` rather than
-directly. The script runs the command, parses its diagnostics, and fails only on something
-beyond what `frontend/static-baseline.json` records.
-
-The recorded baseline is **zero TypeScript errors, zero ESLint errors, three
-`react-hooks/exhaustive-deps` warnings** — the three itemised above. So the type-check is
-exactly as strict as the bare `npm run build` it replaced, and the known warnings are
-tolerated on arrival while a fourth fails the job.
-
-A diagnostic is keyed by file, rule code and a 40-character fingerprint of its message —
-deliberately not by line and column. Line numbers move whenever code is edited above them,
-and a position-keyed baseline would turn every unrelated change into a false regression,
-which is how gates get ignored. Forty characters separates every diagnostic currently
-recorded and stops before a TypeScript type dump, whose field order churns independently
-of the error it belongs to.
-
-Re-record one gate after fixing something:
-
-```
-cd frontend && node scripts/check-static-baseline.mjs <build|lint> --update
-```
-
-Lowering the baseline needs no ceremony. Raising it — adding a key or increasing a count —
-also requires `--allow-increase`, so absorbing a new failure stays a deliberate act with a
-reason in the commit rather than a reflex. The script also fails when a gate exits non-zero
-and parses *zero* diagnostics, because that means either a failure the parser does not
-understand or a parser that has gone stale, and neither may pass silently.
-
-One trap worth recording. The build gate deletes `node_modules/.tmp/*.tsbuildinfo` before
-running, because `tsc --build` is incremental and a warm run is not a measurement of the
-current tree: it can skip a project it considers up to date, or replay diagnostics
-recorded against an older revision of the source. Re-recording this baseline began with
-`npm run build` reporting six TypeScript errors, and the same command reporting none once
-the build-info files were removed — confirmed independently by
-`tsc -p tsconfig.app.json --noEmit` and `tsc -b --force`, both exiting 0. A baseline taken
-from that first reading would have enshrined six errors the tree did not have. CI never
-hits this, because `npm ci` starts cold; a local `--update` would have.
-
-Clear the three warnings and the ratchet is pure overhead: delete the script and the
-baseline file, and put the plain `npm run build` and `npm run lint` back into the two
-steps. The build half of that is already true — its baseline is 0 errors and 0 warnings,
-and `check-static-baseline.mjs build` says so and prints this same instruction. Only the
-lint gate still earns its keep.
+bug looks like, and the test asserting its absence was the only thing distinguishing the two.
+Check for that before "fixing" a type error.
 
 ### CI exists, and asserts a discovery floor
 
@@ -1101,8 +1054,9 @@ lint gate still earns its keep.
 - **`backend`** (blocking) — PostgreSQL 15 and Redis 7 service containers, then
   `manage.py check`, `makemigrations --check --dry-run`,
   `export_documentation_facts --check`, and the full suite.
-- **`frontend`** (blocking, named "Frontend tests, type-check, and lint") — `npm ci`, the
-  ratcheted type-check and lint described above, and the vitest suite.
+- **`frontend`** (blocking, named "Frontend tests, type-check, and lint") — `npm ci`,
+  `npm run build`, `npm run lint` (which now fails on any warning via
+  `--max-warnings 0`), and the vitest suite.
 
 There used to be a third, `frontend-static`, holding the two static checks under
 `continue-on-error: true` while they failed. `5883eaf` fixed the errors and folded the
