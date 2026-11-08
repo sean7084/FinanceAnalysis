@@ -570,7 +570,7 @@ Still open, deliberately:
   `perf/validate-data-quality-scans` notes — it is cold-block-I/O bound on per-asset reads). Until
   that is addressed, a one-year window is the only practically runnable form.
 
-**The 33 attributed 2026-11-08: 12 are real holes that catch-up cannot see.**
+**The 33 attributed, and 12 of them traced to a missing suspension series — resolved 2026-11-08.**
 
 | issue | count | what it is |
 | --- | --- | --- |
@@ -579,17 +579,25 @@ Still open, deliberately:
 | `usable_asset_count_cliff` | 9 | coverage drops past the cliff ratio on 9 dates |
 | `etf_index_valuation_index_coverage` | 1 | already documented: 6 of 299 mapped indices have rows |
 
-The 12 are **not** suspensions, and that is the finding. `AssetSuspension` is current — 143,860 rows
-with newest `trade_date` 2026-11-06 — yet none of the gap dates are covered: 002155's newest
-suspension is 2026-01-26 against a 2026-08-20..26 hole, 300567's only suspension is 2016-11-22
-against a 2026-07-09..15 hole, and 600363 has no suspension row at all against its 2026-09-29 gap.
+**The first read of the 12 was wrong, and the correction is the finding.** They looked like holes in
+the price series. They are not: `pro.daily` returns **no rows at all** for those assets on those
+dates, because the stocks were halted. And `pro.suspend_d` *does* return the halts — 600363
+`2026-09-29` type `S`, 002155 `2026-08-20/21/24` type `S`, 300567 `2026-07-09/10/13` type `S`,
+000582 `2026-10-08/09` type `S`. What was missing was **our** `AssetSuspension` rows: the table spans
+2001-2026 with 143,860 rows, so it is not a window limit, but those specific dates were absent.
 
-They persist because **catch-up's OHLCV detector only fires when a whole session is empty**
-(`detectors.py`: `if count == 0`). One asset missing one to five bars never moves the cross-sectional
-count, so no repair is ever scheduled for it. That is a gap in the detector, not in the sync —
-`sync_asset_history` would fill these if asked. Repairing them is a per-asset re-fetch; making the
-detector see them needs a per-asset comparison against the calendar rather than a cross-sectional
-zero check, which changes the catch-up design and its quota-budget model.
+Backfilling that window (`backfill_asset_suspensions --start-date 2026-07-01 --end-date 2026-10-31`)
+wrote **196 rows, 171 of them full-day**, and the gate's criticals went **33 -> 21** with every
+`missing_ohlcv` gone. So the price series was never wrong; the excuse data was.
+
+Why the window was missing: the suspension series is **watermark-driven**, not row-presence driven —
+`detectors.py` class B — because a day with no suspensions legitimately has no rows. Catch-up replays
+it only when the *beat task itself* missed an occurrence, not when the provider window a past run
+covered was incomplete. A range the pipeline never walked is therefore never revisited, and nothing
+in the system reports that. That is the durable lesson: **class-B series need a periodic range
+backfill, not only a watermark replay.**
+
+Remaining 21 criticals: `stale_macro_snapshot` 11, `usable_asset_count_cliff` 9, ETF index coverage 1.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
