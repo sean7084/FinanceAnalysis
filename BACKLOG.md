@@ -1138,36 +1138,37 @@ Also: `torch` installs as a **CPU-only** build from the default index on Windows
 which conflicts with the `windows_gpu` LightGBM inference backend and the
 WSL2-as-NVIDIA-owner framing. Document which runtimes actually have GPU.
 
-### Unpinned *transitive* dependencies broke CI on every branch (fixed for kombu, the class remains)
+### Transitive dependencies are now locked — resolved
 
-On 2026-11-06 PR #79 failed CI with three errors that looked like Celery broker exhaustion:
-`IndexError: pop from empty list` in `kombu/transport/virtual/base.py:create_channel`. That frame is
-a red herring — it is kombu's normal lazy-init path, and the real terminal exception was buried
-~40 frames deeper:
+`requirements/*.in` carry the direct intent; the matching `.txt` are `pip-compile` lockfiles
+with the full transitive closure and a hash per wheel, and CI installs
+`pip install --require-hashes -r requirements/local.txt`. A package released overnight can
+no longer turn an unrelated PR red, which is what kombu 5.7.0 did on 2026-11-03: celery only
+constrains it to `<6.0`, a fresh resolve floated it onto a version whose redis extra rejects
+`redis==5.0.4`, and every branch went red without a code change.
 
-```
-kombu.exceptions.VersionMismatch: Redis transport requires redis-py versions 6.1.0 or later.
-You have 5.0.4
-```
+`scripts/check_requirements_lockfile.py` runs first in the job and fails if an `.in` and its
+`.txt` disagree, if a package line has no `--hash`, or if a `.txt` still carries a `-r`
+include (a compiled file is flattened). It is a text comparison on purpose: a CI
+`pip-compile --dry-run` would re-resolve torch, mlflow and akshare with hashes -- about
+twenty minutes per file here -- to catch the one failure that actually happens, a forgotten
+recompile.
 
-`requirements/base.txt` pins `celery==5.4.0` and `redis==5.0.4`, but celery only constrains kombu to
-`<6.0,>=5.3.4`, so a fresh resolve floats kombu to whatever has been released. **kombu 5.7.0 shipped
-on 2026-11-03 and tightened its redis extra to `>=6.4.0`.** `main`'s last green run was 2026-11-02 —
-one day earlier — so the breakage was invisible until an unrelated branch happened to run CI after
-the release, and then presented as that branch's regression. Local runs passed the whole time because
-the local venv had resolved kombu 5.6.2, which declares `redis>=4.5.2,<6.5`.
+Two things found while generating them, neither introduced by this change:
 
-Fixed by pinning `kombu==5.6.2` beside `celery` and `redis`. What is **not** fixed is the class:
-every transitively-resolved package can do this, and the failure surfaces as an unrelated PR going
-red. Two things would contain it:
+- **`local.txt` and `production.txt` disagree on the server stack.** mlflow pulls
+  `gunicorn==25.3.0` and `uvicorn==0.54.0` transmissively, so the CI lockfile pins those,
+  while `production.txt` pins the declared `gunicorn==23.0.0` / `uvicorn[standard]==0.32.0`.
+  Each file is internally consistent; the two describe different environments. Worth
+  reconciling before a real deployment, because CI tests a gunicorn that production would
+  not run.
+- **The lockfiles are resolved on Python 3.12 and CI runs 3.14** (`setup-python`), because
+  the verified local interpreter is 3.12. Marker evaluation can differ between the two. A
+  hashed install on a different interpreter may legitimately reject a marker-excluded
+  package; if that happens, compile with `--python-version` matching CI.
 
-- A lockfile (`pip-compile` / `uv lock`) committed alongside `requirements/*.txt`, so CI installs a
-  resolved set rather than re-resolving against today's PyPI.
-- Until then, pin any package that a hard runtime check depends on — kombu was only caught because it
-  *raises*; a silent behaviour change in a floated dependency would have been worse.
-
-Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of the
-above exception" chain is rarely the cause.
+Read the whole traceback, not the first one: `IndexError` at the top of a "During handling of
+the above exception" chain is rarely the cause.
 
 ### `requirements/production.txt` cannot support the documented deployment
 

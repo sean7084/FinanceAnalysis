@@ -210,13 +210,29 @@ jobs:
           # wheels that bundle the C library, so no apt build step is needed.
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: requirements/base.txt
+          cache-dependency-path: |
+            requirements/base.txt
+            requirements/local.txt
+            requirements/production.txt
+
+      - name: Lockfiles match their .in files
+        # Offline text comparison. A full `pip-compile --dry-run` here would re-resolve
+        # torch, mlflow and akshare with hashes -- about twenty minutes per file plus the
+        # network -- to catch the only failure that realistically happens: someone edits a
+        # .in and forgets to recompile. See scripts/check_requirements_lockfile.py.
+        run: python scripts/check_requirements_lockfile.py
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/local.txt
-        # torch is unpinned and large; expect this step to dominate the job runtime.
+          # requirements/*.in carry the direct intent; the matching .txt are pip-compile
+          # lockfiles with the full transitive closure and a hash per wheel. Installing
+          # them with --require-hashes means CI runs a set someone actually resolved, and
+          # a package released overnight can no longer turn an unrelated PR red -- kombu
+          # 5.7.0 did exactly that on 2026-11-03, because celery only constrains it to
+          # <6.0 and a fresh resolve floated it onto a version its redis extra rejects.
+          pip install --require-hashes -r requirements/local.txt
+        # torch is the largest pinned dependency and dominates this step's runtime.
 
       - name: Python timezone lint
         run: |
