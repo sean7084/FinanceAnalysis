@@ -12,6 +12,16 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Resolved
 
+- **The PIT union benchmark chain: six year-boundary fossils, and a daily seed row that
+  erased a correct return.**
+  Rebuilt 2026-11-09 with `scripts/rebuild_pit_benchmark.py`. Two separate bugs had to be
+  understood before the repair could be trusted. The incremental refresh re-emitted the row it
+  anchored on, so it upserted that session's stored `daily_return` back to zero every day while
+  leaving the nav alone, and the date was never revisited. The year-chunked rebuild started each
+  chunk at Jan 1, which -- once `emit_seed_row=False` suppresses the first date of a range --
+  makes the boundary session itself the unwritten anchor, reproducing the fossil it was meant to
+  fix. Anchoring every post-first chunk at the previous chunk's last trade_date is what
+  repaired it: 1 zero-return row, correlation 0.9927.
 - **Two calibrated entries came back through the campaign, and why.**
   The 19-PR campaign resolved `BACKLOG.md` and `CHANGELOG.md` conflicts with a union
   merge, because both files are append-only bullet lists and losing a side is worse
@@ -1342,10 +1352,15 @@ unvalidated.
   seed is 0 — so it *confirmed* the flatness instead of repairing it. The cumulative effect is
   that every nav after 2016-01-04 is roughly 8% too high.
 
-  **Open work:** re-run the chunked rebuild with the `emit_seed_row` fix so boundaries are no
-  longer lost, then re-measure `PIT vs 000905.SH daily-return correlation` (currently 0.9529 in
-  `docs/reference/metrics.md`). A return-only repair cannot fix (b) because the nav itself never
-  moved. Do the rebuild before quoting any PIT-relative alpha.
+  **Done 2026-11-09.** Rebuilt with the anchored chunking (17 yearly chunks). Zero-return rows
+  are now 1: `2010-01-04` -- the single legitimate anchor at the start of the series.
+  The chain identity `nav[t] == nav[t-1]*(1+r[t])` holds across all 4089 sessions
+  (0 rows outside 1e-6; worst deviation 4.9983725961713575918E-9), and `PIT vs 000905.SH daily-return
+  correlation` measures **0.9927** against the 0.9529 that was on file. Mid-rebuild the same
+  assertion had reported a 0.23 deviation; that was the seam where a freshly rebuilt row sat next
+  to a not-yet-rebuilt one, not a defect -- and it is also an honest measure of how far the
+  broken chain had drifted by that point. PIT-relative alpha may now be quoted, with the
+  regenerated metrics sheet as the reference.
 - **`TechnicalIndicator.timestamp` read-side truncation — no surviving call sites; the
   write-side key is the real defect.** This entry claimed `.date()` on the stored UTC value
   returns the previous day for a Beijing-midnight row. Every Python-side conversion now goes
