@@ -456,16 +456,24 @@ jobs:
           # Strip ANSI color codes so grep patterns match reliably.
           sed 's/\x1b\[[0-9;]*m//g' test-output-raw.txt > test-output.txt
 
-          count=$(grep -oE 'Tests +[0-9]+ passed' test-output.txt | grep -oE '[0-9]+' | head -n1)
+          # Failures are checked BEFORE the count, and the count reads the parenthesised
+          # total rather than "N passed": a run with one failing test prints
+          # `Tests  1 failed | 99 passed (100)`, which the old `Tests +[0-9]+ passed`
+          # pattern does not match at all. So a single broken test was reported as
+          # "Test discovery regression: 0 tests found" -- a confident misdiagnosis that
+          # sends the next reader to apps/__init__.py instead of to the failing assert.
+          if grep -qE 'Tests +[0-9]+ failed|Test Files +[0-9]+ failed' test-output.txt; then
+            echo "::error::Frontend suite reported failures; see the log above."
+            exit 1
+          fi
+
+          count=$(sed -nE 's/^[[:space:]]*Tests .*\(([0-9]+)\)$/\1/p' test-output.txt | head -n1)
           echo "Discovered ${count:-0} tests; floor is $MIN_TEST_COUNT."
 
           if [ -z "$count" ] || [ "$count" -lt "$MIN_TEST_COUNT" ]; then
             echo "::error::Test discovery regression: ${count:-0} tests found, floor is $MIN_TEST_COUNT."
-            exit 1
-          fi
-
-          if grep -qE 'Tests +[0-9]+ failed|Test Files +[0-9]+ failed' test-output.txt; then
-            echo "::error::Frontend suite reported failures; see the log above."
+            echo "No summary line at all means vitest never ran the suite; a low number"
+            echo "means a test file stopped being collected."
             exit 1
           fi
 

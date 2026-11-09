@@ -468,14 +468,41 @@ raw `SentimentScore` ASSET_7D rows) plus the interaction `factor_composite_x_sen
 (`:437`). `FactorScore.sentiment_score` is not read into the matrix at all.
 
 
-**Recomputed and retrained 2026-11-09.** The scorer fix does not repair stored rows, so
-  the series was recomputed over the only window where it can differ from neutral: the
-  news era, 2025-06-09..2026-11-07, 340 trading sessions. Earlier dates have no
-  `NewsArticle\ key defect in the open session
-  uniqueness issue is the reason any session can fail at all, and it stays open).
-  Then one retrain across all three horizons: 3 active LIGHTGBM versions now report
-  `evaluation_mode=purged_holdout` with `test_accuracy`/`rank_ic`/`icir`/`rank_ic_tstat`, so the
-  numbers the activation guard reads are out-of-sample instead of in-sample.
+**Recomputed and retrained 2026-11-09.** Fixing the scorer does not repair the stored rows, so the
+  series was recomputed over the news era 2025-06-09..2026-11-07 -- 345 sessions.
+  The window is not a convenience: `NewsArticle` holds 176,098 rows and every one of them
+  starts on 2025-06-09, so a date before it can only be re-scored into the same neutral
+  zero, at the cost of two round trips per listed asset per session over a link whose
+  wedge condition is concurrency. That is also why the ~5.8M pre-era ASSET_7D rows remain
+  0 legitimately rather than being treated as still-broken.
+
+  Walk result: 340 sessions completed on the first pass, 5 died with
+  `MultipleObjectsReturned`. Those five -- 2026-05-19, 2026-10-08, 2026-10-13, 2026-10-20,
+  2026-10-21 -- are issue #49 occurring in production data rather than in a report: 2,047
+  duplicate upsert-key groups, every one with NULL in `article` or `asset`, which is
+  precisely what `unique_together` cannot constrain. #104 declared NULLS NOT DISTINCT and
+  batched the writer; #105 made the collapse actually delete rows. The five sessions were
+  re-run afterwards and duplicate key groups now stand at 0.
+
+  Non-zero scores now, inside the era: ARTICLE 11101/168485, ASSET_7D 6968/643851 (the rest are assets no article
+  mentioned), MARKET_7D 232.
+
+  Retrain of horizons 3/7/30 on the repaired features:
+    3d: test_accuracy 0.4782, train_accuracy 0.5547, rank_ic 0.0080, icir 0.0465, rank_ic_tstat 0.7351
+    30d: test_accuracy 0.3896, train_accuracy 0.5780, rank_ic 0.0495, icir 0.2265, rank_ic_tstat 3.5813
+    7d: test_accuracy 0.4037, train_accuracy 0.4885, rank_ic 0.0150, icir 0.0818, rank_ic_tstat 1.2927
+
+  Only the 30-day horizon clears significance (t-stat 3.58); 7d and 3d do not. That is the
+  answer the holdout exists to give, and it was unavailable while every stored score was a
+  constant zero and the reported accuracy was in-sample -- train 0.578 against test 0.390 is
+  the gap the guard was designed to make visible rather than pleasant.
+
+  `docs/reference/metrics.md` was deliberately NOT regenerated: that sheet computes
+  per-column statistics over `analytics_technicalindicator` (179M rows), which is a
+  multi-hour aggregate, and running it concurrently with another job is the shape that
+  wedged this link twice during this campaign. CI cannot notice its staleness either --
+  `export_documentation_facts --check` skips the DB-gated sheets -- so it is refreshed by
+  decision, not by habit.
 
 ### The newest trading session is missing for 1,680 of 1,886 assets
 
