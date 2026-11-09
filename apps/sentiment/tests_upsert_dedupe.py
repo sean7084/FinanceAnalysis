@@ -79,7 +79,7 @@ class CollapseLogicTests(TestCase):
         dropped = [self._insert(None, 7) for _ in range(2)]
         other = self._insert(None, 8)
 
-        removed = collapse(_Editor())
+        removed = collapse(_Editor(), table=TEMP)
 
         self.assertEqual(removed, 2)
         with connection.cursor() as cursor:
@@ -92,14 +92,14 @@ class CollapseLogicTests(TestCase):
         self._insert(None, None)
         self._insert(None, None)
 
-        self.assertEqual(collapse(_Editor()), 1)
+        self.assertEqual(collapse(_Editor(), table=TEMP), 1)
 
     def test_it_refuses_when_two_copies_disagree_on_the_score(self):
         self._insert(None, 7, score='0.500000')
         self._insert(None, 7, score='0.200000')
 
         with self.assertRaises(RuntimeError), transaction.atomic():
-            collapse(_Editor())
+            collapse(_Editor(), table=TEMP)
 
         # Nothing is destroyed by a refusal: the guard has to fire before the delete.
         with connection.cursor() as cursor:
@@ -108,7 +108,7 @@ class CollapseLogicTests(TestCase):
 
     def test_a_table_without_duplicates_is_a_no_op(self):
         self._insert(None, 7)
-        self.assertEqual(collapse(_Editor()), 0)
+        self.assertEqual(collapse(_Editor(), table=TEMP), 0)
 
     def test_the_real_table_can_no_longer_hold_a_duplicate_key(self):
         """Positive control: the constraint this migration installed is what is being

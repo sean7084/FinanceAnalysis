@@ -44,8 +44,12 @@ DELETE FROM {table}
 """
 
 
-def collapse(schema_editor, table='sentiment_sentimentscore'):
-    """Delete every row except the newest in each upsert-key group.
+def collapse(schema_editor, table):
+    """Delete every row except the newest in each upsert-key group of ``table``.
+
+    The table is required, not defaulted: a helper that silently counts the production
+    table while being pointed at a temp one is how the first version of this repair
+    looked like it passed.
 
     Returns the number of rows removed. Refuses to delete anything if some group's copies
     carry different scores: choosing between two published values is a data decision, not

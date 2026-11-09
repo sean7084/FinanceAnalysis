@@ -33,7 +33,7 @@ class Migration(migrations.Migration):
             # SQLite/CI builds arrive here from migrations, so there are no duplicates to
             # collapse; the constraint is what matters there.
             return
-        removed = collapse(schema_editor)
+        removed = collapse(schema_editor, table='sentiment_sentimentscore')
         if removed:
             print(f'sentiment: collapsed {removed} duplicate SentimentScore rows')
 
