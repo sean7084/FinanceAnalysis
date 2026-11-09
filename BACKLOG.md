@@ -491,6 +491,26 @@ raw `SentimentScore` ASSET_7D rows) plus the interaction `factor_composite_x_sen
     30d: test_accuracy 0.3896, train_accuracy 0.5780, rank_ic 0.0495, icir 0.2265, rank_ic_tstat 3.5813
     7d: test_accuracy 0.4037, train_accuracy 0.4885, rank_ic 0.0150, icir 0.0818, rank_ic_tstat 1.2927
 
+  The retrain after the #49 repair produced metrics identical to the one before it,
+  to every stored digit. That is not a broken pipeline: the repair changed roughly
+  26 asset-days of ASSET_7D scores (2, 1, 3, 9 and 11 on the five
+  sessions) inside a training matrix of ~1.1M samples, and those 26 values were
+  confirmed present through the trainer's own read path -- `_query_frame` returns
+  `0.574850` for the repaired asset-day, and there is no parquet or snapshot cache in
+  the feature build. A handful of feature cells will usually not move a split choice.
+  Stating it matters because "identical numbers after a data fix" otherwise reads as
+  evidence the fix did not reach the model.
+
+  One gap worth naming: `holdout_start` and `purge_sessions` are returned by the
+  trainer and land in the artifact summary, but they do NOT reach
+  `ModelVersion.metrics` (missing keys: ['holdout_start', 'purge_sessions']), so the sheet cannot show
+  which window a registry row was scored on. The holdout is real; only its
+  provenance is unpersisted.
+
+  `docs/reference/models.md` was regenerated after this, because the earlier copy
+  was generated seconds before the last artifact activated and still named the
+  superseded tags.
+
   Only the 30-day horizon clears significance (t-stat 3.58); 7d and 3d do not. That is the
   answer the holdout exists to give, and it was unavailable while every stored score was a
   constant zero and the reported accuracy was in-sample -- train 0.578 against test 0.390 is
