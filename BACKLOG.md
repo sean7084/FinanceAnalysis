@@ -484,8 +484,7 @@ raw `SentimentScore` ASSET_7D rows) plus the interaction `factor_composite_x_sen
   batched the writer; #105 made the collapse actually delete rows. The five sessions were
   re-run afterwards and duplicate key groups now stand at 0.
 
-  Non-zero scores now, inside the era: ARTICLE 11101/168485, ASSET_7D 6968/643851 (the rest are assets no article
-  mentioned), MARKET_7D 232.
+  Scores now, inside the era, counting either sign: ARTICLE 15639/168485 (11101 positive, 4538 negative), ASSET_7D 9111/643851 (the rest are assets no article mentioned, and they are genuinely neutral rather than broken), MARKET_7D 288/369.
 
   Retrain of horizons 3/7/30 on the repaired features:
     3d: test_accuracy 0.4782, train_accuracy 0.5547, rank_ic 0.0080, icir 0.0465, rank_ic_tstat 0.7351
