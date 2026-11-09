@@ -12,6 +12,18 @@ Items here have no commitment attached. When something is done, move it to
 
 ## Resolved
 
+- **Two calibrated entries came back through the campaign, and why.**
+  The 19-PR campaign resolved `BACKLOG.md` and `CHANGELOG.md` conflicts with a union
+  merge, because both files are append-only bullet lists and losing a side is worse
+  than an odd blank line. Union is correct for additions and wrong for deletions: it
+  re-applies whatever the other side kept. Two entries Phase 0 removed -- the
+  `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` block (it is configurable, `env.int` plus
+  `.env.example`) and the `Decide LICENSE` bullet (decided, recorded above) -- were
+  back on main and are removed again here. Nothing else from the thirteen deletions
+  returned; the check is line-level: a line main has, that the clean calibration
+  commit did not, and that pre-campaign main did. Rule for the next campaign: union
+  merge prose, then re-apply the deletions, then run that check -- CI cannot see any
+  of this, because a documentation file that contradicts itself still lints clean.
 - **The dependency lockfiles now carry an ASGI server (`#16`, landed in #97).**
   `requirements/production.in` declares `daphne==4.1.2`, `gunicorn==23.0.0` and
   `uvicorn[standard]==0.32.0`, and the compiled `production.txt` pins them with hashes.
@@ -1117,11 +1129,6 @@ enough to dominate the job runtime.
 ## Open — configuration and infrastructure
 
 ### OpenAPI schema metadata is stale
-### `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` is not configurable
-
-`apps/core/task_health.py` reads it via `getattr(settings, ..., 2400)`, but
-the setting is never defined and never read from the environment. Changing the
-stale-run threshold currently requires a code edit. Wire it through `env.int()`.
 
 ### OpenAPI schema metadata — version resolved
 
@@ -1251,9 +1258,6 @@ the above exception" chain is rarely the cause.
   pointer.~~ Stale: it has one. `CHANGELOG.md:3081-3083` carries "**Note (0.1.13)**:
   This was later reversed by the single-`.env` consolidation", pointing at
   `docs/reference/env.md`.
-- Decide `LICENSE`. `README.md` declares the project private and proprietary and
-  a proprietary notice file now exists, but the choice should be conscious
-  rather than incidental.
 
 ---
 
