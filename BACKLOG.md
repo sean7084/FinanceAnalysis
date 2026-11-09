@@ -467,6 +467,16 @@ Sentiment enters as `sentiment_7d` / `sentiment_7d_avg_20d` (built at `:1793-180
 raw `SentimentScore` ASSET_7D rows) plus the interaction `factor_composite_x_sentiment`
 (`:437`). `FactorScore.sentiment_score` is not read into the matrix at all.
 
+
+**Recomputed and retrained 2026-11-09.** The scorer fix does not repair stored rows, so
+  the series was recomputed over the only window where it can differ from neutral: the
+  news era, 2025-06-09..2026-11-07, 340 trading sessions. Earlier dates have no
+  `NewsArticle\ key defect in the open session
+  uniqueness issue is the reason any session can fail at all, and it stays open).
+  Then one retrain across all three horizons: 3 active LIGHTGBM versions now report
+  `evaluation_mode=purged_holdout` with `test_accuracy`/`rank_ic`/`icir`/`rank_ic_tstat`, so the
+  numbers the activation guard reads are out-of-sample instead of in-sample.
+
 ### The newest trading session is missing for 1,680 of 1,886 assets
 
 Measured 2026-11-06: per-date OHLCV counts run 1,759 / 1,759 / 1,760 / 1,760 / 1,760 / 1,758 for
