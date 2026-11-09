@@ -147,11 +147,15 @@ describe('StockDetailPage queued generation', () => {
 
     await waitFor(() => expect(screen.getByText(QUEUED_NOTICE)).toBeInTheDocument())
     expect(screen.queryByText('7D')).toBeNull()
-    // One load, one poll: the first load registered exactly one interval.
-    expect(handlers).toHaveLength(1)
+    // One load, one poll: the first load registered exactly one interval. Awaited, not
+    // assumed -- the polling interval is registered by a passive effect, and React can
+    // flush that after the commit that renders the notice. Isolated it always wins the
+    // race; running the full 13-file suite on a loaded runner it does not, which is how
+    // main went red on an unrelated Python change.
+    await waitFor(() => expect(handlers).toHaveLength(1))
     // The initial composed load is one request each, not two -- the poll is what
     // adds the second, below.
-    expect(apiMocks.fetchAssetBySymbol).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(apiMocks.fetchAssetBySymbol).toHaveBeenCalledTimes(1))
 
     await act(async () => {
       handlers.at(-1)?.()
