@@ -104,7 +104,21 @@ class SentimentScore(models.Model):
             models.Index(fields=['asset', 'date', 'score_type']),
             models.Index(fields=['score_type', 'date']),
         ]
-        unique_together = ('article', 'asset', 'date', 'score_type')
+        constraints = [
+            # The upsert key of every writer in tasks.py. `unique_together` was not enough:
+            # `article` is NULL for ASSET_7D/MARKET_7D rows and `asset` is NULL for
+            # article-level rows, and Postgres treats NULLs as distinct, so the constraint
+            # never fired for exactly the rows that are written by the million -- they
+            # accumulated in parallel copies and `update_or_create`'s `get()` then raised
+            # MultipleObjectsReturned. Measured 2026-11-09: 2,047 duplicate key groups, all
+            # of them with at least one NULL, and zero groups whose rows disagreed on
+            # sentiment_score. NULLS NOT DISTINCT is what the key always meant.
+            models.UniqueConstraint(
+                fields=('article', 'asset', 'date', 'score_type'),
+                name='sentiment_score_upsert_key_uniq',
+                nulls_distinct=False,
+            ),
+        ]
 
 
 class ConceptHeat(models.Model):

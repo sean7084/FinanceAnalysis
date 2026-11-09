@@ -442,6 +442,36 @@ def run_hourly_historical_news_backfill():
     )
 
 
+def _bulk_upsert_scores(rows):
+    """Upsert staged SentimentScore rows in as few statements as possible.
+
+    The per-row form cost two round trips per row -- one SELECT and one UPDATE -- and the
+    neutral-fallback loop runs over every listed asset, so one session meant roughly 1,600
+    pairs of them. Over the NAS link that made a full-era recompute a ~9 hour walk. The key
+    is sentiment.0004's NULLS NOT DISTINCT constraint, which exists because the old
+    unique_together could not constrain rows whose article or asset is NULL.
+
+    Returns the number of rows handed to the database.
+    """
+    if not rows:
+        return 0
+    SentimentScore.objects.bulk_create(
+        rows,
+        update_conflicts=True,
+        unique_fields=['article', 'asset', 'date', 'score_type'],
+        update_fields=[
+            'positive_score',
+            'neutral_score',
+            'negative_score',
+            'sentiment_score',
+            'sentiment_label',
+            'metadata',
+        ],
+        batch_size=2000,
+    )
+    return len(rows)
+
+
 @shared_task
 def calculate_daily_sentiment(target_date=None):
     if target_date:
@@ -457,41 +487,73 @@ def calculate_daily_sentiment(target_date=None):
     day_start = timezone.make_aware(timezone.datetime.combine(d, timezone.datetime.min.time()))
     day_end = day_start + timedelta(days=1)
 
-    articles = NewsArticle.objects.filter(published_at__gte=day_start, published_at__lt=day_end)
+    staged = {}
+
+    def stage(row):
+        # Keyed by the upsert key, last writer wins -- which is what one-at-a-time
+        # update_or_create did. Keying also keeps the batch legal: ON CONFLICT DO UPDATE
+        # refuses a statement that would touch the same row twice.
+        staged[(row.article_id, row.asset_id, row.date, row.score_type)] = row
+
+    def flush():
+        if staged:
+            _bulk_upsert_scores(list(staged.values()))
+        staged.clear()
+
+    articles = list(
+        NewsArticle.objects.filter(published_at__gte=day_start, published_at__lt=day_end).only(
+            'id', 'title', 'summary', 'content', 'source'
+        )
+    )
+
+    # One query for every article-to-asset link in the day instead of one per article.
+    related_by_article = {}
+    if articles:
+        for article_id, asset_id in (
+            NewsArticle.related_assets.through.objects.filter(
+                newsarticle_id__in=[article.id for article in articles]
+            ).values_list('newsarticle_id', 'asset_id')
+        ):
+            related_by_article.setdefault(article_id, []).append(asset_id)
+
     for article in articles:
         text = f"{article.title} {article.summary} {article.content}"
         pos, neu, neg, sent = _score_text(text)
-
-        SentimentScore.objects.update_or_create(
-            article=article,
-            asset=None,
-            date=d,
-            score_type=SentimentScore.ScoreType.ARTICLE,
-            defaults={
-                'positive_score': pos,
-                'neutral_score': neu,
-                'negative_score': neg,
-                'sentiment_score': sent,
-                'sentiment_label': _label(sent),
-                'metadata': {'source': article.source},
-            },
-        )
-
-        for asset in article.related_assets.all():
-            SentimentScore.objects.update_or_create(
-                article=article,
-                asset=asset,
+        label = _label(sent)
+        stage(
+            SentimentScore(
+                article_id=article.id,
+                asset_id=None,
                 date=d,
                 score_type=SentimentScore.ScoreType.ARTICLE,
-                defaults={
-                    'positive_score': pos,
-                    'neutral_score': neu,
-                    'negative_score': neg,
-                    'sentiment_score': sent,
-                    'sentiment_label': _label(sent),
-                    'metadata': {'source': article.source},
-                },
+                positive_score=pos,
+                neutral_score=neu,
+                negative_score=neg,
+                sentiment_score=sent,
+                sentiment_label=label,
+                metadata={'source': article.source},
             )
+        )
+        for asset_id in related_by_article.get(article.id, ()):
+            stage(
+                SentimentScore(
+                    article_id=article.id,
+                    asset_id=asset_id,
+                    date=d,
+                    score_type=SentimentScore.ScoreType.ARTICLE,
+                    positive_score=pos,
+                    neutral_score=neu,
+                    negative_score=neg,
+                    sentiment_score=sent,
+                    sentiment_label=label,
+                    metadata={'source': article.source},
+                )
+            )
+
+    # The 7d aggregates read ARTICLE rows for the window that includes today, so the
+    # article rows have to be on disk before this point. Batching them any earlier would
+    # change what the aggregates see.
+    flush()
 
     # Build 7d aggregate per asset
     lookback = d - timedelta(days=6)
@@ -513,38 +575,38 @@ def calculate_daily_sentiment(target_date=None):
         pos = max(Decimal('0'), avg_sent)
         neg = max(Decimal('0'), -avg_sent)
         neu = max(Decimal('0'), Decimal('1') - min(Decimal('1'), pos + neg))
-        SentimentScore.objects.update_or_create(
-            article=None,
-            asset_id=row['asset'],
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            defaults={
-                'positive_score': pos,
-                'neutral_score': neu,
-                'negative_score': neg,
-                'sentiment_score': avg_sent,
-                'sentiment_label': _label(avg_sent),
-                'metadata': {'window_days': 7},
-            },
+        stage(
+            SentimentScore(
+                article_id=None,
+                asset_id=row['asset'],
+                date=d,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+                positive_score=pos,
+                neutral_score=neu,
+                negative_score=neg,
+                sentiment_score=avg_sent,
+                sentiment_label=_label(avg_sent),
+                metadata={'window_days': 7},
+            )
         )
 
     # Ensure each historically listed asset has a 7d sentiment row for the target date.
     for asset_id in listed_asset_ids_for_date(d):
         if asset_id in aggregated_asset_ids:
             continue
-        SentimentScore.objects.update_or_create(
-            article=None,
-            asset_id=asset_id,
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            defaults={
-                'positive_score': Decimal('0.000000'),
-                'neutral_score': Decimal('1.000000'),
-                'negative_score': Decimal('0.000000'),
-                'sentiment_score': Decimal('0.000000'),
-                'sentiment_label': SentimentScore.Label.NEUTRAL,
-                'metadata': {'window_days': 7, 'fallback': 'no_related_article'},
-            },
+        stage(
+            SentimentScore(
+                article_id=None,
+                asset_id=asset_id,
+                date=d,
+                score_type=SentimentScore.ScoreType.ASSET_7D,
+                positive_score=Decimal('0.000000'),
+                neutral_score=Decimal('1.000000'),
+                negative_score=Decimal('0.000000'),
+                sentiment_score=Decimal('0.000000'),
+                sentiment_label=SentimentScore.Label.NEUTRAL,
+                metadata={'window_days': 7, 'fallback': 'no_related_article'},
+            )
         )
 
     # Market-wide 7d aggregate
@@ -557,21 +619,22 @@ def calculate_daily_sentiment(target_date=None):
     pos = max(Decimal('0'), market_avg)
     neg = max(Decimal('0'), -market_avg)
     neu = max(Decimal('0'), Decimal('1') - min(Decimal('1'), pos + neg))
-    SentimentScore.objects.update_or_create(
-        article=None,
-        asset=None,
-        date=d,
-        score_type=SentimentScore.ScoreType.MARKET_7D,
-        defaults={
-            'positive_score': pos,
-            'neutral_score': neu,
-            'negative_score': neg,
-            'sentiment_score': market_avg,
-            'sentiment_label': _label(market_avg),
-            'metadata': {'window_days': 7},
-        },
+    stage(
+        SentimentScore(
+            article_id=None,
+            asset_id=None,
+            date=d,
+            score_type=SentimentScore.ScoreType.MARKET_7D,
+            positive_score=pos,
+            neutral_score=neu,
+            negative_score=neg,
+            sentiment_score=market_avg,
+            sentiment_label=_label(market_avg),
+            metadata={'window_days': 7},
+        )
     )
 
+    flush()
     return f'Sentiment scores updated for {d}'
 
 
