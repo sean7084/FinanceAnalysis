@@ -11,8 +11,8 @@ frame -> native ``lgb.train`` -> pickle under ``models/`` -> ``ModelVersion`` wi
    skill. Every number registered here comes from a block the booster never saw, produced by
    :mod:`apps.etf_rotation.walk_forward` with the label-window purge applied.
 2. Its data layer is ETF-native. ``_create_feature_matrix`` is welded to the stock universe
-   -- ``FactorScore``, ``SentimentScore`` and CSI500 point-in-time membership decide which
-   rows exist -- so it cannot serve an ETF pool. Here the rows are exactly
+   -- ``FactorScore``, the technical-indicator matrix and CSI500 point-in-time membership
+   decide which rows exist -- so it cannot serve an ETF pool. Here the rows are exactly
    ``ETFFeatureSnapshot`` with ``is_eligible=True`` and the columns are exactly
    ``apps.etf_rotation.features.FEATURE_COLUMNS``.
 
