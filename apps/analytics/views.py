@@ -37,7 +37,6 @@ from apps.macro.models import MarketContext
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.models_lightgbm import LightGBMPrediction
 from apps.prediction.tasks import reconcile_prediction_coverage
-from apps.sentiment.models import ConceptHeat, SentimentScore
 from .tasks import (
     calculate_rsi_for_asset,
     calculate_macd_for_asset,
@@ -450,10 +449,10 @@ def _dashboard_stocks_cache_key(latest_date, params):
 
 
 def _build_dashboard_summary():
-    """The six KPI values the SPA currently derives from seven separate calls.
+    """The five KPI values the SPA currently derives from six separate calls.
 
     Querysets mirror the endpoints being replaced so the numbers do not shift:
-    ``MarketContextViewSet.current`` with its list fallback, ``ConceptHeatViewSet.top``,
+    ``MarketContextViewSet.current`` with its list fallback,
     ``SignalEventViewSet.recent`` at ``days=1``,
     ``AlertEventViewSet.get_queryset``, and ``BottomCandidateViewSet.get_queryset``
     ordering. Two deliberate differences: alert and backtest counts are true
@@ -466,15 +465,6 @@ def _build_dashboard_summary():
         .first()
         or MarketContext.objects.order_by('-starts_at', '-updated_at').first()
     )
-
-    latest_concept_date = ConceptHeat.objects.order_by('-date').values_list('date', flat=True).first()
-    concepts = []
-    if latest_concept_date is not None:
-        concepts = list(
-            ConceptHeat.objects.filter(date=latest_concept_date)
-            .order_by('-heat_score')
-            .values_list('concept_name', flat=True)[:3]
-        )
 
     latest_factor_date = FactorScore.objects.filter(
         mode=FactorScore.FactorMode.COMPOSITE
@@ -492,7 +482,6 @@ def _build_dashboard_summary():
 
     return {
         'macro_phase': macro.macro_phase if macro else 'N/A',
-        'hot_concepts': ', '.join(concepts) if concepts else 'N/A',
         'prediction_signals': SignalEvent.objects.filter(
             timestamp__gte=timezone.now() - timedelta(days=1)
         ).count(),
@@ -572,7 +561,7 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 }
             factor_queryset = factor_queryset.filter(asset_id__in=candidate_asset_ids)
 
-        # The per-asset lookups below (OHLCV, sentiment, three prediction
+        # The per-asset lookups below (OHLCV, three prediction
         # families, indicators) are DISTINCT ON scans keyed on asset_id, so their
         # cost is a function of how many ids they are handed. When every row
         # filter and the ordering can be answered in SQL, take the page first and
@@ -604,14 +593,6 @@ class DashboardStockViewSet(viewsets.ViewSet):
         ohlcv_map = _latest_by_asset(
             OHLCV.objects.filter(asset_id__in=asset_ids, date__lte=latest_date)
             .order_by('asset_id', '-date')
-            .distinct('asset_id')
-        )
-        sentiment_map = _latest_by_asset(
-            SentimentScore.objects.filter(
-                asset_id__in=asset_ids,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-                date__lte=latest_date,
-            ).order_by('asset_id', '-date', '-created_at')
             .distinct('asset_id')
         )
         heuristic_map = _latest_by_asset(
@@ -680,7 +661,6 @@ class DashboardStockViewSet(viewsets.ViewSet):
             heuristic = heuristic_map.get(factor.asset_id)
             lightgbm = lightgbm_map.get(factor.asset_id)
             lstm = lstm_map.get(factor.asset_id)
-            sentiment = sentiment_map.get(factor.asset_id)
             latest_bar = ohlcv_map.get(factor.asset_id)
             indicators = indicator_map.get(factor.asset_id, {})
             bbands = indicators.get('BBANDS')
@@ -703,8 +683,6 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 'margin_flow_score': factor.margin_flow_score,
                 'technical_reversal_score': factor.technical_reversal_score,
                 'current_close': latest_bar.close if latest_bar else None,
-                'sentiment_score': sentiment.sentiment_score if sentiment else None,
-                'sentiment_label': sentiment.sentiment_label if sentiment else '',
                 'rsi': getattr(indicators.get('RSI'), 'value', None),
                 'macd': getattr(indicators.get('MACD'), 'value', None),
                 'bb_upper': bbands_parameters.get('upper'),
