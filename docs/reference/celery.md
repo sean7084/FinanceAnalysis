@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-11-10T14:20:39Z_
+_Generated: 2026-11-10T14:44:22Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -57,7 +57,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`, which beat reads them against and which must equal `TIME_ZONE`. Celery does not fall back to Django's `TIME_ZONE`, so a deploy that flips one without the other shifts the whole nightly pipeline eight hours and still looks healthy until the data lands late. `apps/core/tests_beat_schedule.py` is the gate.
 
-**60** registered project tasks, **18** beat entries, **42** reachable only through management commands, API actions, or other tasks.
+**61** registered project tasks, **18** beat entries, **43** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -99,6 +99,7 @@ Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`
 | `apps.etf_rotation.tasks.sync_etf_daily_recent` | `etf-rotation` | explicit | **600** | **660** | `sync-etf-daily-bars-daily` |
 | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `ops` | explicit | **600** | **700** | `sync-etf-fund-shares-weekly` |
 | `apps.etf_rotation.tasks.sync_etf_universe` | `etf-rotation` | explicit | **900** | **1000** | &mdash; |
+| `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` | `train-lightgbm` | explicit | **3600** | **3900** | &mdash; |
 | `apps.factors.tasks.calculate_factor_scores_for_date` | `ops` | default | global | global | &mdash; |
 | `apps.factors.tasks.sync_daily_capital_flow_snapshots` | `ops` | default | global | global | &mdash; |
 | `apps.macro.tasks.refresh_current_market_context` | `ops` | default | global | global | &mdash; |
@@ -145,6 +146,7 @@ Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`
 | `apps.etf_rotation.tasks.sync_etf_daily_recent` | **600** | **660** |
 | `apps.etf_rotation.tasks.sync_etf_fund_shares` | **600** | **700** |
 | `apps.etf_rotation.tasks.sync_etf_universe` | **900** | **1000** |
+| `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` | **3600** | **3900** |
 | `apps.markets.tasks.run_post_sync_universal_refresh` | **1800** | **2100** |
 | `apps.prediction.tasks.generate_predictions_for_date` | **3600** | **3900** |
 | `apps.prediction.tasks.reconcile_prediction_coverage` | **1500** | **1800** |
