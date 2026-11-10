@@ -7,7 +7,7 @@ resolved parent package. Every ``apps/*/tests.py`` uses relative imports
 
     ImportError: attempted relative import with no known parent package
 
-For example ``manage.py test apps.sentiment`` errors, while the fully qualified
-``manage.py test apps.sentiment.tests`` works. Keeping this marker makes both
+For example ``manage.py test apps.factors`` errors, while the fully qualified
+``manage.py test apps.factors.tests`` works. Keeping this marker makes both
 forms behave identically.
 """

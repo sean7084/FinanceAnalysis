@@ -3,7 +3,9 @@
 One check, and it exists because a setting flip silently doubled a key space.
 
 ``TIME_ZONE`` moved from UTC to Asia/Shanghai on 2026-11-02. The only data correction
-shipped with it was for ``NewsArticle.published_at``. Every ``TechnicalIndicator`` write
+shipped with it was for the news article timestamps (``sentiment_newsarticle.published_at``,
+a table and model both since deleted with the news module -- see
+docs/reference/sentiment-data-corrections.md). Every ``TechnicalIndicator`` write
 key is built from the *setting*, so rows written before the flip sit at midnight UTC and
 rows after at midnight Beijing -- eight hours apart as instants, for the same trade date.
 ``unique_together`` includes ``timestamp``, so it cannot catch the duplicate, and a

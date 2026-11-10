@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-11-10T16:03:27Z_
+_Generated: 2026-11-10T16:57:13Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -57,7 +57,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`, which beat reads them against and which must equal `TIME_ZONE`. Celery does not fall back to Django's `TIME_ZONE`, so a deploy that flips one without the other shifts the whole nightly pipeline eight hours and still looks healthy until the data lands late. `apps/core/tests_beat_schedule.py` is the gate.
 
-**61** registered project tasks, **18** beat entries, **43** reachable only through management commands, API actions, or other tasks.
+**55** registered project tasks, **18** beat entries, **37** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -119,12 +119,6 @@ Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`
 | `apps.prediction.tasks_lstm.generate_lstm_prediction_for_asset` | `ops` | default | global | global | &mdash; |
 | `apps.prediction.tasks_lstm.generate_lstm_predictions_for_date` | `ops` | default | global | global | &mdash; |
 | `apps.prediction.tasks_lstm.train_lstm_models` | `train-lstm` | explicit | global | global | &mdash; |
-| `apps.sentiment.tasks.calculate_concept_heat` | `ops` | default | global | global | &mdash; |
-| `apps.sentiment.tasks.calculate_daily_sentiment` | `ops` | default | global | global | &mdash; |
-| `apps.sentiment.tasks.fetch_latest_market_news` | `ops` | default | global | global | &mdash; |
-| `apps.sentiment.tasks.ingest_latest_news` | `ops` | default | global | global | &mdash; |
-| `apps.sentiment.tasks.run_daily_sentiment_pipeline` | `ops` | default | global | global | &mdash; |
-| `apps.sentiment.tasks.run_hourly_historical_news_backfill` | `ops` | default | global | global | &mdash; |
 
 ### Tasks overriding the global time limits
 

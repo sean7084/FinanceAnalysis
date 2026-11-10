@@ -19,7 +19,6 @@ from apps.macro.models import EventImpactStat, MacroSnapshot, MarketContext
 from apps.markets.models import BenchmarkIndexDaily, IndexMembership, OHLCV
 from apps.prediction.models import PredictionResult
 from apps.prediction.models_lightgbm import EnsembleWeightSnapshot, LightGBMPrediction
-from apps.sentiment.models import ConceptHeat, NewsArticle, SentimentScore
 
 
 def _parse_date(value, label):
@@ -32,12 +31,13 @@ def _parse_date(value, label):
 def _start_of_day(value):
     """``--before-date`` as an instant, at midnight in ``TIME_ZONE``.
 
-    Only ``news_articles`` needs this. Every other entry in ``_querysets()``
-    compares a ``DateField`` to the bare date, and a date has no zone to disagree
-    with; ``published_at`` is the one timestamp column in the list, so its
-    boundary is the one that moves when ``TIME_ZONE`` moves. Under ``'UTC'`` this
-    was 08:00 Beijing, which deleted articles published in the small hours of the
-    floor day even though their Beijing date *was* the floor day.
+    Two entries need this: ``signal_events`` and ``technical_indicators``. Every other
+    entry in ``_querysets()`` compares a ``DateField`` to the bare date, and a date has no
+    zone to disagree with; those two are the timestamp columns left in the list, so their
+    boundary is what moves when ``TIME_ZONE`` moves. Under ``'UTC'`` this was 08:00 Beijing,
+    which deleted the small hours of the floor day even though their Beijing date *was* the
+    floor day. ``news_articles`` used to be the reason this function existed; the news
+    module was decommissioned (#52) and the lesson stayed.
     """
     cutoff = datetime.combine(value, time.min)
     if timezone.is_naive(cutoff):
@@ -59,9 +59,6 @@ class Command(BaseCommand):
     def _querysets(self, before_date):
         before_dt = _start_of_day(before_date)
         return [
-            ('sentiment_scores', SentimentScore.objects.filter(date__lt=before_date)),
-            ('concept_heat', ConceptHeat.objects.filter(date__lt=before_date)),
-            ('news_articles', NewsArticle.objects.filter(published_at__lt=before_dt)),
             ('signal_events', SignalEvent.objects.filter(timestamp__lt=before_dt)),
             ('technical_indicators', TechnicalIndicator.objects.filter(timestamp__lt=before_dt)),
             ('factor_scores', FactorScore.objects.filter(date__lt=before_date)),

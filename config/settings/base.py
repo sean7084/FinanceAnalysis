@@ -349,13 +349,6 @@ MACRO_YIELD_BACKFILL_MAX_RETRIES = env.int('MACRO_YIELD_BACKFILL_MAX_RETRIES', d
 MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS = env.float('MACRO_YIELD_BACKFILL_RETRY_SLEEP_SECONDS', default=65.0)
 MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS = env.float('MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS', default=31.0)
 CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS = env.int('CAPITAL_FLOW_DAILY_SYNC_LOOKBACK_DAYS', default=20)
-NEWS_BACKFILL_ENABLED = env.bool('NEWS_BACKFILL_ENABLED', default=True)
-NEWS_BACKFILL_PROVIDER = env('NEWS_BACKFILL_PROVIDER', default='tushare_major')
-NEWS_BACKFILL_CHUNK_DAYS = env.int('NEWS_BACKFILL_CHUNK_DAYS', default=31)
-# A naive wall-clock string: from 2026-11 it is interpreted as Asia/Shanghai by
-# ``_parse_backfill_floor``'s ``make_aware``, i.e. Beijing midnight.
-NEWS_BACKFILL_FLOOR = env('NEWS_BACKFILL_FLOOR', default='2021-04-15 00:00:00')
-NEWS_BACKFILL_LIMIT_PER_PROVIDER = env.int('NEWS_BACKFILL_LIMIT_PER_PROVIDER', default=0)
 
 # ETF rotation -- see apps/etf_rotation/tasks.py. Every name here is read with
 # getattr(settings, NAME, fallback), so the app stays importable without this block.

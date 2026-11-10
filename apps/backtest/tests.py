@@ -30,11 +30,10 @@ from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
 from apps.prediction.tasks_lstm import LSTM_MISSING_VALUE_STRATEGY, _predict_with_lstm
 from apps.prediction.tasks_lightgbm import IdentityCalibrator, _create_feature_matrix
-from apps.sentiment.models import SentimentScore
 from . import tasks as backtest_tasks
 from .comparison import _run_trading_dates
-from .models import BacktestRun, BacktestTrade
 from .serializers import BacktestRunSerializer
+from .models import BacktestRun, BacktestTrade
 from apps.core.task_health import get_backtest_run_task_owner_state
 from .tasks import _pick_candidates, _resolve_macro_context_for_date, run_backtest
 
@@ -772,17 +771,6 @@ class Phase15BacktestTests(TestCase):
             indicator_type='RS_SCORE',
             value=Decimal('0.72000000'),
         )
-        SentimentScore.objects.create(
-            article=None,
-            asset=self.asset,
-            date=self.d1,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.5'),
-            neutral_score=Decimal('0.3'),
-            negative_score=Decimal('0.2'),
-            sentiment_score=Decimal('0.22'),
-            sentiment_label=SentimentScore.Label.POSITIVE,
-        )
 
         features = _feature_snapshot(self.asset.id, self.d1, cache={})
         expected_up, expected_flat, expected_down = _probabilities_from_features(features, 7, '')
@@ -906,17 +894,6 @@ class Phase15BacktestTests(TestCase):
             technical_score=Decimal('0.65'),
             composite_score=Decimal('0.52'),
             bottom_probability_score=Decimal('0.52'),
-        )
-        SentimentScore.objects.create(
-            article=None,
-            asset=self.asset,
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.55'),
-            neutral_score=Decimal('0.25'),
-            negative_score=Decimal('0.2'),
-            sentiment_score=Decimal('0.35'),
-            sentiment_label=SentimentScore.Label.POSITIVE,
         )
 
         for offset, as_of in enumerate(trade_dates):
@@ -1845,17 +1822,6 @@ class Phase15BacktestTests(TestCase):
                     'composite_score': Decimal('0.58') + Decimal(offset) / Decimal('100'),
                     'bottom_probability_score': Decimal('0.45') + Decimal(offset) / Decimal('100'),
                 },
-            )
-            SentimentScore.objects.create(
-                article=None,
-                asset=self.asset,
-                date=trade_date,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-                positive_score=Decimal('0.5'),
-                neutral_score=Decimal('0.3'),
-                negative_score=Decimal('0.2'),
-                sentiment_score=Decimal('0.10') + Decimal(offset) / Decimal('100'),
-                sentiment_label=SentimentScore.Label.POSITIVE,
             )
             indicator_timestamp = timezone.make_aware(timezone.datetime.combine(trade_date, timezone.datetime.min.time()))
             TechnicalIndicator.objects.update_or_create(

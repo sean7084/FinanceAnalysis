@@ -17,7 +17,6 @@ from apps.analytics.management.commands.backfill_technical_indicators import Com
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.backtest.models import BacktestRun, BacktestTrade
-from apps.core.management.commands.purge_pre_floor_historical_data import _start_of_day
 from apps.core.management.commands.validate_data_quality import DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import AssetMarginDetailSnapshot, AssetMoneyFlowSnapshot, CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
 from apps.macro.models import EventImpactStat, MacroSnapshot, MarketContext
@@ -25,7 +24,6 @@ from apps.markets.benchmarking import PIT_BENCHMARK_CODE
 from apps.markets.models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.prediction.models import PredictionResult
 from apps.prediction.models_lightgbm import EnsembleWeightSnapshot, LightGBMPrediction
-from apps.sentiment.models import ConceptHeat, NewsArticle, SentimentScore
 
 
 REQUIRED_TECHNICAL_INDICATORS = (
@@ -253,17 +251,6 @@ class DataQualityValidationCommandTests(TestCase):
             technical_score=Decimal('0.300000'),
             composite_score=Decimal('0.500000'),
             bottom_probability_score=Decimal('0.500000'),
-        )
-        SentimentScore.objects.create(
-            article=None,
-            asset=asset,
-            date=trade_date,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.100000'),
-            neutral_score=Decimal('0.800000'),
-            negative_score=Decimal('0.100000'),
-            sentiment_score=Decimal('0.000000'),
-            sentiment_label=SentimentScore.Label.NEUTRAL,
         )
 
     def _create_moneyflow_source(self, asset, trade_date):
@@ -1926,7 +1913,6 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
         self._seed_prediction_rows(self.old_date, self.new_date)
         self._seed_backtest_rows(self.old_date, self.new_date)
         self._seed_macro_rows(self.old_date, self.new_date)
-        self._seed_sentiment_rows(self.old_date, self.new_date)
 
     def _seed_market_rows(self, old_date, new_date):
         for trade_date, close_value in ((old_date, Decimal('9.5')), (new_date, Decimal('10.5'))):
@@ -2111,36 +2097,6 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
             observations_end=new_date,
         )
 
-    def _seed_sentiment_rows(self, old_date, new_date):
-        old_article = NewsArticle.objects.create(
-            source=NewsArticle.Source.OTHER,
-            title='Old article',
-            url='https://example.com/old-article',
-            published_at=self.old_timestamp,
-        )
-        new_article = NewsArticle.objects.create(
-            source=NewsArticle.Source.OTHER,
-            title='New article',
-            url='https://example.com/new-article',
-            published_at=self.new_timestamp,
-        )
-        for article, trade_date in ((old_article, old_date), (new_article, new_date)):
-            SentimentScore.objects.create(
-                article=article,
-                asset=self.asset,
-                date=trade_date,
-                score_type=SentimentScore.ScoreType.ARTICLE,
-                positive_score=Decimal('0.2'),
-                neutral_score=Decimal('0.6'),
-                negative_score=Decimal('0.2'),
-                sentiment_score=Decimal('0.0'),
-                sentiment_label=SentimentScore.Label.NEUTRAL,
-            )
-            ConceptHeat.objects.create(
-                concept_name=f'concept-{trade_date.isoformat()}',
-                date=trade_date,
-                heat_score=Decimal('1.0'),
-            )
 
     def test_purge_pre_floor_historical_data_reports_dry_run_counts(self):
         output = StringIO()
@@ -2158,7 +2114,6 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
         self.assertEqual(by_label['prediction_results'], 1)
         self.assertEqual(by_label['backtest_runs'], 1)
         self.assertEqual(by_label['macro_snapshots'], 1)
-        self.assertEqual(by_label['news_articles'], 1)
 
     def test_purge_pre_floor_historical_data_deletes_only_pre_floor_rows(self):
         output = StringIO()
@@ -2194,45 +2149,7 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
         self.assertTrue(IndexMembership.objects.filter(trade_date=self.new_date).exists())
         self.assertFalse(BenchmarkIndexDaily.objects.filter(trade_date=self.old_date).exists())
         self.assertTrue(BenchmarkIndexDaily.objects.filter(trade_date=self.new_date).exists())
-        self.assertFalse(NewsArticle.objects.filter(published_at=self.old_timestamp).exists())
-        self.assertTrue(NewsArticle.objects.filter(published_at=self.new_timestamp).exists())
-        self.assertFalse(SentimentScore.objects.filter(date=self.old_date).exists())
-        self.assertTrue(SentimentScore.objects.filter(date=self.new_date).exists())
-        self.assertFalse(ConceptHeat.objects.filter(date=self.old_date).exists())
-        self.assertTrue(ConceptHeat.objects.filter(date=self.new_date).exists())
 
-    def test_purge_cutoff_is_beijing_midnight_for_the_instant_keyed_table(self):
-        """Pin which side of the boundary an article lands on, in the zone that counts.
-
-        ``news_articles`` is the only entry in ``_querysets()`` that filters an
-        instant, so it is the only candidate set that moves with ``TIME_ZONE``.
-        Two articles four hours apart either side of the floor day's *Beijing*
-        midnight have to fall on opposite sides -- the one at 04:00 Beijing
-        belongs to the floor day and stays, the one at 22:00 Beijing on the day
-        before goes. If ``TIME_ZONE`` ever moves again, this fails instead of
-        quietly changing what ``--execute`` deletes.
-        """
-        cutoff = _start_of_day(datetime.date(2010, 1, 1))
-        self.assertEqual(cutoff.utcoffset(), datetime.timedelta(hours=8))
-        self.assertEqual(cutoff, datetime.datetime(2009, 12, 31, 16, 0, tzinfo=datetime.UTC))
-
-        floor_day_small_hours = NewsArticle.objects.create(
-            source=NewsArticle.Source.OTHER,
-            title='04:00 Beijing on the floor day',
-            url='https://example.com/inside-boundary',
-            published_at=datetime.datetime(2009, 12, 31, 20, 0, tzinfo=datetime.UTC),
-        )
-        previous_evening = NewsArticle.objects.create(
-            source=NewsArticle.Source.OTHER,
-            title='22:00 Beijing the day before',
-            url='https://example.com/outside-boundary',
-            published_at=datetime.datetime(2009, 12, 31, 14, 0, tzinfo=datetime.UTC),
-        )
-
-        call_command('purge_pre_floor_historical_data', execute=True, stdout=StringIO())
-
-        self.assertTrue(NewsArticle.objects.filter(pk=floor_day_small_hours.pk).exists())
-        self.assertFalse(NewsArticle.objects.filter(pk=previous_evening.pk).exists())
 
 class TushareEntitlementProbeTests(TestCase):
     """#68d: entitlement is recorded as denied, not as an empty frame."""
