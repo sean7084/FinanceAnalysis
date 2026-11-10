@@ -15,7 +15,6 @@ from apps.analytics.models import SignalEvent
 from apps.markets.benchmarking import ensure_pit_membership_coverage, point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from apps.prediction.historical_features import latest_bbands, latest_ohlcv, latest_rsi
-from apps.sentiment.models import SentimentScore
 from .models import FundamentalFactorSnapshot, CapitalFlowSnapshot, FactorScore
 
 
@@ -80,22 +79,6 @@ def _latest_rows_by_asset(model, asset_ids, as_of, extra_filters=None):
         **extra_filters,
     ).order_by('asset_id', '-date', '-pk').distinct('asset_id')
     return {row.asset_id: row for row in rows}
-
-
-def _sentiment_scores_by_asset(asset_ids, as_of):
-    latest_scores = _latest_rows_by_asset(
-        SentimentScore,
-        asset_ids,
-        as_of,
-        extra_filters={'score_type': SentimentScore.ScoreType.ASSET_7D},
-    )
-
-    sentiment_scores = {}
-    for asset_id, latest in latest_scores.items():
-        raw = Decimal(str(latest.sentiment_score))
-        mapped = (raw + Decimal('1')) / Decimal('2')
-        sentiment_scores[asset_id] = max(Decimal('0'), min(Decimal('1'), mapped))
-    return sentiment_scores
 
 
 def _recent_ohlcv_rows_by_asset(asset_ids, as_of, lookback_rows=TECHNICAL_LOOKBACK_ROWS):
@@ -238,21 +221,6 @@ def _technical_reversal_score(asset_id, as_of):
     return min(score, Decimal('1'))
 
 
-def _sentiment_factor_score(asset_id, as_of):
-    latest = SentimentScore.objects.filter(
-        asset_id=asset_id,
-        date__lte=as_of,
-        score_type=SentimentScore.ScoreType.ASSET_7D,
-    ).order_by('-date').first()
-    if latest is None:
-        return Decimal('0.5')
-
-    raw = Decimal(str(latest.sentiment_score))
-    # Map [-1, 1] -> [0, 1]
-    mapped = (raw + Decimal('1')) / Decimal('2')
-    return max(Decimal('0'), min(Decimal('1'), mapped))
-
-
 @shared_task
 def sync_daily_capital_flow_snapshots(target_date=None, lookback_days=None):
     """Refresh recent capital-flow data daily using the same backfill command path."""
@@ -286,10 +254,13 @@ def calculate_factor_scores_for_date(
     financial_weight=0.4,
     flow_weight=0.3,
     technical_weight=0.3,
-    sentiment_weight=0.0,
 ):
     """
     Calculate daily multi-factor scores and bottom candidate probabilities.
+
+    ``sentiment_weight`` was a parameter here until the news module was decommissioned
+    (#52). It was 0.0 in production, so removing it moves no composite score by a
+    single unit -- it removes the pretence that a fourth input was being weighed.
     """
     as_of = _resolve_target_date(target_date)
 
@@ -297,15 +268,13 @@ def calculate_factor_scores_for_date(
     fw = Decimal(str(financial_weight))
     cw = Decimal(str(flow_weight))
     tw = Decimal(str(technical_weight))
-    sw = Decimal(str(sentiment_weight))
-    total = fw + cw + tw + sw
+    total = fw + cw + tw
     if total <= 0:
-        fw, cw, tw, sw = Decimal('0.4'), Decimal('0.3'), Decimal('0.3'), Decimal('0.0')
-        total = fw + cw + tw + sw
+        fw, cw, tw = Decimal('0.4'), Decimal('0.3'), Decimal('0.3')
+        total = fw + cw + tw
     fw /= total
     cw /= total
     tw /= total
-    sw /= total
 
     ensure_pit_membership_coverage([as_of], context=f'Daily factor score refresh for {as_of}')
 
@@ -315,7 +284,6 @@ def calculate_factor_scores_for_date(
 
     latest_fundamentals = _latest_rows_by_asset(FundamentalFactorSnapshot, asset_ids, as_of)
     latest_flows = _latest_rows_by_asset(CapitalFlowSnapshot, asset_ids, as_of)
-    sentiment_scores = _sentiment_scores_by_asset(asset_ids, as_of)
     technical_scores = _technical_reversal_scores_by_asset(asset_ids, as_of)
 
     pe_rank = _build_percentile_ranker(
@@ -385,15 +353,13 @@ def calculate_factor_scores_for_date(
             mb_score = mb_rank(Decimal(str(c.margin_balance_change_5d)))
 
         technical_score = technical_scores.get(asset.id, Decimal('0'))
-        sentiment_score = sentiment_scores.get(asset.id, Decimal('0.5'))
         fundamental_score = _avg_decimal([pe_ttm_score, pb_score, roe_trend])
         capital_flow_score = _avg_decimal([mf_score, mb_score])
 
         composite = (
             fundamental_score * fw +
             capital_flow_score * cw +
-            technical_score * tw +
-            sentiment_score * sw
+            technical_score * tw
         )
         bottom_probability = max(Decimal('0'), min(Decimal('1'), composite))
 
@@ -409,19 +375,20 @@ def calculate_factor_scores_for_date(
                 main_force_flow_score=mf_score,
                 margin_flow_score=mb_score,
                 technical_reversal_score=technical_score,
-                sentiment_score=sentiment_score,
                 fundamental_score=fundamental_score,
                 capital_flow_score=capital_flow_score,
                 technical_score=technical_score,
                 financial_weight=fw,
                 flow_weight=cw,
                 technical_weight=tw,
-                sentiment_weight=sw,
                 composite_score=composite,
                 bottom_probability_score=bottom_probability,
                 metadata={
                     'target_date': str(as_of),
-                    'source': 'phase11_scoring_with_sentiment',
+                    # Rows written before the news module was decommissioned say
+                    # 'phase11_scoring_with_sentiment'; that label is the only place the
+                    # two recipes are still distinguishable once the column is gone.
+                    'source': 'phase11_scoring_without_sentiment',
                 },
                 created_at=now,
                 updated_at=now,

@@ -69,11 +69,6 @@ class Command(BaseCommand):
             help='Skip model data backfill and retrain directly.',
         )
         parser.add_argument(
-            '--skip-sentiment',
-            action='store_true',
-            help='Pass through to backfill_model_data to skip sentiment recomputation.',
-        )
-        parser.add_argument(
             '--version-tag',
             default='',
             help='Optional suffix added to the LSTM model version to preserve existing artifact families.',
@@ -151,8 +146,6 @@ class Command(BaseCommand):
                 'start_date': start_date.isoformat(),
                 'end_date': end_date.isoformat(),
             }
-            if options['skip_sentiment']:
-                backfill_kwargs['skip_sentiment'] = True
             call_command('backfill_model_data', **backfill_kwargs)
 
         version_tag = str(options.get('version_tag') or '').strip()

@@ -31,7 +31,6 @@ from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
-from apps.sentiment.models import SentimentScore
 from apps.analytics.models import TechnicalIndicator
 from apps.analytics.technical_staleness import (
     asset_exchange_code,
@@ -434,9 +433,8 @@ def _exact_window_valid_mask(trade_positions, periods):
 INTERACTION_FEATURE_SPECS = (
     ('rsi_x_relative_volume_5d', 'rsi', 'relative_volume_5d'),
     ('rsi_x_macro_phase', 'rsi', 'macro_phase'),
-    ('factor_composite_x_sentiment', 'factor_composite', 'sentiment_7d'),
-    # Retain the feature name for model-artifact compatibility, but keep the asset-level
-    # northbound placeholder neutral because northbound flow is market-wide, not per-stock.
+    # 'factor_composite_x_sentiment' was here until the news module was decommissioned
+    # (#52). Its left operand still exists; its right one was the dead feature.
     ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
     ('pe_ttm_percentile_x_macro_phase', 'pe_ttm_percentile', 'macro_phase'),
 )
@@ -769,7 +767,6 @@ def _refresh_ensemble_weights(snapshot_date, lightgbm_results):
                 'rs_score',
                 'factor_composite',
                 'factor_bottom_prob',
-                'sentiment_score',
             ],
             'training_window_start': training_window_start,
             'training_window_end': training_window_end,
@@ -1092,20 +1089,11 @@ def _extract_features_for_asset(
             else _default_numeric(0.0, missing_value_strategy, preserve_missing=True)
         )
 
-    # Phase 13: Sentiment
-    sentiment = SentimentScore.objects.filter(
-        asset_id=asset_id,
-        date__lte=as_of,
-        score_type=SentimentScore.ScoreType.ASSET_7D,
-    ).order_by('-date').first()
-    features['sentiment_7d'] = _safe_float(getattr(sentiment, 'sentiment_score', 0), 0.0) if sentiment else 0.0
-    sentiment_window = SentimentScore.objects.filter(
-        asset_id=asset_id,
-        date__lte=as_of,
-        date__gte=as_of - timedelta(days=20),
-        score_type=SentimentScore.ScoreType.ASSET_7D,
-    )
-    features['sentiment_7d_avg_20d'] = _safe_float(sentiment_window.aggregate(avg=Avg('sentiment_score'))['avg'], 0.0)
+    # The sentiment block that stood here was the Phase 13 feature pair
+    # ``sentiment_7d`` / ``sentiment_7d_avg_20d``. It reads nothing now because the news
+    # module it depended on was decommissioned (#52): the corpus it scored stopped growing
+    # on 2026-06-13, and measured over the five months after that the feature was non-zero
+    # on 81 rows across 29 assets.
 
     return _augment_single_asset_features(features)
 
@@ -1403,20 +1391,6 @@ def _create_feature_matrix(
             'main_force_flow_score', 'margin_flow_score', 'composite_score',
         ]:
             factor_df[column] = factor_df[column].astype(float)
-
-    sentiment_df = _query_frame(
-        SentimentScore.objects.filter(
-            asset_id__in=eligible_asset_ids,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            date__gte=warmup_start,
-            date__lte=end_date,
-        ).values('asset_id', 'date', 'sentiment_score').order_by('asset_id', 'date'),
-        ['asset_id', 'date', 'sentiment_score'],
-    )
-    timer.tick(f'sentiment rows={len(sentiment_df)}')
-    if not sentiment_df.empty:
-        sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
-        sentiment_df['sentiment_score'] = sentiment_df['sentiment_score'].astype(float)
 
     rsi_df = _indicator_frame_from_queryset(
         TechnicalIndicator.objects.filter(
@@ -1795,15 +1769,6 @@ def _create_feature_matrix(
                 asset_df['factor_composite'] = asset_df['composite_score'].fillna(0.5)
         asset_df['northbound_flow'] = 0.5
 
-        asset_sentiment_df = sentiment_df[sentiment_df['asset_id'] == asset_id][['date', 'sentiment_score']].sort_values('date')
-        if asset_sentiment_df.empty:
-            asset_df['sentiment_7d'] = 0.0
-            asset_df['sentiment_7d_avg_20d'] = 0.0
-        else:
-            asset_df = pd.merge_asof(asset_df.sort_values('date'), asset_sentiment_df, on='date', direction='backward')
-            asset_df['sentiment_7d'] = asset_df['sentiment_score'].fillna(0.0)
-            asset_df['sentiment_7d_avg_20d'] = asset_df['sentiment_7d'].rolling(window=20, min_periods=1).mean().fillna(0.0)
-
         if not macro_df.empty:
             asset_df = pd.merge_asof(asset_df.sort_values('date'), macro_df, on='date', direction='backward')
         else:
@@ -1886,7 +1851,6 @@ def _create_feature_matrix(
             'pe_ttm_percentile', 'pb_percentile', 'roe_trend',
             'northbound_flow', 'main_force_flow', 'margin_flow', 'factor_composite',
             'macro_phase', 'pmi_manufacturing', 'pmi_non_manufacturing', 'yield_curve',
-            'sentiment_7d', 'sentiment_7d_avg_20d',
         ]])
 
     if not frames:

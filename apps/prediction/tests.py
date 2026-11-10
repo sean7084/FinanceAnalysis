@@ -318,7 +318,7 @@ class Phase14PredictionTests(TestCase):
         self.assertEqual(runtime_features['factor_composite'], Decimal('0.57'))
         self.assertEqual(runtime_features['factor_bottom_prob'], Decimal('0.57'))
         self.assertAlmostEqual(float(runtime_features['factor_composite']), float(training_row['factor_composite']))
-        self.assertAlmostEqual(float(runtime_features['sentiment_score']), float(training_row['sentiment_7d']))
+        self.assertAlmostEqual(float(runtime_features['rs_score']), float(training_row['rs_score']))
         self.assertAlmostEqual(float(runtime_features['rsi']), float(training_row['rsi']))
         self.assertAlmostEqual(float(runtime_features['mom_5d']), float(training_row['mom_5d']))
         self.assertAlmostEqual(float(runtime_features['rs_score']), float(training_row['rs_score']))
@@ -871,7 +871,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date='2024-01-02',
             end_date='2024-01-04',
-            skip_sentiment=True,
         )
 
         self.assertEqual(mock_calculate.call_count, 3)
@@ -921,7 +920,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=self.trading_dates[0].isoformat(),
             end_date=self.trading_dates[-1].isoformat(),
-            skip_sentiment=True,
         )
 
         composite_rows = FactorScore.objects.filter(
@@ -978,7 +976,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=self.trading_dates[0].isoformat(),
             end_date=self.trading_dates[-1].isoformat(),
-            skip_sentiment=True,
         )
 
         composite_rows = FactorScore.objects.filter(
@@ -993,7 +990,6 @@ class BackfillModelDataCommandTests(TestCase):
         with self.assertRaisesMessage(CommandError, 'start-date and end-date are required.'):
             call_command(
                 'backfill_model_data',
-                skip_sentiment=True,
             )
 
     def test_backfill_model_data_creates_high_rs_score_signals(self):
@@ -1041,7 +1037,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=trade_dates[0].isoformat(),
             end_date=trade_dates[-1].isoformat(),
-            skip_sentiment=True,
         )
 
         target_timestamp = timezone.make_aware(
@@ -1111,7 +1106,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=target_date.isoformat(),
             end_date=target_date.isoformat(),
-            skip_sentiment=True,
             stdout=output,
         )
 
@@ -1175,7 +1169,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=trade_dates[0].isoformat(),
             end_date=trade_dates[-1].isoformat(),
-            skip_sentiment=True,
         )
 
         target_timestamp = timezone.make_aware(
@@ -1227,7 +1220,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=target_date.isoformat(),
             end_date=target_date.isoformat(),
-            skip_sentiment=True,
         )
 
         target_timestamp = timezone.make_aware(
@@ -1247,7 +1239,6 @@ class BackfillModelDataCommandTests(TestCase):
             'backfill_model_data',
             start_date=target_date.isoformat(),
             end_date=target_date.isoformat(),
-            skip_sentiment=True,
         )
 
         self.assertFalse(
@@ -1275,7 +1266,6 @@ class BackfillModelDataCommandTests(TestCase):
                 'backfill_model_data',
                 start_date='2009-12-31',
                 end_date='2010-01-04',
-                skip_sentiment=True,
             )
 
     def test_backfill_model_data_rejects_missing_required_pit_membership_coverage(self):
@@ -1305,68 +1295,11 @@ class BackfillModelDataCommandTests(TestCase):
                 'backfill_model_data',
                 start_date=start_date.isoformat(),
                 end_date=end_date.isoformat(),
-                skip_sentiment=True,
             )
-
-    @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
-    def test_backfill_model_data_fills_pre_news_sentiment_for_historically_listed_delisted_asset(self, mock_calculate):
-        start_date = timezone.datetime(2024, 1, 2).date()
-        trade_dates = [start_date + timezone.timedelta(days=offset) for offset in range(3)]
-
-        delisted_asset = Asset.objects.create(
-            market=self.market,
-            symbol='605099',
-            ts_code='605099.SH',
-            name='Historical Sentiment Asset',
-            list_date=trade_dates[0],
-            delist_date=trade_dates[2],
-            listing_status=Asset.ListingStatus.DELISTED,
-        )
-
-        for offset, trade_date in enumerate(trade_dates):
-            close_value = Decimal('10.0') + Decimal(offset) / Decimal('10')
-            OHLCV.objects.create(
-                asset=delisted_asset,
-                date=trade_date,
-                open=close_value,
-                high=close_value + Decimal('0.1'),
-                low=close_value - Decimal('0.1'),
-                close=close_value,
-                adj_close=close_value,
-                volume=100000,
-                amount=close_value * Decimal('100000'),
-            )
-
-        IndexMembership.objects.create(
-            asset=delisted_asset,
-            index_code='000905.SH',
-            index_name='CSI 500',
-            trade_date=trade_dates[0],
-            weight=Decimal('4.2'),
-        )
-
-        call_command(
-            'backfill_model_data',
-            start_date=trade_dates[0].isoformat(),
-            end_date=trade_dates[-1].isoformat(),
-        )
-
-        self.assertEqual(
-            list(
-                SentimentScore.objects.filter(
-                    asset=delisted_asset,
-                    score_type=SentimentScore.ScoreType.ASSET_7D,
-                )
-                .order_by('date')
-                .values_list('date', flat=True)
-            ),
-            trade_dates[:2],
-        )
 
     @patch('apps.prediction.management.commands.backfill_model_data.persist_ranked_rs_scores')
-    @patch('apps.prediction.management.commands.backfill_model_data.calculate_daily_sentiment')
     @patch('apps.prediction.management.commands.backfill_model_data.calculate_factor_scores_for_date')
-    def test_backfill_model_data_resume_from_checkpoint_skips_completed_stages(self, mock_calculate, mock_sentiment, mock_rs):
+    def test_backfill_model_data_resume_from_checkpoint_skips_completed_stages(self, mock_calculate, mock_rs):
         IndexMembership.objects.create(
             asset=self.asset,
             index_code='000905.SH',
@@ -1386,7 +1319,6 @@ class BackfillModelDataCommandTests(TestCase):
                     'trading_dates_count': 3,
                 },
                 'stages': {
-                    'sentiment': {'status': 'completed'},
                     'rs_score': {'status': 'completed'},
                     'factor_scores': {
                         'status': 'running',
@@ -1403,7 +1335,6 @@ class BackfillModelDataCommandTests(TestCase):
                 resume_from_checkpoint=True,
             )
 
-            self.assertFalse(mock_sentiment.called)
             self.assertFalse(mock_rs.called)
             self.assertEqual(
                 [call.kwargs['target_date'] for call in mock_calculate.call_args_list],
@@ -1427,7 +1358,6 @@ class BackfillModelDataCommandTests(TestCase):
                 'backfill_model_data',
                 start_date='2024-01-02',
                 end_date='2024-01-04',
-                skip_sentiment=True,
                 checkpoint_file=str(checkpoint_path),
             )
 

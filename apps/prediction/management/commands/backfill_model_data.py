@@ -34,8 +34,6 @@ from apps.markets.benchmarking import (
 )
 from apps.markets.models import Asset
 from apps.markets.models import OHLCV
-from apps.sentiment.models import NewsArticle, SentimentScore
-from apps.sentiment.tasks import calculate_daily_sentiment, listed_asset_ids_for_date
 
 
 class Command(BaseCommand):
@@ -45,8 +43,6 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--start-date', help='Inclusive start date in YYYY-MM-DD format.')
         parser.add_argument('--end-date', help='Inclusive end date in YYYY-MM-DD format.')
-        parser.add_argument('--sentiment-weight', type=float, default=0.0)
-        parser.add_argument('--skip-sentiment', action='store_true')
         parser.add_argument('--checkpoint-file', default='')
         parser.add_argument('--resume-from-checkpoint', action='store_true')
 
@@ -78,18 +74,6 @@ class Command(BaseCommand):
             )
         )
 
-        historical_asset_windows = list(
-            Asset.objects.filter(list_date__isnull=False).values_list('id', 'list_date', 'delist_date')
-        )
-        earliest_article_date = NewsArticle.objects.aggregate(value=Min('published_at'))['value']
-        earliest_article_date = earliest_article_date.date() if earliest_article_date else None
-
-        if not options['skip_sentiment']:
-            self._run_stage(
-                'sentiment',
-                lambda: self._backfill_sentiment(trading_dates, historical_asset_windows, earliest_article_date),
-            )
-
         self._run_stage(
             'rs_score',
             lambda: self._backfill_rs_scores(start_date, end_date, trading_dates),
@@ -97,10 +81,7 @@ class Command(BaseCommand):
 
         self._run_stage(
             'factor_scores',
-            lambda: self._backfill_factor_scores(
-                trading_dates,
-                options['sentiment_weight'],
-            ),
+            lambda: self._backfill_factor_scores(trading_dates),
         )
 
         self._write_timing_summary()
@@ -116,8 +97,7 @@ class Command(BaseCommand):
                 'trading_dates_count': len(trading_dates),
             },
             'options': {
-                'skip_sentiment': bool(options.get('skip_sentiment')),
-                'sentiment_weight': float(options.get('sentiment_weight') or 0.0),
+                'sentiment_stage_removed': True,
             },
             'stages': {},
         }
@@ -282,86 +262,6 @@ class Command(BaseCommand):
             f'Historical model data backfill for {start_date}..{end_date}',
         )
 
-    def _backfill_sentiment(self, trading_dates, historical_asset_windows, earliest_article_date):
-        self.stdout.write(self.style.NOTICE('Backfilling daily sentiment coverage...'))
-        stage_name = 'sentiment'
-        stage_state = self._stage_state(stage_name)
-        neutral_dates = [
-            trading_date for trading_date in trading_dates
-            if earliest_article_date is None or trading_date < earliest_article_date
-        ]
-        dynamic_dates = [
-            trading_date for trading_date in trading_dates
-            if earliest_article_date is not None and trading_date >= earliest_article_date
-        ]
-
-        neutral_completed = bool(stage_state.get('details', {}).get('neutral_completed'))
-        if neutral_dates and not neutral_completed:
-            self.stdout.write(
-                f'  sentiment: bulk-filling neutral coverage for {len(neutral_dates)} pre-news trading dates'
-            )
-            SentimentScore.objects.filter(
-                date__gte=neutral_dates[0],
-                date__lte=neutral_dates[-1],
-                score_type__in=[SentimentScore.ScoreType.ASSET_7D, SentimentScore.ScoreType.MARKET_7D],
-            ).delete()
-
-            buffer = []
-            for trading_date in neutral_dates:
-                for asset_id in listed_asset_ids_for_date(trading_date, asset_windows=historical_asset_windows):
-                    buffer.append(
-                        SentimentScore(
-                            article=None,
-                            asset_id=asset_id,
-                            date=trading_date,
-                            score_type=SentimentScore.ScoreType.ASSET_7D,
-                            positive_score=Decimal('0.000000'),
-                            neutral_score=Decimal('1.000000'),
-                            negative_score=Decimal('0.000000'),
-                            sentiment_score=Decimal('0.000000'),
-                            sentiment_label=SentimentScore.Label.NEUTRAL,
-                            metadata={'window_days': 7, 'fallback': 'historical_pre_news_bulk_fill'},
-                        )
-                    )
-                buffer.append(
-                    SentimentScore(
-                        article=None,
-                        asset=None,
-                        date=trading_date,
-                        score_type=SentimentScore.ScoreType.MARKET_7D,
-                        positive_score=Decimal('0.000000'),
-                        neutral_score=Decimal('1.000000'),
-                        negative_score=Decimal('0.000000'),
-                        sentiment_score=Decimal('0.000000'),
-                        sentiment_label=SentimentScore.Label.NEUTRAL,
-                        metadata={'window_days': 7, 'fallback': 'historical_pre_news_bulk_fill'},
-                    )
-                )
-                if len(buffer) >= 5000:
-                    SentimentScore.objects.bulk_create(buffer, batch_size=5000)
-                    buffer = []
-
-            if buffer:
-                SentimentScore.objects.bulk_create(buffer, batch_size=5000)
-
-            self._mark_stage_progress(stage_name, details={'neutral_completed': True})
-
-        dynamic_dates = self._resume_from_date(dynamic_dates, stage_name)
-        if not dynamic_dates:
-            return
-
-        stage_started = time.perf_counter()
-        total_dynamic_dates = len(dynamic_dates)
-
-        for index, trading_date in enumerate(dynamic_dates, start=1):
-            calculate_daily_sentiment(target_date=str(trading_date))
-            self._mark_stage_progress(stage_name, last_completed_date=trading_date)
-            if index % 25 == 0 or index == len(dynamic_dates):
-                elapsed = time.perf_counter() - stage_started
-                self.stdout.write(
-                    f'  sentiment: {index}/{total_dynamic_dates} news-era dates complete '
-                    f'({elapsed:.1f}s elapsed, {elapsed / index:.3f}s/date)'
-                )
 
     def _backfill_rs_scores(self, start_date, end_date, trading_dates):
         self.stdout.write(self.style.NOTICE('Backfilling historical RS_SCORE indicators...'))
@@ -488,7 +388,7 @@ class Command(BaseCommand):
             f'  rs_score: attempted {attempted_indicators} indicator rows and {attempted_signals} HIGH_RS_SCORE rows'
         )
 
-    def _backfill_factor_scores(self, trading_dates, sentiment_weight):
+    def _backfill_factor_scores(self, trading_dates):
         stage_name = 'factor_scores'
         trading_dates = self._resume_from_date(trading_dates, stage_name)
         if not trading_dates:
@@ -497,16 +397,16 @@ class Command(BaseCommand):
 
         self._clear_factor_score_window(trading_dates)
 
-        if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists() and float(sentiment_weight) == 0.0:
+        # The old guard also required sentiment_weight == 0.0 before taking the fast path.
+        # That weight is gone with the news module (#52), so the condition is now just what
+        # it always really meant: no fundamentals and no flows to read.
+        if not FundamentalFactorSnapshot.objects.exists() and not CapitalFlowSnapshot.objects.exists():
             return self._backfill_factor_scores_fast(trading_dates)
 
         self.stdout.write(self.style.NOTICE('Backfilling daily factor scores...'))
         stage_started = time.perf_counter()
         for index, trading_date in enumerate(trading_dates, start=1):
-            calculate_factor_scores_for_date(
-                target_date=str(trading_date),
-                sentiment_weight=sentiment_weight,
-            )
+            calculate_factor_scores_for_date(target_date=str(trading_date))
             self._mark_stage_progress(stage_name, last_completed_date=trading_date)
             if index % 100 == 0 or index == len(trading_dates):
                 elapsed = time.perf_counter() - stage_started
@@ -614,14 +514,12 @@ class Command(BaseCommand):
                         main_force_flow_score=None,
                         margin_flow_score=None,
                         technical_reversal_score=technical_score,
-                        sentiment_score=Decimal('0.5'),
                         fundamental_score=Decimal('0.5'),
                         capital_flow_score=Decimal('0.5'),
                         technical_score=technical_score,
                         financial_weight=Decimal('0.4'),
                         flow_weight=Decimal('0.3'),
                         technical_weight=Decimal('0.3'),
-                        sentiment_weight=Decimal('0.0'),
                         composite_score=composite_score,
                         bottom_probability_score=composite_score,
                         metadata={'target_date': str(row_date), 'source': 'historical_ohlcv_fast_path'},

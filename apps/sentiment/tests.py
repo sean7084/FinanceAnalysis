@@ -115,7 +115,7 @@ class Phase13SentimentTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         mock_delay.assert_called_once()
 
-    def test_sentiment_integrates_into_factor_score(self):
+    def test_factor_score_composite_is_written_without_a_sentiment_component(self):
         d = timezone.now().date()
         IndexMembership.objects.bulk_create([
             IndexMembership(
@@ -152,12 +152,13 @@ class Phase13SentimentTests(TestCase):
             financial_weight=0.35,
             flow_weight=0.25,
             technical_weight=0.20,
-            sentiment_weight=0.20,
         )
 
         fs = FactorScore.objects.get(asset=self.asset, date=d, mode=FactorScore.FactorMode.COMPOSITE)
-        self.assertIsNotNone(fs.sentiment_score)
-        self.assertGreater(fs.sentiment_weight, 0)
+        # The composite still lands; the sentiment component no longer does. Reading NULL
+        # here is the point -- a non-null value would mean something is still writing it.
+        self.assertIsNotNone(fs.composite_score)
+        self.assertIsNone(fs.sentiment_score)
 
     def test_sentiment_latest_endpoint(self):
         d = timezone.now().date()
