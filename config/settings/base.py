@@ -563,18 +563,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.macro.tasks.sync_macro_data_monthly',
         'schedule': crontab(day_of_month='2-8', hour='8', minute='10'),
     },
-    'fetch-latest-market-news-daily': {
-        'task': 'apps.sentiment.tasks.fetch_latest_market_news',
-        'schedule': crontab(hour='0', minute='35'),
-    },
-    'run-hourly-historical-news-backfill': {
-        'task': 'apps.sentiment.tasks.run_hourly_historical_news_backfill',
-        'schedule': crontab(minute='12'),
-    },
-    'run-daily-sentiment-pipeline': {
-        'task': 'apps.sentiment.tasks.run_daily_sentiment_pipeline',
-        'schedule': crontab(hour='1', minute='0'),
-    },
+    # The news/sentiment entries were here until the module was decommissioned (#52):
+    # fetch-latest-market-news-daily, run-hourly-historical-news-backfill and
+    # run-daily-sentiment-pipeline. The hourly one had raised on every run since the
+    # token lost the major_news entitlement on 2026-06-13.
     'generate-predictions-daily': {
         'task': 'apps.prediction.tasks.generate_predictions_for_date',
         'schedule': crontab(hour='2', minute='0'),

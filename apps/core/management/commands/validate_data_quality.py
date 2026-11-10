@@ -58,7 +58,6 @@ from apps.markets.models import (
     OHLCV,
     PointInTimeBenchmarkDaily,
 )
-from apps.sentiment.models import SentimentScore
 from apps.etf_rotation import valuation_qc
 from apps.etf_rotation.models import ETFIndexMapping, IndexValuationDaily
 
@@ -97,7 +96,6 @@ DEFAULT_CROSS_SECTION_AUDIT_DATES = (
 DAILY_COVERAGE_REQUIRED_FAMILIES = (
     'rs_score',
     'factor_score',
-    'sentiment_score',
     'fundamental_snapshot',
     'capital_flow_snapshot',
 )
@@ -105,7 +103,6 @@ DAILY_COVERAGE_FIELDS = (
     'ohlcv',
     'rs_score',
     'factor_score',
-    'sentiment_score',
     'fundamental_snapshot',
     'capital_flow_snapshot',
     'pe',
@@ -133,7 +130,6 @@ REPORT_DESCRIPTIONS = {
     'macro_snapshot_gaps.csv': 'Missing or NULL macro snapshot and market-context rows relative to required trade-date context rows.',
     'etf_index_valuation_quality.csv': 'IndexValuationDaily quality rules (#66): PE/PB null rate, per-index date gaps, index coverage against the mapped universe, and staleness.',
     'factor_score_gaps.csv': 'Missing FactorScore rows relative to existing OHLCV-backed asset dates.',
-    'sentiment_score_gaps.csv': 'Missing SentimentScore rows relative to existing OHLCV-backed asset dates.',
     'ohlcv_continuity_gaps.csv': 'Missing OHLCV on official exchange open days after listing and before delisting, excluding suspend_d-covered dates.',
     'fundamental_snapshot_continuity_gaps.csv': 'Missing or NULL PE/PE_TTM/PB/ROE/ROE_QOQ windows relative to OHLCV-backed baseline dates.',
     'capital_flow_snapshot_continuity_gaps.csv': 'Missing or NULL Main Force Net 5D / Margin Balance Change 5D windows relative to OHLCV-backed baseline dates, including source-derived gap_reason labels.',
@@ -174,7 +170,6 @@ FACTOR_SCORE_FIELDS = (
     'main_force_flow_score',
     'margin_flow_score',
     'technical_reversal_score',
-    'sentiment_score',
     'fundamental_score',
     'capital_flow_score',
     'technical_score',
@@ -186,7 +181,6 @@ FACTOR_NEUTRAL_DEFAULT_FIELDS = (
     'technical_reversal_score',
     'fundamental_score',
     'capital_flow_score',
-    'sentiment_score',
     'roe_trend_score',
 )
 FUNDAMENTAL_FIELDS = ('pe', 'pe_ttm', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq')
@@ -209,7 +203,6 @@ MACRO_FIELDS = (
     'cpi_yoy',
     'ppi_yoy',
 )
-SENTIMENT_FIELDS = ('positive_score', 'neutral_score', 'negative_score', 'sentiment_score')
 EXPECTED_FIELD_NULL_ISSUE_TYPE = 'expected_field_null'
 SUSPICIOUS_FIELD_NULL_ISSUE_TYPE = 'suspicious_field_null'
 FUNDAMENTAL_RECONCILIATION_FIELDNAMES = [
@@ -327,7 +320,6 @@ class ReportWriter:
                 'expected', 'details',
             ],
             'factor_score_gaps': dependency_gap_fieldnames,
-            'sentiment_score_gaps': dependency_gap_fieldnames,
             'ohlcv_continuity_gaps': [
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
                 'asset_id', 'asset_symbol', 'asset_ts_code', 'asset_name', 'list_date', 'delist_date',
@@ -382,7 +374,7 @@ class ReportWriter:
             'effective_universe_daily_coverage': [
                 'metric_family', 'metric_name', 'rule_name', 'report_scope',
                 'date', 'effective_universe_count', 'feature_non_null_count', 'usable_asset_count', 'dropped_asset_count',
-                'ohlcv_count', 'rs_score_count', 'factor_score_count', 'sentiment_score_count',
+                'ohlcv_count', 'rs_score_count', 'factor_score_count',
                 'fundamental_snapshot_count', 'capital_flow_snapshot_count', 'pe_non_null_count', 'pe_ttm_non_null_count', 'pb_non_null_count',
                 'roe_non_null_count', 'roe_qoq_non_null_count', 'main_force_net_5d_non_null_count',
                 'margin_balance_change_5d_non_null_count', 'pe_ttm_percentile_score_count', 'pb_percentile_score_count',
@@ -2083,12 +2075,6 @@ class Command(BaseCommand):
         ).values_list('date', flat=True))
         fundamental_dates = set(FundamentalFactorSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date).values_list('date', flat=True))
         capital_flow_dates = set(CapitalFlowSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date).values_list('date', flat=True))
-        sentiment_dates = set(SentimentScore.objects.filter(
-            asset=asset,
-            date__gte=min_date,
-            date__lte=max_date,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-        ).values_list('date', flat=True))
 
         checks = (
             (
@@ -2114,14 +2100,6 @@ class Command(BaseCommand):
                 SNAPSHOT_ROW_FIELD,
                 capital_flow_dates,
                 'OHLCV exists for asset/date but required CapitalFlowSnapshot row is missing.',
-            ),
-            (
-                'missing_sentiment_score',
-                'warning',
-                'sentiment_score',
-                'ASSET_7D',
-                sentiment_dates,
-                'OHLCV exists for asset/date but required SentimentScore row is missing.',
             ),
         )
         # The newest date ANY asset carries a composite score for. A row missing after this
@@ -2180,15 +2158,6 @@ class Command(BaseCommand):
                 mode=FactorScore.FactorMode.COMPOSITE,
             ).select_related('asset'),
             'factor_score', FACTOR_SCORE_FIELDS, 'warning', writer, counters, field_counters, reason_counters,
-        )
-        self._validate_model_null_fields(
-            SentimentScore.objects.filter(
-                asset_id__in=asset_ids,
-                date__gte=start_date,
-                date__lte=end_date,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-            ).select_related('asset'),
-            'sentiment_score', SENTIMENT_FIELDS, 'warning', writer, counters, field_counters, reason_counters,
         )
 
     def _audit_fundamental_reconciliation(self, assets, start_date, end_date, floor_date, sample_size, sample_seed, writer, counters, table_counters, field_counters):
@@ -2682,19 +2651,6 @@ class Command(BaseCommand):
             field_counters[('technical_indicator', ','.join(technical_indicators), 'neutral_default_value', 'info')] += technical_count
             reason_counters[('technical_indicator', ','.join(technical_indicators), 'neutral_default_or_fallback', 'info')] += technical_count
 
-        sentiment_queryset = SentimentScore.objects.filter(
-            asset_id__in=asset_ids,
-            date__gte=start_date,
-            date__lte=end_date,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            sentiment_label=SentimentScore.Label.NEUTRAL,
-            sentiment_score=Decimal('0'),
-        ).select_related('asset')
-        sentiment_count = sentiment_queryset.count()
-        if sentiment_count:
-            self._increment(counters, 'sentiment_score.neutral_default_value', 'info', sentiment_count)
-            field_counters[('sentiment_score', 'sentiment_score', 'neutral_default_value', 'info')] += sentiment_count
-            reason_counters[('sentiment_score', 'sentiment_score', 'neutral_sentiment_or_fallback', 'info')] += sentiment_count
 
     def _validate_model_null_fields(self, queryset, table, fields, severity, writer, counters, field_counters, reason_counters):
         for field in fields:
@@ -2726,7 +2682,6 @@ class Command(BaseCommand):
     def _dependency_gap_report_name(self, table):
         return {
             'factor_score': 'factor_score_gaps',
-            'sentiment_score': 'sentiment_score_gaps',
         }.get(table)
 
     def _record_asset_cross_gap(self, writer, counters, table_counters, field_counters, issue_type, severity, table, field, asset, trading_date, details):
@@ -2925,22 +2880,6 @@ class Command(BaseCommand):
                         continue
                     self._set_feature_presence(feature_bitmaps, 'rs_score', row_date, asset_id, bit_positions)
 
-        for rows in windowed_rows(
-            lambda lo, hi: SentimentScore.objects.filter(
-                asset_id__in=union_asset_ids,
-                date__gte=lo,
-                date__lte=hi,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-            ).order_by().values('date', 'asset_id'),
-            start_date, end_date,
-        ):
-            for row in rows:
-                row_date = row['date']
-                asset_id = row['asset_id']
-                if asset_id not in effective_universe_by_date.get(row_date, set()):
-                    continue
-                self._set_feature_presence(feature_bitmaps, 'sentiment_score', row_date, asset_id, bit_positions)
-
         # select_related('asset') was a no-op on a .values() queryset; the asset lookup
         # below already goes through asset_map.
         for row in iter_windowed(
@@ -3083,7 +3022,6 @@ class Command(BaseCommand):
                 'ohlcv_count': (feature_bitmaps['ohlcv'].get(trading_date, 0) & membership_mask).bit_count(),
                 'rs_score_count': (feature_bitmaps['rs_score'].get(trading_date, 0) & membership_mask).bit_count(),
                 'factor_score_count': (feature_bitmaps['factor_score'].get(trading_date, 0) & membership_mask).bit_count(),
-                'sentiment_score_count': (feature_bitmaps['sentiment_score'].get(trading_date, 0) & membership_mask).bit_count(),
                 'fundamental_snapshot_count': (feature_bitmaps['fundamental_snapshot'].get(trading_date, 0) & membership_mask).bit_count(),
                 'capital_flow_snapshot_count': (feature_bitmaps['capital_flow_snapshot'].get(trading_date, 0) & membership_mask).bit_count(),
                 'pe_non_null_count': (feature_bitmaps['pe'].get(trading_date, 0) & membership_mask).bit_count(),
