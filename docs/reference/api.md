@@ -254,14 +254,13 @@ response schemas are in Swagger; this is the map.
 | --- | --- | --- |
 | `/markets/`, `/assets/`, `/ohlcv/` | markets | Exchanges, instruments, daily bars |
 | `/indicators/` | analytics | Stored indicators plus `compare`, `recalculate`, `fibonacci_levels`, and the `top_rsi` / `bottom_rsi` / `trending_strong` / `overbought_stoch` rankings |
-| `/dashboard/stocks/` | analytics | Composite board: factors, indicators, sentiment, dual-model trade decisions |
+| `/dashboard/stocks/` | analytics | Composite board: factors, indicators, dual-model trade decisions |
 | `/screeners/`, `/screener-templates/` | analytics | 4 pre-built screeners (`overbought_oversold`, `breakout_candidates`, `high_volume`, `trend_reversal`) plus saved templates |
 | `/screener/bottom-candidates/` | factors | Bottom-fishing candidate screener |
 | `/alerts/`, `/alert-events/` | analytics | Alert rules and fired events |
 | `/signals/` | analytics | Signal events |
 | `/factors/fundamentals/`, `/factors/capital-flows/` | factors | Snapshot tables behind `FactorScore` |
 | `/macro/snapshots/`, `/macro/contexts/`, `/macro/event-impacts/` | macro | Monthly macro surface and inferred regime |
-| `/sentiment/news/`, `/sentiment/`, `/sentiment/concepts/` | sentiment | Articles, scores, concept heat |
 | `/prediction/`, `/prediction-model-versions/` | prediction | Heuristic predictions and the model registry |
 | `/lightgbm-predictions/`, `/lightgbm-models/`, `/ensemble-weights/` | prediction | LightGBM surface |
 | `/lstm-predictions/` | prediction | LSTM surface |
