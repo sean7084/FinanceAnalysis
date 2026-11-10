@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-08T16:50:32Z_
+_Generated: 2026-11-10T14:46:10Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -739,7 +739,6 @@ Onboard the CSI 500 effective universe: sync historical memberships, backfill ra
 | `--skip-raw-backfills` | flag | `False` |  |  |
 | `--skip-model-backfill` | flag | `False` |  |  |
 | `--skip-retrain` | flag | `False` |  |  |
-| `--skip-sentiment` | flag | `False` |  |  |
 | `--lightgbm-version-tag` | value | `""` |  |  |
 | `--lightgbm-use-snapshot-pruning` | flag | `False` |  |  |
 | `--lstm-sequence-length` | value | `20` |  |  |
@@ -810,8 +809,6 @@ Backfill model input data over a historical date range for heuristic and LightGB
 | --- | --- | --- | --- | --- |
 | `--start-date` | value | &mdash; |  | Inclusive start date in YYYY-MM-DD format. |
 | `--end-date` | value | &mdash; |  | Inclusive end date in YYYY-MM-DD format. |
-| `--sentiment-weight` | value | `0.0` |  |  |
-| `--skip-sentiment` | flag | `False` |  |  |
 | `--checkpoint-file` | value | `""` |  |  |
 | `--resume-from-checkpoint` | flag | `False` |  |  |
 
@@ -860,7 +857,6 @@ Backfill features and retrain 3/7/30-day LightGBM models end-to-end.
 | `--end-date` | value | `<dynamic-date>` |  | Training end date (YYYY-MM-DD). Defaults to yesterday. |
 | `--horizons` | value | `3,7,30` |  | Comma-separated horizons to train (subset of 3,7,30). |
 | `--skip-backfill` | flag | `False` |  | Skip model data backfill and retrain directly. |
-| `--skip-sentiment` | flag | `False` |  | Pass through to backfill_model_data to skip sentiment recomputation. |
 | `--version-tag` | value | `""` |  | Optional suffix added to the LightGBM model version to preserve existing artifact families. |
 | `--use-snapshot-pruning` | flag | `False` |  | Prune features from the latest active FeatureImportanceSnapshot before retraining. |
 
@@ -879,7 +875,6 @@ Backfill features and retrain 3/7/30-day LSTM models end-to-end.
 | `--asset-chunk-size` | value | `60` |  | Number of assets processed per feature-extraction chunk to control memory. |
 | `--max-samples-per-horizon` | value | `30000` |  | Upper bound of sequence samples used per horizon to keep retrain memory-safe. |
 | `--skip-backfill` | flag | `False` |  | Skip model data backfill and retrain directly. |
-| `--skip-sentiment` | flag | `False` |  | Pass through to backfill_model_data to skip sentiment recomputation. |
 | `--version-tag` | value | `""` |  | Optional suffix added to the LSTM model version to preserve existing artifact families. |
 
 
