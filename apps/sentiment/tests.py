@@ -109,12 +109,6 @@ class Phase13SentimentTests(TestCase):
             ).exists()
         )
 
-    @patch('apps.sentiment.views.run_daily_sentiment_pipeline.delay')
-    def test_recalculate_endpoint_queues_pipeline(self, mock_delay):
-        response = self.client.post('/api/v1/sentiment/recalculate/', {'target_date': str(timezone.now().date())}, format='json')
-        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
-        mock_delay.assert_called_once()
-
     def test_factor_score_composite_is_written_without_a_sentiment_component(self):
         d = timezone.now().date()
         IndexMembership.objects.bulk_create([
@@ -159,23 +153,6 @@ class Phase13SentimentTests(TestCase):
         # here is the point -- a non-null value would mean something is still writing it.
         self.assertIsNotNone(fs.composite_score)
         self.assertIsNone(fs.sentiment_score)
-
-    def test_sentiment_latest_endpoint(self):
-        d = timezone.now().date()
-        SentimentScore.objects.create(
-            article=None,
-            asset=self.asset,
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.6'),
-            neutral_score=Decimal('0.3'),
-            negative_score=Decimal('0.1'),
-            sentiment_score=Decimal('0.5'),
-            sentiment_label=SentimentScore.Label.POSITIVE,
-        )
-        response = self.client.get(f'/api/v1/sentiment/latest/?asset={self.asset.id}&score_type=ASSET_7D&date={d}')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data['results']), 1)
 
     def test_ingest_links_assets_and_infers_concepts(self):
         message = ingest_latest_news(news_items=[{

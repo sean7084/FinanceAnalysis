@@ -148,7 +148,6 @@ export function DashboardPage() {
 
   const dashboard = summaryResource.data ?? {
     macroPhase: 'N/A',
-    hotConcepts: 'N/A',
     predictionSignals: 0,
     alertTriggers: 0,
     completedBacktests: 0,
@@ -202,7 +201,6 @@ export function DashboardPage() {
 
   const translatedMetrics = [
     { label: t('dash.macro'), value: summaryValue(dashboard.macroPhase), pending: summaryPending },
-    { label: t('dash.hotConcepts'), value: summaryValue(dashboard.hotConcepts), pending: summaryPending },
     { label: t('dash.predSignals'), value: summaryValue(`${dashboard.predictionSignals} ${t('dash.today')}`), pending: summaryPending },
     { label: t('dash.alertTriggers'), value: summaryValue(`${dashboard.alertTriggers} ${t('dash.live')}`), pending: summaryPending },
     { label: t('dash.completedBacktests'), value: summaryValue(String(dashboard.completedBacktests)), pending: summaryPending },

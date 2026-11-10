@@ -12,7 +12,6 @@ const apiMocks = vi.hoisted(() => ({
   fetchOhlcvByAsset: vi.fn(),
   fetchPredictionBySymbol: vi.fn(),
   fetchLightGBMPredictionBySymbol: vi.fn(),
-  fetchSentimentByAsset: vi.fn(),
 }))
 
 vi.mock('../lib/api', async () => {
@@ -127,7 +126,6 @@ describe('StockDetailPage queued generation', () => {
     apiMocks.fetchAssets.mockResolvedValue([{ symbol: '600519', name: 'Kweichow Moutai' }])
     apiMocks.fetchAssetBySymbol.mockResolvedValue({ id: 1, symbol: '600519', name: 'Kweichow Moutai' })
     apiMocks.fetchOhlcvByAsset.mockResolvedValue([])
-    apiMocks.fetchSentimentByAsset.mockResolvedValue([])
   })
 
   afterEach(() => {

@@ -1753,7 +1753,7 @@ class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
 
     URL = '/api/v1/dashboard/stocks/summary/'
     EXPECTED_KEYS = {
-        'macro_phase', 'hot_concepts', 'prediction_signals', 'alert_triggers',
+        'macro_phase', 'prediction_signals', 'alert_triggers',
         'completed_backtests', 'avg_bottom_probability', 'generated_at',
     }
 

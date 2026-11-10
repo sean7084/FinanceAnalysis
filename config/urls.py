@@ -34,11 +34,6 @@ from apps.macro.views import (
     MarketContextViewSet,
     EventImpactStatViewSet,
 )
-from apps.sentiment.views import (
-    NewsArticleViewSet,
-    SentimentScoreViewSet,
-    ConceptHeatViewSet,
-)
 from apps.prediction.views import (
     PredictionViewSet,
     ModelVersionViewSet,
@@ -85,9 +80,6 @@ router.register(r'screener/bottom-candidates', BottomCandidateViewSet, basename=
 router.register(r'macro/snapshots', MacroSnapshotViewSet, basename='macro-snapshot')
 router.register(r'macro/contexts', MarketContextViewSet, basename='macro-context')
 router.register(r'macro/event-impacts', EventImpactStatViewSet, basename='event-impact')
-router.register(r'sentiment/news', NewsArticleViewSet, basename='sentiment-news')
-router.register(r'sentiment', SentimentScoreViewSet, basename='sentiment-score')
-router.register(r'sentiment/concepts', ConceptHeatViewSet, basename='sentiment-concept')
 router.register(r'prediction', PredictionViewSet, basename='prediction')
 router.register(r'prediction-model-versions', ModelVersionViewSet, basename='prediction-model-version')
 router.register(r'lightgbm-predictions', LightGBMPredictionViewSet, basename='lightgbm-prediction')

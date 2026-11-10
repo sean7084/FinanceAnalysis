@@ -34,7 +34,6 @@ const dashboardRow = {
   fundamental_score: 0.6,
   capital_flow_score: 0.52,
   technical_score: 0.57,
-  factor_sentiment_score: 0.48,
   pe_percentile_score: 0.3,
   pb_percentile_score: 0.25,
   roe_trend_score: 0.44,
@@ -42,8 +41,6 @@ const dashboardRow = {
   margin_flow_score: 0.32,
   technical_reversal_score: 0.55,
   current_close: 18.4,
-  sentiment_score: 0.22,
-  sentiment_label: 'POSITIVE',
   rsi: 55.2,
   macd: 0.18,
   bb_upper: 20.1,
@@ -115,7 +112,6 @@ describe('DashboardPage', () => {
     apiMocks.fetchDashboardStocks.mockReset()
     apiMocks.fetchDashboardData.mockResolvedValue({
       macroPhase: 'RECOVERY',
-      hotConcepts: 'AI, Banks',
       predictionSignals: 12,
       alertTriggers: 3,
       completedBacktests: 21,
@@ -209,7 +205,6 @@ describe('DashboardPage', () => {
     await waitFor(() => {
       expect(screen.getByText('RECOVERY')).toBeInTheDocument()
     })
-    expect(screen.getByText('AI, Banks')).toBeInTheDocument()
     expect(screen.queryByText('Sample Asset')).not.toBeInTheDocument()
   })
 
@@ -232,7 +227,6 @@ const LOAD_ERROR = 'Failed to load dashboard data.'
 
 const degradedSummary = {
   macroPhase: 'N/A',
-  hotConcepts: 'N/A',
   predictionSignals: 0,
   alertTriggers: 0,
   completedBacktests: 0,
