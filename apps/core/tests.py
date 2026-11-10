@@ -306,7 +306,6 @@ class DataQualityValidationCommandTests(TestCase):
                 'pit_benchmark_daily_gaps.csv',
                 'macro_snapshot_gaps.csv',
                 'factor_score_gaps.csv',
-                'sentiment_score_gaps.csv',
                 'ohlcv_continuity_gaps.csv',
                 'fundamental_snapshot_continuity_gaps.csv',
                 'capital_flow_snapshot_continuity_gaps.csv',
@@ -410,15 +409,6 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertEqual({row['metric_family'] for row in missing_factor_rows}, {'factor_score'})
             self.assertEqual({row['required_table'] for row in missing_factor_rows}, {'factor_score'})
             self.assertEqual({row['date'] for row in missing_factor_rows}, {'2024-01-04', '2024-01-05'})
-
-            sentiment_gap_rows = read_csv(output_dir / 'sentiment_score_gaps.csv')
-            missing_sentiment_rows = [row for row in sentiment_gap_rows if row['issue_type'] == 'missing_sentiment_score']
-            self.assertEqual(len(missing_sentiment_rows), 2)
-            self.assertEqual({row['asset_ts_code'] for row in missing_sentiment_rows}, {'001391.SZ'})
-            self.assertEqual({row['field'] for row in missing_sentiment_rows}, {'ASSET_7D'})
-            self.assertEqual({row['metric_family'] for row in missing_sentiment_rows}, {'sentiment_score'})
-            self.assertEqual({row['required_table'] for row in missing_sentiment_rows}, {'sentiment_score'})
-            self.assertEqual({row['date'] for row in missing_sentiment_rows}, {'2024-01-04', '2024-01-05'})
 
             macro_gap_rows = read_csv(output_dir / 'macro_snapshot_gaps.csv')
             missing_macro_rows = [row for row in macro_gap_rows if row['issue_type'] == 'missing_macro_field']
@@ -534,7 +524,7 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertIn('pit_benchmark_daily_gaps.csv', metadata['report_descriptions'])
             self.assertIn('macro_snapshot_gaps.csv', metadata['report_descriptions'])
             self.assertIn('factor_score_gaps.csv', metadata['report_descriptions'])
-            self.assertIn('sentiment_score_gaps.csv', metadata['report_descriptions'])
+            self.assertIn('factor_score_gaps.csv', metadata['report_descriptions'])
             self.assertIn('ohlcv_continuity_gaps.csv', metadata['report_descriptions'])
             self.assertIn('fundamental_snapshot_continuity_gaps.csv', metadata['report_descriptions'])
             self.assertIn('capital_flow_snapshot_continuity_gaps.csv', metadata['report_descriptions'])

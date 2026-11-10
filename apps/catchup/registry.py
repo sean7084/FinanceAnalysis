@@ -122,14 +122,6 @@ SERIES = (
         cost_shape=COST_PER_ASSET, calls_per_unit=3, detector_class='C',
     ),
     SeriesDescriptor(
-        name='news', priority=60, layer=LAYER_RAW, depends_on=(),
-        detector=detectors.watermark_detector(
-            'news', 'fetch-latest-market-news-daily', grace_days=1, estimated_calls=3),
-        repair=repairs.repair_news,
-        cost_shape=COST_FIXED, calls_per_unit=3,
-        beat_task_name='fetch-latest-market-news-daily', detector_class='B',
-    ),
-    SeriesDescriptor(
         name='macro_core', priority=70, layer=LAYER_RAW, depends_on=(),
         detector=detectors.detect_macro_gap, repair=repairs.repair_macro_core,
         cost_shape=COST_FIXED, calls_per_unit=5,
@@ -169,16 +161,6 @@ SERIES = (
         beat_task_name=DAILY_DISPATCHER_ENTRY, detector_class='B',
     ),
     SeriesDescriptor(
-        name='sentiment_pipeline', priority=90, layer=LAYER_DERIVED,
-        depends_on=('news',),
-        detector=detectors.watermark_detector(
-            'sentiment_pipeline', 'run-daily-sentiment-pipeline',
-            grace_days=1, kind=KIND_REPLAY),
-        repair=repairs.replay_sentiment_pipeline,
-        cost_shape=COST_LOCAL, calls_per_unit=0,
-        beat_task_name='run-daily-sentiment-pipeline', detector_class='B',
-    ),
-    SeriesDescriptor(
         name='etf_features', priority=92, layer=LAYER_DERIVED,
         depends_on=('etf_daily', 'benchmark_index'),
         detector=detectors.watermark_detector(
@@ -189,7 +171,11 @@ SERIES = (
     ),
     SeriesDescriptor(
         name='predictions', priority=95, layer=LAYER_DERIVED,
-        depends_on=('factor_scores', 'sentiment_pipeline'),
+        # 'sentiment_pipeline' was listed here until that series was deregistered with
+        # the news module (#52). _blocking_upstream skips an unknown name, so a stale
+        # edge would rot quietly rather than fail; tests_replay.py:90 is what keeps
+        # depends_on honest, and it only passes while the edge points at a real series.
+        depends_on=('factor_scores',),
         detector=detectors.detect_prediction_gap, repair=repairs.delegate_predictions,
         cost_shape=COST_LOCAL, calls_per_unit=0,
         beat_task_name='reconcile-prediction-coverage-hourly', detector_class='A',

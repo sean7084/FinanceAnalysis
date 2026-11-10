@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-08T16:50:32Z_
+_Generated: 2026-11-10T14:44:22Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -169,7 +169,7 @@ Catch up on the data holes an outage left behind. Beat never replays a missed oc
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--dry-run` | flag | `False` |  | Detect and report gaps without repairing anything. |
-| `--series` | value | `""` |  | Comma-separated subset of: trading_calendar,suspensions,ohlcv,benchmark_index,index_membership,etf_daily,capital_flow,fundamentals,news,macro_core,macro_yields,technical_indicators,model_data_rs_score,factor_scores,sentiment_pipeline,etf_features,predictions |
+| `--series` | value | `""` |  | Comma-separated subset of: trading_calendar,suspensions,ohlcv,benchmark_index,index_membership,etf_daily,capital_flow,fundamentals,macro_core,macro_yields,technical_indicators,model_data_rs_score,factor_scores,etf_features,predictions |
 | `--max-calls` | value | &mdash; |  | TuShare call budget for this run. |
 | `--max-seconds` | value | &mdash; |  | Wall-clock budget for this run. |
 | `--trigger` | value | `manual` |  |  |
