@@ -290,7 +290,6 @@ def _generate_predictions_for_single_asset(asset, as_of, horizons, macro_phase=N
                 'feature_payload': {
                     'factor_composite': float(features['factor_composite']),
                     'factor_bottom_prob': float(features['factor_bottom_prob']),
-                    'sentiment_score': float(features['sentiment_score']),
                     'rsi': float(features['rsi']),
                     'mom_5d': float(features['mom_5d']),
                     'rs_score': float(features['rs_score']),
