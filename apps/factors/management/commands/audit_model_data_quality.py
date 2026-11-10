@@ -14,7 +14,6 @@ SCORE_FIELDS = (
     'technical_reversal_score',
     'fundamental_score',
     'capital_flow_score',
-    'sentiment_score',
     'roe_trend_score',
 )
 
@@ -235,6 +234,5 @@ class Command(BaseCommand):
         self.stdout.write(
             f'  {label} date={row.date} source={metadata.get("source") or "<missing>"} '
             f'technical_score={row.technical_score} technical_reversal_score={row.technical_reversal_score} '
-            f'fundamental_score={row.fundamental_score} capital_flow_score={row.capital_flow_score} '
-            f'sentiment_score={row.sentiment_score}'
+            f'fundamental_score={row.fundamental_score} capital_flow_score={row.capital_flow_score}'
         )

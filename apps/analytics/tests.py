@@ -375,7 +375,6 @@ class DashboardStockFixtures:
                 main_force_flow_score=Decimal('0.550000'),
                 margin_flow_score=Decimal('0.450000'),
                 technical_reversal_score=Decimal('0.700000'),
-                sentiment_score=Decimal('0.350000'),
                 fundamental_score=Decimal('0.400000'),
                 capital_flow_score=Decimal('0.500000'),
                 technical_score=Decimal('0.650000'),
