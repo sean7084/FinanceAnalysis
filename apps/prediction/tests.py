@@ -26,7 +26,12 @@ from apps.sentiment.models import SentimentScore
 from .historical_features import latest_bbands, latest_momentum, latest_rsi, latest_sma
 from .models import ModelVersion, PredictionResult
 from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
-from .tasks import _feature_snapshot, generate_predictions_for_date, train_prediction_models
+from .tasks import (
+    _feature_snapshot,
+    _generate_predictions_for_single_asset,
+    generate_predictions_for_date,
+    train_prediction_models,
+)
 from .tasks_lightgbm import MISSING_VALUE_STRATEGY_NATIVE_NAN, _create_feature_matrix, _create_labels_for_training
 from .tasks_lstm import (
     LSTM_MISSING_VALUE_STRATEGY,
@@ -450,6 +455,22 @@ class Phase14PredictionTests(TestCase):
         prediction = PredictionResult.objects.get(asset=self.asset, date=d, horizon_days=7)
         self.assertEqual(prediction.macro_phase, MarketContext.MacroPhase.RECOVERY)
         self.assertEqual(prediction.event_tag, 'historical-regime')
+
+    def test_stored_feature_payload_keys_match_the_snapshot_builder(self):
+        d = self._seed_features()
+        # Called directly because this is the writer the on-demand single-stock path uses
+        # (:324 and :400), and every other test patches it away -- which is how it kept
+        # copying a literal 'sentiment_score' after _feature_snapshot stopped returning the
+        # key, green through the whole suite. A KeyError waiting on a live endpoint is not
+        # a test-suite problem, it is a coverage problem.
+        _generate_predictions_for_single_asset(self.asset, d, [7])
+
+        prediction = PredictionResult.objects.get(asset=self.asset, date=d, horizon_days=7)
+        self.assertEqual(
+            set(prediction.feature_payload),
+            set(_feature_snapshot(self.asset.id, d)),
+        )
+        self.assertNotIn('sentiment_score', prediction.feature_payload)
 
     def test_generate_predictions_ignores_future_ohlcv_rows(self):
         d = self._seed_features()
