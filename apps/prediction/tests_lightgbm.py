@@ -160,7 +160,8 @@ class LightGBMPredictionTests(TestCase):
         self.assertIn('rsi_delta_3d', features)
         self.assertIn('return_5d', features)
         self.assertIn('relative_volume_5d', features)
-        self.assertIn('sentiment_7d_avg_20d', features)
+        self.assertNotIn('sentiment_7d', features)
+        self.assertNotIn('sentiment_7d_avg_20d', features)
         self.assertIn('pe_ttm_percentile', features)
         self.assertIn('pe_ttm_percentile_x_macro_phase', features)
         self.assertEqual(features['northbound_flow'], 0.5)
@@ -185,7 +186,8 @@ class LightGBMPredictionTests(TestCase):
         feature_df = _create_feature_matrix(d, d, asset_ids=[self.asset.id])
 
         self.assertIn('rsi_x_relative_volume_5d', feature_df.columns)
-        self.assertIn('factor_composite_x_sentiment', feature_df.columns)
+        self.assertIn('rsi_x_macro_phase', feature_df.columns)
+        self.assertNotIn('factor_composite_x_sentiment', feature_df.columns)
 
     def test_create_feature_matrix_uses_stored_technical_indicator_values(self):
         d = timezone.datetime(2024, 2, 2).date()

@@ -200,7 +200,6 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
         fw = _parse_decimal(request.data.get('financial_weight'), 0.4)
         cw = _parse_decimal(request.data.get('flow_weight'), 0.3)
         tw = _parse_decimal(request.data.get('technical_weight'), 0.3)
-        sw = _parse_decimal(request.data.get('sentiment_weight'), 0.0)
         macro_context = request.data.get('macro_context')
         event_tag = request.data.get('event_tag')
 
@@ -217,7 +216,6 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
             financial_weight=float(adjusted['financial_weight']),
             flow_weight=float(adjusted['flow_weight']),
             technical_weight=float(adjusted['technical_weight']),
-            sentiment_weight=float(sw),
         )
         return Response(
             {
@@ -227,7 +225,6 @@ class BottomCandidateViewSet(viewsets.ReadOnlyModelViewSet):
                     'financial_weight': float(adjusted['financial_weight']),
                     'flow_weight': float(adjusted['flow_weight']),
                     'technical_weight': float(adjusted['technical_weight']),
-                    'sentiment_weight': float(sw),
                 },
                 'macro_context': adjusted['macro_context'],
                 'event_tag': adjusted['event_tag'],

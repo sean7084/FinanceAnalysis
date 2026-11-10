@@ -65,7 +65,6 @@ class Command(BaseCommand):
         parser.add_argument('--skip-raw-backfills', action='store_true')
         parser.add_argument('--skip-model-backfill', action='store_true')
         parser.add_argument('--skip-retrain', action='store_true')
-        parser.add_argument('--skip-sentiment', action='store_true')
         parser.add_argument('--lightgbm-version-tag', default='')
         parser.add_argument('--lightgbm-use-snapshot-pruning', action='store_true')
         parser.add_argument('--lstm-sequence-length', type=int, default=20)
@@ -225,8 +224,6 @@ class Command(BaseCommand):
                 'end_date': end_date.isoformat(),
                 'stdout': self.stdout,
             }
-            if options['skip_sentiment']:
-                model_backfill_kwargs['skip_sentiment'] = True
             call_command('backfill_model_data', **model_backfill_kwargs)
         else:
             self.stdout.write('Skipping model-data backfill by request.')
@@ -241,8 +238,6 @@ class Command(BaseCommand):
                 'use_snapshot_pruning': options['lightgbm_use_snapshot_pruning'],
                 'stdout': self.stdout,
             }
-            if options['skip_sentiment']:
-                lightgbm_kwargs['skip_sentiment'] = True
             call_command('rebuild_lightgbm_pipeline', **lightgbm_kwargs)
 
             lstm_kwargs = {
@@ -255,8 +250,6 @@ class Command(BaseCommand):
                 'skip_backfill': True,
                 'stdout': self.stdout,
             }
-            if options['skip_sentiment']:
-                lstm_kwargs['skip_sentiment'] = True
             call_command('rebuild_lstm_pipeline', **lstm_kwargs)
         else:
             self.stdout.write('Skipping model retraining by request.')

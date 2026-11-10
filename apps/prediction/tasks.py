@@ -19,7 +19,6 @@ from apps.prediction.reconciliation import (
     RECONCILE_SOURCES,
     gaps_for_date,
 )
-from apps.sentiment.models import SentimentScore
 from .models import ModelVersion, PredictionResult
 from .odds import estimate_trade_decision
 
@@ -67,12 +66,6 @@ def _feature_snapshot(asset_id, as_of, cache=None):
         mode=FactorScore.FactorMode.COMPOSITE,
     ).order_by('-date').first()
 
-    sentiment = SentimentScore.objects.filter(
-        asset_id=asset_id,
-        date__lte=as_of,
-        score_type=SentimentScore.ScoreType.ASSET_7D,
-    ).order_by('-date').first()
-
     rsi = latest_rsi(asset_id, as_of, default=Decimal('50'), cache=cache)
     mom_5d = latest_momentum(asset_id, as_of, n_days=5, default=Decimal('0'), cache=cache)
     rs_score = latest_rs_score(asset_id, as_of, default=Decimal('0.5'), cache=cache)
@@ -80,7 +73,6 @@ def _feature_snapshot(asset_id, as_of, cache=None):
     return {
         'factor_composite': Decimal(str(getattr(factor, 'composite_score', Decimal('0.5')))),
         'factor_bottom_prob': Decimal(str(getattr(factor, 'bottom_probability_score', Decimal('0.5')))),
-        'sentiment_score': Decimal(str(getattr(sentiment, 'sentiment_score', Decimal('0')))),
         'rsi': rsi,
         'mom_5d': mom_5d,
         'rs_score': rs_score,
@@ -91,14 +83,16 @@ def _probabilities_from_features(features, horizon_days, macro_phase):
     base = Decimal('0.33')
 
     factor_signal = (features['factor_bottom_prob'] - Decimal('0.5'))
-    sentiment_signal = features['sentiment_score'] * Decimal('0.25')
     momentum_signal = features['mom_5d'] * Decimal('1.2')
     rs_signal = (features['rs_score'] - Decimal('0.5')) * Decimal('0.4')
 
     horizon_scale = {3: Decimal('1.10'), 7: Decimal('1.00'), 30: Decimal('0.85')}.get(horizon_days, Decimal('1.00'))
 
-    up = base + (momentum_signal + sentiment_signal + rs_signal - factor_signal) * horizon_scale
-    down = base + (factor_signal - sentiment_signal - momentum_signal - rs_signal) * horizon_scale
+    # The third term in each of these two lines was sentiment_signal, weighted 0.25, until
+    # the news module was decommissioned (#52). This is a live behaviour change, not dead
+    # code removal: the heuristic probabilities narrow because the +/-0.25 swing is gone.
+    up = base + (momentum_signal + rs_signal - factor_signal) * horizon_scale
+    down = base + (factor_signal - momentum_signal - rs_signal) * horizon_scale
     flat = Decimal('1') - up - down
 
     if macro_phase == MarketContext.MacroPhase.RECESSION:
@@ -145,7 +139,7 @@ def _ensure_active_ensemble_version(as_of):
         status=ModelVersion.Status.READY,
         artifact_path='models/ensemble/latest.json',
         metrics={'note': 'heuristic baseline pending full ML training pipeline'},
-        feature_schema=['factor_composite', 'factor_bottom_prob', 'sentiment_score', 'rsi', 'mom_5d', 'rs_score'],
+        feature_schema=['factor_composite', 'factor_bottom_prob', 'rsi', 'mom_5d', 'rs_score'],
         trained_at=timezone.now(),
         training_window_start=as_of.replace(year=max(2000, as_of.year - 5)),
         training_window_end=as_of,
@@ -239,7 +233,6 @@ def generate_predictions_for_date(target_date=None, horizons=None, macro_phase=N
                     'feature_payload': {
                         'factor_composite': float(features['factor_composite']),
                         'factor_bottom_prob': float(features['factor_bottom_prob']),
-                        'sentiment_score': float(features['sentiment_score']),
                         'rsi': float(features['rsi']),
                         'mom_5d': float(features['mom_5d']),
                         'rs_score': float(features['rs_score']),
