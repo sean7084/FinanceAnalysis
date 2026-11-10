@@ -12,8 +12,6 @@ The daily pipeline is a chain with deliberate spacing:
 | Time (CST, UTC+8) | Task | Depends on |
 | --- | --- | --- |
 | 00:10 | `sync_daily_a_shares` | provider availability |
-| 00:35 | `fetch_latest_market_news` | — |
-| 01:00 | `run_daily_sentiment_pipeline` | news ingest |
 | 02:00 | `generate_predictions_for_date` | indicators, factors, sentiment, market context |
 | 02:30 | `generate_lightgbm_predictions_for_date` | same, plus an active artifact per horizon |
 | every 5 min | `check_alert_rules` | indicators |

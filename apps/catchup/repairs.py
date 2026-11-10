@@ -177,27 +177,6 @@ def repair_fundamentals(ctx, gap, budget):
                calls=calls, dates=gap.missing_dates)
 
 
-def repair_news(ctx, gap, budget):
-    """The interior gap, with an explicit range.
-
-    ``run_hourly_historical_news_backfill`` walks *backward* from the earliest
-    stored row toward the 2021 floor, so it can never reach a hole in the middle.
-    Providers may also simply not retain articles from weeks ago -- that is a
-    PARTIAL, not a FAILED.
-    """
-    summary = _run('backfill_news',
-                   start_at=f'{gap.window_start} 00:00:00',
-                   end_at=f'{gap.window_end} 23:59:59',
-                   chunk_days=30)
-    budget.spend(3)
-    return RepairResult(
-        units_done=1, units_remaining=0, estimated_calls_spent=3,
-        outcome=CatchUpRun.Outcome.PARTIAL,
-        detail=(summary or 'news window fetched') +
-               '; providers may not retain articles this old',
-    )
-
-
 def repair_macro_core(ctx, gap, budget):
     summary = _run('backfill_macro_snapshots',
                    start_date=gap.missing_dates[0].isoformat(),
@@ -276,20 +255,6 @@ def replay_factor_scores(ctx, gap, budget):
         calculate_factor_scores_for_date(target_date=day.isoformat())
     return _ok(f'factor scores recomputed for {len(gap.missing_dates)} dates',
                dates=gap.missing_dates)
-
-
-def replay_sentiment_pipeline(ctx, gap, budget):
-    from apps.sentiment.tasks import run_daily_sentiment_pipeline
-
-    for day in gap.missing_dates[:1]:
-        run_daily_sentiment_pipeline(target_date=day.isoformat())
-    remaining = max(len(gap.missing_dates) - 1, 0)
-    return RepairResult(
-        units_done=1, units_remaining=remaining, estimated_calls_spent=0,
-        outcome=CatchUpRun.Outcome.PARTIAL if remaining else CatchUpRun.Outcome.OK,
-        detail=f'sentiment pipeline run for {gap.missing_dates[0]}',
-        repaired_dates=(gap.missing_dates[0],),
-    )
 
 
 def replay_etf_features(ctx, gap, budget):

@@ -266,9 +266,9 @@ class WatermarkDetectorTests(CalendarSeededTests):
         self.assertEqual(gap.window_end, AS_OF)
 
     def test_replay_kind_converts_the_window_to_open_dates(self):
-        seed_periodic_task('run-daily-sentiment-pipeline', watermark_at(AS_OF, 9))
+        seed_periodic_task('compute-etf-features-daily', watermark_at(AS_OF, 9))
         detector = detectors.watermark_detector(
-            'sentiment_pipeline', 'run-daily-sentiment-pipeline',
+            'etf_features', 'compute-etf-features-daily',
             grace_days=1, kind=detectors.KIND_REPLAY)
         gap = detector(self.ctx())
         self.assertEqual(gap.kind, detectors.KIND_REPLAY)
