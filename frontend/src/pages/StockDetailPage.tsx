@@ -9,7 +9,6 @@ import {
   fetchLightGBMPredictionBySymbol,
   fetchOhlcvByAsset,
   fetchPredictionBySymbol,
-  fetchSentimentByAsset,
   type LightGBMPredictionStockDto,
   type PredictionStockDto,
 } from '../lib/api'
@@ -29,14 +28,13 @@ async function loadStockDetail(symbol: string) {
     return null
   }
 
-  // All four only need asset.id / asset.symbol, so none has to wait for
+  // All three only need asset.id / asset.symbol, so none has to wait for
   // another. OHLCV previously gated the rest behind up to three serial
   // page round trips.
-  const [ohlcvResult, predictionResult, lightgbmResult, sentimentResult] = await Promise.allSettled([
+  const [ohlcvResult, predictionResult, lightgbmResult] = await Promise.allSettled([
     fetchOhlcvByAsset(asset.id, 3000),
     fetchPredictionBySymbol(asset.symbol),
     fetchLightGBMPredictionBySymbol(asset.symbol),
-    fetchSentimentByAsset(asset.id),
   ])
 
   // allSettled would otherwise turn an OHLCV failure into a silently
@@ -51,7 +49,6 @@ async function loadStockDetail(symbol: string) {
     ohlcvRows: ohlcvResult.value,
     prediction: predictionResult.status === 'fulfilled' ? predictionResult.value : null,
     lightgbm: lightgbmResult.status === 'fulfilled' ? lightgbmResult.value : null,
-    sentimentRows: sentimentResult.status === 'fulfilled' ? sentimentResult.value : [],
   }
 }
 
@@ -84,7 +81,6 @@ export function StockDetailPage() {
   const [predData, setPredData] = useState<Array<{ horizon: string; up: number; flat: number; down: number }>>([])
   const [heuristicPrediction, setHeuristicPrediction] = useState<PredictionStockDto | null>(null)
   const [lightgbmPrediction, setLightgbmPrediction] = useState<LightGBMPredictionStockDto | null>(null)
-  const [sentimentLatest, setSentimentLatest] = useState<number | null>(null)
   const [assetOptions, setAssetOptions] = useState<Array<{ symbol: string; name: string }>>([])
   const [assetSearch, setAssetSearch] = useState('')
   const detailRef = useRef<StockDetailPayload>(null)
@@ -144,7 +140,6 @@ export function StockDetailPage() {
             setPredData([])
             setHeuristicPrediction(null)
             setLightgbmPrediction(null)
-            setSentimentLatest(null)
             detailRef.current = null
           }
           return
@@ -174,9 +169,6 @@ export function StockDetailPage() {
           })),
         )
 
-        if (payload.sentimentRows.length > 0) {
-          setSentimentLatest(Number(payload.sentimentRows[0].sentiment_score))
-        }
         setError(null)
       } catch (err) {
         if (alive) {
@@ -256,13 +248,6 @@ export function StockDetailPage() {
       window.clearInterval(timer)
     }
   }, [awaitingGeneration, symbol])
-
-  const sentimentText = useMemo(() => {
-    if (sentimentLatest === null) {
-      return t('common.na')
-    }
-    return sentimentLatest.toFixed(3)
-  }, [sentimentLatest, t])
 
   const comparisonRows = useMemo(() => {
     const comparison = new Map<number, {
@@ -434,10 +419,6 @@ export function StockDetailPage() {
           {t(error.key)}{error.status === undefined ? '' : ` (HTTP ${error.status})`}
         </p>
       )}
-      <div className="card">
-        <strong>{t('stock.sentiment')}: </strong>
-        <span>{sentimentText}</span>
-      </div>
       <CandlestickChart data={klineData} />
       {generationNotice && <p className="status">{generationNotice}</p>}
       <ProbabilityChart title={t('stock.heuristicProbability')} data={predData} />

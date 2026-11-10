@@ -47,7 +47,6 @@ export function IndicatorBoardPage() {
     { key: 'fundamental_score', label: t('dash.fundamental') },
     { key: 'capital_flow_score', label: t('dash.capitalFlow') },
     { key: 'technical_score', label: t('dash.technical') },
-    { key: 'factor_sentiment_score', label: t('dash.factorSentiment') },
     { key: 'rsi', label: 'RSI' },
     { key: 'macd', label: 'MACD' },
     { key: 'bb_upper', label: 'BB Upper' },

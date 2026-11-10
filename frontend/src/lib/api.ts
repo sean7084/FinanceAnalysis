@@ -29,11 +29,6 @@ export interface MacroContextDto {
   is_active: boolean
 }
 
-export interface ConceptHeatDto {
-  concept_name: string
-  heat_score: number
-}
-
 export interface SignalEventDto {
   id: number
   signal_type: string
@@ -75,7 +70,6 @@ export interface DashboardStockRowDto {
   fundamental_score: number
   capital_flow_score: number
   technical_score: number
-  factor_sentiment_score: number | null
   pe_percentile_score: number | null
   pb_percentile_score: number | null
   roe_trend_score: number | null
@@ -83,8 +77,6 @@ export interface DashboardStockRowDto {
   margin_flow_score: number | null
   technical_reversal_score: number | null
   current_close: number | null
-  sentiment_score: number | null
-  sentiment_label: string
   rsi: number | null
   macd: number | null
   bb_upper: number | null
@@ -186,11 +178,6 @@ export interface LightGBMPredictionStockDto {
     trade_score?: number | string | null
     suggested?: boolean
   }>
-}
-
-export interface SentimentDto {
-  date: string
-  sentiment_score: number
 }
 
 export interface ModelVersionDto {
@@ -516,7 +503,6 @@ async function apiGetSafe<T>(path: string, fallback: T): Promise<T> {
 
 export interface DashboardSummaryDto {
   macro_phase: string
-  hot_concepts: string
   prediction_signals: number
   alert_triggers: number
   completed_backtests: number
@@ -526,7 +512,6 @@ export interface DashboardSummaryDto {
 
 const DASHBOARD_SUMMARY_FALLBACK: DashboardSummaryDto = {
   macro_phase: 'N/A',
-  hot_concepts: 'N/A',
   prediction_signals: 0,
   alert_triggers: 0,
   completed_backtests: 0,
@@ -563,7 +548,6 @@ export async function fetchDashboardData() {
 
   return {
     macroPhase: summary.macro_phase || 'N/A',
-    hotConcepts: summary.hot_concepts || 'N/A',
     predictionSignals: summary.prediction_signals ?? 0,
     alertTriggers: summary.alert_triggers ?? 0,
     completedBacktests: summary.completed_backtests ?? 0,
@@ -574,10 +558,9 @@ export async function fetchDashboardData() {
 
 /** Retained for one release so the switch to the summary endpoint is reversible. */
 export async function fetchDashboardDataLegacy() {
-  const [macroCurrent, macroList, conceptsTop, recentSignals, recentAlerts, backtests, screener] = await Promise.all([
+  const [macroCurrent, macroList, recentSignals, recentAlerts, backtests, screener] = await Promise.all([
     apiGetSafe<MacroContextDto | { detail: string }>('/macro/contexts/current/', { detail: 'No active context found.' }),
     apiGetSafe<Paginated<MacroContextDto>>('/macro/contexts/?page_size=1', { count: 0, next: null, previous: null, results: [] }),
-    apiGetSafe<{ date?: string; results: ConceptHeatDto[] }>('/sentiment/concepts/top/?limit=3', { results: [] }),
     apiGetSafe<Paginated<SignalEventDto>>('/signals/recent/?days=1&page_size=200', { count: 0, next: null, previous: null, results: [] }),
     apiGetSafe<Paginated<AlertEventDto>>('/alert-events/?page_size=200', { count: 0, next: null, previous: null, results: [] }),
     apiGetSafe<Paginated<BacktestRunDto>>('/backtest/?page_size=50', { count: 0, next: null, previous: null, results: [] }),
@@ -595,7 +578,6 @@ export async function fetchDashboardDataLegacy() {
 
   return {
     macroPhase: macro?.macro_phase ?? 'N/A',
-    hotConcepts: conceptsTop.results.map((x) => x.concept_name).join(', ') || 'N/A',
     predictionSignals: recentSignals.count,
     alertTriggers: activeAlerts,
     completedBacktests,
@@ -778,15 +760,6 @@ export async function fetchPredictionBySymbol(symbol: string): Promise<Predictio
     return await apiGet<PredictionStockDto>(`/prediction/${encodeURIComponent(symbol)}/`)
   } catch {
     return null
-  }
-}
-
-export async function fetchSentimentByAsset(assetId: number): Promise<SentimentDto[]> {
-  try {
-    const payload = await apiGet<Paginated<SentimentDto>>(`/sentiment/?asset=${assetId}&score_type=ASSET_7D&page_size=20`)
-    return payload.results
-  } catch {
-    return []
   }
 }
 
