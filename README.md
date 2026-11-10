@@ -30,6 +30,7 @@ This README is orientation only. Everything else is split by purpose.
 | Look up an environment variable | [`docs/reference/env.md`](docs/reference/env.md) *(generated)* |
 | Look up current data coverage | [`docs/reference/metrics.md`](docs/reference/metrics.md) *(generated)* |
 | Look up the deployed model registry | [`docs/reference/models.md`](docs/reference/models.md) *(generated)* |
+| Understand a historical data correction that is no longer in the code | [`docs/reference/sentiment-data-corrections.md`](docs/reference/sentiment-data-corrections.md) |
 | Diagnose a failed sync or stuck task | [`docs/how-to/runbook-sync-failure.md`](docs/how-to/runbook-sync-failure.md) |
 | Diagnose missing provider data | [`docs/how-to/runbook-provider-blackout.md`](docs/how-to/runbook-provider-blackout.md) |
 | Diagnose stale derived data | [`docs/how-to/runbook-stale-data.md`](docs/how-to/runbook-stale-data.md) |
