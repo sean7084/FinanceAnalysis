@@ -149,10 +149,15 @@ class Phase13SentimentTests(TestCase):
         )
 
         fs = FactorScore.objects.get(asset=self.asset, date=d, mode=FactorScore.FactorMode.COMPOSITE)
-        # The composite still lands; the sentiment component no longer does. Reading NULL
-        # here is the point -- a non-null value would mean something is still writing it.
+        # The composite still lands. The sentiment column is not merely unset here -- it no
+        # longer exists as a field -- so the assertion is about the model's shape. When this
+        # test was written the column was still present and NULL was the meaningful check;
+        # feat/drop-sentiment-columns removed the field, and asserting absence is what pins
+        # that instead of failing on an AttributeError.
         self.assertIsNotNone(fs.composite_score)
-        self.assertIsNone(fs.sentiment_score)
+        self.assertFalse(
+            [field for field in FactorScore._meta.fields if field.name.startswith('sentiment')]
+        )
 
     def test_ingest_links_assets_and_infers_concepts(self):
         message = ingest_latest_news(news_items=[{
