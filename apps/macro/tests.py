@@ -5,7 +5,6 @@ import tempfile
 from unittest.mock import patch
 
 import pandas as pd
-from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -22,11 +21,6 @@ from .tasks import refresh_current_market_context, sync_macro_data_monthly, sync
 class Phase12MacroTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='phase12_user',
-            email='phase12@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='P12', name='Phase 12 Market')
         self.asset1 = Asset.objects.create(
             market=self.market,

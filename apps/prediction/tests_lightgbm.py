@@ -3,7 +3,6 @@ from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
 import numpy as np
-from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -50,11 +49,6 @@ class LightGBMPredictionTests(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='lightgbm_user',
-            email='lightgbm@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='LGB', name='LightGBM Market')
         self.asset = Asset.objects.create(
             market=self.market,

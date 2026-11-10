@@ -11,7 +11,6 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from django.conf import settings
-from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.management import call_command
 from django.db.utils import OperationalError
@@ -94,11 +93,6 @@ class StaticLstmModel:
 class Phase15BacktestTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='phase15_user',
-            email='phase15@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='P15', name='Phase 15 Market')
         self.asset = Asset.objects.create(
             market=self.market,
