@@ -895,7 +895,6 @@ class Phase15BacktestTests(TestCase):
             main_force_flow_score=Decimal('0.55'),
             margin_flow_score=Decimal('0.45'),
             technical_reversal_score=Decimal('0.7'),
-            sentiment_score=Decimal('0.35'),
             fundamental_score=Decimal('0.4'),
             capital_flow_score=Decimal('0.5'),
             technical_score=Decimal('0.65'),
