@@ -4,7 +4,6 @@ from io import StringIO
 from unittest.mock import patch
 
 import pandas as pd
-from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -43,11 +42,6 @@ def _seed_trading_calendar_dates(exchange_code, trade_dates):
 class Phase11FactorTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='phase11_user',
-            email='phase11@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='P11', name='Phase 11 Market')
         self.asset1 = Asset.objects.create(
             market=self.market, symbol='600111', ts_code='600111.SH', name='Asset 1'

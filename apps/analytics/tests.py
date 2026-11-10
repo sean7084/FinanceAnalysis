@@ -6,7 +6,6 @@ from unittest.mock import patch
 from django.core.cache import cache
 from django.core import mail
 from django.core.management import call_command, CommandError
-from django.contrib.auth.models import User
 from django.conf import settings
 from django.db.utils import OperationalError
 from django.http import QueryDict
@@ -54,11 +53,6 @@ from .tasks import (
 
 class Phase9AlertTaskTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
-            username='phase9_user',
-            email='phase9@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='SSE', name='Shanghai Stock Exchange')
         self.asset = Asset.objects.create(
             market=self.market,
@@ -281,16 +275,6 @@ class Phase9AlertNotificationDispatchTests(TestCase):
 class Phase9ApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='api_user',
-            email='api_user@example.com',
-            password='Passw0rd!123',
-        )
-        self.other_user = User.objects.create_user(
-            username='other_user',
-            email='other_user@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='SZSE', name='Shenzhen Stock Exchange')
         self.asset = Asset.objects.create(
             market=self.market,
@@ -335,11 +319,6 @@ class DashboardStockFixtures:
 
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='dashboard_user',
-            email='dashboard_user@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='DASH', name='Dashboard Market')
         self.asset1 = Asset.objects.create(market=self.market, symbol='600111', ts_code='600111.SH', name='Alpha Corp')
         self.asset2 = Asset.objects.create(market=self.market, symbol='600222', ts_code='600222.SH', name='Beta Corp')
@@ -657,11 +636,6 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
 class Phase8IndicatorTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='phase8_user',
-            email='phase8@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='BSE', name='Beijing Stock Exchange')
         self.asset = Asset.objects.create(
             market=self.market,
@@ -788,9 +762,6 @@ class Phase10SignalTests(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='p10_user', email='p10@example.com', password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='P10MKT', name='Phase10 Market')
         self.asset = Asset.objects.create(
             market=self.market, symbol='P10001', ts_code='P10001.SH', name='Phase10 Asset',
