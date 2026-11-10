@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -63,11 +62,6 @@ def _seed_trading_calendar_dates(exchange_code, trade_dates):
 class Phase14PredictionTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='phase14_user',
-            email='phase14@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='P14', name='Phase 14 Market')
         self.asset = Asset.objects.create(
             market=self.market,

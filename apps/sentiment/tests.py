@@ -2,7 +2,6 @@ from datetime import datetime, time, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
-from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -27,11 +26,6 @@ from .tasks import calculate_daily_sentiment, fetch_latest_market_news, ingest_l
 class Phase13SentimentTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='phase13_user',
-            email='phase13@example.com',
-            password='Passw0rd!123',
-        )
         self.market = Market.objects.create(code='P13', name='Phase 13 Market')
         self.asset = Asset.objects.create(
             market=self.market,
