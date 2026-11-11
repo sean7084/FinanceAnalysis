@@ -1620,6 +1620,16 @@ The bar the model work is aiming at, against the 3.2 baseline:
   Fix in this order: add `apps.etf_rotation.train_lightgbm` to the celery import list (or import
   it from `tasks.py`), confirm `export_documentation_facts --check` now reproduces the committed
   count, then change the queue literal and regenerate in the same commit.
+- **`'apps.sentiment'` is still in `INSTALLED_APPS`, and that is now a decision rather than a
+  constraint.** The plan listed removing the line as part of the code deletion; it was not done,
+  and re-checking the reason given for keeping it found the reason was wrong. Verified 2026-11-11:
+  no file outside `apps/sentiment/` imports it, and no other app's migration calls
+  `get_model('sentiment', ...)`, so dropping the entry would not break a fresh `migrate` or CI's
+  test database. What remains is that production has applied `sentiment/0001-0006`, so deleting
+  the package also deletes the only on-disk record of what those rows mean. Decide deliberately:
+  either delete `apps/sentiment/` whole plus the settings line in one reviewed change, or keep the
+  tombstone and say so in `docs/reference/sentiment-data-corrections.md`. Not urgent; currently
+  harmless.
 - `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
   second row rather than an update. Every indicator task builds its key the same way —
   `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
