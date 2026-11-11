@@ -1986,8 +1986,8 @@ def _purged_holdout_split(frame, horizon_days, holdout_sessions=HOLDOUT_SESSIONS
     seen its own future.
 
     No embargo is needed on the other side: every feature here is strictly backward
-    looking (``sentiment_7d_avg_20d`` looks back 20 sessions, the interactions are
-    same-row products). If a forward-looking feature is ever added, this is the place that
+    looking -- each window closes on the row's own session, and the interaction terms are
+    same-row products. If a forward-looking feature is ever added, this is the place that
     must be revisited.
 
     Returns ``(train, holdout, holdout_start)`` or ``None`` when the window is too short
