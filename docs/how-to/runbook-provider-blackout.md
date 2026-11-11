@@ -10,8 +10,8 @@ whole job here — the remediation is completely different.
 
 | Provider | Role | Token |
 | --- | --- | --- |
-| TuShare | Primary for market data, fundamentals, capital flow, macro, news | `TUSHARE_TOKEN` |
-| AkShare | Fallback, and primary for some news providers | none |
+| TuShare | Primary for market data, fundamentals, capital flow, macro | `TUSHARE_TOKEN` |
+| AkShare | Fallback provider | none |
 
 Provider selection for macro is configurable:
 
@@ -74,9 +74,6 @@ If you are being throttled:
    python manage.py check_earliest_data
    ```
 
-`backfill_news` has its own throttling handles — `--sleep-seconds`,
-`--max-retries`, `--chunk-days`, `--limit-per-provider`. Use `--dry-run` first to
-confirm the plan before spending quota on it.
 
 ---
 
@@ -138,7 +135,6 @@ Providers publish on their own schedule, and this system aligns to it:
 | Macro (PMI, CPI, PPI, yields, FX) | Monthly | Stored on the **first day of the month**, populated from the first available trade date in that month |
 | Fundamentals (`fina_indicator`) | Quarterly | Aligned by **announcement date**, not report period — never uses a future filing |
 | `daily_basic` (PE/PB/shares/market cap) | Daily | Same trade date |
-| News | Continuous | Ingested hourly for backfill, daily at 00:35 CST (16:35 UTC) for the latest window |
 
 Macro sync runs on days 2–8 of each month at 08:10 CST (00:10 UTC) precisely because
 month-start publication is not instantaneous. A macro snapshot for the current
@@ -163,7 +159,6 @@ why a blackout degrades signal quality rather than causing errors:
 | `relative_volume_*` | `1.0` | Neutral volume |
 | `return_*`, `realized_volatility_5d` | `0` | Neutral |
 | Factor percentile scores | `0.5` | Neutral valuation/flow context |
-| Sentiment `ASSET_7D` | `0.0` | Removes the news-tone signal |
 | `MarketContext` | recovery/neutral | Weakens macro-aware ranking |
 | Macro yields | neutral spread | Weakens the yield-curve feature |
 

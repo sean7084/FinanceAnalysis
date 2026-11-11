@@ -87,6 +87,13 @@ INSTALLED_APPS = [
     'apps.analytics',
     'apps.factors',
     'apps.macro',
+    # Retired app (#52): models, tasks, providers and surfaces deleted; the package is its
+    # migration history and nothing else. Verified 2026-11-11, because the usual reason to keep
+    # such a line does not apply here: no other app's migration resolves a `sentiment` model, so
+    # removing it would not break a fresh `migrate`. It stays because production has already
+    # applied sentiment/0001-0006, and the campaign that dropped the tables was not the campaign
+    # to reshuffle the migration graph -- those are separate risks and only one of them was
+    # taken. Deferred as a BACKLOG item.
     'apps.sentiment',
     'apps.prediction',
     'apps.backtest',

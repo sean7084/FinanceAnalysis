@@ -2,7 +2,8 @@
 
 A split or a large dividend changes the share count without any money entering or leaving the
 fund. The flow features treat a share change as flow, so a mechanical jump would read as
-sentiment. This module identifies those jumps from the adjustment factor already stored on
+genuine subscription pressure. This module identifies those jumps from the adjustment factor
+already stored on
 ``ETFDaily`` and, when the switch is on, removes them from the history the features read.
 The switch is off by default: with it off the feature values are bit-identical to before.
 """

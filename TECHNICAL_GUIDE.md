@@ -267,13 +267,18 @@ publication availability. Tracked in `BACKLOG.md`.
 Primary code: `apps/prediction/tasks.py` (`_feature_snapshot`,
 `_probabilities_from_features`).
 
-**Inputs.** `factor_composite`, `factor_bottom_prob`, `sentiment_score`
-(`ASSET_7D`), `rsi`, `mom_5d`, `rs_score`.
+**Inputs.** `factor_composite`, `factor_bottom_prob`, `rsi`, `mom_5d`, `rs_score`.
+A sixth input, `sentiment_score` (`ASSET_7D`), was removed with the news module (#52).
+Unlike the LightGBM side, this changes the heuristic's output directly rather than
+requiring a retrain, so the stored history is mixed: of the 76,199
+`PredictionResult.feature_payload` rows in the database, 72,875 carry a `sentiment_score`
+key and were computed with that term live; the other 3,324 predate it. Those payloads are
+kept as written — recomputing them is impossible now, since the scores they read were
+deleted with the tables. (The LightGBM side stores `sentiment_7d`, all 63,311 rows.)
 
 **Core formula.** Base prior `0.33`, with signals:
 
 ```
-sentiment_signal = sentiment_score * 0.25
 momentum_signal  = mom_5d * 1.2
 rs_signal        = (rs_score - 0.5) * 0.4
 factor_signal    = (factor_bottom_prob - 0.5)
@@ -282,8 +287,8 @@ factor_signal    = (factor_bottom_prob - 0.5)
 Horizon scale: 3d `1.10`, 7d `1.00`, 30d `0.85`. Unclamped:
 
 ```
-up   = base + (momentum_signal + sentiment_signal + rs_signal - factor_signal) * horizon_scale
-down = base + (factor_signal - sentiment_signal - momentum_signal - rs_signal) * horizon_scale
+up   = base + (momentum_signal + rs_signal - factor_signal) * horizon_scale
+down = base + (factor_signal - momentum_signal - rs_signal) * horizon_scale
 flat = 1 - up - down
 ```
 
@@ -310,7 +315,6 @@ The daily scorer writes one `FactorScore(mode=COMPOSITE)` row per asset per date
 - *Capital flow*: average of `main_force_flow_score` and `margin_flow_score`.
   Asset-level northbound fields were physically removed because northbound flow is
   not a valid per-stock field — it is a market-level series.
-- *Sentiment*: mapped from `[-1, 1]` to `[0, 1]`.
 
 **Technical reversal score** (`technical_score`) is intentionally a
 **bottom-fishing reversal** signal, not a general trend-strength score. In the
@@ -353,15 +357,21 @@ not feed `technical_score`. That is a deliberate scoping decision, not an
 oversight — the component measures reversal, not trend. Revisit via `BACKLOG.md`.
 
 **Composite weights** (before normalisation): financial `0.4`, capital flow
-`0.3`, technical `0.3`, sentiment `0.0`.
+`0.3`, technical `0.3`.
 
 ```
-composite = financial*w_f + capital_flow*w_c + technical*w_t + sentiment*w_s
+composite = financial*w_f + capital_flow*w_c + technical*w_t
 bottom_probability_score = clamp(composite, 0, 1)
 ```
 
-Sentiment carries zero weight, so `FactorScore.sentiment_score` is stored for
-inspection and completeness but does not move the composite.
+A fourth term, `sentiment*w_s`, existed until #111 and always carried `w_s = 0.0` in
+production, so dropping it moved no composite value. What it removed was the appearance of
+data: measured over all 2,043,000 `FactorScore` rows before #116 dropped the columns,
+`sentiment_score` held exactly one distinct value — `0.500000`, the scorer's neutral
+midpoint — and `sentiment_weight` held `0.0000` everywhere. Rows written by the older scorer
+are labelled `metadata.source = 'phase11_scoring_with_sentiment'` and newer ones
+`'phase11_scoring_without_sentiment'`; the composites are identical either way, which is the
+point of recording the weight at all.
 
 ### 5.3 LightGBM multi-class model
 

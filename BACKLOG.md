@@ -443,20 +443,21 @@ so `buy` does not match inside `buyer`. The lexicon already contained 增长/利
 so no vocabulary work was needed. A positive sample now scores +1 and a negative one
 −1. `apps/sentiment/tests_scoring.py` pins it, including the exact regex regression.
 
-**Still open, and it is the larger half:** the 6.5M stored scores are still degenerate.
-Fixing the scorer does not retroactively fix them, so `SENTIMENT_7D`,
-`sentiment_7d_avg_20d` and `factor_composite_x_sentiment` remain constant features until
-a recompute runs. Sequence it before the next stock LightGBM retrain, or the holdout
-will measure a feature that carries no information.
+**Superseded 2026-11-11:** the 6.5M degenerate stored scores were never recomputed into
+anything -- they were deleted. `SENTIMENT_7D`, `sentiment_7d_avg_20d` and
+`factor_composite_x_sentiment` left the feature matrix in #111 and the tables left with the
+module in #117, and the retrain that followed (Job R) measured 36 columns instead of 39. The
+diagnosis above still stands as the reason the retrain was worth running: the concern was a
+holdout measuring a feature that carries no information, and the answer turned out to be that
+removing it changed nothing.
 
-Two smaller residuals:
-- `jieba` should be declared and pinned with the dependency lockfile work. Without it
-  the denominator is a count of unsegmented runs, so scores saturate at ±1 readily;
-  the import now logs a warning saying so instead of degrading silently.
-- `sentiment_weight` defaults to `0.0` (`apps/factors/models.py:157`), so the sentiment
-  component does not affect `composite_score` even once populated. That is a policy
-  decision, not a defect — but it is undocumented, so a reader sees a live-looking
-  column. State it in the field's `help_text`.
+Two residuals were closed by deletion rather than by fixing:
+- `jieba` is gone from `requirements/base.in` and all three lockfiles. It was declared to
+  be *added* here because the scorer imported it optionally; once the scorer was deleted the
+  dependency had no consumer at all, which is the cleaner resolution.
+- `sentiment_weight` never got its `help_text`. #116 dropped the column: measured across
+  all 2,043,000 `FactorScore` rows it held `0.0000` everywhere, and its partner
+  `sentiment_score` held exactly one value, `0.500000`.
 - `backfill_model_data.py:616` does hardcode `Decimal('0.5')` on the historical fast
   path, and `:597`'s `composite_score = 0.35 + technical*0.3` has no sentiment term.
   Real, but **not** the origin of the audited rows; fix it when that path is next run.
@@ -466,6 +467,7 @@ Two smaller residuals:
 Sentiment enters as `sentiment_7d` / `sentiment_7d_avg_20d` (built at `:1793-1800` from
 raw `SentimentScore` ASSET_7D rows) plus the interaction `factor_composite_x_sentiment`
 (`:437`). `FactorScore.sentiment_score` is not read into the matrix at all.
+Superseded 2026-11-11: none of those paths exist any more, and the matrix is 36 columns.
 
 
 **Recomputed and retrained 2026-11-09.** Fixing the scorer does not repair the stored rows, so the
@@ -1110,9 +1112,7 @@ in the admin that changes no behaviour is worse than no checkbox. Dropped in mig
 `macro_eventimpactstat` has no production writer. It is not quite dead code — it has an
 API endpoint (`apps/macro/views.py`), a serializer, an admin registration, a purge
 command reference, and tests that create rows directly — so removing it is removing an
-API surface, not deleting an unused model. Two honest options: implement the writer that
-populates it from news/policy events, or remove the model, endpoint, serializer, admin and
-those tests together. Leaving it as an endpoint that can only ever return nothing is the
+API surface, not deleting an unused model. Two honest options remain, but the first got harder: implement a writer that populates it from news/policy events -- the news module that would have fed it was deleted with #52, so this now means a provider plus a corpus, not just a writer -- or remove the model, endpoint, serializer, admin and those tests together. Leaving it as an endpoint that can only ever return nothing is the
 option least worth keeping.
 
 No seed/fixture mechanism exists anywhere in the repo (`find apps -type d -name fixtures`
@@ -1500,8 +1500,7 @@ unvalidated.
   layer rather than adding parallel pages.
 - **Sector rotation signals.** Industry and theme rotation context to improve
   selection directionality.
-- **Real NLP sentiment.** Replace the rule-based, neutral-heavy fallback with a
-  finance-oriented Chinese BERT model.
+- **Real NLP sentiment.** Re-add a news module first: the rule-based fallback this item wanted replaced was deleted whole with #52, together with `jieba`, the scoring tasks, the three tables and the `ASSET_7D` series. Treat it as a new subsystem with a provider decision attached, not as a model swap.
 - **Policy text analysis.** Parse CSRC / NDRC documents for sector-level
   directional impact.
 - **Personal holdings tracking.** Let a user enter cost basis and position size
@@ -1598,51 +1597,39 @@ The bar the model work is aiming at, against the 3.2 baseline:
   by hand, and nothing in the code says so. Unrelated to timezones, and listed here
   only because it is the same shape of problem — a convention that changed, with a
   stored value still written under the old one.
-- The hourly news backfill hands its provider a window label eight hours behind the
-  zone that label names. `apps/sentiment/tasks.py:367-368` builds `start_at`/`end_at`
-  by calling `.strftime('%Y-%m-%d %H:%M:%S')` on the window bounds read back from the
-  database. Postgres returns those **UTC-aware**, so `strftime` renders the UTC reading
-  of an instant TuShare then parses as Beijing wall time — the window sent is eight
-  hours earlier than the one the task computed. This was expected to fix itself when
-  `TIME_ZONE` flipped; it did not, because the offset lives in the driver's return
-  value, not in the setting. Fix is `timezone.localtime(window_start).strftime(...)` at
-  both sites. Deliberately left alone in the unification: changing what a live provider
-  receives is a semantic change, not a mechanical one, and it wants its own rehearsal
-  against real TuShare responses. Until then
-  `apps/sentiment/tests.py::test_hourly_historical_backfill_fetches_next_window` pins
-  the current UTC-reading strings, so the first person to fix this sees a failing
-  assertion that explains the trade rather than a silent behaviour change.
-- That same rendering costs the backfill one permanent eight-hour hole at the moment
-  sentiment `0003` lands. Every stored `published_at` moves −8h, the walk's next
-  `end_at` is still rendered as the UTC reading, and so it jumps eight hours behind
-  where the walk had already got to: news published 01:30–09:30 Beijing on the
-  boundary day is skipped once and never revisited, because the walk only goes
-  backwards. Measured on the rehearsal copy across all 175,730 rows and pinned by
-  `apps/sentiment/tests_tz_migration.py::test_the_backfill_walk_boundary_moves_eight_hours_at_the_correction`.
-  Day-aligning `window_end` — the obvious-looking containment fix — widens the hole to
-  eighteen hours, since `window_end = earliest - 1s` is already below `earliest` in the
-  corrected frame and pulling it back to the previous Beijing midnight discards the
-  rest of the boundary day. Rendering in the zone the label names closes this and the
-  steady-state skew at once; both wait on the same TuShare rehearsal.
-  **Deployed 2026-11-02 19:26 CST**, and the hole is still open rather than closed: the
-  planned manual fill of Beijing `2025-06-09 02:06:00 → 10:05:59` returned
-  `抱歉，您没有接口(major_news)访问权限`, so the window has to be fetched the moment the
-  entitlement comes back — see the next entry.
-- The historical news backfill has been **dead since 2026-06-13** and nothing surfaces it.
-  `sentiment_newsarticle` rows carrying `metadata.provider = 'tushare_major'` (166,821 of them)
-  stop being created at `2026-06-13 20:12:40Z`; ingest by month is Apr 56,014 / May 95,217 /
-  Jun 15,590 / nothing since. The walk reached `2025-06-09` against a floor of `2021-04-15`, so
-  it is four and a half years short. Two separate things make this invisible. First, the
-  provider now answers `抱歉，您没有接口(major_news)访问权限` — a *permission* loss, not a rate
-  limit — and `_is_provider_quota_error` (`apps/sentiment/tasks.py:58-66`) only matches
-  `最多访问该接口` and `频率超限`, so the branch at `:379` never fires and `:384` re-raises: the
-  task fails loudly instead of returning the "deferred" string that the provider-blackout
-  runbook is written around. Second, `run-hourly-historical-news-backfill` is `enabled=true` with
-  `total_run_count=1797` and `last_run_at` 2026-11-02 02:12Z, so beat keeps ticking it and every
-  hour's failure looks like the previous hour's failure. Unrelated to timezones, listed here
-  because it is the same shape — a convention that changed (the token's entitlement) with the
-  error-handling code still written against the old one. Fix: recognise permission loss as its
-  own deferred class, with an alert after N consecutive failures rather than after 1,700.
+- **News and sentiment pipeline decommissioned 2026-11-11 (#52), which retires four entries from this list.** The module, its three tables and its two `FactorScore` columns are gone: #110 stopped the scheduling, #111 the model reads, #112 the API and UI surfaces, #116/#117 the schema and code, #118 the beat rows a settings removal cannot stop. That voids the window-label rendering fix, the boundary-day hole it created, the manual fill of Beijing `2025-06-09 02:06:00 -> 10:05:59` that the entitlement blocked, and the permission-loss error class for `major_news` -- all of them were work on code that no longer exists. The *findings* survive in `docs/reference/sentiment-data-corrections.md`, because the tz-flip correction and the `NULLS NOT DISTINCT` upsert-key repair are production history with no code left to explain them.
+- **If per-asset news is wanted again, `ak.stock_news_em` is the only free path and it is forward-only.** Measured live from this network: current to the previous trading day, real URLs, roughly 167 calls/day for a 3-day rotation over 500 assets. It accepts no date range (`pageIndex:1 / pageSize:10`, verified against the driver), so the deleted corpus is not reconstructible by any route. The obstacle is relevance, not volume: the retired matcher's digit-boundary guard accepted an article that merely lists `600519` inside a price table, so attribution needs a name-alias rule before it needs a fetcher.
+- **`docs/reference/celery.md` still advertises sentiment on the `ops` queue, and the reason
+  is an unrelated import defect that has to go first.** The stale phrase is a hand-written
+  literal in the generator (`apps/core/management/commands/export_documentation_facts.py:925`:
+  `periodic syncs, indicators, sentiment, daily predictions (default)`), which is why the CI
+  drift check never caught it -- the sheet matches its generator. Regenerating the sheet is
+  where this stops being a one-word change: the committed sheet counts **55** registered project
+  tasks including `apps.etf_rotation.tasks.train_etf_rotation_lightgbm`, and a fresh generation
+  counts **54** without it, under default settings and under `config.settings.test` alike.
+  Measured cause: the task is decorated in `apps/etf_rotation/train_lightgbm.py:1553` with an
+  explicit `name='apps.etf_rotation.tasks.train_etf_rotation_lightgbm'`, not in `tasks.py`, and
+  celery's `autodiscover_tasks()` imports only `<app>.tasks` -- `CELERY_IMPORTS` is empty and
+  `apps.etf_rotation.tasks` never references the symbol. So it registers only when some other
+  code path happens to import that module, which is why the committed sheet and a fresh
+  generation disagree. Not a live failure: no `.delay()` caller exists anywhere in the repo (the
+  only other reference is the routing entry at `config/settings/base.py:316`), so nothing is
+  dispatching a name that may or may not be registered today. It does mean the generated sheet
+  is not reproducible from a clean interpreter, and that the first person to schedule this task
+  by name gets an unregistered-task error unless the import is made explicit.
+  Fix in this order: add `apps.etf_rotation.train_lightgbm` to the celery import list (or import
+  it from `tasks.py`), confirm `export_documentation_facts --check` now reproduces the committed
+  count, then change the queue literal and regenerate in the same commit.
+- **`'apps.sentiment'` is still in `INSTALLED_APPS`, and that is now a decision rather than a
+  constraint.** The plan listed removing the line as part of the code deletion; it was not done,
+  and re-checking the reason given for keeping it found the reason was wrong. Verified 2026-11-11:
+  no file outside `apps/sentiment/` imports it, and no other app's migration calls
+  `get_model('sentiment', ...)`, so dropping the entry would not break a fresh `migrate` or CI's
+  test database. What remains is that production has applied `sentiment/0001-0006`, so deleting
+  the package also deletes the only on-disk record of what those rows mean. Decide deliberately:
+  either delete `apps/sentiment/` whole plus the settings line in one reviewed change, or keep the
+  tombstone and say so in `docs/reference/sentiment-data-corrections.md`. Not urgent; currently
+  harmless.
 - `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
   second row rather than an update. Every indicator task builds its key the same way —
   `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
