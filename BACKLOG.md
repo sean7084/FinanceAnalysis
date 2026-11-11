@@ -343,7 +343,52 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### Two orphaned backtest rows are immortal because the orphan rule reads the wrong clock
+
+Found while building the state-vs-side-effects probe that Phase 1 Step 6 called for. Census of
+every row with `status='RUNNING'`, read-only, 2026-11-11:
+
+```
+BacktestRun pk=639  task_id=set   state=PENDING  orphan=False  started 171.4d ago  updated 171.3d ago  report=[progress, runtime_state]
+BacktestRun pk=640  task_id=set   state=PENDING  orphan=False  started 171.4d ago  updated 171.3d ago  report=[progress, runtime_state]
+BacktestRun pk=699  task_id=EMPTY state=-        orphan=True   started 169.5d ago  updated 169.5d ago  report=[]
+ETFRotationBacktest: 0 RUNNING rows
+```
+
+Three rows, all frozen for about half a year, all `finished_at=None`. Two of them -- the only two
+carrying partial side effects (14 and 80 trade rows, `processed_trading_days: 50` of `243`) --
+cannot be swept at all. `sweep_stale_backtest_runs` with no verb reports exactly one row, id 699.
+
+Why: `get_backtest_run_task_owner_state` grants the chunked-suite exemption when
+`'runtime_state' in report or 'progress' in report`, and that branch is what suppresses the
+`PENDING + age >= threshold` rule. The exemption was written for a suite that is between chunks
+and will get a new owner shortly, and the signal that distinguishes that from a corpse is not
+whether the report *has* progress -- it is whether the progress is *recent*. `updated_at` already
+carries exactly that signal, both rows stopped moving 171 days ago, and the classifier never
+looks at it. `task_health.py:86-92`.
+
+This is not the #50 defect and #50's fix does not touch it: the state here is `PENDING` because
+`CELERY_RESULT_EXPIRES` (86,400 s) elapsed 169 days ago, which is correct behaviour for a result
+retention window. The fault is entirely in the classification rule, which cannot tell
+"expired" from "never recorded" and treats an old `progress` key as proof of life.
+
+Consequences while it stands: the dashboard's backtest list shows two runs in flight that ended
+in May, `run_backtest`'s `current_task_id` ownership protocol considers them live, and any
+future sweep-based recovery skips them permanently. A row that can never be declared orphaned is
+a row that can never be restarted or failed.
+
+Suggested shape of the fix, not its timing: gate the exemption on
+`updated_at` being within a bounded multiple of `BACKTEST_STALE_TASK_MAX_AGE_SECONDS`, so a
+mid-chunk suite is still protected and a suite that stopped writing is not. It needs a test per
+branch (fresh progress + PENDING = alive; stale progress + PENDING + past threshold = orphan),
+which is a behaviour change to recovery, so it belongs in its own PR rather than in a docs or
+settings phase. Decided against fixing it during Phase 1 because sweep semantics touch the
+production fleet's recovery path, and because `--fail`/`--restart` on live rows is a database
+write that should not be a side effect of someone cleaning up a changelog.
+
 ### The lazy-import rationale in `apps/prediction/tasks.py` no longer describes the fleet
+
+
 
 `apps/prediction/tasks.py:405-406` defers `tasks_lightgbm` with the reason that "the ops worker
 should not pay for" numpy/pandas/lightgbm to serve the heuristic path. #126 added
