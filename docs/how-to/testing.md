@@ -25,7 +25,7 @@ run's `Ran N tests` line says, and is deliberately not restated here.
 | `apps/factors/tests.py` | 19 |
 | `apps/macro/tests.py` | 19 |
 | `apps/prediction/tests_reconciliation.py` | 19 |
-| `apps/sentiment/tests.py` | 11 |
+| ~~`apps/sentiment/tests.py`~~ | removed with the news module (#52, 2026-11-11) |
 | `apps/core/tests_frontend.py` | 6 |
 | `apps/developer/tests.py` | 5 |
 

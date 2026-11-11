@@ -35,13 +35,13 @@ class EnabledPeriodicTaskCheckTests(TestCase):
     def test_a_row_naming_a_module_that_no_longer_exists_is_an_error(self):
         """The exact shape #110 left behind: enabled row, deleted module.
 
-        Asserted rather than assumed: ``apps.sentiment.tasks`` must be gone for this test to
-        mean what it says, so the deletion in #117 is checked here too.
+        Asserted rather than assumed: ``apps.sentiment.tasks`` must be unlocatable for this test
+        to mean what it says, so it also fails if the module ever comes back.
         """
-        import importlib.util
+        from apps.core.checks import _module_absent
 
-        self.assertIsNone(
-            importlib.util.find_spec('apps.sentiment.tasks'),
+        self.assertTrue(
+            _module_absent('apps.sentiment.tasks'),
             'apps.sentiment.tasks came back; this test is asserting a deleted module',
         )
         self._row('fetch-latest-market-news-daily', DEAD_TASK)
