@@ -6,7 +6,7 @@
 
 # Data Coverage Metrics
 
-_Generated: 2026-11-09T11:36:46Z_
+_Generated: 2026-11-11T15:05:15Z_
 
 Table-level coverage for every concrete model in `apps/`. `Assets` is the distinct count of the `asset` foreign key where the table has one. Prose about what each metric *means* and what a gap *implies* lives in `TECHNICAL_GUIDE.md`; this sheet only states the measured facts.
 
@@ -49,15 +49,12 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 | `markets_market` | `markets.Market` | 5 | &mdash; | &mdash; | &mdash; | &mdash; |
 | `markets_ohlcv` | `markets.OHLCV` | 6,544,372 | 1,886 | date | 2008-07-02 | 2026-11-06 |
 | `markets_pointintimebenchmarkdaily` | `markets.PointInTimeBenchmarkDaily` | 4,089 | &mdash; | trade_date | 2010-01-04 | 2026-11-06 |
-| `prediction_ensembleweightsnapshot` | `prediction.EnsembleWeightSnapshot` | 9 | &mdash; | date | 2020-01-01 | 2026-11-08 |
-| `prediction_featureimportancesnapshot` | `prediction.FeatureImportanceSnapshot` | 1,305 | &mdash; | created_at | 2026-04-15 | 2026-11-09 |
-| `prediction_lightgbmmodelartifact` | `prediction.LightGBMModelArtifact` | 38 | &mdash; | created_at | 2026-04-15 | 2026-11-09 |
+| `prediction_ensembleweightsnapshot` | `prediction.EnsembleWeightSnapshot` | 10 | &mdash; | date | 2020-01-01 | 2026-11-09 |
+| `prediction_featureimportancesnapshot` | `prediction.FeatureImportanceSnapshot` | 1,530 | &mdash; | created_at | 2026-04-15 | 2026-11-10 |
+| `prediction_lightgbmmodelartifact` | `prediction.LightGBMModelArtifact` | 44 | &mdash; | created_at | 2026-04-15 | 2026-11-10 |
 | `prediction_lightgbmprediction` | `prediction.LightGBMPrediction` | 63,311 | 897 | date | 2025-01-14 | 2026-11-07 |
-| `prediction_modelversion` | `prediction.ModelVersion` | 107 | &mdash; | created_at | 2026-04-15 | 2026-11-09 |
+| `prediction_modelversion` | `prediction.ModelVersion` | 114 | &mdash; | created_at | 2026-04-15 | 2026-11-10 |
 | `prediction_predictionresult` | `prediction.PredictionResult` | 76,199 | 898 | date | 2025-01-14 | 2026-11-07 |
-| `sentiment_conceptheat` | `sentiment.ConceptHeat` | 654 | &mdash; | date | 2026-04-15 | 2026-11-07 |
-| `sentiment_newsarticle` | `sentiment.NewsArticle` | 176,098 | &mdash; | published_at | 2025-06-09 | 2026-11-07 |
-| `sentiment_sentimentscore` | `sentiment.SentimentScore` | 6,702,927 | 1,912 | date | 2010-01-04 | 2026-11-07 |
 
 ## Breakdowns
 
@@ -132,20 +129,12 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 
 | model_type | Rows | Share | Earliest | Latest |
 | --- | --- | --- | --- | --- |
-| `ENSEMBLE` | 13 | 12.1% | 2026-04-15 | 2026-11-09 |
-| `ETF_ENSEMBLE` | 3 | 2.8% | 2026-10-20 | 2026-11-06 |
-| `ETF_LIGHTGBM` | 5 | 4.7% | 2026-10-20 | 2026-11-06 |
-| `ETF_LSTM` | 39 | 36.4% | 2026-10-20 | 2026-11-06 |
-| `LIGHTGBM` | 39 | 36.4% | 2026-04-15 | 2026-11-09 |
-| `LSTM` | 8 | 7.5% | 2026-04-18 | 2026-11-05 |
-
-### `sentiment_sentimentscore` by `score_type`
-
-| score_type | Rows | Share | Earliest | Latest |
-| --- | --- | --- | --- | --- |
-| `ARTICLE` | 168,964 | 2.5% | 2025-06-09 | 2026-11-07 |
-| `ASSET_7D` | 6,529,853 | 97.4% | 2010-01-04 | 2026-11-07 |
-| `MARKET_7D` | 4,110 | 0.1% | 2010-01-04 | 2026-11-06 |
+| `ENSEMBLE` | 14 | 12.3% | 2026-04-15 | 2026-11-10 |
+| `ETF_ENSEMBLE` | 3 | 2.6% | 2026-10-20 | 2026-11-06 |
+| `ETF_LIGHTGBM` | 5 | 4.4% | 2026-10-20 | 2026-11-06 |
+| `ETF_LSTM` | 39 | 34.2% | 2026-10-20 | 2026-11-06 |
+| `LIGHTGBM` | 45 | 39.5% | 2026-04-15 | 2026-11-10 |
+| `LSTM` | 8 | 7.0% | 2026-04-18 | 2026-11-05 |
 
 ## Field-level non-null coverage
 
@@ -172,14 +161,12 @@ Restricted to the tables whose individual columns feed model features. A low non
 | `factors_factorscore` | `main_force_flow_score` | 2,041,597 | 0.002000 | 1.000000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `margin_flow_score` | 1,302,787 | 0.002008 | 1.000000 | 2011-12-12 &rarr; 2026-11-03 |
 | `factors_factorscore` | `technical_reversal_score` | 2,043,000 | 0.000000 | 1.000000 | 2010-01-04 &rarr; 2026-11-03 |
-| `factors_factorscore` | `sentiment_score` | 2,043,000 | 0.500000 | 0.500000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `fundamental_score` | 2,043,000 | 0.000000 | 1.000000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `capital_flow_score` | 2,043,000 | 0.002000 | 1.000000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `technical_score` | 2,043,000 | 0.000000 | 1.000000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `financial_weight` | 2,043,000 | 0.4000 | 0.4000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `flow_weight` | 2,043,000 | 0.3000 | 0.3000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `technical_weight` | 2,043,000 | 0.3000 | 0.3000 | 2010-01-04 &rarr; 2026-11-03 |
-| `factors_factorscore` | `sentiment_weight` | 2,043,000 | 0.0000 | 0.0000 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `composite_score` | 2,043,000 | 0.002405 | 0.985900 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `bottom_probability_score` | 2,043,000 | 0.002405 | 0.985900 | 2010-01-04 &rarr; 2026-11-03 |
 | `macro_macrosnapshot` | `dxy` | 190 | 93.5300 | 134.0950 | 2011-01-01 &rarr; 2026-11-01 |
