@@ -9,8 +9,11 @@ and the gap is minutes long rather than a race you can win.
 
 Both columns are restored as empty structure on reverse. The values are not coming back: they
 were derived from a corpus this campaign deletes, and measured before deletion
-``sentiment_score`` was non-null on all 2,043,000 rows with exactly one distinct value, so the
-"history" being preserved was a constant.
+``sentiment_score`` held exactly one distinct value across all 2,043,000 rows -- ``0.500000``,
+the scorer's neutral midpoint -- with ``sentiment_weight`` ``0.0000`` on every row. That is the
+shape of the trap: a column non-null everywhere looks like coverage while carrying no bit of
+information, and the constant it holds is the midpoint rather than zero, so a naive
+``<> 0`` audit reports 100% populated.
 """
 from django.db import migrations, models
 
