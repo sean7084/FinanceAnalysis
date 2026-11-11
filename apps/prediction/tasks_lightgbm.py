@@ -1091,9 +1091,11 @@ def _extract_features_for_asset(
 
     # The sentiment block that stood here was the Phase 13 feature pair
     # ``sentiment_7d`` / ``sentiment_7d_avg_20d``. It reads nothing now because the news
-    # module it depended on was decommissioned (#52): the corpus it scored stopped growing
-    # on 2026-06-13, and measured over the five months after that the feature was non-zero
-    # on 81 rows across 29 assets.
+    # module it depended on was decommissioned (#52). Measured 2026-11-10, the last day the
+    # tables existed: of the 181,130 ASSET_7D rows dated on or after 2026-06-13, when the
+    # ``major_news`` walk died, 151 were non-zero (0.083%) spread over 51 of the 1,787
+    # assets the daily neutral fallback wrote for -- against 8,866 non-zero across 587
+    # assets before June. A row per asset per day kept landing either way.
 
     return _augment_single_asset_features(features)
 
