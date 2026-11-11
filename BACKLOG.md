@@ -1599,22 +1599,27 @@ The bar the model work is aiming at, against the 3.2 baseline:
   stored value still written under the old one.
 - **News and sentiment pipeline decommissioned 2026-11-11 (#52), which retires four entries from this list.** The module, its three tables and its two `FactorScore` columns are gone: #110 stopped the scheduling, #111 the model reads, #112 the API and UI surfaces, #116/#117 the schema and code, #118 the beat rows a settings removal cannot stop. That voids the window-label rendering fix, the boundary-day hole it created, the manual fill of Beijing `2025-06-09 02:06:00 -> 10:05:59` that the entitlement blocked, and the permission-loss error class for `major_news` -- all of them were work on code that no longer exists. The *findings* survive in `docs/reference/sentiment-data-corrections.md`, because the tz-flip correction and the `NULLS NOT DISTINCT` upsert-key repair are production history with no code left to explain them.
 - **If per-asset news is wanted again, `ak.stock_news_em` is the only free path and it is forward-only.** Measured live from this network: current to the previous trading day, real URLs, roughly 167 calls/day for a 3-day rotation over 500 assets. It accepts no date range (`pageIndex:1 / pageSize:10`, verified against the driver), so the deleted corpus is not reconstructible by any route. The obstacle is relevance, not volume: the retired matcher's digit-boundary guard accepted an article that merely lists `600519` inside a price table, so attribution needs a name-alias rule before it needs a fetcher.
-- **`docs/reference/celery.md` still advertises sentiment on the `ops` queue, and fixing it
-  is blocked on a reproducible enumeration, not on the wording.** The stale phrase is a
-  hand-written literal in the generator (`apps/core/management/commands/export_documentation_facts.py:925`:
+- **`docs/reference/celery.md` still advertises sentiment on the `ops` queue, and the reason
+  is an unrelated import defect that has to go first.** The stale phrase is a hand-written
+  literal in the generator (`apps/core/management/commands/export_documentation_facts.py:925`:
   `periodic syncs, indicators, sentiment, daily predictions (default)`), which is why the CI
-  drift check never caught it -- the sheet matches its generator exactly. Changing the literal
-  is one word; what fails is proving the regenerated sheet is what CI would produce. From this
-  working tree, `export_documentation_facts --only celery` yields **54** registered project
-  tasks and drops both `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` rows, against the
-  committed sheet's **55** with them -- under default settings *and* under
-  `--settings=config.settings.test` with a dummy `DATABASE_URL`. The task is defined in
-  `apps/etf_rotation/train_lightgbm.py:1557`, not in `tasks.py`, so it reaches the registry only
-  when something imports that module, and whatever imported it when the committed sheet was
-  generated is not reproduced here. Shipping the one-word fix would put an unexplained
-  two-row regression in front of CI's `--check`. Do it together with the enumeration diagnosis,
-  not before: find why that module is not imported by autodiscovery in this environment, then
-  change the literal and regenerate in the same commit.
+  drift check never caught it -- the sheet matches its generator. Regenerating the sheet is
+  where this stops being a one-word change: the committed sheet counts **55** registered project
+  tasks including `apps.etf_rotation.tasks.train_etf_rotation_lightgbm`, and a fresh generation
+  counts **54** without it, under default settings and under `config.settings.test` alike.
+  Measured cause: the task is decorated in `apps/etf_rotation/train_lightgbm.py:1553` with an
+  explicit `name='apps.etf_rotation.tasks.train_etf_rotation_lightgbm'`, not in `tasks.py`, and
+  celery's `autodiscover_tasks()` imports only `<app>.tasks` -- `CELERY_IMPORTS` is empty and
+  `apps.etf_rotation.tasks` never references the symbol. So it registers only when some other
+  code path happens to import that module, which is why the committed sheet and a fresh
+  generation disagree. Not a live failure: no `.delay()` caller exists anywhere in the repo (the
+  only other reference is the routing entry at `config/settings/base.py:316`), so nothing is
+  dispatching a name that may or may not be registered today. It does mean the generated sheet
+  is not reproducible from a clean interpreter, and that the first person to schedule this task
+  by name gets an unregistered-task error unless the import is made explicit.
+  Fix in this order: add `apps.etf_rotation.train_lightgbm` to the celery import list (or import
+  it from `tasks.py`), confirm `export_documentation_facts --check` now reproduces the committed
+  count, then change the queue literal and regenerate in the same commit.
 - `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
   second row rather than an update. Every indicator task builds its key the same way —
   `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
