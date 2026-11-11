@@ -828,21 +828,42 @@ def build_celery():
         f'{global_soft}s without being killed.\n',
     )
 
-    try:
-        from config.celery import app as celery_app
-        try:
-            celery_app.loader.import_default_modules()
-        except Exception:  # noqa: BLE001 - best-effort discovery
-            pass
-        task_names = sorted(name for name in celery_app.tasks if name.startswith('apps.'))
-    except Exception as exc:  # noqa: BLE001
-        parts.append(f'\nTask registry unavailable: `{exc}`\n')
-        task_names = []
+    from config.celery import app as celery_app
+
+    # No silent fallbacks in either direction. A registry that fails to import, or that comes
+    # back with nothing in it, used to produce a sheet saying "Task registry unavailable" or a
+    # table with zero project tasks -- both of which commit cleanly and then look like the
+    # project has no tasks. An inventory sheet that reports nothing has to fail the run.
+    celery_app.loader.import_default_modules()
+    task_names = sorted(name for name in celery_app.tasks if name.startswith('apps.'))
+    if not task_names:
+        raise CommandError(
+            'celery registry holds no apps.* tasks; refusing to write a celery.md that '
+            'documents an empty project. An import failure or a mis-set settings module '
+            'looks identical to a real empty registry from here.'
+        )
 
     beat = getattr(settings, 'CELERY_BEAT_SCHEDULE', {}) or {}
     scheduled = {}
     for entry_name, entry in beat.items():
         scheduled.setdefault(entry.get('task'), []).append((entry_name, entry))
+
+    # Derivable completeness check: every task this project routes or schedules must exist in
+    # the registry of the process building the sheet. autodiscover_tasks() only imports
+    # <app>.tasks, so a task declared elsewhere is invisible to workers while still looking
+    # correct in settings -- which is how apps.etf_rotation.tasks.train_etf_rotation_lstm came
+    # to be routed to the train-lstm queue while registered nowhere.
+    routed = {
+        name for name in (getattr(settings, 'CELERY_TASK_ROUTES', {}) or {})
+        if isinstance(name, str) and name.startswith('apps.')
+    }
+    unregistered = sorted((routed | {task for task in scheduled if task}) - set(celery_app.tasks))
+    if unregistered:
+        raise CommandError(
+            'routed or scheduled tasks missing from the celery registry: '
+            f'{unregistered}. Add the defining module to CELERY_IMPORTS, or stop routing a '
+            'name no worker can resolve.'
+        )
 
     parts.append('\n## Beat schedule\n')
     if beat:
@@ -910,10 +931,11 @@ def build_celery():
         parts.append('\n### Tasks overriding the global time limits\n')
         parts.append(_md_table(['Task', 'Soft limit', 'Hard limit'], [(row[0], row[3], row[4]) for row in overrides]))
         parts.append(
-            '\nThese overrides exist because the global soft limit is short '
-            'enough to protect the `ops` queue from a stuck sync, while a '
-            'backtest chunk and the post-sync universe refresh legitimately run '
-            'for tens of minutes.\n',
+            '\nThese overrides exist because the global soft limit is short enough to protect '
+            'the `ops` queue from a stuck sync, while any job that legitimately runs for '
+            'minutes to hours -- a backtest chunk, a universe refresh, a model retrain -- would '
+            'be killed by it. Each is declared on the task rather than raised globally, so the '
+            'default stays tight. The longest pair in the table below is the current ceiling.\n',
         )
 
     parts.append('')
@@ -922,10 +944,11 @@ def build_celery():
 
 def _queue_role(name, default_queue):
     roles = {
-        'ops': 'periodic syncs, indicators, sentiment, daily predictions (default)',
+        'ops': 'periodic syncs, indicators, daily predictions (default)',
         'backtest': '`run_backtest`; long-running and CPU-heavy',
-        'train-lightgbm': '`train_lightgbm_models`',
-        'train-lstm': '`train_lstm_models`',
+        'train-lightgbm': '`train_lightgbm_models` and `train_etf_rotation_lightgbm`',
+        'train-lstm': '`train_lstm_models` and `train_etf_rotation_lstm`',
+        'etf-rotation': 'ETF universe, bars, features, signals and the rotation backtest',
     }
     return roles.get(name, 'default queue' if name == default_queue else 'declared, unrouted')
 
