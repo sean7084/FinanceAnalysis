@@ -87,14 +87,17 @@ INSTALLED_APPS = [
     'apps.analytics',
     'apps.factors',
     'apps.macro',
-    # Retired app (#52): models, tasks, providers and surfaces deleted; the package is its
-    # migration history and nothing else. Verified 2026-11-11, because the usual reason to keep
-    # such a line does not apply here: no other app's migration resolves a `sentiment` model, so
-    # removing it would not break a fresh `migrate`. It stays because production has already
-    # applied sentiment/0001-0006, and the campaign that dropped the tables was not the campaign
-    # to reshuffle the migration graph -- those are separate risks and only one of them was
-    # taken. Deferred as a BACKLOG item.
-    'apps.sentiment',
+    # apps.sentiment removed (#52, plan Step 6). Its models, tasks, providers and surfaces went
+    # in #117; the tables were dropped by sentiment/0005 and the orphaned beat rows by
+    # sentiment/0006, both applied to production on 2026-11-11. Safe to delete the package
+    # rather than keep it as history: no other app declares a dependency on a sentiment
+    # migration, nothing calls get_model('sentiment', ...) outside the package, and there is no
+    # MIGRATION_MODULES override or migration router. The six rows production recorded in
+    # django_migrations for sentiment become inert history -- the loader plans against what
+    # exists on disk. The two data corrections those migrations carried are preserved in
+    # docs/reference/sentiment-data-corrections.md, including the tz-shift predicate and the
+    # NULLS NOT DISTINCT upsert-key repair, which is why deleting the package loses no
+    # explanation.
     'apps.prediction',
     'apps.backtest',
     'apps.etf_rotation',
