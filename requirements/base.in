@@ -39,13 +39,6 @@ lightgbm==4.6.0
 torch==2.12.0
 scikit-learn==1.8.0
 mlflow==3.12.0
-# Chinese word segmentation for the sentiment scorer. It was imported by
-# apps/sentiment/tasks.py behind a try/except but never declared, so every environment --
-# including CI -- silently took the unsegmented fallback. That fallback's character class
-# was also broken until 2026-11-08, which is how all 6.5M stored sentiment scores came out
-# as exactly zero. Declared now so the intended segmented path runs; the fallback still
-# works and logs once when it is taken.
-jieba==0.42.1
 drf-spectacular==0.27.2
 django-vite==3.1.0
 whitenoise==6.8.2

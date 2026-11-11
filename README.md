@@ -1,8 +1,8 @@
 # 璇玑 Armillary
 
 A Django-based platform for analysing Chinese A-share markets over the CSI 500
-benchmark universe. It ingests market, fundamental, macro, and news
-data; derives technical and factor features; runs three prediction models; and
+benchmark universe. It ingests market, fundamental and macro data; derives
+technical and factor features; runs three prediction models; and
 backtests trading strategies against point-in-time benchmarks.
 
 Bilingual (English / Simplified Chinese). REST API plus a React dashboard and a
@@ -51,7 +51,9 @@ python manage.py export_documentation_facts --check   # fail if stale
 
 ## Architecture
 
-Nine Django apps with a strict upstream → derived ordering.
+Nine Django apps with a strict upstream → derived ordering. `sentiment` is retired: its
+models, tasks, providers and surfaces were deleted with #52, and the package survives only
+so its migrations stay replayable.
 
 | App | Responsibility |
 | --- | --- |
@@ -60,7 +62,7 @@ Nine Django apps with a strict upstream → derived ordering.
 | `analytics` | Stored technical indicators, signal events, alerts, screeners, dashboard DTO |
 | `factors` | Fundamentals, money flow, margin detail, capital flow, factor scores |
 | `macro` | Monthly macro surface and inferred market regime |
-| `sentiment` | News ingestion, article and aggregate scoring, concept heat |
+| `sentiment` | *retired* (#52, 2026-11-11) — no models, no code; kept as migration history only |
 | `prediction` | Heuristic, LightGBM, and LSTM models; trade decisions; model registry |
 | `backtest` | Run engine, trades, comparison curves, benchmark export |
 | `developer` | Public API changelog |
@@ -73,13 +75,13 @@ TuShare / AkShare
         ▼
     markets ──── OHLCV · trading calendar · suspensions · index membership
         │
-        ├──────────────┬───────────────┬───────────────┐
-        ▼              ▼               ▼               ▼
-   analytics        factors          macro         sentiment
-  indicators,     fundamentals,    yields, PMI,   news, scores,
-  signals, RS     capital flow,    CPI, regime    concept heat
-        │              │               │               │
-        └──────────────┴───────┬───────┴───────────────┘
+        ├──────────────┬───────────────┐
+        ▼              ▼               ▼
+   analytics        factors          macro
+  indicators,     fundamentals,    yields, PMI,
+  signals, RS     capital flow,    CPI, regime
+        │              │               │
+        └──────────────┴───────┬───────┘
                                ▼
                           prediction
               heuristic · LightGBM · LSTM · trade decisions
