@@ -51,9 +51,10 @@ python manage.py export_documentation_facts --check   # fail if stale
 
 ## Architecture
 
-Nine Django apps with a strict upstream → derived ordering. `sentiment` is retired: its
-models, tasks, providers and surfaces were deleted with #52, and the package survives only
-so its migrations stay replayable.
+Eight Django apps with a strict upstream → derived ordering. `sentiment` is gone entirely:
+#117 deleted its models, tasks, providers and surfaces, and #121 deleted the package and its
+migrations once production had applied them -- so the honest count here is eight, not the
+nine this campaign started from.
 
 | App | Responsibility |
 | --- | --- |
@@ -62,7 +63,7 @@ so its migrations stay replayable.
 | `analytics` | Stored technical indicators, signal events, alerts, screeners, dashboard DTO |
 | `factors` | Fundamentals, money flow, margin detail, capital flow, factor scores |
 | `macro` | Monthly macro surface and inferred market regime |
-| `sentiment` | *retired* (#52, 2026-11-11) — no models, no code; kept as migration history only |
+| `sentiment` | *deleted* (#52, 2026-11-11) — not an installed app; its corrections history is in docs/reference/sentiment-data-corrections.md |
 | `prediction` | Heuristic, LightGBM, and LSTM models; trade decisions; model registry |
 | `backtest` | Run engine, trades, comparison curves, benchmark export |
 | `developer` | Public API changelog |

@@ -1620,16 +1620,20 @@ The bar the model work is aiming at, against the 3.2 baseline:
   Fix in this order: add `apps.etf_rotation.train_lightgbm` to the celery import list (or import
   it from `tasks.py`), confirm `export_documentation_facts --check` now reproduces the committed
   count, then change the queue literal and regenerate in the same commit.
-- **`'apps.sentiment'` is still in `INSTALLED_APPS`, and that is now a decision rather than a
-  constraint.** The plan listed removing the line as part of the code deletion; it was not done,
-  and re-checking the reason given for keeping it found the reason was wrong. Verified 2026-11-11:
-  no file outside `apps/sentiment/` imports it, and no other app's migration calls
-  `get_model('sentiment', ...)`, so dropping the entry would not break a fresh `migrate` or CI's
-  test database. What remains is that production has applied `sentiment/0001-0006`, so deleting
-  the package also deletes the only on-disk record of what those rows mean. Decide deliberately:
-  either delete `apps/sentiment/` whole plus the settings line in one reviewed change, or keep the
-  tombstone and say so in `docs/reference/sentiment-data-corrections.md`. Not urgent; currently
-  harmless.
+- **Done 2026-11-11 (#121): `apps.sentiment` is deleted outright -- package, migrations, and the
+  `INSTALLED_APPS` entry.** The tombstone was kept only while `sentiment/0005` and `0006` were
+  still pending against databases that had not applied them; production applied both on
+  2026-11-11, which retired the reason. Verified before deleting: no other app declares a
+  dependency on a sentiment migration, nothing calls `get_model` with the sentiment label outside
+  the package, no `MIGRATION_MODULES` override or migration router exists, `migrate --plan`
+  against production reported nothing planned with the app absent, and a fresh test-database
+  build replayed every remaining migration cleanly.
+  One consequence worth recording because CI caught it and my local checks did not: `core.E002`
+  located an orphaned row's module with `importlib.util.find_spec`, which returns `None` for a
+  missing submodule but raises `ModuleNotFoundError` once the *parent package* is gone -- so the
+  check crashed while reporting exactly the absence it exists to catch. Fixed in the same PR by
+  `_module_absent`, which treats both answers as absent, and the #118 regression test now uses
+  that helper rather than asserting `find_spec(...) is None` itself.
 - `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
   second row rather than an update. Every indicator task builds its key the same way —
   `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
