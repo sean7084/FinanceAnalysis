@@ -2271,7 +2271,7 @@ def _mark_backtest_run_failed(backtest_run_id, error_message):
     return False
 
 
-@shared_task(bind=True, soft_time_limit=1800, time_limit=2100)
+@shared_task(bind=True, soft_time_limit=1800, time_limit=2100, ignore_result=False)
 def run_backtest(self, backtest_run_id):
     """Execute one chunk of a backtest run, re-queueing itself until complete.
 

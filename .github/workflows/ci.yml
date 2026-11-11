@@ -212,11 +212,14 @@ jobs:
       # Lowered to 1145 by feat/delete-news-module: deleting apps/sentiment removed its 48
       # tests (1197 -> 1149 measured locally). Raised to 1153 by fix/row-shape-conformance,
       # which adds four: two parsing the TS row shape and two comparing it to what the
-      # dashboard view assembles (1157 measured locally on a fresh database). The floor stays
+      # dashboard view assembles (1157 measured locally on a fresh database). Raised again to
+      # 1162 by fix/celery-backend-resilience, which adds nine: connparams provenance and its
+      # negative controls, the result-storage sweep, registry completeness, and the .env.example
+      # discoverability check (1166 measured locally on a fresh database). The floor stays
       # four below the local count because CI measured one fewer than local on the same tree
       # before this change, and a floor that trips on environment noise teaches people to
       # ignore it -- which is the opposite of what a discovery floor is for.
-      MIN_TEST_COUNT: "1153"
+      MIN_TEST_COUNT: "1162"
 
     steps:
       - uses: actions/checkout@v4

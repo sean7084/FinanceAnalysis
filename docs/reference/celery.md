@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-11-10T16:57:13Z_
+_Generated: 2026-11-11T14:41:01Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -14,11 +14,11 @@ Operational guidance -- which worker to start, how to scale backtests, what to d
 
 | Queue | Role |
 | --- | --- |
-| `ops` | periodic syncs, indicators, sentiment, daily predictions (default) |
+| `ops` | periodic syncs, indicators, daily predictions (default) |
 | `backtest` | `run_backtest`; long-running and CPU-heavy |
-| `train-lightgbm` | `train_lightgbm_models` |
-| `train-lstm` | `train_lstm_models` |
-| `etf-rotation` | declared, unrouted |
+| `train-lightgbm` | `train_lightgbm_models` and `train_etf_rotation_lightgbm` |
+| `train-lstm` | `train_lstm_models` and `train_etf_rotation_lstm` |
+| `etf-rotation` | ETF universe, bars, features, signals and the rotation backtest |
 
 Default queue: `ops`.
 
@@ -57,7 +57,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`, which beat reads them against and which must equal `TIME_ZONE`. Celery does not fall back to Django's `TIME_ZONE`, so a deploy that flips one without the other shifts the whole nightly pipeline eight hours and still looks healthy until the data lands late. `apps/core/tests_beat_schedule.py` is the gate.
 
-**55** registered project tasks, **18** beat entries, **37** reachable only through management commands, API actions, or other tasks.
+**56** registered project tasks, **18** beat entries, **38** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -100,6 +100,7 @@ Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`
 | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `ops` | explicit | **600** | **700** | `sync-etf-fund-shares-weekly` |
 | `apps.etf_rotation.tasks.sync_etf_universe` | `etf-rotation` | explicit | **900** | **1000** | &mdash; |
 | `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` | `train-lightgbm` | explicit | **3600** | **3900** | &mdash; |
+| `apps.etf_rotation.tasks.train_etf_rotation_lstm` | `train-lstm` | explicit | **5400** | **5700** | &mdash; |
 | `apps.factors.tasks.calculate_factor_scores_for_date` | `ops` | default | global | global | &mdash; |
 | `apps.factors.tasks.sync_daily_capital_flow_snapshots` | `ops` | default | global | global | &mdash; |
 | `apps.macro.tasks.refresh_current_market_context` | `ops` | default | global | global | &mdash; |
@@ -141,10 +142,11 @@ Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`
 | `apps.etf_rotation.tasks.sync_etf_fund_shares` | **600** | **700** |
 | `apps.etf_rotation.tasks.sync_etf_universe` | **900** | **1000** |
 | `apps.etf_rotation.tasks.train_etf_rotation_lightgbm` | **3600** | **3900** |
+| `apps.etf_rotation.tasks.train_etf_rotation_lstm` | **5400** | **5700** |
 | `apps.markets.tasks.run_post_sync_universal_refresh` | **1800** | **2100** |
 | `apps.prediction.tasks.generate_predictions_for_date` | **3600** | **3900** |
 | `apps.prediction.tasks.reconcile_prediction_coverage` | **1500** | **1800** |
 | `apps.prediction.tasks_lightgbm.generate_lightgbm_predictions_for_date` | **3600** | **3900** |
 
-These overrides exist because the global soft limit is short enough to protect the `ops` queue from a stuck sync, while a backtest chunk and the post-sync universe refresh legitimately run for tens of minutes.
+These overrides exist because the global soft limit is short enough to protect the `ops` queue from a stuck sync, while any job that legitimately runs for minutes to hours -- a backtest chunk, a universe refresh, a model retrain -- would be killed by it. Each is declared on the task rather than raised globally, so the default stays tight. The longest pair in the table below is the current ceiling.
 

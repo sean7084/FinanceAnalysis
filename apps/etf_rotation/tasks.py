@@ -804,7 +804,7 @@ def reset_etf_rotation_run_for_restart(run):
 
 
 @shared_task(bind=True, name='apps.etf_rotation.tasks.run_etf_rotation_backtest',
-             soft_time_limit=3600, time_limit=3900)
+             soft_time_limit=3600, time_limit=3900, ignore_result=False)
 def run_etf_rotation_backtest(self, backtest_id):
     """Execute a queued ``ETFRotationBacktest`` and write its result set in place.
 

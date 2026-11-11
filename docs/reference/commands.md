@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-10T16:57:12Z_
+_Generated: 2026-11-11T14:41:00Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 

@@ -244,6 +244,56 @@ CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 # pipeline by eight hours.
 CELERY_TIMEZONE = 'Asia/Shanghai'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# Redis socket resilience -- issue #50. Tasks died inside mark_as_done, after their body had
+# already run, with ConnectionResetError [Errno 104] against the NAS-hosted Redis. The cause is
+# the WSL2<->NAS link dropping a long-idle socket. Both usual explanations were ruled out by
+# measurement on 2026-11-11: the server sets `timeout 0`, so it never drops idle clients, and
+# `maxmemory 0` with `noeviction`, so stored results cannot be evicted either.
+#
+# What reaches the backend's redis client is the CELERY_REDIS_* group below, read while
+# building connparams in celery/backends/redis.py. `result_backend_transport_options` does NOT
+# reach it: in celery 5.4 that setting feeds only retry_policy, result_chord_ordered and
+# sentinel keys, and is never merged into connparams. It looks like the right fix and changes
+# nothing, which is why the bug report suggested it.
+#
+# The broker needs none of this. kombu's redis transport already defaults to
+# DEFAULT_HEALTH_CHECK_INTERVAL = 25. That asymmetry -- health-checked broker, unchecked
+# backend -- is exactly why delivery survived an idle link while result writes did not.
+CELERY_REDIS_BACKEND_HEALTH_CHECK_INTERVAL = env.int(
+    'CELERY_REDIS_BACKEND_HEALTH_CHECK_INTERVAL', default=25)
+CELERY_REDIS_SOCKET_KEEPALIVE = env.bool('CELERY_REDIS_SOCKET_KEEPALIVE', default=True)
+CELERY_REDIS_RETRY_ON_TIMEOUT = env.bool('CELERY_REDIS_RETRY_ON_TIMEOUT', default=True)
+CELERY_REDIS_SOCKET_CONNECT_TIMEOUT = env.float(
+    'CELERY_REDIS_SOCKET_CONNECT_TIMEOUT', default=10)
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'health_check_interval': 25,
+    'socket_keepalive': True,
+    'socket_connect_timeout': 10,
+    'retry_on_timeout': True,
+}
+
+# Results are stored for two tasks only. apps/core/task_health.py is the sole reader of backend
+# state, and it reads just run_backtest and run_etf_rotation_backtest: their RUNNING rows are
+# checked against a terminal state to find orphans. Every other result was written and never
+# read -- and writing it is the call that failed under #50. Defaulting to ignore removes the
+# failing path rather than retrying it; the two consumers opt out per-task below.
+CELERY_TASK_IGNORE_RESULT = True
+# Explicit because those two tasks now depend on it: an expired result reads as PENDING and
+# orphan detection would fall back to the age heuristic alone. It must stay well above
+# BACKTEST_STALE_TASK_MAX_AGE_SECONDS (2400).
+CELERY_RESULT_EXPIRES = env.int('CELERY_RESULT_EXPIRES', default=86400)
+
+# autodiscover_tasks() imports only <app>.tasks, so a task declared anywhere else is invisible
+# to every worker. Both ETF trainers live in train_lightgbm.py / train_lstm.py while being
+# routed under the apps.etf_rotation.tasks.* name (see CELERY_TASK_ROUTES below), which meant
+# apps.etf_rotation.tasks.train_etf_rotation_lstm was routed but registered nowhere -- only a
+# management command that happened to import the module could dispatch it, and a beat entry
+# naming it would have failed with an unregistered-task error.
+CELERY_IMPORTS = (
+    'apps.etf_rotation.train_lightgbm',
+    'apps.etf_rotation.train_lstm',
+)
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
