@@ -64,7 +64,6 @@ DATE_FIELD_PRIORITY = (
 BREAKDOWN_FIELDS = {
     'analytics.TechnicalIndicator': 'indicator_type',
     'analytics.SignalEvent': 'signal_type',
-    'sentiment.SentimentScore': 'score_type',
     'prediction.ModelVersion': 'model_type',
     'backtest.BacktestRun': 'status',
     'markets.Asset': 'listing_status',

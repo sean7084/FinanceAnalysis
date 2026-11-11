@@ -37,7 +37,6 @@ from .management.commands.backfill_technical_indicators import Command as Techni
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
 from apps.prediction.models_lightgbm import LightGBMModelArtifact, LightGBMPrediction
-from apps.sentiment.models import SentimentScore
 from .tasks import (
     check_alert_rules,
     send_alert_notifications,
@@ -370,17 +369,6 @@ class DashboardStockFixtures:
                 adj_close=base_price,
                 volume=1000000,
                 amount=base_price * Decimal('1000000'),
-            )
-            SentimentScore.objects.create(
-                article=None,
-                asset=asset,
-                date=self.as_of,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-                positive_score=Decimal('0.55'),
-                neutral_score=Decimal('0.25'),
-                negative_score=Decimal('0.20'),
-                sentiment_score=Decimal('0.350000'),
-                sentiment_label=SentimentScore.Label.POSITIVE,
             )
             for indicator_type, value, parameters in [
                 ('RSI', Decimal('62.50000000'), {}),

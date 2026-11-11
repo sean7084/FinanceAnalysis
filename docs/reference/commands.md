@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-10T16:03:27Z_
+_Generated: 2026-11-10T16:57:12Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**59** project commands across **10** apps.
+**58** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -894,24 +894,3 @@ Verify registered model artifacts resolve in the configured artifact store.
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--json` | flag | `False` |  | Emit a machine-readable JSON report instead of prose. |
-
-
-## `apps.sentiment`
-
-
-### `backfill_news`
-
-Fetch and ingest recent market news from configured providers.
-
-| Option | Takes | Default | Required | Help |
-| --- | --- | --- | --- | --- |
-| `--providers` | value | `eastmoney,sina,tonghuashun` |  | Comma-separated provider list. Supported: eastmoney,sina,tonghuashun |
-| `--limit-per-provider` | value | `20` |  |  |
-| `--start-at` | value | &mdash; |  | Inclusive lower datetime bound, e.g. 2026-04-15 00:00:00 |
-| `--end-at` | value | &mdash; |  | Inclusive upper datetime bound, e.g. 2026-04-15 23:59:59 |
-| `--chunk-days` | value | `30` |  | Date-range fetch chunk size in days. |
-| `--sleep-seconds` | value | `0.2` |  | Throttle delay between chunks. |
-| `--max-retries` | value | `4` |  | Max retries per chunk when provider rate limit is hit. |
-| `--dry-run` | flag | `False` |  | Fetch and display rows without writing them. |
-| `--queue` | flag | `False` |  | Queue the fetch task via Celery instead of running inline. |
-| `--run-pipeline` | flag | `False` |  | Run daily sentiment and concept calculations after ingest. |

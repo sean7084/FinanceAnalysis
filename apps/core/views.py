@@ -140,7 +140,6 @@ def _build_data_limits():
     from apps.markets.models import ExchangeTradingCalendar, IndexMembership, OHLCV
     from apps.markets.price_limits import NEW_LISTING_FREE_SESSIONS
     from apps.prediction.models import PredictionResult
-    from apps.sentiment.models import NewsArticle
 
     specs = [
         ('Stock OHLCV', OHLCV, 'date', 'markets_ohlcv has no date-leading index, so the '
@@ -157,7 +156,6 @@ def _build_data_limits():
         ('Signal events', SignalEvent, 'timestamp', ''),
         ('Capital flow', CapitalFlowSnapshot, 'date', ''),
         ('Fundamental factors', FundamentalFactorSnapshot, 'date', ''),
-        ('News articles', NewsArticle, 'published_at', ''),
         ('Prediction results', PredictionResult, 'date', ''),
     ]
 

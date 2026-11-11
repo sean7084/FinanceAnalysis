@@ -21,10 +21,9 @@ from apps.markets.benchmarking import PITMembershipCoverageError
 from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.macro.models import MarketContext
-from apps.sentiment.models import SentimentScore
 from .historical_features import latest_bbands, latest_momentum, latest_rsi, latest_sma
-from .models import ModelVersion, PredictionResult
 from .models_lightgbm import EnsembleWeightSnapshot, LightGBMModelArtifact
+from .models import ModelVersion, PredictionResult
 from .tasks import (
     _feature_snapshot,
     _generate_predictions_for_single_asset,
@@ -85,17 +84,6 @@ class Phase14PredictionTests(TestCase):
             composite_score=Decimal('0.57'),
             bottom_probability_score=Decimal('0.57'),
         )
-        SentimentScore.objects.create(
-            article=None,
-            asset=self.asset,
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.6'),
-            neutral_score=Decimal('0.2'),
-            negative_score=Decimal('0.2'),
-            sentiment_score=Decimal('0.3'),
-            sentiment_label=SentimentScore.Label.POSITIVE,
-        )
         for offset in range(30):
             as_of = d - timezone.timedelta(days=offset)
             OHLCV.objects.create(
@@ -153,17 +141,6 @@ class Phase14PredictionTests(TestCase):
             technical_score=Decimal('0.51'),
             composite_score=Decimal('0.57'),
             bottom_probability_score=Decimal('0.57'),
-        )
-        SentimentScore.objects.create(
-            article=None,
-            asset=asset,
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.6'),
-            neutral_score=Decimal('0.2'),
-            negative_score=Decimal('0.2'),
-            sentiment_score=Decimal('0.3'),
-            sentiment_label=SentimentScore.Label.POSITIVE,
         )
         for offset in range(30):
             as_of = d - timezone.timedelta(days=offset)
@@ -1699,17 +1676,6 @@ class LstmTrainingRegistryTests(TestCase):
                 technical_score=Decimal('0.57') + Decimal(offset) / Decimal('100'),
                 composite_score=Decimal('0.58') + Decimal(offset) / Decimal('100'),
                 bottom_probability_score=Decimal('0.45') + Decimal(offset) / Decimal('100'),
-            )
-            SentimentScore.objects.create(
-                article=None,
-                asset=self.asset,
-                date=trade_date,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-                positive_score=Decimal('0.5'),
-                neutral_score=Decimal('0.3'),
-                negative_score=Decimal('0.2'),
-                sentiment_score=Decimal('0.10') + Decimal(offset) / Decimal('100'),
-                sentiment_label=SentimentScore.Label.POSITIVE,
             )
             indicator_timestamp = timezone.make_aware(timezone.datetime.combine(trade_date, timezone.datetime.min.time()))
             TechnicalIndicator.objects.create(

@@ -1,1 +1,0 @@
-# Sentiment management commands package.

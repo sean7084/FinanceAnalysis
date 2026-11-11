@@ -12,9 +12,8 @@ from apps.analytics.models import TechnicalIndicator
 from apps.factors.models import FactorScore
 from apps.macro.models import MacroSnapshot
 from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
-from apps.sentiment.models import SentimentScore
-from .models import ModelVersion
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
+from .models import ModelVersion
 from .tasks_lightgbm import (
     MISSING_VALUE_STRATEGY_NATIVE_NAN,
     _build_lightgbm_model_version,
@@ -101,17 +100,6 @@ class LightGBMPredictionTests(TestCase):
             technical_score=Decimal('0.65'),
             composite_score=Decimal('0.52'),
             bottom_probability_score=Decimal('0.52'),
-        )
-        SentimentScore.objects.create(
-            article=None,
-            asset=self.asset,
-            date=d,
-            score_type=SentimentScore.ScoreType.ASSET_7D,
-            positive_score=Decimal('0.55'),
-            neutral_score=Decimal('0.25'),
-            negative_score=Decimal('0.2'),
-            sentiment_score=Decimal('0.35'),
-            sentiment_label=SentimentScore.Label.POSITIVE,
         )
         for offset, as_of in enumerate(trade_dates):
             OHLCV.objects.create(
@@ -616,17 +604,6 @@ class LightGBMPredictionTests(TestCase):
                 technical_score=Decimal('0.65'),
                 composite_score=Decimal('0.52'),
                 bottom_probability_score=Decimal('0.52'),
-            )
-            SentimentScore.objects.create(
-                article=None,
-                asset=asset,
-                date=d,
-                score_type=SentimentScore.ScoreType.ASSET_7D,
-                positive_score=Decimal('0.55'),
-                neutral_score=Decimal('0.25'),
-                negative_score=Decimal('0.2'),
-                sentiment_score=Decimal('0.35'),
-                sentiment_label=SentimentScore.Label.POSITIVE,
             )
             for offset in range(35):
                 as_of = d - timezone.timedelta(days=offset)
