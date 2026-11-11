@@ -2,6 +2,10 @@
 
 ### Unreleased
 
+#### Removed:
+
+- **News and sentiment module decommissioned (#52; #110-#119).** The `major_news` entitlement lapsed on 2026-06-13 and the hourly historical walk raised 24 times a day from then on. Measured before deletion: the per-asset feature it fed was non-zero on **151 of 181,130** `ASSET_7D` rows (0.083%) across **51 of 1,787** assets, and `FactorScore.sentiment_score` held exactly one distinct value (`0.500000`) on all 2,043,000 rows while `sentiment_weight` held `0.0000` -- a constant at the neutral midpoint, which is why an audit phrased as "is this populated" could never have flagged it. Gone: the module, its three tables (176,098 articles / 6,708,181 scores / 654 concept rows), both `FactorScore` columns, three LightGBM features, the heuristic's `sentiment_signal` term, the API endpoints, the dashboard surfaces, and the `jieba` dependency. The corpus was cold-backed up and the restore verified against pre-deletion counts first. Retrained 3/7/30 without the features: 30d `rank_ic` 0.0559 / t 3.96 against 0.0495 / t 3.58 with them, so no measurable skill was lost. #118 closed a gap the deletion itself left -- removing `CELERY_BEAT_SCHEDULE` entries does not stop beat, because `DatabaseScheduler` dispatches from `PeriodicTask` rows and `update_from_dict` never prunes -- now pruned by data migration and gated by a new `core.E002` system check.
+
 #### Fixed:
 
 - **The incremental PIT benchmark refresh no longer destroys the previous session's
