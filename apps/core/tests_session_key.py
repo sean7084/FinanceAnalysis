@@ -85,7 +85,13 @@ class SessionKeyTimestampTests(SimpleTestCase):
         self.assertEqual(offenders, [], 'a setting-dependent write key came back')
 
 
-class CheckRegistrationTests(SimpleTestCase):
+class CheckRegistrationTests(TestCase):
+    """``TestCase`` rather than ``SimpleTestCase``, because these tests exercise the global
+    check registry and that registry now contains a check that reads the beat table
+    (``core.E002``). Calling ``run_checks()`` is the point of the tests -- it is the only way
+    to prove the module is imported at all -- so the database access comes with it.
+    """
+
     def test_the_check_is_registered(self):
         """Django does not import an app's ``checks`` module on its own.
 
