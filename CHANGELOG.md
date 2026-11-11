@@ -121,6 +121,52 @@
   `extraComparisonOptions` so the effect keys on the candidate set rather than a new array
   identity every render.
 
+#### Added:
+
+- **Four gates behind Phase 1 "evidence integrity" (#125, #126, #127, #128).** The
+  decommission's real finding was not a bad module but a weak instrument: an outcome could be
+  recorded wrongly, and a generated sheet could describe a schema that no longer existed, and
+  neither was detectable from inside CI. Each gate below is derived from the thing it checks,
+  so it survives the next change without needing that change's edit.
+  - *Row shape as a contract* (#125). The dashboard's TS interface, its page fixtures and the
+    serializer behind them had no relationship to each other. At `b830c8c`, `api.ts` declared
+    `pe_percentile_score` for the field `DashboardStockRowSerializer` calls
+    `pe_ttm_percentile_score`, and `IndicatorBoardPage.test.tsx`'s fixture asserted that same
+    wrong name while naming none of the eight `lstm_*` fields the serializer declares -- so no
+    change to the view's row could have failed it. A response-key assertion cannot catch this
+    class either: DRF's plain `Serializer.to_representation` iterates `self.fields` and
+    silently drops undeclared keys. The gate therefore compares *declared against assembled*,
+    including the candidate path's optional pair, and aborts if fewer than 40 fields parse.
+  - *Celery backend socket health* (#50, #126). The broker was already health-checked
+    (`kombu` defaults `DEFAULT_HEALTH_CHECK_INTERVAL = 25`); the result backend never was, and
+    that asymmetry is why delivery survived an idle WSL2↔NAS link while `mark_as_done` died.
+    Set through the four `CELERY_REDIS_*` settings, **not** `result_backend_transport_options`
+    -- checked against the installed source, that option feeds `retry_policy`, chord ordering
+    and sentinel keys and is never merged into `connparams`, so the obvious fix is inert.
+    `CELERY_TASK_IGNORE_RESULT=True` with exactly two opt-outs (both backtests, whose recorded
+    terminal state is `task_health`'s orphan signal). A read-only probe found `noeviction`,
+    `maxmemory 0`, `timeout 0` on the NAS Redis, so the result db was left in the broker's db 0
+    rather than split for no gain. `CELERY_IMPORTS` also fixes a runtime defect, not a docs
+    one: `train_etf_rotation_lstm` was routed to a queue and registered in no worker.
+    **Merged on `main` but not yet live** -- it needs a worker restart to take effect.
+  - *Truncated data-quality reports fail loudly* (#127). `validate_data_quality` writes CSVs
+    progressively and `metadata.json` only in its final phase, so a killed 90-minute run left
+    partial reports indistinguishable from a clean run that found nothing. `--verify-report
+    DIR` now refuses a missing `metadata.json`, a missing `completed_at`, or a zero
+    `asset_count`/`trading_date_count`; deliberately *not* `coverage_status`, which means "no
+    critical issues" and is satisfied trivially by a scan that stopped early. Per-phase
+    timings are recorded so the next run is a measurement rather than a guess.
+  - *Generated sheets checked against the schema they claim* (#128). `metrics.md` still listed
+    three dropped tables, a dropped breakdown and two dropped columns after the deletion,
+    because `--check` skips both DB-gated sheets; `models.md` additionally still called the
+    39-feature `post-p49-holdout` fleet ACTIVE when the database had been serving the
+    36-feature `2026-11-09` fleet since the previous night. The gate is database-free, so CI
+    has had this since the PR merged; row *counts* remain ungated by design, and the sheet is
+    still a snapshot of a moving database.
+  - Discovery floors moved with the tests: 1153 (#125) → 1162 (#126) → 1170 (#127) → 1175
+    (#128). CI and local counts now agree exactly (1166 and 1174 measured in both), so the
+    four-test margin is precautionary rather than compensating for a known CI shortfall.
+
 ### version 0.1.53
 
 #### Changed:

@@ -222,10 +222,14 @@ jobs:
       # Raised to 1170 by fix/dq-completion-guard, which adds the eight report-completeness
       # guard tests: a truncated DQ directory, a zero asset_count, a zero trading_date_count,
       # and the case that pins coverage_status as the wrong field for this verdict. Measured
-      # 1174 locally. The margin stays because the guard's subject -- a scan whose run time
-      # depends on the NAS link -- is exactly the kind of thing that should not be able to
-      # turn CI red for an environmental reason.
-      MIN_TEST_COUNT: "1170"
+      # 1174 locally and 1174 in CI.
+      #
+      # Raised to 1175 by fix/generated-sheet-conformance, which adds the five sheet-conformance
+      # tests over docs/reference/metrics.md. This is the gate that has to exist: metrics.md and
+      # models.md are excluded from --check because their numbers cannot be reproduced without a
+      # populated database, so before this commit a sheet could describe a schema -- or a model
+      # fleet -- that no longer existed and every CI job would be green about it. Measured 1179.
+      MIN_TEST_COUNT: "1175"
 
     steps:
       - uses: actions/checkout@v4

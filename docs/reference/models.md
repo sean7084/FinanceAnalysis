@@ -6,7 +6,7 @@
 
 # Model Registry and Artifacts
 
-_Generated: 2026-11-09T15:38:16Z_
+_Generated: 2026-11-11T15:17:52Z_
 
 Read this sheet before trusting any accuracy or feature count quoted in prose. `LightGBMModelArtifact` is the authority for per-horizon LightGBM deployment; `ModelVersion` is a higher-level registry that does **not** keep one simultaneously active row per horizon. The rationale for that split, and the version-tag naming convention, are explained in `TECHNICAL_GUIDE.md`; the promote/rollback procedure is in `docs/how-to/retrain.md`.
 
@@ -14,25 +14,26 @@ Read this sheet before trusting any accuracy or feature count quoted in prose. `
 
 | Horizon | Version | Status | Trained at | Window | Samples | Accuracy | Features | Pruning rule | Missing-value strategy | Present in store? |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 3 | `lgb-3d-2026-11-08-post-p49-holdout` | READY | 2026-11-09 14:42:17 | 2016-06-01 → 2026-11-08 | 1,120,907 | 0.478165 | 39 | none | native_nan | yes |
-| 7 | `lgb-7d-2026-11-08-post-p49-holdout` | READY | 2026-11-09 14:42:58 | 2016-06-01 → 2026-11-08 | 1,117,898 | 0.403654 | 39 | none | native_nan | yes |
-| 30 | `lgb-30d-2026-11-08-post-p49-holdout` | READY | 2026-11-09 14:43:42 | 2016-06-01 → 2026-11-08 | 1,097,810 | 0.389598 | 39 | none | native_nan | yes |
+| 3 | `lgb-3d-2026-11-09` | READY | 2026-11-10 16:41:40 | 2016-06-01 → 2026-11-09 | 1,120,907 | 0.476363 | 36 | none | native_nan | yes |
+| 7 | `lgb-7d-2026-11-09` | READY | 2026-11-10 16:42:24 | 2016-06-01 → 2026-11-09 | 1,117,898 | 0.405512 | 36 | none | native_nan | yes |
+| 30 | `lgb-30d-2026-11-09` | READY | 2026-11-10 16:43:04 | 2016-06-01 → 2026-11-09 | 1,097,810 | 0.388973 | 36 | none | native_nan | yes |
 
-Registry totals: **41** `LightGBMModelArtifact` rows, **3** active.
+Registry totals: **44** `LightGBMModelArtifact` rows, **3** active.
 
 
 ## ModelVersion registry
 
 | ID | Type | Version | Active | Status | Trained at | Accuracy | Artifact path |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 119 | ENSEMBLE | `ensemble-2026-11-08` | ACTIVE | READY | 2026-11-09 14:43:43 | &mdash; | models/ensemble/latest.json |
+| 126 | ENSEMBLE | `ensemble-2026-11-09` | ACTIVE | READY | 2026-11-10 16:43:05 | &mdash; | models/ensemble/latest.json |
 | 110 | ETF_ENSEMBLE | `etf-ensemble-2026-11-06-adj-fix` | ACTIVE | READY | 2026-11-06 03:54:37 | &mdash; | &mdash; |
 | 111 | ETF_LIGHTGBM | `etf-lgb-20d-lambdarank-2026-10-08` | ACTIVE | READY | 2026-11-06 09:43:09 | &mdash; | models/etf_rotation/lightgbm/etf-lgb-20d-lambdarank-2026-10-08 |
 | 109 | ETF_LSTM | `etf-lstm-2026-09-29-adj-fix` | ACTIVE | READY | 2026-11-06 03:54:37 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-29-adj-fix |
-| 122 | LIGHTGBM | `lgb-30d-2026-11-08-post-p49-holdout` | ACTIVE | READY | 2026-11-09 14:43:43 | 0.389598 | models/lightgbm/30d_lgb-30d-2026-11-08-post-p49-holdout |
-| 121 | LIGHTGBM | `lgb-7d-2026-11-08-post-p49-holdout` | ACTIVE | READY | 2026-11-09 14:42:58 | 0.403654 | models/lightgbm/7d_lgb-7d-2026-11-08-post-p49-holdout |
-| 120 | LIGHTGBM | `lgb-3d-2026-11-08-post-p49-holdout` | ACTIVE | READY | 2026-11-09 14:42:18 | 0.478165 | models/lightgbm/3d_lgb-3d-2026-11-08-post-p49-holdout |
+| 125 | LIGHTGBM | `lgb-30d-2026-11-09` | ACTIVE | READY | 2026-11-10 16:43:04 | 0.388973 | models/lightgbm/30d_lgb-30d-2026-11-09 |
+| 124 | LIGHTGBM | `lgb-7d-2026-11-09` | ACTIVE | READY | 2026-11-10 16:42:24 | 0.405512 | models/lightgbm/7d_lgb-7d-2026-11-09 |
+| 123 | LIGHTGBM | `lgb-3d-2026-11-09` | ACTIVE | READY | 2026-11-10 16:41:41 | 0.476363 | models/lightgbm/3d_lgb-3d-2026-11-09 |
 | 107 | LSTM | `lstm-2026-11-03-adj-fix` | ACTIVE | READY | 2026-11-05 17:50:18 | 0.452167 | models/lstm/lstm-2026-11-03-adj-fix |
+| 119 | ENSEMBLE | `ensemble-2026-11-08` |  | READY | 2026-11-09 14:43:43 | &mdash; | models/ensemble/latest.json |
 | 113 | ENSEMBLE | `ensemble-2026-11-05` |  | READY | 2026-11-06 11:14:06 | &mdash; | models/ensemble/latest.json |
 | 106 | ENSEMBLE | `ensemble-2026-11-03` |  | READY | 2026-11-05 17:50:19 | &mdash; | models/ensemble/latest.json |
 | 58 | ENSEMBLE | `ensemble-2020-01-01` |  | ARCHIVED | 2026-09-25 12:17:32 | &mdash; | models/ensemble/latest.json |
@@ -89,6 +90,9 @@ Registry totals: **41** `LightGBMModelArtifact` rows, **3** active.
 | 66 | ETF_LSTM | `etf-lstm-2023-12-29-t-fd4deb21` |  | ARCHIVED | 2026-10-22 19:49:39 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-12-29-t-fd4deb21 |
 | 64 | ETF_LSTM | `etf-lstm-2023-11-30-oos23` |  | ARCHIVED | 2026-10-20 18:35:40 | &mdash; | models/etf_rotation/lstm/etf-lstm-2023-11-30-oos23 |
 | 61 | ETF_LSTM | `etf-lstm-2026-09-14` |  | ARCHIVED | 2026-10-20 18:13:05 | &mdash; | models/etf_rotation/lstm/etf-lstm-2026-09-14 |
+| 122 | LIGHTGBM | `lgb-30d-2026-11-08-post-p49-holdout` |  | READY | 2026-11-09 14:43:43 | 0.389598 | models/lightgbm/30d_lgb-30d-2026-11-08-post-p49-holdout |
+| 121 | LIGHTGBM | `lgb-7d-2026-11-08-post-p49-holdout` |  | READY | 2026-11-09 14:42:58 | 0.403654 | models/lightgbm/7d_lgb-7d-2026-11-08-post-p49-holdout |
+| 120 | LIGHTGBM | `lgb-3d-2026-11-08-post-p49-holdout` |  | READY | 2026-11-09 14:42:18 | 0.478165 | models/lightgbm/3d_lgb-3d-2026-11-08-post-p49-holdout |
 | 118 | LIGHTGBM | `lgb-30d-2026-11-08-post-sentiment-holdout` |  | READY | 2026-11-09 11:36:13 | 0.389598 | models/lightgbm/30d_lgb-30d-2026-11-08-post-sentiment-holdout |
 | 117 | LIGHTGBM | `lgb-7d-2026-11-08-post-sentiment-holdout` |  | READY | 2026-11-09 11:35:37 | 0.403654 | models/lightgbm/7d_lgb-7d-2026-11-08-post-sentiment-holdout |
 | 116 | LIGHTGBM | `lgb-3d-2026-11-08-post-sentiment-holdout` |  | READY | 2026-11-09 11:35:00 | 0.478165 | models/lightgbm/3d_lgb-3d-2026-11-08-post-sentiment-holdout |
@@ -140,13 +144,13 @@ Registry totals: **41** `LightGBMModelArtifact` rows, **3** active.
 
 | ID | Date | LightGBM weight | LSTM weight | Heuristic weight | Lookback (d) | basis: LightGBM acc | basis: LSTM acc | basis: heuristic acc |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 | 2026-11-09 | 0.3079 | 0.3287 | 0.3634 | 60 | 0.423616 | 0.452167 | 0.5 |
 | 9 | 2026-11-08 | 0.3080 | 0.3286 | 0.3634 | 60 | 0.423806 | 0.452167 | 0.5 |
 | 8 | 2026-11-05 | 0.3580 | 0.3049 | 0.3371 | 60 | 0.530886 | 0.452167 | 0.5 |
 | 7 | 2026-11-03 | 0.3597 | 0.3041 | 0.3362 | 60 | 0.534849 | 0.452167 | 0.5 |
 | 5 | 2026-09-21 | 0.3520 | 0.3161 | 0.3319 | 60 | 0.53019 | 0.476111 | 0.5 |
-| 4 | 2026-05-23 | 0.3560 | 0.3143 | 0.3297 | 60 | 0.53999 | 0.476722 | 0.5 |
 
-`FeatureImportanceSnapshot`: **1,422** rows, latest id `2134`.
+`FeatureImportanceSnapshot`: **1,530** rows, latest id `2242`.
 
 
 ## On-disk LightGBM artifacts
@@ -167,6 +171,7 @@ Registry totals: **41** `LightGBMModelArtifact` rows, **3** active.
 | `30d_lgb-30d-2026-11-05` | lgb-30d-2026-11-05 | 30 | 2026-11-06 11:14:05 | 2016-06-01 → 2026-11-05 | 39 | none | native_nan |
 | `30d_lgb-30d-2026-11-08-post-p49-holdout` | lgb-30d-2026-11-08-post-p49-holdout | 30 | 2026-11-09 14:43:42 | 2016-06-01 → 2026-11-08 | 39 | none | native_nan |
 | `30d_lgb-30d-2026-11-08-post-sentiment-holdout` | lgb-30d-2026-11-08-post-sentiment-holdout | 30 | 2026-11-09 11:36:12 | 2016-06-01 → 2026-11-08 | 39 | none | native_nan |
+| `30d_lgb-30d-2026-11-09` | lgb-30d-2026-11-09 | 30 | 2026-11-10 16:43:03 | 2016-06-01 → 2026-11-09 | 36 | none | native_nan |
 | `3d_lgb-3d-2020-01-01` | lgb-3d-2020-01-01 | 3 | 2026-09-25 12:15:18 | 2010-01-01 → 2020-01-01 | 39 | none | native_nan |
 | `3d_lgb-3d-2024-12-31` | lgb-3d-2024-12-31 | 3 | 2026-05-02 00:58:45 | 2016-06-01 → 2024-12-31 | 39 | none | ABSENT |
 | `3d_lgb-3d-2024-12-31-core80-v1` | lgb-3d-2024-12-31-core80-v1 | 3 | 2026-04-26 09:43:27 | 2016-06-01 → 2024-12-31 | 20 | latest_snapshot_cumulative_80_core20_25 | ABSENT |
@@ -182,6 +187,7 @@ Registry totals: **41** `LightGBMModelArtifact` rows, **3** active.
 | `3d_lgb-3d-2026-11-05` | lgb-3d-2026-11-05 | 3 | 2026-11-06 11:06:39 | 2016-06-01 → 2026-11-05 | 39 | none | native_nan |
 | `3d_lgb-3d-2026-11-08-post-p49-holdout` | lgb-3d-2026-11-08-post-p49-holdout | 3 | 2026-11-09 14:42:16 | 2016-06-01 → 2026-11-08 | 39 | none | native_nan |
 | `3d_lgb-3d-2026-11-08-post-sentiment-holdout` | lgb-3d-2026-11-08-post-sentiment-holdout | 3 | 2026-11-09 11:34:58 | 2016-06-01 → 2026-11-08 | 39 | none | native_nan |
+| `3d_lgb-3d-2026-11-09` | lgb-3d-2026-11-09 | 3 | 2026-11-10 16:41:38 | 2016-06-01 → 2026-11-09 | 36 | none | native_nan |
 | `7d_lgb-7d-2020-01-01` | lgb-7d-2020-01-01 | 7 | 2026-09-25 12:15:43 | 2010-01-01 → 2020-01-01 | 39 | none | native_nan |
 | `7d_lgb-7d-2024-12-31` | lgb-7d-2024-12-31 | 7 | 2026-05-02 00:59:11 | 2016-06-01 → 2024-12-31 | 39 | none | ABSENT |
 | `7d_lgb-7d-2024-12-31-core80-v1` | lgb-7d-2024-12-31-core80-v1 | 7 | 2026-04-26 09:43:40 | 2016-06-01 → 2024-12-31 | 20 | latest_snapshot_cumulative_80_core20_25 | ABSENT |
@@ -197,6 +203,7 @@ Registry totals: **41** `LightGBMModelArtifact` rows, **3** active.
 | `7d_lgb-7d-2026-11-05` | lgb-7d-2026-11-05 | 7 | 2026-11-06 11:13:24 | 2016-06-01 → 2026-11-05 | 39 | none | native_nan |
 | `7d_lgb-7d-2026-11-08-post-p49-holdout` | lgb-7d-2026-11-08-post-p49-holdout | 7 | 2026-11-09 14:42:57 | 2016-06-01 → 2026-11-08 | 39 | none | native_nan |
 | `7d_lgb-7d-2026-11-08-post-sentiment-holdout` | lgb-7d-2026-11-08-post-sentiment-holdout | 7 | 2026-11-09 11:35:36 | 2016-06-01 → 2026-11-08 | 39 | none | native_nan |
+| `7d_lgb-7d-2026-11-09` | lgb-7d-2026-11-09 | 7 | 2026-11-10 16:42:22 | 2016-06-01 → 2026-11-09 | 36 | none | native_nan |
 
 ## On-disk LSTM artifacts
 
