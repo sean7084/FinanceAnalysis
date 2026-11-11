@@ -343,6 +343,38 @@ windows and the labelled-row set were verified unchanged.
 
 ## Open — correctness
 
+### The lazy-import rationale in `apps/prediction/tasks.py` no longer describes the fleet
+
+`apps/prediction/tasks.py:405-406` defers `tasks_lightgbm` with the reason that "the ops worker
+should not pay for" numpy/pandas/lightgbm to serve the heuristic path. #126 added
+`CELERY_IMPORTS = ('apps.etf_rotation.train_lightgbm', 'apps.etf_rotation.train_lstm')` to
+`config/settings/base.py` -- necessary, because `train_etf_rotation_lstm` was routed to a
+queue and registered in no worker at all, which is how `celery.md` came to list a task that
+could never run. A global `CELERY_IMPORTS` is loaded by every worker process, ops included,
+and `train_lightgbm` pulls the trainer at module scope. So the deferral now buys exactly
+nothing it claims to buy.
+
+Harmless -- an unnecessary local import is not a bug -- but the comment is a false statement
+about the running system, and false comments are how the next person justifies the next
+deferral. The fix is to rewrite the rationale or move the import to module scope, not to
+change behaviour. Cut from Phase 1 deliberately as unrelated to evidence integrity; recorded
+here so it is not lost in a PR description.
+
+### `build_metrics` can silently drop a whole table's field coverage
+
+`apps/core/management/commands/export_documentation_facts.py:352` catches
+`OperationalError, ProgrammingError` per model and `continue`s. For a link failure -- the
+WSL2/NAS case the retry wrapper exists for -- that is right. For `ProgrammingError` it is
+wrong in the same direction as everything else in Phase 1: a real schema fault makes a table's
+numeric coverage vanish from the sheet rather than fail the run, and the sheet is then
+silently smaller than the truth. The new `tests_generated_sheets.py` floors catch wholesale
+collapse and would catch the dropped *columns* if the table still resolved, but a table whose
+rows never made it into the sheet leaves nothing for the gate to compare.
+
+The honest fix distinguishes the two error classes: retry the connection fault, raise on the
+schema fault. It needs the same measurements as the DQ loop inversion (below), so it is
+scheduled with Phase 2 rather than bolted onto a docs PR.
+
 ### The 7-day stock LightGBM model has below-coin-flip directional accuracy
 
 Retrained on the `2016-06-01` date-contract window, the three stock horizons scored
@@ -379,14 +411,27 @@ Done as part of the date-contract change: `rebuild_lightgbm_pipeline --skip-back
 was run for horizons 3, then 7 and 30. Numbers are in `CHANGELOG.md` under version
 0.1.53. The remaining gap is the missing out-of-sample metric above, not a stale window.
 
-**Not gating, by design:** `docs/reference/metrics.md` and `models.md` are in
-`DB_GATED_SHEETS` (`apps/core/management/commands/export_documentation_facts.py:1132`).
+**Numbers still not gating, by design:** `docs/reference/metrics.md` and `models.md` are in
+`DB_GATED_SHEETS` (`apps/core/management/commands/export_documentation_facts.py:1154`).
 CI regenerates them against a freshly created, table-less service database because
 migrations have not run at that step, so a "fresh" CI render is a wall of
 `UNAVAILABLE ... <exc>` rows that can never equal a developer's populated render in
 either direction -- `--check` skips both for exactly that reason. They have been
-refreshed locally for this change and committed. Budget ~9 minutes with warm caches and
-40+ cold for `export_documentation_facts --only metrics,models`: it scans ~30 tables
+refreshed locally for this change and committed.
+
+**What is now gated, and was not:** the *structure* these sheets describe.
+`apps/core/tests_generated_sheets.py` parses the committed `metrics.md` and compares every
+table, app label, field-coverage column and breakdown field against the generator's own
+`_iter_project_models()`. It needs no database, so CI has been running it since #128. The
+reason it exists: `--check` skipping these two files is not a neutral gap. The whole
+news/sentiment decommission merged with CI green while `metrics.md` still listed three
+dropped tables, a dropped `score_type` breakdown and two dropped `FactorScore` columns,
+and nothing in the repository could contradict the sheet. A check that cannot fail is
+not a check.
+
+Budget: measured **761 s** on 2026-11-11 for `export_documentation_facts --only
+metrics,models` against the populated database with the suite idle -- warmer than the 40+
+cold figure below and closer to the ~9 minute estimate. Run it detached anyway.
 including ~174M rows of `analytics_technicalindicator` (`pg_stat_activity`: `active` /
 `IO` / `DataFileRead`, real sequential scans, not the wedge below). Run it detached.
 
@@ -400,6 +445,15 @@ wedge below or pure I/O contention was never confirmed -- `pg_stat_activity` was
 sampled at the time, so do not record it as a reproducing case.
 
 ### `sentiment_score` is constant because the tokenizer matched no Chinese — root cause found
+
+**Closed by deletion, 2026-11-11; kept for provenance.** The module is gone: `apps/sentiment/`
+does not exist, `FactorScore.sentiment_score` and `sentiment_weight` were dropped in the
+#110-#123 decommission, and `_sentiment_scores_by_asset` matches nothing under `apps/` any
+more. The `phase11_scoring_with_sentiment` label in the measurement below is historical --
+the daily path writes `phase11_scoring_without_sentiment` now
+(`apps/factors/tasks.py:391`) -- so the SQL in this entry can no longer be re-run to the same
+shape. Read it as the record of how a constant feature column could be read as coverage, which
+is the failure Phase 1 exists to make impossible, not as open work.
 
 **Diagnosis corrected 2026-11-08; the scorer is fixed, the stored rows are not.**
 This entry previously asked us to "look for the scoring path that should have written
