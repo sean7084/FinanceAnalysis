@@ -13,11 +13,16 @@ seconds budget would measure nothing. The measured evidence lives in
 """
 
 import inspect
+import json
+import tempfile
 from datetime import date, timedelta
+from pathlib import Path
 
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 
 from apps.core.db_scans import DEFAULT_WINDOW_DAYS, date_windows, iter_windowed, windowed_rows
+from apps.core.management.commands.validate_data_quality import Command as ValidateDataQualityCommand
 from apps.core.management.commands import validate_data_quality as vdq
 
 
@@ -204,3 +209,82 @@ class GateCoverageEquivalenceTests(TestCase):
         ]
         self.assertEqual(sorted(fetched), days)
         self.assertEqual(len(fetched), len(set(fetched)))
+
+
+class ReportCompletenessGuardTests(SimpleTestCase):
+    """A killed run must not be readable as a clean one.
+
+    metadata.json is written only by the final summary phase, so its absence -- or a zero
+    coverage count inside it -- is the signature of a scan that stopped early. That matters
+    because the CSVs are written progressively: a 90-minute timeout leaves a directory full of
+    partial reports sitting next to no verdict, which is how the run documented in
+    db_scans.py's docstring ended. Every failing case below is the point of the guard; a check
+    that only ever passes is decoration.
+    """
+
+    COMPLETE = {
+        'completed_at': '2026-11-11T10:00:00+00:00',
+        'asset_count': 512,
+        'trading_date_count': 2600,
+    }
+
+    def setUp(self):
+        self.command = ValidateDataQualityCommand()
+
+    def test_a_complete_metadata_block_reports_no_problems(self):
+        self.assertEqual(self.command._report_completeness_problems(dict(self.COMPLETE)), [])
+
+    def test_missing_completed_at_is_a_problem(self):
+        metadata = dict(self.COMPLETE)
+        del metadata['completed_at']
+        problems = self.command._report_completeness_problems(metadata)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('completed_at', problems[0])
+
+    def test_zero_asset_count_is_a_problem(self):
+        for value in (0, None):
+            metadata = dict(self.COMPLETE, asset_count=value)
+            self.assertTrue(
+                self.command._report_completeness_problems(metadata),
+                f'asset_count={value!r} must not read as a completed scan',
+            )
+
+    def test_zero_trading_date_count_is_a_problem(self):
+        metadata = dict(self.COMPLETE, trading_date_count=0)
+        self.assertTrue(self.command._report_completeness_problems(metadata))
+
+    def test_coverage_status_is_not_mistaken_for_completeness(self):
+        """coverage_status means no critical issues. A truncated scan can trivially have none.
+
+        Pinned because reusing that field for the completeness verdict would have been the
+        tempting shortcut and would pass on exactly the case this guard exists to catch.
+        """
+        metadata = {'coverage_status': 'complete', 'asset_count': 512, 'trading_date_count': 2600}
+        problems = self.command._report_completeness_problems(metadata)
+        self.assertEqual(len(problems), 1, 'only the missing completed_at should be flagged')
+
+    def test_a_directory_without_metadata_json_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            partial = Path(tmp)
+            (partial / 'ohlcv_continuity_gaps.csv').write_text('issue_type\n', encoding='utf-8')
+            with self.assertRaises(CommandError) as caught:
+                self.command._verify_report_completeness(partial)
+            self.assertIn('metadata.json', str(caught.exception))
+
+    def test_a_truncated_directory_raises_even_with_csvs_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / 'metadata.json').write_text(
+                json.dumps({'asset_count': 0, 'trading_date_count': 2600}), encoding='utf-8')
+            with self.assertRaises(CommandError) as caught:
+                self.command._verify_report_completeness(path)
+            self.assertIn('asset_count', str(caught.exception))
+
+    def test_the_verb_mode_runs_no_scans(self):
+        """--verify-report is a reader. It must not open a scan or write a report directory."""
+        signature_src = inspect.getsource(ValidateDataQualityCommand.handle)
+        guard = signature_src.splitlines()[1:6]
+        self.assertTrue(
+            any('verify_report' in line for line in guard),
+            'the verify path must be the first thing handle() does, before any query',
+        )

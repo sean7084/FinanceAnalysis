@@ -215,11 +215,17 @@ jobs:
       # dashboard view assembles (1157 measured locally on a fresh database). Raised again to
       # 1162 by fix/celery-backend-resilience, which adds nine: connparams provenance and its
       # negative controls, the result-storage sweep, registry completeness, and the .env.example
-      # discoverability check (1166 measured locally on a fresh database). The floor stays
-      # four below the local count because CI measured one fewer than local on the same tree
-      # before this change, and a floor that trips on environment noise teaches people to
-      # ignore it -- which is the opposite of what a discovery floor is for.
-      MIN_TEST_COUNT: "1162"
+      # discoverability check (1166 measured locally on a fresh database, and CI independently
+      # reported 1166 for that same run -- so the two now agree, and this floor's four-test
+      # margin is precautionary rather than compensating for a known CI shortfall).
+      #
+      # Raised to 1170 by fix/dq-completion-guard, which adds the eight report-completeness
+      # guard tests: a truncated DQ directory, a zero asset_count, a zero trading_date_count,
+      # and the case that pins coverage_status as the wrong field for this verdict. Measured
+      # 1174 locally. The margin stays because the guard's subject -- a scan whose run time
+      # depends on the NAS link -- is exactly the kind of thing that should not be able to
+      # turn CI red for an environmental reason.
+      MIN_TEST_COUNT: "1170"
 
     steps:
       - uses: actions/checkout@v4
