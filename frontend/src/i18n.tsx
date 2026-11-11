@@ -29,7 +29,7 @@ const dict: Record<Locale, Record<string, string>> = {
     'chart.noProb': '暂无预测概率数据。',
     'chart.noKline': '暂无K线数据。',
     'dash.title': '首页仪表盘',
-    'dash.desc': '宏观环境、概念热度和今日预测信号概览。',
+    'dash.desc': '宏观环境与今日预测信号概览。',
     'dash.filterTitle': '候选筛选配置',
     'dash.filterDesc': '使用与回测工作台一致的候选筛选逻辑刷新 Dashboard。',
     'dash.applyFilters': '应用 Dashboard 筛选',
