@@ -34,7 +34,7 @@ const dashboardRow = {
   fundamental_score: 0.6,
   capital_flow_score: 0.52,
   technical_score: 0.57,
-  pe_percentile_score: 0.3,
+  pe_ttm_percentile_score: 0.3,
   pb_percentile_score: 0.25,
   roe_trend_score: 0.44,
   main_force_flow_score: 0.51,
