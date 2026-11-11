@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-11T14:41:00Z_
+_Generated: 2026-11-11T14:54:33Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -248,6 +248,7 @@ Validate historical data quality and write actionable reports under reports/ wit
 | `--alert` | flag | `False` |  | Email a summary when critical data-quality issues are found. |
 | `--alert-recipients` | value | `""` |  | Comma-separated alert recipients. Falls back to settings. |
 | `--fail-on-critical` | flag | `False` |  |  |
+| `--verify-report` | value | `""` |  | Judge an existing report directory for completeness instead of scanning: exit non-zero when metadata.json is absent or when the run covered nothing. Performs no queries. |
 
 
 ## `apps.etf_rotation`

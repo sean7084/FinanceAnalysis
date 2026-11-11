@@ -463,6 +463,14 @@ class Command(BaseCommand):
         parser.add_argument('--alert', action='store_true', help='Email a summary when critical data-quality issues are found.')
         parser.add_argument('--alert-recipients', default='', help='Comma-separated alert recipients. Falls back to settings.')
         parser.add_argument('--fail-on-critical', action='store_true')
+        parser.add_argument(
+            '--verify-report',
+            metavar='DIR',
+            default='',
+            help='Judge an existing report directory for completeness instead of scanning: '
+                 'exit non-zero when metadata.json is absent or when the run covered nothing. '
+                 'Performs no queries.',
+        )
 
     def _run_with_database_retry(self, operation, *, action):
         last_error = None
@@ -488,6 +496,11 @@ class Command(BaseCommand):
         run_started_at = timezone.now()
         run_started_perf = perf_counter()
 
+        verify_dir = options.get('verify_report')
+        if verify_dir:
+            self._verify_report_completeness(Path(verify_dir))
+            return
+
         floor_date = get_historical_data_floor()
         start_date = max(self._parse_date(options['start_date'], 'start-date'), floor_date)
         end_date = self._parse_date(options['end_date'], 'end-date')
@@ -511,6 +524,10 @@ class Command(BaseCommand):
         table_counters = Counter()
         field_counters = Counter()
         reason_counters = Counter()
+        # Where the wall clock actually goes. Recorded per phase rather than inferred, because
+        # the only previous evidence about a 90-minute run was a pg_stat_activity sample taken
+        # by hand, and the fix for the run time depends on knowing which phase owns it.
+        phase_timings = {}
 
         try:
             # Session guards for the big analytical scans on the (shared) database host:
@@ -608,6 +625,7 @@ class Command(BaseCommand):
                 field_counters,
             )
 
+            phase_started = perf_counter()
             for asset in assets:
                 actual_rows = list(
                     OHLCV.objects.filter(asset=asset, date__gte=start_date, date__lte=end_date)
@@ -701,6 +719,8 @@ class Command(BaseCommand):
                     field_counters,
                 )
 
+            phase_timings['per_asset_scans'] = round(perf_counter() - phase_started, 3)
+            phase_started = perf_counter()
             self._validate_null_fields(assets, start_date, end_date, writer, counters, field_counters, reason_counters)
             self._audit_fundamental_reconciliation(
                 assets,
@@ -726,6 +746,8 @@ class Command(BaseCommand):
                 table_counters,
                 field_counters,
             )
+            phase_timings['null_field_scans'] = round(perf_counter() - phase_started, 3)
+            phase_started = perf_counter()
             self._validate_default_buckets(
                 assets,
                 start_date,
@@ -736,6 +758,8 @@ class Command(BaseCommand):
                 field_counters,
                 reason_counters,
             )
+            phase_timings['default_bucket_scans'] = round(perf_counter() - phase_started, 3)
+            phase_started = perf_counter()
             # No enclosing transaction. It used to be load-bearing: in autocommit psycopg2
             # declares .iterator()'s server-side cursor WITH HOLD, so PostgreSQL materialised
             # the whole result before the client saw a row, the client sat app-idle for
@@ -759,6 +783,7 @@ class Command(BaseCommand):
                 cross_section_audit_dates,
                 effective_universe_by_date,
             )
+            phase_timings['universe_and_audit_writes'] = round(perf_counter() - phase_started, 3)
             self._write_summary_reports(
                 writer,
                 counters,
@@ -774,6 +799,7 @@ class Command(BaseCommand):
                 options,
                 run_started_at,
                 run_started_perf,
+                phase_timings,
             )
         finally:
             writer.close()
@@ -3179,7 +3205,54 @@ class Command(BaseCommand):
     def _critical_count(self, counters):
         return self._severity_count(counters, 'critical')
 
-    def _write_summary_reports(self, writer, counters, table_counters, field_counters, reason_counters, assets, trading_dates, start_date, end_date, floor_date, technical_indicators, options, run_started_at, run_started_perf):
+    @staticmethod
+    def _report_completeness_problems(metadata):
+        """Reasons a report directory must not be read as a full scan. Kept pure for testing."""
+        problems = []
+        # metadata.json is written only by _write_summary_reports, i.e. after every phase has
+        # finished, so its absence is the signature of a run that was killed mid-scan while its
+        # CSVs were already partly on disk. That is the state a 90-minute timeout leaves behind,
+        # and until now nothing distinguished it from a clean run that found nothing.
+        if 'completed_at' not in metadata:
+            problems.append('completed_at is missing, so the run never reached its final phase')
+        if not metadata.get('asset_count'):
+            problems.append(
+                f"asset_count={metadata.get('asset_count')!r}: the scan covered no assets, "
+                "which cannot support any statement about coverage"
+            )
+        if not metadata.get('trading_date_count'):
+            problems.append(
+                f"trading_date_count={metadata.get('trading_date_count')!r}: the calendar "
+                "resolved to no trading days inside the requested window"
+            )
+        return problems
+
+    def _verify_report_completeness(self, directory):
+        metadata_path = directory / 'metadata.json'
+        if not metadata_path.exists():
+            raise CommandError(
+                f'{metadata_path} not found. metadata.json is written only after every phase '
+                'completes, so a directory without one is a killed or interrupted run -- the '
+                'CSVs in it are partial and must not be read as a verdict.'
+            )
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as exc:
+            raise CommandError(f'{metadata_path} is not valid JSON: {exc}') from exc
+
+        problems = self._report_completeness_problems(metadata)
+        if problems:
+            raise CommandError(
+                f'{directory} is not a complete run: ' + '; '.join(problems)
+            )
+        self.stdout.write(
+            f'{directory} is complete: {metadata["asset_count"]} assets x '
+            f'{metadata["trading_date_count"]} trading dates in '
+            f'{metadata.get("total_elapsed_seconds")}s '
+            f'({metadata.get("critical_issues", "?")} critical issues reported).'
+        )
+
+    def _write_summary_reports(self, writer, counters, table_counters, field_counters, reason_counters, assets, trading_dates, start_date, end_date, floor_date, technical_indicators, options, run_started_at, run_started_perf, phase_timings):
         calendar_max_gap_days = 0
         if len(trading_dates) > 1:
             calendar_max_gap_days = max(
@@ -3189,6 +3262,11 @@ class Command(BaseCommand):
 
         completed_at = timezone.now()
         total_elapsed_seconds = round(max(0.0, perf_counter() - run_started_perf), 3)
+        if phase_timings:
+            ranked = sorted(phase_timings.items(), key=lambda item: item[1], reverse=True)
+            self.stdout.write(
+                'phase timings (s): ' + ', '.join(f'{name}={seconds}' for name, seconds in ranked)
+            )
 
         summary_rows = [
             {'issue_type': issue_type, 'severity': severity, 'count': count}
@@ -3228,6 +3306,7 @@ class Command(BaseCommand):
             'end_date': end_date,
             'global_floor_date': floor_date,
             'coverage_status': 'complete' if self._critical_count(counters) == 0 else 'issues_detected',
+            'phase_timings': dict(phase_timings),
             'asset_count': len(assets),
             'effective_universe_only': bool(options.get('effective_universe_only')),
             'trading_date_count': len(trading_dates),
