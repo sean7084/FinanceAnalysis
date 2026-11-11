@@ -33,6 +33,7 @@ from .views import (
     _queue_candidate_reconciliation,
 )
 from .technical_staleness import asset_exchange_code
+from .serializers import DashboardStockRowSerializer
 from .management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand, DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import FactorScore
 from apps.prediction.models import ModelVersion, PredictionResult
@@ -1766,3 +1767,74 @@ class DashboardSummaryApiTests(DashboardStockFixtures, TestCase):
         self.assertEqual(second.data['alert_triggers'], 1)
         # Identical timestamp proves the second call was served from cache.
         self.assertEqual(first.data['generated_at'], second.data['generated_at'])
+
+
+class DashboardRowAssemblyConformanceTests(DashboardStockFixtures, TestCase):
+    """The keys the view assembles against the fields the serializer declares.
+
+    This is the check that can see issue #120's drift class, and a response-key assertion
+    cannot. ``DashboardStockRowSerializer`` is a plain ``Serializer``, and DRF's
+    ``to_representation`` iterates ``self.fields`` — so any assembled key it does not declare is
+    dropped on the way out. The response is therefore a whitelist *of the declaration*, never a
+    view of the assembly: compare it to the declared fields and it agrees by construction,
+    however badly the two have diverged underneath.
+
+    So the rows are intercepted before that whitelist runs. ``Recording`` subclasses the real
+    serializer, remembers what it was handed, and behaves identically afterwards; production
+    code is untouched and the assertion reads the dicts the endpoint's data layer actually
+    built.
+    """
+
+    CANDIDATE_ONLY_KEYS = {'candidate_rank', 'candidate_rank_value'}
+    # Carried by the candidate merge for the payload-field helper, and dropped by the
+    # serializer. Named here so it cannot quietly grow: a second internal key is a signal that
+    # rows are being assembled with more than the endpoint means to expose.
+    INTERNAL_CANDIDATE_KEYS = {'signal_payload'}
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def _assembled_row_keys(self, query):
+        from django.db.models import Max
+
+        from .serializers import DashboardStockRowSerializer
+
+        recorded = {}
+        real = DashboardStockRowSerializer
+
+        class Recording(real):
+            def __init__(self, instance=(), *args, **kwargs):
+                recorded['rows'] = list(instance)
+                super().__init__(instance, *args, **kwargs)
+
+        params = _parse_dashboard_list_params(QueryDict(query))
+        latest = FactorScore.objects.filter(
+            mode=FactorScore.FactorMode.COMPOSITE
+        ).aggregate(latest=Max('date'))['latest']
+
+        with patch('apps.analytics.views.DashboardStockRowSerializer', Recording):
+            payload = DashboardStockViewSet().build_stocks_payload(latest, params)
+
+        self.assertTrue(recorded['rows'], 'the serializer was handed no rows to whitelist')
+        self.assertEqual(len(payload['results']), len(recorded['rows']))
+        return set(recorded['rows'][0])
+
+    def test_non_candidate_rows_are_the_declared_fields_minus_the_optional_pair(self):
+        assembled = self._assembled_row_keys('prediction_horizon=7')
+        declared = set(DashboardStockRowSerializer().fields)
+        self.assertEqual(
+            assembled, declared - self.CANDIDATE_ONLY_KEYS,
+            f'assembled-only={sorted(assembled - declared)} '
+            f'declared-only={sorted(declared - assembled - self.CANDIDATE_ONLY_KEYS)}',
+        )
+
+    def test_candidate_rows_add_the_rank_pair_plus_the_declared_internal_key(self):
+        assembled = self._assembled_row_keys(
+            'prediction_source=heuristic&candidate_mode=top_n&top_n=1'
+            '&top_n_metric=up_prob_7d&up_threshold=0'
+        )
+        declared = set(DashboardStockRowSerializer().fields)
+
+        self.assertEqual(assembled - declared, self.INTERNAL_CANDIDATE_KEYS)
+        self.assertTrue(self.CANDIDATE_ONLY_KEYS.issubset(assembled))

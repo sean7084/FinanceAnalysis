@@ -70,7 +70,7 @@ export interface DashboardStockRowDto {
   fundamental_score: number
   capital_flow_score: number
   technical_score: number
-  pe_percentile_score: number | null
+  pe_ttm_percentile_score: number | null
   pb_percentile_score: number | null
   roe_trend_score: number | null
   main_force_flow_score: number | null
