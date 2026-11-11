@@ -27,6 +27,20 @@ from django.core.checks import Error, register
 
 from apps.core.timez import SESSION_TZ_NAME
 
+def _module_absent(module_name):
+    """True when a module cannot be located at all.
+
+    find_spec returns None for a missing submodule but raises ModuleNotFoundError when the
+    *parent package* is gone, which is exactly the case for an app whose directory was deleted
+    (#121 removed apps/sentiment whole). Both answers mean absent here, so the check must not
+    crash while describing the absence it exists to report.
+    """
+    try:
+        return importlib.util.find_spec(module_name) is None
+    except (ImportError, ValueError):
+        return True
+
+
 TIME_ZONE_CHECK_ID = 'core.E001'
 PERIODIC_TASK_CHECK_ID = 'core.E002'
 
@@ -122,7 +136,7 @@ def check_enabled_periodic_tasks_are_dispatchable(app_configs, **kwargs):
         module, _, _ = task.rpartition('.')
         if module in broken_modules:
             detail = f', whose module failed to import ({broken_modules[module]})'
-        elif module and importlib.util.find_spec(module) is None:
+        elif module and _module_absent(module):
             detail = ', and the module no longer exists'
         else:
             detail = ''
