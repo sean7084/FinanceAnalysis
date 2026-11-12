@@ -28,7 +28,7 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 
 - **M1 — measurement power** (Phase D): #136, #138–#143
 - **M2 — model quality** (Phase E): #137, #144–#148
-- **M3 — hygiene and micro-tasks**: #152–#156, #160 (#151 and #153 shipped/closed)
+- **M3 — hygiene and micro-tasks**: #152–#156, #160 — state is not uniform: #153 and #156 are **closed** (#156 on measurement: zero-row legacy class), #151/#152/#155 stay **open until their PRs merge**, and #154 needs a semantic decision, not code
 - **Owner decisions** — deployment hygiene, not diffs: #149, #150
 - **Blocked on a data source** (not schedulable): #157–#159
 
@@ -87,7 +87,7 @@ rematch on the current layout re-measures the harness, not the strategy.
 | ~~#153~~ closed | Eight orphaned screener i18n keys removed in [PR #168](https://github.com/sean7084/FinanceAnalysis/pull/168), gated on 408 `t()` literals resolving in both locales — `tsc` and eslint cannot catch an over-deletion here |
 | [#154](https://github.com/sean7084/FinanceAnalysis/issues/154) | Macro semantics: `dxy` name, publication-date alignment, where northbound flow belongs |
 | [#155](https://github.com/sean7084/FinanceAnalysis/issues/155) | Entitlement flags cached with `timeout=None` — documented-convention option shipped in [PR #166](https://github.com/sean7084/FinanceAnalysis/pull/166); TTL declined because the condition only changes when the operator changes the token | one operator walk-through of `runbook-provider-blackout.md` §9 |
-| [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) | `amount` unit — **already documented** (`models.py:220` states 千元 vs 元 and the do-not-join rule); remainder is the `raw_close IS NULL` asset count and whether the repair walks them |
+| [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) — closed | `amount` unit **already documented** (`models.py:220`: 千元 vs 元 plus the do-not-join rule); remainder measured: **0 rows / 0 assets with `raw_close IS NULL` out of 6,546,368**, and 0 NULL `adj_close`/`close`. The class was removed by a full OHLCV re-fetch, not by migration 0014, which added both columns nullable with no `RunPython` |
 | [#160](https://github.com/sean7084/FinanceAnalysis/issues/160) | Operator model-version selection — and which surface absorbs it |
 | ~~#161~~ closed | `apps/macro/tests.py` gitignored-CSV dependency — **verified already fixed**: this host has no `source_data/` at all and the pre-2016 yield case still reports `csv_yield_updates=21` from a temp fixture |
 
