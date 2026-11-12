@@ -28,7 +28,8 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 
 - **M1 — measurement power** (Phase D): #136, #138–#143
 - **M2 — model quality** (Phase E): #137, #144–#148
-- **M3 — hygiene and micro-tasks**: #149–#156, #160, #161
+- **M3 — hygiene and micro-tasks**: #151–#156, #160, #161
+- **Owner decisions** — deployment hygiene, not diffs: #149, #150
 - **Blocked on a data source** (not schedulable): #157–#159
 
 ---
@@ -69,8 +70,6 @@ rematch on the current layout re-measures the harness, not the strategy.
 
 | Issue | One line |
 |---|---|
-| [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) | **Owner decision**: `local` vs `production` lockfiles disagree on gunicorn/uvicorn; 3.12-resolved vs 3.14-CI |
-| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | **Owner decision**: `torch` is CPU-only while `windows_gpu` is a valid inference backend |
 | [#151](https://github.com/sean7084/FinanceAnalysis/issues/151) | Correct the stale lazy-import rationale in `apps/prediction/tasks.py` |
 | [#152](https://github.com/sean7084/FinanceAnalysis/issues/152) | Function-level docstrings on the backtest engine's four decision points |
 | [#153](https://github.com/sean7084/FinanceAnalysis/issues/153) | Remove the eight orphaned screener i18n keys |
@@ -80,9 +79,17 @@ rematch on the current layout re-measures the harness, not the strategy.
 | [#160](https://github.com/sean7084/FinanceAnalysis/issues/160) | Operator model-version selection — and which surface absorbs it |
 | [#161](https://github.com/sean7084/FinanceAnalysis/issues/161) | `apps/macro/tests.py` needs a temp-dir fixture; today it depends on a gitignored CSV |
 
-#149 and #150 are labelled `blocked` because they need a deployment decision, not a diff: CI
-currently tests a gunicorn that production would not run, and no document says which runtime
-actually has a GPU.
+## Owner decisions — deployment hygiene
+
+Not schedulable as diffs: each needs a deployment choice first, and neither closes with a PR.
+
+| Issue | The mismatch | What has to be chosen |
+|---|---|---|
+| [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) | mlflow pulls `gunicorn==25.3.0` / `uvicorn==0.54.0` into `local.txt`, while `production.txt` pins the declared `23.0.0` / `0.32.0`; the lockfiles are resolved on Python 3.12 but CI runs 3.14 | align production to what CI exercises, pin the server stack in the `.in` files, or declare the divergence intentional and stop claiming CI covers the production server |
+| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves CPU-only from the default index, yet `windows_gpu` is a valid LightGBM inference backend | record which runtimes actually have a GPU (this host, the NAS, CI, any Windows worker), then decide whether to add a CUDA index as a separate extra or drop `windows_gpu` from the valid set |
+
+`scripts/check_requirements_lockfile.py` passes for both of these — each file is internally
+consistent — which is exactly why nothing catches them. The `blocked` label is the honest state.
 
 ## Blocked on a data source
 
