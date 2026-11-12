@@ -16,6 +16,8 @@ intact, or being archived verbatim.
 
 ## Current state
 
+**Executed 2026-11-12 and awaiting merge:** nine CI-green PRs — #162 (this restructure), #163 (#143), #164 (#151), #165 and #169 (#138), #166 (#155), #167 (#152), #168 (#153), #170 (#139). They are blocked only on an approving review, so merging is an owner action; measured with git merge-tree, the sequence has three CHANGELOG.md conflicts and no code conflicts. #141 and #156 closed on measurement; #138 residual attributed to the bulk read I/O rather than the Python work; #140, #154, #136, #149 and #150 are costed and need a decision, not a diff.
+
 Phases A–C (reliability and closure) are merged as PRs #129–#135: the NAS-Redis cache resilience,
 the `ETFFeatureSnapshot` `NameError`, the freshness rule for immortal `RUNNING` rows, the dead
 event-impact surface, the `--check` verdict ordering, and the BACKLOG triage itself. The frozen
