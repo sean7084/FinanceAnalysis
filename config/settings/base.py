@@ -762,6 +762,20 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": env("REDIS_URL", default="redis://localhost:6379/1"),
+        # The cache rides the same idle WSL2<->NAS link as the broker. With no
+        # health check, the first use of a connection the link has dropped raises
+        # Errno 104 and fails the task (A0 classified catch_up_missed_runs and
+        # prewarm_dashboard_stocks_cache onto this socket). Mirror
+        # CELERY_BROKER_TRANSPORT_OPTIONS above -- that is why the broker has zero
+        # such failures. health_check_interval is the load-bearing knob: redis-py
+        # PINGs before reusing an idle connection and reconnects if it is dead.
+        "OPTIONS": {
+            "health_check_interval": 25,
+            "socket_keepalive": True,
+            "socket_connect_timeout": 10,
+            "socket_timeout": 30,
+            "retry_on_timeout": True,
+        },
     }
 }
 

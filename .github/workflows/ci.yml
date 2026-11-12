@@ -229,7 +229,13 @@ jobs:
       # models.md are excluded from --check because their numbers cannot be reproduced without a
       # populated database, so before this commit a sheet could describe a schema -- or a model
       # fleet -- that no longer existed and every CI job would be green about it. Measured 1179.
-      MIN_TEST_COUNT: "1175"
+      #
+      # Raised to 1177 by fix/redis-cache-resilience, which adds the two cache-connparams tests:
+      # the production Django cache pool must carry the same idle-link knobs the broker already
+      # has (A0 classified the active Errno-104 task failures onto the cache, which had no
+      # OPTIONS), plus a negative control proving they come from CACHES OPTIONS not redis
+      # defaults. Measured 1181.
+      MIN_TEST_COUNT: "1177"
 
     steps:
       - uses: actions/checkout@v4
