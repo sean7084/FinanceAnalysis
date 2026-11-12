@@ -234,8 +234,17 @@ DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 #: penalty is +8.0 s and 5.4 s of it is that single column, which the callers never needed:
 #: ``_write_technical_indicator_continuity_gaps`` reads only ``timestamp__date``. Row
 #: materialisation per extra column, at ~0.6 us/row, is the term that scales with the
-#: window -- not retention, not round trips, not date span. Residual ~19 s of the ~27 s
-#: phase penalty is spread over the other seven prefetched reads and is still unmeasured.
+#: window -- not retention, not round trips, not date span. Confirmed end to end: an
+#: isolated old-vs-new two-year A/B afterwards measured `per_asset_scans` 105.05 s vs
+#: 115.67 s, so the penalty went from ~+23 s to ~+10.6 s -- a recovery of ~12.6 s against
+#: a 5.4 s prediction, i.e. the column cost more in the real phase than in the replay,
+#: most plausibly because 9.0 M fewer parsed datetimes also lowers allocation pressure for
+#: everything else in the loop. That mechanism is inferred, not measured.
+#:
+#: Timing caveat for anyone re-running this comparison: `default_bucket_scans` is code both
+#: sides share, and it has been observed at 206.7, 217.3, 326.6 and 387.3 s across four
+#: runs. That spread is bigger than the whole effect above, so total wall time cannot carry
+#: a claim about this change -- only `per_asset_scans`, and only between adjacent runs.
 PREFETCH_CHUNK_REFERENCE_SESSIONS = 120
 
 #: Floor for the adaptive size. Below this the round-trip saving collapses: the chunk
