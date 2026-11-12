@@ -187,14 +187,92 @@ FUNDAMENTAL_FIELDS = ('pe', 'pe_ttm', 'pb', 'total_share', 'float_share', 'free_
 FUNDAMENTAL_CONTINUITY_FIELDS = ('pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq')
 CAPITAL_FLOW_FIELDS = ('main_force_net_5d', 'margin_balance_change_5d')
 
-#: Assets per bulk prefetch in the per-asset validation phase.
+#: Assets per bulk prefetch in the per-asset validation phase, unless
+#: ``settings.DQ_PREFETCH_CHUNK_ASSETS`` overrides it.
 #:
 #: Sized from the widest prefetched read, not from a guess: ``TechnicalIndicator`` rows come
 #: as assets x sessions x indicator variants, and holding that for the whole effective
 #: universe at once is the failure mode ``apps/prediction/tasks_lightgbm.py:_query_frame``
 #: records at 22.9 GB peak RSS. A quarter of the universe keeps one chunk's row sets in tens
 #: of megabytes while still cutting ~10 queries per asset down to 8 per chunk.
-PREFETCH_CHUNK_ASSETS = 25
+#:
+#: It is a default rather than a constant because the measurement says the trade-off moves
+#: with the window: at six months the chunked read cut the per-asset phase 149.0 s -> 34.1 s,
+#: while at two years the same chunk size made it *slower* (106.8 s -> 239.2 s) even though
+#: total wall time fell. Retention, not round trips, is what scales with the window, so the
+#: knob has to be tunable by a run rather than by a commit.
+DEFAULT_PREFETCH_CHUNK_ASSETS = 25
+
+#: Sessions at which ``DEFAULT_PREFETCH_CHUNK_ASSETS`` was chosen.
+#:
+#: The prefetch trades round trips for retention: a chunk holds its assets' rows for
+#: every session in the window and across every requested indicator variant, so retained
+#: volume is assets x sessions x variants. At a six-month window (~120 sessions,
+#: ~57k rows per chunk) that trade is strongly favourable: the per-asset phase went
+#: 149.0 s -> 34.1 s. At two years (~490 sessions) it is mildly unfavourable -- 107.5 s
+#: of old code against 134.5 s of chunked code, measured in isolation with byte-identical
+#: output, and the earlier 106.8 -> 239.2 pair quoted here was contaminated by other
+#: database jobs sharing the link at the time.
+#:
+#: So the chunk shrinks as the window grows, which keeps retention per chunk roughly flat.
+#:
+#: Measured, retention is NOT where the two-year penalty comes from. On an isolated adjacent
+#: trio over 2024-11-13 .. 2026-11-12, output byte-identical in all three runs and nothing
+#: else on the link: old code 107.5 s, fixed chunk of 25 134.5 s, adaptive chunk of 6
+#: 130.7 s. Sizing recovered about 4 s of a ~27 s penalty, so it is a minor term.
+#:
+#: Over-fetch was the next candidate and it is also refuted: joined against each asset's
+#: own first/last OHLCV date inside the window, the tables this prefetch reads are
+#: 0.0% outside that span (median asset occupies 99% of a 729-day window), so bounding the
+#: bulk read per asset would save nothing. That check ran over all 1,780 assets; the gate
+#: iterates the 687 in the point-in-time union, which is a weaker population than claimed.
+#:
+#: Attributed 2026-11-12 by replaying three SELECT shapes over the same rows -- one query
+#: per asset (old), one bulk query per chunk (shipped), and the bulk query with the raw
+#: ``timestamp`` column dropped -- over 2024-11-13 .. 2026-11-12 on the 687-asset union:
+#: 8,994,707 identical rows in all three, 58.4 s / 66.4 s / 61.0 s. The bulk read's own
+#: penalty is +8.0 s and 5.4 s of it is that single column, which the callers never needed:
+#: ``_write_technical_indicator_continuity_gaps`` reads only ``timestamp__date``. Row
+#: materialisation per extra column, at ~0.6 us/row, is the term that scales with the
+#: window -- not retention, not round trips, not date span. Confirmed end to end: an
+#: isolated old-vs-new two-year A/B afterwards measured `per_asset_scans` 105.05 s vs
+#: 115.67 s, so the penalty went from ~+23 s to ~+10.6 s -- a recovery of ~12.6 s against
+#: a 5.4 s prediction, i.e. the column cost more in the real phase than in the replay,
+#: most plausibly because 9.0 M fewer parsed datetimes also lowers allocation pressure for
+#: everything else in the loop. That mechanism is inferred, not measured.
+#:
+#: The residual +10.6 s IS in the reads, and the replay that said otherwise was wrong.
+#: Isolated SELECT shapes put the bulk prefetch at 67.18 s against 74.03 s for the per-asset
+#: queries it replaced -- a saving that does not exist in the real run. The replay has no
+#: ReportWriter, no validators and no competing phase: the prefetch front-loads ~9.0 M row
+#: fetches and then leaves the link idle during the Python work that follows, while per-asset
+#: queries interleave I/O with computation and hide their latency inside it.
+#:
+#: In-process sub-timers (`per_asset_prefetch` / `per_asset_loop_body`), two adjacent cold
+#: passes at this window: prefetch 77.2 s and 86.6 s, loop body 39.1 s and 40.7 s. The I/O term
+#: is the unstable one (spread 9.4 s against 1.6 s), which is also why single-run A/B pairs of
+#: this phase disagreed by more than the effect they were measuring. Subtracting a stable
+#: ~40 s body from the old code's 105.1-107.5 s puts its per-asset queries near 64-66 s, so
+#: the bulk read costs roughly 13-21 s MORE at two years. Caveat that travels with that
+#: number: unchanged phases swing up to 10x between sessions here -- `universe_and_audit_writes`
+#: measured 7.4 s in the earlier pair and 77.8-83.5 s in these runs -- so 64-66 s is arithmetic
+#: across conditions, not a measurement. The in-run split is the measurement.
+#:
+#: Consequence for anyone reading this before changing the layout: disabling bulk prefetch above
+#: some session count is what the numbers support, but the per-asset read path was deleted by
+#: this rewrite, so it is not a config flip -- it needs that path restored and proven equal
+#: again, with a threshold carrying evidence at both ends.
+#:
+#: Timing caveat for anyone re-running this comparison: `default_bucket_scans` is code both
+#: sides share, and it has been observed at 206.7, 217.3, 326.6 and 387.3 s across four
+#: runs. That spread is bigger than the whole effect above, so total wall time cannot carry
+#: a claim about this change -- only `per_asset_scans`, and only between adjacent runs.
+PREFETCH_CHUNK_REFERENCE_SESSIONS = 120
+
+#: Floor for the adaptive size. Below this the round-trip saving collapses: the chunk
+#: exists to amortise 8 queries across a set of assets, and a chunk of 1 is the old
+#: per-asset pattern with the prefetch's memory cost on top.
+PREFETCH_CHUNK_MIN_ASSETS = 4
 
 
 def _chunked(items, size):
@@ -642,7 +720,7 @@ class Command(BaseCommand):
 
             phase_started = perf_counter()
             for asset, scans in self._iter_assets_with_scans(
-                assets, start_date, end_date, technical_indicators
+                assets, start_date, end_date, technical_indicators, len(trading_dates)
             ):
                 actual_rows = scans['ohlcv_rows']
                 actual_dates = {row['date'] for row in actual_rows}
@@ -734,7 +812,11 @@ class Command(BaseCommand):
                     scans,
                 )
 
-            phase_timings['per_asset_scans'] = round(perf_counter() - phase_started, 3)
+            per_asset_total = perf_counter() - phase_started
+            phase_timings['per_asset_scans'] = round(per_asset_total, 3)
+            prefetch_total = getattr(self, '_prefetch_seconds', 0.0)
+            phase_timings['per_asset_prefetch'] = round(prefetch_total, 3)
+            phase_timings['per_asset_loop_body'] = round(per_asset_total - prefetch_total, 3)
             phase_started = perf_counter()
             self._validate_null_fields(assets, start_date, end_date, writer, counters, field_counters, reason_counters)
             self._audit_fundamental_reconciliation(
@@ -1603,10 +1685,8 @@ class Command(BaseCommand):
             writer=writer,
         )
 
-        lower_bound = session_midnight(min_date)
-        upper_bound = session_midnight(max_date + timedelta(days=1))
         technical_rows = [
-            row for row in scans['technical_rows'] if lower_bound <= row['timestamp'] < upper_bound
+            row for row in scans['technical_rows'] if min_date <= row['timestamp__date'] <= max_date
         ]
         self._write_technical_indicator_continuity_gaps(
             report_name='technical_indicator_snapshot_continuity_gaps',
@@ -2087,15 +2167,59 @@ class Command(BaseCommand):
         if window_dates:
             yield window_dates[0], window_dates[-1], list(window_dates)
 
-    def _iter_assets_with_scans(self, assets, start_date, end_date, technical_indicators):
+    def _prefetch_chunk_assets(self):
+        """Chunk size for the bulk prefetch, read per run so tuning needs no code change.
+
+        Falls back to ``DEFAULT_PREFETCH_CHUNK_ASSETS`` for anything unusable rather than
+        silently running with a chunk of zero or a string: a prefetch that fetched one asset
+        at a time would be the slow path wearing a fast path's clothes, and it would still
+        produce byte-identical output, so no equivalence check would notice.
+        """
+        raw = getattr(settings, 'DQ_PREFETCH_CHUNK_ASSETS', DEFAULT_PREFETCH_CHUNK_ASSETS)
+        try:
+            size = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_PREFETCH_CHUNK_ASSETS
+        return size if size > 0 else DEFAULT_PREFETCH_CHUNK_ASSETS
+
+    def _prefetch_chunk_size(self, total_sessions):
+        """Assets per prefetch chunk, scaled so retained rows stay roughly constant.
+
+        ``DEFAULT_PREFETCH_CHUNK_ASSETS`` is calibrated at
+        ``PREFETCH_CHUNK_REFERENCE_SESSIONS``; a window four times as long gets a quarter
+        of the assets per chunk, because the chunk holds one row set per session. At or
+        below the reference window the default is returned unchanged, so the measured
+        six-month behaviour is what the six-month run produced.
+
+        The session count is passed in from the run's already-loaded trading calendar --
+        computing it here would put another scan inside the phase this tunes.
+        """
+        base = self._prefetch_chunk_assets()
+        sessions = max(int(total_sessions or 0), 1)
+        if sessions <= PREFETCH_CHUNK_REFERENCE_SESSIONS:
+            return base
+        scaled = base * PREFETCH_CHUNK_REFERENCE_SESSIONS // sessions
+        return max(PREFETCH_CHUNK_MIN_ASSETS, min(base, scaled))
+
+    def _iter_assets_with_scans(self, assets, start_date, end_date, technical_indicators, total_sessions):
         """Yield ``(asset, scans)`` with one bulk prefetch per chunk of assets.
 
         A generator rather than a prefetch dict for the whole universe, so one chunk's row
         sets are released before the next is fetched: the loop body below stays exactly as
         it was, and peak memory stays one chunk instead of one history.
+
+        Prefetch time is accumulated here because the two-year penalty could not be
+        attributed from outside: replays of the reads came out 6.85 s CHEAPER than the
+        per-asset queries they replace, while the real phase regressed, which means the cost
+        lives in the loop body rather than the SQL. Only in-process sub-timers can separate
+        them, and the replay method's own noise floor (~6 s) is the same order as the
+        residual being chased.
         """
-        for chunk in _chunked(assets, PREFETCH_CHUNK_ASSETS):
+        self._prefetch_seconds = 0.0
+        for chunk in _chunked(assets, self._prefetch_chunk_size(total_sessions)):
+            chunk_started = perf_counter()
             scans_by_asset = self._prefetch_asset_scans(chunk, start_date, end_date, technical_indicators)
+            self._prefetch_seconds += perf_counter() - chunk_started
             for asset in chunk:
                 yield asset, scans_by_asset[asset.id]
 
@@ -2113,10 +2237,11 @@ class Command(BaseCommand):
         The per-asset date bounds stay exactly as they were, applied in Python to the rows
         this returns: the callers filter to each asset's own ``min_date``/``max_date``, so
         the detail rows must come out byte-identical -- which is the gate this rewrite is
-        checked against, not a speed number. ``TechnicalIndicator`` is the one table whose
-        bound is an instant rather than a date, so both the raw ``timestamp`` and
-        ``timestamp__date`` are carried and the comparison stays on the same axis the SQL
-        filter used.
+        checked against, not a speed number. ``TechnicalIndicator`` is filtered on
+        ``timestamp__date`` rather than a raw ``timestamp`` column: the two bounds are
+        equivalent because both resolve through ``TIME_ZONE`` (``apps/core/date_floor.py``),
+        and carrying the instant as well cost a measured 5.4 s over 9.0 M rows -- two thirds
+        of the whole bulk-side penalty at a two-year window.
 
         Not ``.iterator()`` and not one unbounded ``list()``: see ``apps/core/db_scans.py``
         for both measurements.
@@ -2176,7 +2301,7 @@ class Command(BaseCommand):
                 timestamp__lt=session_midnight(end_date + timedelta(days=1)),
                 indicator_type__in=technical_indicators,
             ).order_by('asset_id', 'timestamp').values(
-                'asset_id', 'timestamp', 'timestamp__date', 'indicator_type', 'parameters', 'value'
+                'asset_id', 'timestamp__date', 'indicator_type', 'parameters', 'value'
             ),
         )
 
