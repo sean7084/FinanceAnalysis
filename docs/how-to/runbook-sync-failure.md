@@ -241,10 +241,9 @@ detects this through `apps/core/task_health.py`:
 | `PENDING` **with** runtime progress | Legitimate — a chunked continuation is queued and waiting for a free worker |
 | No `current_task_id`, age ≥ threshold | Stale owner |
 
-The threshold is `BACKTEST_STALE_TASK_MAX_AGE_SECONDS`, default **2400** (40
-minutes), read via `getattr(settings, ...)`. It is **not** exposed in
-`config/settings/base.py` and not readable from the environment, so changing it
-currently requires a code edit. Tracked in `BACKLOG.md`.
+The threshold is `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` — declared at
+`config/settings/base.py:533` through `env.int` with default **2400** (40 minutes), so it is set
+from `.env` without a code edit; `docs/reference/env.md` lists it as environment-readable.
 
 Recovery:
 
@@ -505,7 +504,8 @@ Order:
    `timezone='Asia/Shanghai'`. `PeriodicTask.last_run_at` is preserved, so the
    watermark-based detectors in §9.5 do not read the restart as an outage. The
    previous UTC `CrontabSchedule` rows are orphaned rather than deleted: harmless,
-   since nothing references them, and tracked in `BACKLOG.md`.
+   since nothing references them, and recorded as a no-action decision in
+   [`BACKLOG_ARCHIVE.md`](../../BACKLOG_ARCHIVE.md) §F.
 6. **Start the workers.**
 
 New rows need no attention: once the corrected call sites are deployed, writes are
@@ -532,5 +532,5 @@ description of the current database.
 One outcome of that deploy is still in the schema and still unaddressed:
 `django_celery_beat_crontabschedule` keeps 27 rows stamped `timezone='UTC'` alongside the
 `Asia/Shanghai` rows `DatabaseScheduler.sync()` created on the first tick of step 5. They are
-orphaned rather than referenced, which is the only reason they are harmless, and they are tracked
-in `BACKLOG.md`.
+orphaned rather than referenced, which is the only reason they are harmless; the decision to leave
+them is recorded in [`BACKLOG_ARCHIVE.md`](../../BACKLOG_ARCHIVE.md) §F.

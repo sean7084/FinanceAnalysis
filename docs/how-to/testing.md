@@ -268,7 +268,7 @@ identified the actual one in a single run. **When reading stops converging, inst
 
 Note that this fix changes what `validate_data_quality` reports: it will now surface
 `value_out_of_range` findings it previously suppressed. They were always present and
-invisible. See `BACKLOG.md`.
+invisible. The record is §B of [`BACKLOG_ARCHIVE.md`](../../BACKLOG_ARCHIVE.md).
 
 ### 6.1 Case study: the Redis failure (93 tests, resolved)
 
@@ -323,11 +323,13 @@ The general point stands: tests that avoid the API client — management-command
 task-level, and model tests — keep passing while the cache is unreachable, so a
 partially green suite can hide a completely broken one.
 
-### 6.2 Non-hermetic sentiment tests
+### 6.2 Non-hermetic sentiment tests — resolved by deletion
 
-Independently of the credential problem, `apps/sentiment/tests.py` emits real
-provider traffic (`Total fetched: 1 items from providers: eastmoney`) rather than
-mocking it, so those tests vary run to run. Tracked in `BACKLOG.md`.
+`apps/sentiment/tests.py` used to emit real provider traffic (`Total fetched: 1 items from
+providers: eastmoney`) instead of mocking it, so those tests varied run to run. The app is gone —
+deleted with #52, the package removed in #121 — so the section is green because the tests no longer
+exist rather than because they were fixed. The lesson outlives the module: a test that makes
+provider calls is not hermetic, and deleting the suite is not evidence that the pattern was solved.
 
 ### 6.3 Tests needing a gitignored local fixture
 
@@ -341,8 +343,9 @@ CommandError: Historical yield CSV not found: .../source_data/CGBYieldCurve_2010
 
 and passes only on a machine that happens to have the file. A test whose outcome
 depends on an untracked local file is not reproducible; it should build the fixture
-in a temp directory, as the CNY/USD case in the same module already does. Tracked in
-`BACKLOG.md`.
+in a temp directory, as the CNY/USD case in the same module already does. Filed as
+[issue #161](https://github.com/sean7084/FinanceAnalysis/issues/161) — it was previously
+described as tracked in `BACKLOG.md`, where no such entry existed.
 
 ---
 
