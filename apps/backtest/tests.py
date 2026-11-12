@@ -453,6 +453,28 @@ class Phase15BacktestTests(TestCase):
         self.assertEqual(state['task_state'], 'PENDING')
         self.assertTrue(state['has_stale_task_owner'])
 
+    @patch('apps.core.task_health.AsyncResult')
+    def test_task_owner_state_marks_long_dead_progress_run_as_stale(self, mock_async_result):
+        # B2: a corpse whose report still carries a progress key must not be
+        # immortal. The chunked-suite exemption protects a run whose progress is
+        # recent (see the 2-hour continuation test above), not one that stopped
+        # writing 171 days ago. Before the fix this returned has_stale_task_owner
+        # False purely because 'progress' was present in the report.
+        mock_async_result.return_value.state = 'PENDING'
+        run = self._create_run(
+            status=BacktestRun.Status.RUNNING,
+            current_task_id='task-dead-with-old-progress',
+            report={'progress': {'current_index': 50, 'total': 243}},
+        )
+        dead_dt = timezone.now() - timedelta(days=171)
+        BacktestRun.objects.filter(id=run.id).update(updated_at=dead_dt, started_at=dead_dt)
+        run.refresh_from_db()
+
+        state = get_backtest_run_task_owner_state(run)
+
+        self.assertEqual(state['task_state'], 'PENDING')
+        self.assertTrue(state['has_stale_task_owner'])
+
     @patch('apps.backtest.views.get_backtest_run_task_owner_state', return_value={
         'task_state': 'PENDING',
         'task_age_seconds': 9999,

@@ -34,6 +34,12 @@ from config.celery import app as celery_app
 
 RUNNING_STATUS = 'RUNNING'
 DEFAULT_STALE_TASK_MAX_AGE_SECONDS = 2400
+# A chunked suite writes progress at least once per chunk, and each chunk is
+# time-limited (~35 min), so a full day without a progress write is a dead run,
+# not a slow one. This bounds the chunked-suite exemption below; it is deliberately
+# far above the 2-hour continuation case the exemption exists to protect, and far
+# below the multi-day corpses it used to let live forever.
+DEFAULT_STALE_PROGRESS_MAX_AGE_SECONDS = 86400
 TERMINAL_TASK_STATES = {'FAILURE', 'REVOKED', 'SUCCESS'}
 
 
@@ -43,6 +49,14 @@ def _stale_task_max_age_seconds():
         return max(int(raw_value), 60)
     except (TypeError, ValueError):
         return DEFAULT_STALE_TASK_MAX_AGE_SECONDS
+
+
+def _progress_freshness_seconds():
+    raw_value = getattr(settings, 'BACKTEST_STALE_PROGRESS_MAX_AGE_SECONDS', DEFAULT_STALE_PROGRESS_MAX_AGE_SECONDS)
+    try:
+        return max(int(raw_value), 60)
+    except (TypeError, ValueError):
+        return DEFAULT_STALE_PROGRESS_MAX_AGE_SECONDS
 
 
 def get_backtest_run_task_owner_state(run):
@@ -77,15 +91,26 @@ def get_backtest_run_task_owner_state(run):
     except Exception:
         task_state = 'UNKNOWN'
 
+    # The chunked-suite exemption protects a run whose progress is RECENT, not one
+    # that merely has a progress key. When progress exists, reference_dt is
+    # updated_at, so age_seconds measures time since the last progress write. A
+    # corpse that stopped writing days ago is not "mid-chunk" and must be sweepable.
+    progress_is_fresh = (
+        has_runtime_progress
+        and age_seconds is not None
+        and age_seconds < _progress_freshness_seconds()
+    )
+
     has_stale_task_owner = False
     if task_state in TERMINAL_TASK_STATES:
         has_stale_task_owner = True
     # Chunked backtests queue the next task id before a worker owns it, so a
     # long-running suite can legitimately leave the next owner in PENDING while
-    # earlier runs are still consuming worker slots.
+    # earlier runs are still consuming worker slots -- but only while its progress
+    # is fresh (see progress_is_fresh above).
     elif (
         task_state == 'PENDING'
-        and not has_runtime_progress
+        and not progress_is_fresh
         and age_seconds is not None
         and age_seconds >= _stale_task_max_age_seconds()
     ):
