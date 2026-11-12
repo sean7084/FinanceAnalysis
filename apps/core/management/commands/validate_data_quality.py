@@ -241,18 +241,27 @@ DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 #: most plausibly because 9.0 M fewer parsed datetimes also lowers allocation pressure for
 #: everything else in the loop. That mechanism is inferred, not measured.
 #:
-#: The residual +10.6 s is then NOT in the reads, which was tested rather than assumed. A
-#: per-read replay at the two-year window put the shipped bulk prefetch at 67.18 s against
-#: 74.03 s for the per-asset queries it replaced -- bulk is 6.85 s CHEAPER -- so no residual
-#: can come from the SQL. Three candidates, each measured and each too small: the other
-#: seven reads together cost 11.2 s (technical alone is 56.0 s, 84% of read time, and
-#: margin history 2.84 s over 1.4 M whole-history rows); `.values_list` tuples instead of
-#: per-row dicts plus dropping the OHLCV re-dict pass are worth 0.23 s; the per-asset
-#: `scans[...] =` construction block is worth 0.88 s.
+#: The residual +10.6 s IS in the reads, and the replay that said otherwise was wrong.
+#: Isolated SELECT shapes put the bulk prefetch at 67.18 s against 74.03 s for the per-asset
+#: queries it replaced -- a saving that does not exist in the real run. The replay has no
+#: ReportWriter, no validators and no competing phase: the prefetch front-loads ~9.0 M row
+#: fetches and then leaves the link idle during the Python work that follows, while per-asset
+#: queries interleave I/O with computation and hide their latency inside it.
 #:
-#: And the replay cannot resolve what is left: the same shape measured twice came out at
-#: 67.18 s and 72.82 s. A ~6 s noise floor is the same order as the +10.6 s residual, so
-#: locating it needs repeated in-process runs of the real phase, not another replay.
+#: In-process sub-timers (`per_asset_prefetch` / `per_asset_loop_body`), two adjacent cold
+#: passes at this window: prefetch 77.2 s and 86.6 s, loop body 39.1 s and 40.7 s. The I/O term
+#: is the unstable one (spread 9.4 s against 1.6 s), which is also why single-run A/B pairs of
+#: this phase disagreed by more than the effect they were measuring. Subtracting a stable
+#: ~40 s body from the old code's 105.1-107.5 s puts its per-asset queries near 64-66 s, so
+#: the bulk read costs roughly 13-21 s MORE at two years. Caveat that travels with that
+#: number: unchanged phases swing up to 10x between sessions here -- `universe_and_audit_writes`
+#: measured 7.4 s in the earlier pair and 77.8-83.5 s in these runs -- so 64-66 s is arithmetic
+#: across conditions, not a measurement. The in-run split is the measurement.
+#:
+#: Consequence for anyone reading this before changing the layout: disabling bulk prefetch above
+#: some session count is what the numbers support, but the per-asset read path was deleted by
+#: this rewrite, so it is not a config flip -- it needs that path restored and proven equal
+#: again, with a threshold carrying evidence at both ends.
 #:
 #: Timing caveat for anyone re-running this comparison: `default_bucket_scans` is code both
 #: sides share, and it has been observed at 206.7, 217.3, 326.6 and 387.3 s across four
