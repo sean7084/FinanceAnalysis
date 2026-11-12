@@ -244,7 +244,11 @@ Extracted from `BACKLOG.md` as of commit `c225c0d`; line references below are to
 
 ### OpenAPI schema metadata is stale
 
+> Disposition: resolved (#133 pass); enforced by `apps/core/tests_version.py`, which fails if `frontend/package.json` or the newest CHANGELOG heading drifts from `pyproject.toml`. (inherited from "OpenAPI schema metadata")
+
 ### OpenAPI schema metadata — version resolved
+
+> Disposition: resolved (#133 pass); enforced by `apps/core/tests_version.py`, which fails if `frontend/package.json` or the newest CHANGELOG heading drifts from `pyproject.toml`. (inherited from "OpenAPI schema metadata")
 
 `pyproject.toml` now owns the project version; `config/settings/base.py` reads it at import
 and `SPECTACULAR_SETTINGS['VERSION']` uses it, so the schema reports the version the
@@ -274,6 +278,8 @@ commit message overclaimed, and one records a production bug found because a fai
 test turned out to be right. Nothing below is outstanding work.
 
 ### Test suite green — 339/339
+
+> Disposition: resolved; these were listed under "Open — correctness" long after they were fixed. The self-description of that section is part of the record — two entries are fixes whose commit messages overclaimed. (inherited from the cluster header above)
 
 Resolved. The reduction ran 109 (Redis) → 17 → 10 → 7 → 6 → 3 → **0**. Every step was
 verified against the full suite. No production behaviour changed except the one genuine
@@ -305,6 +311,8 @@ rather than against production constants. That is the same failure mode the gene
 reference sheets were built to eliminate, appearing in tests instead of docs.
 
 ### Validator skipped value-range checks on dates excused from continuity
+
+> Disposition: resolved; these were listed under "Open — correctness" long after they were fixed. The self-description of that section is part of the record — two entries are fixes whose commit messages overclaimed. (inherited from the cluster header above)
 
 **Production bug, fixed in `1d018d3`.** `_write_technical_indicator_continuity_gaps`
 gated the bounded-value check behind the continuity expectation:
@@ -357,6 +365,8 @@ to be correct and the code wrong. That is the outcome the whole exercise was for
 suite that actually runs is what makes such a bug visible at all.
 
 ### `makemigrations --check` — resolved
+
+> Disposition: resolved; these were listed under "Open — correctness" long after they were fixed. The self-description of that section is part of the record — two entries are fixes whose commit messages overclaimed. (inherited from the cluster header above)
 
 Both drifts are gone; the check exits 0 and is enforced in CI. See the Resolved entry
 for what the generated migrations actually contained. Two corrections to the earlier
@@ -430,6 +440,8 @@ windows and the labelled-row set were verified unchanged.
 
 ### Feature expansion outcomes (P31, P32)
 
+> Disposition: measured and adjudicated. These are the readings behind the verdicts — the reason P38 stayed closed, the reason the RULE defaults are window-specific, the reason `max_positions=3` is an alignment rather than a winner. The open work that grew out of them is #136 (instrument) and #137 (rematch). (inherited from the cluster header above)
+
 - **P31 (share flows) is done and measured**: 95.8% eligible coverage, features enabled, and
   no increment in either arm (report section 19).
 - **P32 (macro regime) is done**: the gate uses a 35-day publication lag instead of a new
@@ -493,6 +505,8 @@ windows and the labelled-row set were verified unchanged.
 
 ### The reference RULE parameter set is window-specific
 
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
+
 Phase 4 ran a CLI-only walk-forward over 2016–2023 (four expanding folds,
 selection by Sharpe with lower turnover as the tie-break, training window only).
 The row-256 configuration — BIWEEKLY / p3 / mom120 / absolute momentum off /
@@ -535,6 +549,8 @@ configurations.
 
 ### Phase 9's `max_positions=3` is an alignment, not a proven winner
 
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
+
 The live default moved 5 -> 3 to match the production reference row 256 (`p3`)
 and the §7.7 holdout book. The §7.12 walk-forward selected p3/p3/p5/p8 across
 four folds, so there is no evidence that 3 is better than 5. **The p3-vs-p5
@@ -546,6 +562,8 @@ Do not cite the default as evidence for p3, and do not flip it to 5 on the
 median Sharpe alone.
 
 ### The ML rematch's CV arm needs per-fold retraining, not another artifact
+
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
 
 Phase 10 added the shadow book (`signal_type=SHADOW`, `ETF_ML_SHADOW_MODEL`, a
 03:50 CST beat task — `19:50 UTC` before the 2026-11 timezone unification, same
@@ -587,6 +605,8 @@ possible at all.
 
 ### The band and the capacity cap have tuning-window evidence only
 
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
+
 Phase 3 added `drift_band_fraction`, `liquidity_mode` and
 `adv_participation_cap`, all off by default. A 2% band suppresses 49 drift
 fills on the reference configuration and moves the headline by less than a
@@ -606,6 +626,8 @@ The decision is recorded in `docs/plans/etf-rotation-next-phases-2026-10-24.md`
 
 ### `position_fees_paid` changed meaning; pre-0.1.23 rows keep the old one
 
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
+
 Phase 2 made a closed leg's `position_fees_paid` include the slippage its fills
 embedded, not just commission. The reference row's 233 closed trades sum to
 168,901.10 on a rerun (39,243.23 commission + 129,657.86 closed-leg slippage),
@@ -623,6 +645,8 @@ ephemeral rerun of the reference configuration, not from the stored row.
 
 ### The Kelly governor is a kill switch at its own default floor
 
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
+
 `kelly_fraction=0` (off) is bit-identical to the pre-change engine, which is the
 regression guarantee the plan asked for. Enabling it is a different story: on the
 reference book the realised edge is negative (51 closed trades, win rate 43.1%,
@@ -638,6 +662,8 @@ no holdout evidence. Item (b) is resolved in 0.1.27: `kelly_fraction`, `kelly_ca
 fingerprint changes, so old PAUSED rows restart from the beginning.
 
 ### Rows 354 and 356-361 are a dedup-off measurement set
+
+> Disposition: decision records. (b) halves of the CV-arm and Kelly entries are #137; the RULE-window re-arbitration is #137. (inherited from "Reference configuration, sizing, fees and the Kelly floor")
 
 `--no-dedup-track-index` was silently applied to *every* command-line run while
 `bool(None)` stood in for "not asked for" (fixed in 0.1.21). Rows written during
@@ -662,6 +688,8 @@ remains optional housekeeping.
 > Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with.
 
 ### Two orphaned backtest rows are immortal because the orphan rule reads the wrong clock
+
+> Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with. (inherited from the cluster header above)
 
 Found while building the state-vs-side-effects probe that Phase 1 Step 6 called for. Census of
 every row with `status='RUNNING'`, read-only, 2026-11-11:
@@ -709,6 +737,8 @@ write that should not be a side effect of someone cleaning up a changelog.
 
 ### Stock headline metrics were re-baselined onto the `2016-06-01` window
 
+> Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with. (inherited from the cluster header above)
+
 Done as part of the date-contract change: `rebuild_lightgbm_pipeline --skip-backfill`
 was run for horizons 3, then 7 and 30. Numbers are in `CHANGELOG.md` under version
 0.1.53. The remaining gap is the missing out-of-sample metric above, not a stale window.
@@ -747,6 +777,8 @@ wedge below or pure I/O contention was never confirmed -- `pg_stat_activity` was
 sampled at the time, so do not record it as a reproducing case.
 
 ### `sentiment_score` is constant because the tokenizer matched no Chinese — root cause found
+
+> Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with. (inherited from the cluster header above)
 
 **Closed by deletion, 2026-11-11; kept for provenance.** The module is gone: `apps/sentiment/`
 does not exist, `FactorScore.sentiment_score` and `sentiment_weight` were dropped in the
@@ -886,6 +918,8 @@ Superseded 2026-11-11: none of those paths exist any more, and the matrix is 36 
 
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
+> Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with. (inherited from the cluster header above)
+
 **Measured outcome 2026-11-08 — the cursor fix landed, and it was not the main cost.** The
 rewrite replaced every `.iterator(chunk_size=...)` with a windowed bulk fetch and narrowed the
 largest scan from `indicator_type__in=<19>` to `indicator_type='RS_SCORE'` (105x fewer rows, a
@@ -969,6 +1003,8 @@ matters because the command is the release gate — a gate that takes an hour ge
 `--fail-on-critical` exit code above shows what happens when nobody has run it recently.
 
 ### `list_date` is NULL on most assets, which makes `validate_data_quality` uninterpretable
+
+> Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with. (inherited from the cluster header above)
 
 **Partly stale: the population paths now exist.** `apps/markets/management/commands/backfill_asset_list_dates.py`
 backfills `list_date`, `delist_date` and `listing_status` from TuShare `stock_basic` with an
@@ -1101,6 +1137,8 @@ newer than the last verified-clean date. Not decided here.
 
 ### The DB connection between this WSL2 host and the NAS-hosted Postgres can wedge permanently
 
+> Disposition: root-cause records. The defect is fixed or the behaviour is now gated; what is kept is the evidence that found it, because each of these was invisible to the question it was originally audited with. (inherited from the cluster header above)
+
 Observed twice on 2026-11-05. Signature, from three independent sources that all have to agree
 before "hung" is a safe conclusion: the server backend sits in `wait_event_type=Client,
 wait_event=ClientWrite`; the client is in `poll_schedule_timeout` at **zero CPU**; and `ss -tnp`
@@ -1149,6 +1187,8 @@ Still open:
 
 ### Artifact storage: DONE (portability + git-bloat, cut over 2026-10-10)
 
+> Disposition: closed 2026-10-10. MinIO is live on the NAS behind `ARTIFACT_STORE_BACKEND=s3`, all 170 on-disk artifacts were migrated, and `models/` is untracked and gitignored. `TECHNICAL_GUIDE.md` §6.5 stated "staged, not cut over yet" until this restructure corrected it — the stale sentence is the reason the record is kept. (inherited from the cluster header above)
+
 Portability is largely resolved. New artifacts store `BASE_DIR`-relative paths
 (`_resolve_artifact_path` / `_resolve_lstm_artifact_path`), and the relative path
 doubles as the object key for the artifact store
@@ -1171,6 +1211,8 @@ repopulate via `sync_artifacts_from_store`. Procedure + ops:
 > Disposition: the ratchet removal shipped and is recorded in `CHANGELOG.md` Unreleased ("The frontend static-check ratchet is gone; `--max-warnings 0` replaces it"). Archived anyway for two things a fix record does not carry: the blind-spot class the ratchet stood for, and the `entry_weekdays` near-miss — a type error that looked like a dropped user selection and was the test deliberately asserting its absence.
 
 ### Frontend static checks — resolved; the ratchet is gone
+
+> Disposition: the ratchet removal shipped and is recorded in `CHANGELOG.md` Unreleased ("The frontend static-check ratchet is gone; `--max-warnings 0` replaces it"). Archived anyway for two things a fix record does not carry: the blind-spot class the ratchet stood for, and the `entry_weekdays` near-miss — a type error that looked like a dropped user selection and was the test deliberately asserting its absence. (inherited from the cluster header above)
 
 All three `react-hooks/exhaustive-deps` warnings are fixed and `npm run lint` reports zero.
 With nothing left to tolerate, `frontend/scripts/check-static-baseline.mjs` and
@@ -1201,6 +1243,8 @@ bug looks like, and the test asserting its absence was the only thing distinguis
 Check for that before "fixing" a type error.
 
 ### CI exists, and asserts a discovery floor
+
+> Disposition: the ratchet removal shipped and is recorded in `CHANGELOG.md` Unreleased ("The frontend static-check ratchet is gone; `--max-warnings 0` replaces it"). Archived anyway for two things a fix record does not carry: the blind-spot class the ratchet stood for, and the `entry_weekdays` near-miss — a type error that looked like a dropped user selection and was the test deliberately asserting its absence. (inherited from the cluster header above)
 
 `.github/workflows/ci.yml` runs on push to `main` and on pull requests, with two jobs:
 
@@ -1349,6 +1393,8 @@ enough to dominate the job runtime.
 
 ### Active — owned by a roadmap phase
 
+> Disposition: superseded by the issue index, archived because it is the only place the DQ run was attributed by phase — per-asset scans **47.8%** and universe/audit writes **44.6%** of a 68-minute run, which is what makes loop inversion *at most half* of #138, and because run 1468 (2026-11-12) is the measurement that put the backtest engine in the same class (#139). (inherited from "The Phase D triage bullet, and the profile split inside it")
+
 - **Phase D (measurement power):** instrument is noisier than the effect (block layout must change +
   a pre-registered, hashed stopping rule); DQ per-asset loop inversion (per_asset 47.8% /
   universe-and-audit 44.6% of a 68-min run — loop inversion is at most half the fix); `list_date`
@@ -1482,9 +1528,13 @@ enough to dominate the job runtime.
 
 ### Empty tables behind live features
 
+> Disposition: deliberately not acted on, with the reason recorded so the next reader does not re-litigate it from scratch. (inherited from the cluster header above)
+
 > The `macro_eventimpactstat` half of this entry shipped as #132 (`CHANGELOG.md` Unreleased — Removed, migration `macro/0004`); the rest is a user-provisioned decision, not a defect.
 
 ### Empty tables behind live features
+
+> Disposition: deliberately not acted on, with the reason recorded so the next reader does not re-litigate it from scratch. (inherited from the cluster header above)
 
 Measured 0 rows: `analytics_alertrule`, `analytics_alertevent`,
 `analytics_screenertemplate`, `macro_eventimpactstat`.
