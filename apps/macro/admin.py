@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import MacroSnapshot, MarketContext, EventImpactStat
+from .models import MacroSnapshot, MarketContext
 
 
 @admin.register(MacroSnapshot)
@@ -20,9 +20,3 @@ class MarketContextAdmin(admin.ModelAdmin):
     list_filter = ('macro_phase', 'is_active')
     search_fields = ('context_key', 'event_tag')
 
-
-@admin.register(EventImpactStat)
-class EventImpactStatAdmin(admin.ModelAdmin):
-    list_display = ('event_tag', 'sector', 'horizon_days', 'avg_return', 'excess_return', 'sample_size')
-    list_filter = ('event_tag', 'horizon_days')
-    search_fields = ('event_tag', 'sector')

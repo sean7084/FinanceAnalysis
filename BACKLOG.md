@@ -1207,17 +1207,17 @@ row, and the flag existed only in the serializer, the admin list and an index. A
 in the admin that changes no behaviour is worse than no checkbox. Dropped in migration
 `analytics/0010`, along with its index and the serializer/admin references.
 
-**Still open, and it is a product decision rather than a cleanup:**
-`macro_eventimpactstat` has no production writer. It is not quite dead code — it has an
-API endpoint (`apps/macro/views.py`), a serializer, an admin registration, a purge
-command reference, and tests that create rows directly — so removing it is removing an
-API surface, not deleting an unused model. Two honest options remain, but the first got harder: implement a writer that populates it from news/policy events -- the news module that would have fed it was deleted with #52, so this now means a provider plus a corpus, not just a writer -- or remove the model, endpoint, serializer, admin and those tests together. Leaving it as an endpoint that can only ever return nothing is the
-option least worth keeping.
+**Resolved 2026-11-12 (#9).** `macro_eventimpactstat` had no production writer and its
+news feeder was deleted with #52, so the model, `EventImpactStatViewSet`, serializer,
+admin registration, URL (`macro/event-impacts`), purge-command reference and their tests
+were removed together (migration `macro/0004_delete_eventimpactstat`, plus a route-removal
+test). An endpoint that can only ever return nothing is not worth keeping.
 
-No seed/fixture mechanism exists anywhere in the repo (`find apps -type d -name fixtures`
-is empty, no seed command), so "seed reference data" would mean building one first.
-Documenting the remaining surfaces as user-provisioned is the cheaper path, and the Alert
-Center already has an empty-state string (`alerts.noLive`).
+**The remaining surfaces are user-provisioned, not broken:** alerts self-seed one
+`FEED_STALE` rule on first run, `alertevent` fills only when a rule triggers, and screener
+templates are created by the user. The Alert Center already shows `alerts.noLive`. No
+seed/fixture mechanism exists and none is needed — these are empty by design, not
+misconfigured.
 
 ---
 

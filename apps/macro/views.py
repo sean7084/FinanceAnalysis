@@ -2,11 +2,10 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import MacroSnapshot, MarketContext, EventImpactStat
+from .models import MacroSnapshot, MarketContext
 from .serializers import (
     MacroSnapshotSerializer,
     MarketContextSerializer,
-    EventImpactStatSerializer,
 )
 from .tasks import sync_macro_data_monthly, refresh_current_market_context
 
@@ -44,13 +43,3 @@ class MarketContextViewSet(viewsets.ModelViewSet):
         )
         return Response({'message': 'Market context refresh queued.'}, status=status.HTTP_202_ACCEPTED)
 
-
-class EventImpactStatViewSet(viewsets.ModelViewSet):
-    serializer_class = EventImpactStatSerializer
-
-    def get_queryset(self):
-        qs = EventImpactStat.objects.all().order_by('event_tag', 'sector', 'horizon_days')
-        event_tag = self.request.query_params.get('event_tag')
-        if event_tag:
-            qs = qs.filter(event_tag=event_tag)
-        return qs

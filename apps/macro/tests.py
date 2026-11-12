@@ -14,7 +14,7 @@ from rest_framework.test import APIClient
 from apps.factors.models import FactorScore
 from apps.markets.models import Market, Asset
 from . import providers
-from .models import MacroSnapshot, MarketContext, EventImpactStat
+from .models import MacroSnapshot, MarketContext
 from .tasks import refresh_current_market_context, sync_macro_data_monthly, sync_market_context_for_snapshot
 
 
@@ -222,27 +222,14 @@ class Phase12MacroTests(TestCase):
         self.assertIsNone(contexts[3].ends_at)
         self.assertIn('MarketContext backfill completed: created=4, updated=0', output.getvalue())
 
-    def test_event_impact_list_filter(self):
-        EventImpactStat.objects.create(
-            event_tag='trade_war',
-            sector='technology',
-            horizon_days=20,
-            avg_return=Decimal('-0.021'),
-            excess_return=Decimal('-0.012'),
-            sample_size=15,
-        )
-        EventImpactStat.objects.create(
-            event_tag='rate_cut_cycle',
-            sector='financials',
-            horizon_days=20,
-            avg_return=Decimal('0.031'),
-            excess_return=Decimal('0.014'),
-            sample_size=9,
-        )
-        response = self.client.get('/api/v1/macro/event-impacts/?event_tag=trade_war')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['count'], 1)
-        self.assertEqual(response.data['results'][0]['event_tag'], 'trade_war')
+    def test_event_impact_route_is_gone(self):
+        # #9: macro_eventimpactstat had no production writer (its news feeder was
+        # deleted with #52), so the model, endpoint, serializer, admin and tests were
+        # removed together rather than left as an API that can only return nothing.
+        from django.urls import NoReverseMatch, reverse
+
+        with self.assertRaises(NoReverseMatch):
+            reverse('event-impact-list')
 
     @patch('apps.factors.views.calculate_factor_scores_for_date.delay')
     def test_bottom_candidates_recalculate_accepts_macro_context(self, mock_delay):

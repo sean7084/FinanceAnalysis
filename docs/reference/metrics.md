@@ -38,7 +38,6 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 | `factors_capitalflowsnapshot` | `factors.CapitalFlowSnapshot` | 5,945,970 | 1,885 | date | 2010-01-04 | 2026-11-06 |
 | `factors_factorscore` | `factors.FactorScore` | 2,043,000 | 1,678 | date | 2010-01-04 | 2026-11-03 |
 | `factors_fundamentalfactorsnapshot` | `factors.FundamentalFactorSnapshot` | 5,926,320 | 1,884 | date | 2010-01-04 | 2026-11-06 |
-| `macro_eventimpactstat` | `macro.EventImpactStat` | 0 | &mdash; | created_at | &mdash; | &mdash; |
 | `macro_macrosnapshot` | `macro.MacroSnapshot` | 202 | &mdash; | date | 2010-01-01 | 2026-11-01 |
 | `macro_marketcontext` | `macro.MarketContext` | 208 | &mdash; | created_at | 2026-04-15 | 2026-11-02 |
 | `markets_asset` | `markets.Asset` | 1,912 | &mdash; | &mdash; | &mdash; | &mdash; |

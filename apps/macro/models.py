@@ -57,26 +57,6 @@ class MarketContext(models.Model):
         ]
 
 
-class EventImpactStat(models.Model):
-    """Historical impact stats for tagged macro/policy events."""
-    event_tag = models.CharField(_('Event Tag'), max_length=100, db_index=True)
-    sector = models.CharField(_('Sector'), max_length=100, blank=True, db_index=True)
-    horizon_days = models.PositiveIntegerField(_('Horizon Days'), default=20)
-    avg_return = models.DecimalField(_('Average Return'), max_digits=10, decimal_places=6)
-    excess_return = models.DecimalField(_('Excess Return'), max_digits=10, decimal_places=6, default=0)
-    sample_size = models.PositiveIntegerField(_('Sample Size'), default=0)
-    observations_start = models.DateField(_('Observations Start'), null=True, blank=True)
-    observations_end = models.DateField(_('Observations End'), null=True, blank=True)
-    metadata = models.JSONField(_('Metadata'), default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        verbose_name = _('Event Impact Statistic')
-        verbose_name_plural = _('Event Impact Statistics')
-        ordering = ['event_tag', 'sector', 'horizon_days']
-        unique_together = ('event_tag', 'sector', 'horizon_days')
-
-
 def release_lag_days(field: str) -> int:
     """Calendar-day publication lag for one macro series, or the conservative fallback.
 
