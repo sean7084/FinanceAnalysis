@@ -153,6 +153,7 @@ Verify nothing drifted:
 ```bash
 python manage.py export_documentation_facts --check
 python scripts/check-backlog-references.py
+python scripts/check-archive-verbatim.py
 ```
 
 `--check` exits non-zero on drift. Generated output is deterministic apart from a
@@ -361,6 +362,7 @@ Before committing:
 - [ ] `cd frontend && npm test` and `npm run lint` pass, if frontend code changed
 - [ ] `python manage.py export_documentation_facts --check` passes
 - [ ] `python scripts/check-backlog-references.py` passes; `--self-test` shows it can fail, and it deliberately does not police paths quoted inside `BACKLOG_ARCHIVE.md` prose
+- [ ] `python scripts/check-archive-verbatim.py` passes — no archived measurement sentence has been reworded (the gate's own control perturbs one and expects a failure)
 - [ ] `python manage.py makemigrations --check` reports no changes
 - [ ] Generated sheets regenerated and their diff reviewed
 - [ ] Authored docs updated where behaviour changed
