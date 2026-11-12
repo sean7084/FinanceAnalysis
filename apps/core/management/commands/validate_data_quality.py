@@ -803,7 +803,11 @@ class Command(BaseCommand):
                     scans,
                 )
 
-            phase_timings['per_asset_scans'] = round(perf_counter() - phase_started, 3)
+            per_asset_total = perf_counter() - phase_started
+            phase_timings['per_asset_scans'] = round(per_asset_total, 3)
+            prefetch_total = getattr(self, '_prefetch_seconds', 0.0)
+            phase_timings['per_asset_prefetch'] = round(prefetch_total, 3)
+            phase_timings['per_asset_loop_body'] = round(per_asset_total - prefetch_total, 3)
             phase_started = perf_counter()
             self._validate_null_fields(assets, start_date, end_date, writer, counters, field_counters, reason_counters)
             self._audit_fundamental_reconciliation(
@@ -2194,9 +2198,19 @@ class Command(BaseCommand):
         A generator rather than a prefetch dict for the whole universe, so one chunk's row
         sets are released before the next is fetched: the loop body below stays exactly as
         it was, and peak memory stays one chunk instead of one history.
+
+        Prefetch time is accumulated here because the two-year penalty could not be
+        attributed from outside: replays of the reads came out 6.85 s CHEAPER than the
+        per-asset queries they replace, while the real phase regressed, which means the cost
+        lives in the loop body rather than the SQL. Only in-process sub-timers can separate
+        them, and the replay method's own noise floor (~6 s) is the same order as the
+        residual being chased.
         """
+        self._prefetch_seconds = 0.0
         for chunk in _chunked(assets, self._prefetch_chunk_size(total_sessions)):
+            chunk_started = perf_counter()
             scans_by_asset = self._prefetch_asset_scans(chunk, start_date, end_date, technical_indicators)
+            self._prefetch_seconds += perf_counter() - chunk_started
             for asset in chunk:
                 yield asset, scans_by_asset[asset.id]
 
