@@ -2,6 +2,10 @@
 
 ### Unreleased
 
+#### Changed:
+
+- **The data-quality gate's per-asset phase reads in bulk (#138).** Measured on `2026-05-01 .. 2026-11-06 --effective-universe-only`: `per_asset_scans` was **149.0 s of a 165 s run** — 90% of the gate, not the "at most half" the triage note assumed, because each of ~500 assets paid ten separate round trips over the WSL2↔NAS link. The loop now receives a chunked prefetch: 8 queries per 25-asset chunk replace ~10 per asset, and `per_asset_scans` drops to **34.1 s** (phase total 160.5 s → 38.4 s). Each asset's own `min_date`/`max_date` bounds are applied in Python to the prefetched rows, so the detail output is unchanged: **all 23 CSVs byte-identical** (`critical_issues=16`, `detail_rows_written=19987`, `detail_rows_dropped=0` before and after), which is the gate this kind of rewrite is checked against rather than the speed number. `TechnicalIndicator` keeps its instant-based bounds on the same axis the SQL used, and the whole-margin-history read stays window-independent. Chunked rather than one dict for the universe because the widest read is assets × sessions × indicator variants — the 22.9 GB failure mode `tasks_lightgbm.py:_query_frame` records.
+
 #### Fixed:
 
 - **The nightly pipeline's idle-link Redis resets stopped (#129).** A0 classified 10 post-deploy `ConnectionResetError` failures onto the **Django cache** (`catch_up_missed_runs`, `prewarm_dashboard_stocks_cache`) — not the broker or #50's result backend, both already hardened and showing zero. `CACHES['default']` had no `OPTIONS`, so its client never health-checked an idle connection; it now mirrors the broker (`health_check_interval=25`, `socket_keepalive`, `socket_connect_timeout=10`, `socket_timeout=30`, `retry_on_timeout`). Verified after the fleet restart: **0** cache resets over 3 hourly catch-up ticks.
