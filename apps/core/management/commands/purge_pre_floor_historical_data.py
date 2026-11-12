@@ -15,7 +15,7 @@ from apps.factors.models import (
     FactorScore,
     FundamentalFactorSnapshot,
 )
-from apps.macro.models import EventImpactStat, MacroSnapshot, MarketContext
+from apps.macro.models import MacroSnapshot, MarketContext
 from apps.markets.models import BenchmarkIndexDaily, IndexMembership, OHLCV
 from apps.prediction.models import PredictionResult
 from apps.prediction.models_lightgbm import EnsembleWeightSnapshot, LightGBMPrediction
@@ -71,12 +71,6 @@ class Command(BaseCommand):
             ('ensemble_weight_snapshots', EnsembleWeightSnapshot.objects.filter(date__lt=before_date)),
             ('backtest_trades', BacktestTrade.objects.filter(trade_date__lt=before_date)),
             ('backtest_runs', BacktestRun.objects.filter(start_date__lt=before_date)),
-            (
-                'event_impact_stats',
-                EventImpactStat.objects.filter(
-                    Q(observations_start__lt=before_date) | Q(observations_end__lt=before_date)
-                ),
-            ),
             ('market_contexts', MarketContext.objects.filter(starts_at__lt=before_date)),
             ('macro_snapshots', MacroSnapshot.objects.filter(date__lt=before_date)),
             ('index_memberships', IndexMembership.objects.filter(trade_date__lt=before_date)),

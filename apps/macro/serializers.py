@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import MacroSnapshot, MarketContext, EventImpactStat
+from .models import MacroSnapshot, MarketContext
 
 
 class MacroSnapshotSerializer(serializers.ModelSerializer):
@@ -25,11 +25,3 @@ class MarketContextSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
 
-
-class EventImpactStatSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = EventImpactStat
-        fields = [
-            'id', 'event_tag', 'sector', 'horizon_days', 'avg_return', 'excess_return',
-            'sample_size', 'observations_start', 'observations_end', 'metadata', 'created_at',
-        ]

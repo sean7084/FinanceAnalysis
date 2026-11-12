@@ -19,7 +19,7 @@ from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.backtest.models import BacktestRun, BacktestTrade
 from apps.core.management.commands.validate_data_quality import DEFAULT_TECHNICAL_INDICATORS
 from apps.factors.models import AssetMarginDetailSnapshot, AssetMoneyFlowSnapshot, CapitalFlowSnapshot, FactorScore, FundamentalFactorSnapshot
-from apps.macro.models import EventImpactStat, MacroSnapshot, MarketContext
+from apps.macro.models import MacroSnapshot, MarketContext
 from apps.markets.benchmarking import PIT_BENCHMARK_CODE
 from apps.markets.models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, Market, OHLCV
 from apps.prediction.models import PredictionResult
@@ -2076,26 +2076,6 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
             ends_at=new_date,
             is_active=True,
         )
-        EventImpactStat.objects.create(
-            event_tag='old-policy',
-            sector='bank',
-            horizon_days=20,
-            avg_return=Decimal('0.01'),
-            excess_return=Decimal('0.00'),
-            sample_size=1,
-            observations_start=old_date,
-            observations_end=old_date,
-        )
-        EventImpactStat.objects.create(
-            event_tag='new-policy',
-            sector='bank',
-            horizon_days=20,
-            avg_return=Decimal('0.02'),
-            excess_return=Decimal('0.01'),
-            sample_size=1,
-            observations_start=new_date,
-            observations_end=new_date,
-        )
 
 
     def test_purge_pre_floor_historical_data_reports_dry_run_counts(self):
@@ -2143,8 +2123,6 @@ class PurgePreFloorHistoricalDataCommandTests(TestCase):
         self.assertTrue(MacroSnapshot.objects.filter(date=self.new_date).exists())
         self.assertFalse(MarketContext.objects.filter(starts_at=self.old_date).exists())
         self.assertTrue(MarketContext.objects.filter(starts_at=self.new_date).exists())
-        self.assertFalse(EventImpactStat.objects.filter(event_tag='old-policy').exists())
-        self.assertTrue(EventImpactStat.objects.filter(event_tag='new-policy').exists())
         self.assertFalse(IndexMembership.objects.filter(trade_date=self.old_date).exists())
         self.assertTrue(IndexMembership.objects.filter(trade_date=self.new_date).exists())
         self.assertFalse(BenchmarkIndexDaily.objects.filter(trade_date=self.old_date).exists())
