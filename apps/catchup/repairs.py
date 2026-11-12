@@ -23,6 +23,9 @@ from .models import CatchUpRun
 # retrying costs MACRO_YIELD_BACKFILL_CALL_SLEEP_SECONDS (31s) per attempt to learn
 # something that will not change. See docs/reports/tushare-entitlement-2026-10-27.md.
 MACRO_YIELDS_DENIED_KEY = 'catchup:macro_yields_entitlement_denied'
+#: Written with ``timeout=None`` on the first denial, so it outlives the denial itself:
+#: upgrading the token does not clear it. Eviction is a documented step of the upgrade --
+#: see docs/how-to/runbook-provider-blackout.md section 9.
 
 PERMISSION_MARKERS = ('没有权限', '权限', 'permission', 'denied', '抱歉，您没有')
 

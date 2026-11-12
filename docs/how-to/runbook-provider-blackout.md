@@ -198,3 +198,52 @@ The diff is the evidence that the remediation worked. Commit it with the change
 so the coverage history is traceable, and note the blackout window in
 `CHANGELOG.md` if it is a new structural finding — the next person to see that
 null should not have to rediscover why it is there.
+
+---
+
+## 9. Entitlement flags that outlive the entitlement
+
+Some provider failures are cached so the pipeline stops paying for a probe that
+cannot succeed. The cached answer is correct *while the condition holds* and wrong
+forever after it stops holding, because the flag is written without a TTL:
+
+| Key | Written at | Effect while set | Clear it with |
+| --- | --- | --- | --- |
+| `catchup:macro_yields_entitlement_denied` | `apps/catchup/repairs.py:213` | The ChinaBond yield refresh is skipped without calling the provider (`repairs.py:199`), so `MacroSnapshot` yields stay NULL | the command below |
+
+Measured rather than assumed: this is the **only** `cache.set(..., timeout=None)` in
+`apps/` production code (the single other hit is `apps/catchup/tests_service.py:327`, a
+test setting up the same flag), so this table is complete rather than sampled.
+
+**Why no TTL.** The flag exists because each re-probe of a denied endpoint pays the
+provider sleep before failing again, and a token tier does not gain entitlement
+mid-run. A TTL would reintroduce that cost on every expiry to protect against a
+condition that changes only when *you* change it — the token. So the eviction is a
+documented step of the upgrade, not a timer.
+
+After raising `TUSHARE_TOKEN`'s tier (or switching tokens), clear the flag:
+
+```bash
+python manage.py shell -c "from django.core.cache import cache; \
+print(cache.delete('catchup:macro_yields_entitlement_denied'))"
+```
+
+Use the Django cache API rather than `redis-cli DEL`. The stored key is not the bare
+name: `cache.make_key('catchup:macro_yields_entitlement_denied')` returns
+`:1:catchup:macro_yields_entitlement_denied` on this project, because `KEY_PREFIX` is
+unset in `CACHES['default']` so Django's default version prefix (`:1:`) applies. A
+hand-typed raw key name deletes nothing and still reports success.
+
+Then prove the flag was the only thing in the way, rather than assuming it:
+
+```bash
+python manage.py shell -c "from django.core.cache import cache; \
+print('denied flag present:', cache.get('catchup:macro_yields_entitlement_denied'))"
+python manage.py backfill_macro_snapshots   # yields should now populate
+```
+
+The general shape worth remembering: **a convention changed (the entitlement), and a
+stored value is still written under the old one.** The same class produced the
+orphaned `PeriodicTask` rows that settings changes cannot prune (now gated by
+`core.E002`) and the pre-flip `CrontabSchedule` rows — both recorded in
+`BACKLOG_ARCHIVE.md`.
