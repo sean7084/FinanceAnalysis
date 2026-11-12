@@ -32,6 +32,8 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 - **Owner decisions** — deployment hygiene, not diffs: #149, #150
 - **Blocked on a data source** (not schedulable): #157–#159
 
+Two rows above already have fixes in flight from this pass: [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) closes #143 (schema faults now fail the run, with a mutation check proving the new tests bite) and [PR #164](https://github.com/sean7084/FinanceAnalysis/pull/164) closes #151. #142 was closed out differently: measured against the tree, the watchdog was already built, tested and wired, so its issue now carries only the production observation that is genuinely left — which is the failure mode this restructure exists to remove, a roadmap that schedules finished work.
+
 ---
 
 ## M1 — measurement power
@@ -43,8 +45,8 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 | [#139](https://github.com/sean7084/FinanceAnalysis/issues/139) | Backtest engine: batch candidate-generation indicator IO (run 1468 hit its time limit) | not a wider `soft_time_limit` |
 | [#140](https://github.com/sean7084/FinanceAnalysis/issues/140) | `list_date`: refresh cadence, class-B range backfill, and a policy for the 21 criticals the attribution left standing | gate re-run over one year + one stated policy |
 | [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Newest-session gap measured **closed** on both feeds (2026-11-12: OHLCV 499/session, ETFDaily 2,183) — what is left is a stock-feed scope question | decide the intended universe for `sync_daily_a_shares` |
-| [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog classified by two-sample signature; per-statement timeout for probes | must not kill a legitimate 58-min scan |
-| [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults | a simulated `ProgrammingError` must fail the run |
+| [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog — **found already shipped and wired** (`scripts/db_wedge_watch.py`, its tests, `run_local_stack.sh:141`, `_stack_probe.py pgstat`) | a production observation: did it fire, and were terminations real wedges |
+| [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults — fix in [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) | a simulated `ProgrammingError` must fail the run |
 
 #138 and #139 are the same trap in two places — per-asset fetches through a server-side cursor —
 and both reuse `apps/core/db_scans.py`. The measured split says how much to expect from either:
@@ -72,7 +74,7 @@ rematch on the current layout re-measures the harness, not the strategy.
 
 | Issue | One line |
 |---|---|
-| [#151](https://github.com/sean7084/FinanceAnalysis/issues/151) | Correct the stale lazy-import rationale in `apps/prediction/tasks.py` |
+| [#151](https://github.com/sean7084/FinanceAnalysis/issues/151) | Correct the lazy-import rationale in `apps/prediction/tasks.py` — fix in [PR #164](https://github.com/sean7084/FinanceAnalysis/pull/164); the note's premise was also wrong: the deferral saves the **web** process, while workers load the trainer anyway via `apps/backtest/tasks.py:60` + `autodiscover_tasks()` |
 | [#152](https://github.com/sean7084/FinanceAnalysis/issues/152) | Function-level docstrings on the backtest engine's four decision points |
 | [#153](https://github.com/sean7084/FinanceAnalysis/issues/153) | Remove the eight orphaned screener i18n keys |
 | [#154](https://github.com/sean7084/FinanceAnalysis/issues/154) | Macro semantics: `dxy` name, publication-date alignment, where northbound flow belongs |
