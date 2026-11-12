@@ -81,7 +81,7 @@ rematch on the current layout re-measures the harness, not the strategy.
 | [#155](https://github.com/sean7084/FinanceAnalysis/issues/155) | Entitlement flags cached with `timeout=None`: TTL or a documented eviction convention |
 | [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) | `amount` unit in `help_text`; count assets holding `raw_close IS NULL` |
 | [#160](https://github.com/sean7084/FinanceAnalysis/issues/160) | Operator model-version selection — and which surface absorbs it |
-| [#161](https://github.com/sean7084/FinanceAnalysis/issues/161) | `apps/macro/tests.py` needs a temp-dir fixture; today it depends on a gitignored CSV |
+| [#161](https://github.com/sean7084/FinanceAnalysis/issues/161) | `apps/macro/tests.py` gitignored-CSV dependency — **verified already fixed** and closed (this host has no `source_data/`, and the pre-2016 yield case still reports `csv_yield_updates=21` from a temp fixture) |
 
 ## Owner decisions — deployment hygiene
 

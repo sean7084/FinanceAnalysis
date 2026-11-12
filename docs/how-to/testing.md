@@ -331,21 +331,28 @@ deleted with #52, the package removed in #121 — so the section is green becaus
 exist rather than because they were fixed. The lesson outlives the module: a test that makes
 provider calls is not hermetic, and deleting the suite is not evidence that the pattern was solved.
 
-### 6.3 Tests needing a gitignored local fixture
+### 6.3 Tests needing a gitignored local fixture — resolved
 
-`apps/macro/tests.py` exercises `backfill_macro_snapshots`, which also loads the
-ChinaBond yield CSV from `source_data/CGBYieldCurve_2010to2016.csv`. `source_data/`
-is **gitignored**, so on a fresh clone that test fails with:
+`apps/macro/tests.py` exercises `backfill_macro_snapshots`, which also loads a ChinaBond yield
+CSV. It used to read `source_data/CGBYieldCurve_2010to2016.csv`, and `source_data/` is
+**gitignored**, so on a fresh clone the test failed with:
 
 ```
 CommandError: Historical yield CSV not found: .../source_data/CGBYieldCurve_2010to2016.csv
 ```
 
-and passes only on a machine that happens to have the file. A test whose outcome
-depends on an untracked local file is not reproducible; it should build the fixture
-in a temp directory, as the CNY/USD case in the same module already does. Filed as
-[issue #161](https://github.com/sean7084/FinanceAnalysis/issues/161) — it was previously
-described as tracked in `BACKLOG.md`, where no such entry existed.
+and passed only on a machine that happened to have the file. The module now builds the fixture in
+a temp file and injects it through `override_settings(MACRO_CNYUSD_CSV_PATH=…, MACRO_YIELD_CSV_PATH=…)`,
+the way the CNY/USD case in the same module already did.
+
+Verified 2026-11-12 rather than inferred from the code: this host has **no `source_data/` directory
+at all**, and the pre-2016 yield case still reports `csv_yield_updates=21` from the temp fixture. A
+test that needed the untracked file could not have run. The earlier version of this section described
+that dependency as open work tracked in `BACKLOG.md`, where no such entry existed; the issue filed
+from that claim (#161) was closed once measured.
+
+The general rule still stands: a test whose outcome depends on an untracked local file is not
+reproducible, and green on one machine is not evidence.
 
 ---
 
