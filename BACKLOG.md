@@ -10,6 +10,57 @@ Items here have no commitment attached. When something is done, move it to
 
 ---
 
+## Triage — 2026-11-12 (Phases A–C)
+
+Dispositions after the reliability-and-closure roadmap. Bodies below are kept for
+provenance; this table is the current state.
+
+### Fixed this pass (merged, CI-verified)
+
+| Item | Disposition | Evidence |
+|---|---|---|
+| WSL2↔NAS Redis `Errno 104` resets failing `catch_up` / `prewarm` | **Fixed** — Django cache had no idle-link options; mirrored the broker's knobs | #129; 0 cache resets over 3 hourly ticks |
+| `ETFFeatureSnapshot` `NameError` in `compute_etf_features_daily` | **Fixed** — missing from the `.models` import | #130; 0 post-baseline NameErrors |
+| Immortal `RUNNING` backtest rows (639/640, 171 days) | **Fixed** — orphan exemption now requires *fresh* progress | #131; corpse-case regression test |
+| `#124` beat observation | **Closed** — 3 hourly ticks, 0 news/sentiment refs, 0 FAILED | issue #124 |
+| `#9` empty `macro_eventimpactstat` surface | **Closed** — model/endpoint/serializer/admin/URL/tests removed; alerts/screener documented as user-provisioned | #132 |
+| `#15` documentation gaps | **Closed** — CONTRIBUTING/scripts/import/CHANGELOG were already fixed or stale; `--check` verdict ordering fixed; two key docstrings added | #133 |
+| Frozen `RUNNING` rows sweep | **Detectable** now (#131); the `--fail`/`--restart` verb is an owner-gated production write | — |
+
+### Already done / stale (no code needed)
+
+artifact storage (MinIO, 2026-10-10), frontend static checks (`--max-warnings 0`), CI discovery floor,
+OpenAPI version (`tests_version.py`), transitive lockfile (`check_requirements_lockfile.py`), duplicate
+`import json`, CHANGELOG 0.1.12 env note, `run_local_stack.sh`/`smoke_api_check.sh` references,
+`onboard_csi500_universe` (the old a500/rollout pair no longer exists), P25 (20 days stays), P31
+(95.8% coverage, no increment), P32 (35-day lag), stock headline re-baseline, `sentiment_score`
+(closed by deletion).
+
+### Blocked on a data source (not code)
+
+- **Index valuation** — `index_dailybasic` covers 12.1% of the pool. **P30 constituent breadth** —
+  53.2% vs the 70% floor. Both re-open only with a source that has monthly thematic weights back to
+  2016 (a purchasing decision), or a post-2020 window that invalidates every reading since P18.
+
+### Active — owned by a roadmap phase
+
+- **Phase D (measurement power):** instrument is noisier than the effect (block layout must change +
+  a pre-registered, hashed stopping rule); DQ per-asset loop inversion (per_asset 47.8% /
+  universe-and-audit 44.6% of a 68-min run — loop inversion is at most half the fix); `list_date`
+  backfill; newest-session gap. The ML-rematch veto arm does not replicate under the tightened gate
+  (lgb-veto 2/3, lstm-veto 1/3); the open item is the instrument, not the hypothesis.
+- **Phase E (stock model quality):** 7-day horizon is below coin flip (0.4874); needs a purged
+  holdout and a 36-feature audit.
+
+### Owner decisions — deployment hygiene (not started)
+
+- `local.txt` and `production.txt` disagree on gunicorn/uvicorn (CI tests a gunicorn production would
+  not run). Reconcile before a real deployment.
+- `torch` installs CPU-only from the default index; conflicts with `windows_gpu` LightGBM inference.
+  Document which runtimes actually have a GPU.
+
+---
+
 ## Resolved
 
 - **The PIT union benchmark chain: six year-boundary fossils, and a daily seed row that

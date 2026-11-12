@@ -2,6 +2,16 @@
 
 ### Unreleased
 
+#### Fixed:
+
+- **The nightly pipeline's idle-link Redis resets stopped (#129).** A0 classified 10 post-deploy `ConnectionResetError` failures onto the **Django cache** (`catch_up_missed_runs`, `prewarm_dashboard_stocks_cache`) — not the broker or #50's result backend, both already hardened and showing zero. `CACHES['default']` had no `OPTIONS`, so its client never health-checked an idle connection; it now mirrors the broker (`health_check_interval=25`, `socket_keepalive`, `socket_connect_timeout=10`, `socket_timeout=30`, `retry_on_timeout`). Verified after the fleet restart: **0** cache resets over 3 hourly catch-up ticks.
+- **`compute_etf_features_daily` stopped raising `NameError` (#130).** `ETFFeatureSnapshot` was missing from the `.models` import; a regression test exercises the exact failing return line.
+- **Immortal `RUNNING` backtest rows are now sweepable (#131).** The orphan exemption granted immunity whenever a report merely *contained* a progress key, so two rows sat `RUNNING` for 171 days with no way to clear them. It now requires *fresh* progress (`BACKTEST_STALE_PROGRESS_MAX_AGE_SECONDS`, default 24h) — above the legitimate 2-hour chunked-continuation case, below the multi-day corpses.
+- **`export_documentation_facts --check` prints its drift verdict last (#133).** stdout is block-buffered when redirected while the `CommandError` goes to stderr, so the verdict appeared above the per-sheet lines and `tail` read as clean. stdout is now flushed before raising.
+- **`macro_eventimpactstat` removed (#132).** No production writer, and the news/policy feeder was deleted with #52; the model, endpoint, serializer, admin, URL and tests are gone (migration `macro/0004`). Alerts and screener stay, documented as user-provisioned.
+
+Backend discovery floor **1175 → 1179** for the tests these add.
+
 #### Removed:
 
 - **News and sentiment module decommissioned (#52; #110-#119).** The `major_news` entitlement lapsed on 2026-06-13 and the hourly historical walk raised 24 times a day from then on. Measured before deletion: the per-asset feature it fed was non-zero on **151 of 181,130** `ASSET_7D` rows (0.083%) across **51 of 1,787** assets, and `FactorScore.sentiment_score` held exactly one distinct value (`0.500000`) on all 2,043,000 rows while `sentiment_weight` held `0.0000` -- a constant at the neutral midpoint, which is why an audit phrased as "is this populated" could never have flagged it. Gone: the module, its three tables (176,098 articles / 6,708,181 scores / 654 concept rows), both `FactorScore` columns, three LightGBM features, the heuristic's `sentiment_signal` term, the API endpoints, the dashboard surfaces, and the `jieba` dependency. The corpus was cold-backed up and the restore verified against pre-deletion counts first. Retrained 3/7/30 without the features: 30d `rank_ic` 0.0559 / t 3.96 against 0.0495 / t 3.58 with them, so no measurable skill was lost. #118 closed a gap the deletion itself left -- removing `CELERY_BEAT_SCHEDULE` entries does not stop beat, because `DatabaseScheduler` dispatches from `PeriodicTask` rows and `update_from_dict` never prunes -- now pruned by data migration and gated by a new `core.E002` system check.
