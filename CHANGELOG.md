@@ -2,6 +2,10 @@
 
 ### Unreleased
 
+#### Docs:
+
+- **The backtest engine's four decision points are documented where they are implemented (#152), and the backlog's description of the gap was stale.** Measured over `apps/backtest/`: 8 non-test files and 3,639 lines (not "19 files, ~4,100"), 5 of 8 module docstrings already present, and 19 of 128 functions documented -- 15%, not zero. What was genuinely missing was the small mechanical layer around the decisions that were already written down: `_max_buy_amount_for_budget`, `_load_runtime_state`, `_save_runtime_state`, `_clear_runtime_state`, `_enable_stop_target_exit`. All five now state the rule and why it is that rule -- the piecewise commission floor (a CN A-share commission is `max(rate x amount, minimum)`, so the obvious `budget / (1 + levy + rate)` over-buys whenever the floor binds), the JSON-boundary re-coercion on resume, and the fact that `task_health.py:64` grants the chunked-continuation exemption on the *presence* of `runtime_state`/`progress` while `:94` requires recency, which is what ties a resumed run's progress write to what the orphan sweep may reap. The four big ones -- fee model, exit precedence, resume contract, candidate gate -- already had docstrings, including the exit rule that `STOP_LOSS` is checked before `TARGET_PRICE` because a daily close cannot reveal the intraday path. Residual, stated as a measurement: 109 functions still carry none.
+
 #### Fixed:
 
 - **The nightly pipeline's idle-link Redis resets stopped (#129).** A0 classified 10 post-deploy `ConnectionResetError` failures onto the **Django cache** (`catch_up_missed_runs`, `prewarm_dashboard_stocks_cache`) — not the broker or #50's result backend, both already hardened and showing zero. `CACHES['default']` had no `OPTIONS`, so its client never health-checked an idle connection; it now mirrors the broker (`health_check_interval=25`, `socket_keepalive`, `socket_connect_timeout=10`, `socket_timeout=30`, `retry_on_timeout`). Verified after the fleet restart: **0** cache resets over 3 hourly catch-up ticks.
