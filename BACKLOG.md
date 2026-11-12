@@ -48,7 +48,11 @@ OpenAPI version (`tests_version.py`), transitive lockfile (`check_requirements_l
   a pre-registered, hashed stopping rule); DQ per-asset loop inversion (per_asset 47.8% /
   universe-and-audit 44.6% of a 68-min run — loop inversion is at most half the fix); `list_date`
   backfill; newest-session gap. The ML-rematch veto arm does not replicate under the tightened gate
-  (lgb-veto 2/3, lstm-veto 1/3); the open item is the instrument, not the hypothesis.
+  (lgb-veto 2/3, lstm-veto 1/3); the open item is the instrument, not the hypothesis. **The backtest
+  engine is the same bottleneck:** a 28-trading-day heuristic `run_backtest` (run 1468, 2026-11-12)
+  hit its 30-min `SoftTimeLimitExceeded` because candidate generation is IO-bound on
+  `TechnicalIndicator` — so the engine needs the same per-asset loop/measurement work the DQ scan
+  does, not just a wider time limit.
 - **Phase E (stock model quality):** 7-day horizon is below coin flip (0.4874); needs a purged
   holdout and a 36-feature audit.
 
