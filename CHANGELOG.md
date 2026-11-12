@@ -2,6 +2,10 @@
 
 ### Unreleased
 
+#### Docs:
+
+- **The eight orphaned screener i18n keys are gone (#153).** Left behind when `ScreenerPage.tsx` was deleted: `screener.title|desc|loadError|sortBy|suggested|rr|tradeScore` and `nav.screener`, in both locales -- inert, because `t()` returns the key string and no call site asked for them. Removed from `frontend/src/i18n.tsx` (16 entries, 8 keys x 2 locales) with the four screener keys that ARE referenced by `IndicatorBoardPage` and `DashboardPage` (`symbol`, `name`, `comp`, `bottomProb`) left alone -- the interesting failure here is deleting a neighbour that is in use, and neither eslint nor `tsc` would notice, because `dict` is `Record<Locale, Record<string, string>>`: an absent key renders as its own name. Verified with a check that can fail instead: 408 key-shaped `t('...')` literals harvested from the app, every one resolving in both locales, and locale asymmetry 0 (451 keys each).
+
 #### Fixed:
 
 - **The nightly pipeline's idle-link Redis resets stopped (#129).** A0 classified 10 post-deploy `ConnectionResetError` failures onto the **Django cache** (`catch_up_missed_runs`, `prewarm_dashboard_stocks_cache`) — not the broker or #50's result backend, both already hardened and showing zero. `CACHES['default']` had no `OPTIONS`, so its client never health-checked an idle connection; it now mirrors the broker (`health_check_interval=25`, `socket_keepalive`, `socket_connect_timeout=10`, `socket_timeout=30`, `retry_on_timeout`). Verified after the fleet restart: **0** cache resets over 3 hourly catch-up ticks.
