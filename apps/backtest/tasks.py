@@ -287,6 +287,15 @@ def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity
 
 
 def _backtest_chunk_trading_days(run):
+    """Resolve how many trading days each Celery chunk covers for this run.
+
+    A long backtest is split into chunks so it survives a worker restart: each
+    chunk is small enough to fit the task time limit, and ``run.report`` records
+    the last completed chunk so the next one resumes rather than restarting. The
+    value comes from the run's parameters (``chunk_trading_days`` /
+    ``backtest_chunk_trading_days``), falling back to
+    ``BACKTEST_CHUNK_TRADING_DAYS`` when absent or malformed.
+    """
     params = run.parameters or {}
     raw_value = params.get('chunk_trading_days', params.get('backtest_chunk_trading_days'))
     if raw_value in (None, ''):
@@ -446,6 +455,14 @@ def _resolve_fee_config(run):
 
 
 def _trade_fee_breakdown(amount, fee_config, *, is_sell):
+    """Itemise one trade's fees into the component lines the ledger stores.
+
+    ``_resolve_fee_config`` decides the model and this applies it. The legacy
+    flat mode charges a single ``buy_levy_rate`` / ``sell_levy_rate`` and reports
+    the component lines as zero. The structured A-share mode itemises commission,
+    exchange, regulatory and transfer fees, plus stamp duty on sells only. Every
+    component is aggregated into ``total_fee`` so callers never re-sum by hand.
+    """
     if fee_config['mode'] == 'legacy_flat_fee':
         legacy_rate = fee_config['sell_levy_rate'] if is_sell else fee_config['buy_levy_rate']
         total_fee = amount * legacy_rate

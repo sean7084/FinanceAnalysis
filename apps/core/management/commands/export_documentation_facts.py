@@ -1213,6 +1213,12 @@ class Command(BaseCommand):
 
         if options['check']:
             if drifted:
+                # Flush the buffered per-sheet progress lines BEFORE raising. Python
+                # block-buffers stdout when it is redirected to a file, while Django
+                # prints a CommandError to stderr immediately -- so without this flush
+                # the verdict appears ABOVE the "Building ..." lines in a combined log
+                # and `tail` reads as a clean run for a sheet that actually drifted.
+                self.stdout.flush()
                 raise CommandError(
                     'Documentation drift detected: '
                     + ', '.join(drifted)
