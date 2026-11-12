@@ -8508,3 +8508,25 @@ class ArchivedArtifactTests(TestCase):
 
         with self.assertRaisesMessage(ValueError, 'ARCHIVED'):
             train_lightgbm.load_predictor_for_version('archived-test-artifact')
+
+
+class ComputeEtfFeaturesDailyNameErrorTests(TestCase):
+    """A0 finding: ``compute_etf_features_daily`` referenced ``ETFFeatureSnapshot``
+    without importing it, so every nightly run raised ``NameError`` at the return
+    statement (post-deploy 2026-11-12 01:23 / 03:xx). This exercises that exact line
+    with the heavy feature command mocked out; the snapshot count runs against the
+    (empty) test table, so a missing import fails here instead of in production.
+    """
+
+    def test_returns_snapshot_count_without_nameerror(self):
+        from apps.etf_rotation import tasks
+
+        with patch.object(tasks, 'session_today', return_value=date(2026, 11, 12)), \
+                patch('django.core.management.call_command') as call_command:
+            result = tasks.compute_etf_features_daily(lookback_days=5)
+
+        call_command.assert_called_once()
+        self.assertEqual(result['start'], '2026-11-07')
+        self.assertEqual(result['end'], '2026-11-12')
+        self.assertIn('snapshots', result)
+        self.assertIsInstance(result['snapshots'], int)

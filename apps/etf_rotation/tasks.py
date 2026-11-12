@@ -38,7 +38,7 @@ from .etf_universe import (
     normalize_track_index,
     shares_to_aum_yuan,
 )
-from .models import ETFDaily, ETFRotationBacktest, ETFUniverse
+from .models import ETFDaily, ETFFeatureSnapshot, ETFRotationBacktest, ETFUniverse
 
 
 logger = logging.getLogger(__name__)
