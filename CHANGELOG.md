@@ -232,7 +232,7 @@ Backend discovery floor **1175 → 1179** for the tests these add.
   sit above sixty entries whose status nobody could re-derive. Three destinations, one rule each:
   **26 GitHub issues** (#136–#161) for open actionable work, **`BACKLOG_ARCHIVE.md`** for
   measurement evidence and decision records — copied *verbatim*, never summarised, each block
-  headed with a `Disposition:` line naming what closed it — and this file, 145 lines of index.
+  headed with a `Disposition:` line naming what closed it — and this file, 148 lines of index.
   Every item deleted rather than archived is logged line-by-line in archive §G with its reason,
   and each of those was checked against this file's Unreleased section or against the current tree
   first. Three dangling pointers found on the way and fixed by rewriting the text, not just the

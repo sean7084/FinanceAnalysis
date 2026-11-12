@@ -32,7 +32,7 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 - **Owner decisions** — deployment hygiene, not diffs: #149, #150
 - **Blocked on a data source** (not schedulable): #157–#159
 
-Two rows above already have fixes in flight from this pass: [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) closes #143 (schema faults now fail the run, with a mutation check proving the new tests bite) and [PR #164](https://github.com/sean7084/FinanceAnalysis/pull/164) closes #151. #142 was closed out differently: measured against the tree, the watchdog was already built, tested and wired, so its issue now carries only the production observation that is genuinely left — which is the failure mode this restructure exists to remove, a roadmap that schedules finished work.
+Fixes from this pass are open as PRs: [#163](https://github.com/sean7084/FinanceAnalysis/pull/163) closes #143 (schema faults now fail the run, with a mutation check proving the new tests bite), [#164](https://github.com/sean7084/FinanceAnalysis/pull/164) closes #151, [#165](https://github.com/sean7084/FinanceAnalysis/pull/165) closes #138 (per-asset bulk read, 149.0 s → 34.1 s with all 23 detail CSVs byte-identical on two fixed windows), [#166](https://github.com/sean7084/FinanceAnalysis/pull/166) closes #155. Two items closed out differently: #161 was already fixed and its doc claim corrected, and #142's watchdog was already built, wired, tested **and observed** — so the restructure's own first finding was a roadmap scheduling finished work, twice over.
 
 ---
 
@@ -41,19 +41,22 @@ Two rows above already have fixes in flight from this pass: [PR #163](https://gi
 | Issue | One line | Gate |
 |---|---|---|
 | [#136](https://github.com/sean7084/FinanceAnalysis/issues/136) | ETF instrument: block layout swings ~1 Sharpe on panel start alone; declare a hashed, pre-registered stopping rule | **blocks #137** |
-| [#138](https://github.com/sean7084/FinanceAnalysis/issues/138) | DQ gate: invert the per-asset cursor loop into batched windowed reads | byte-identical detail rows on a fixed window |
+| [#138](https://github.com/sean7084/FinanceAnalysis/issues/138) | DQ gate: bulk-read the per-asset validation phase — [PR #165](https://github.com/sean7084/FinanceAnalysis/pull/165); 149.0 s → 34.1 s on a 6-month window, 23 CSVs byte-identical | full-history run still unmeasured (90-min timeout case) |
 | [#139](https://github.com/sean7084/FinanceAnalysis/issues/139) | Backtest engine: batch candidate-generation indicator IO (run 1468 hit its time limit) | not a wider `soft_time_limit` |
 | [#140](https://github.com/sean7084/FinanceAnalysis/issues/140) | `list_date`: refresh cadence, class-B range backfill, and a policy for the 21 criticals the attribution left standing | gate re-run over one year + one stated policy |
 | [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Newest-session gap measured **closed** on both feeds (2026-11-12: OHLCV 499/session, ETFDaily 2,183) — what is left is a stock-feed scope question | decide the intended universe for `sync_daily_a_shares` |
-| [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog — **found already shipped and wired** (`scripts/db_wedge_watch.py`, its tests, `run_local_stack.sh:141`, `_stack_probe.py pgstat`) | a production observation: did it fire, and were terminations real wedges |
+| [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog — already shipped, wired, tested **and observed**: `scripts/db_wedge_watch.py` records 328 clean passes with zero terminations across a 90-minute full-range DQ run | one controlled true-positive reproduction remains |
 | [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults — fix in [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) | a simulated `ProgrammingError` must fail the run |
 
-#138 and #139 are the same trap in two places — per-asset fetches through a server-side cursor —
-and both reuse `apps/core/db_scans.py`. The measured split says how much to expect from either:
-profiling a 68-minute DQ run put `per_asset_scans` at **47.8%** and `universe_and_audit_writes` at
-**44.6%**, so inverting the loop is **at most half** of #138. Neither may quote a full-run speedup
-before measuring it (the warning is in `db_scans.py:71`), and #138 is a release gate, where the
-failure mode is a silent miss rather than a slow run.
+#138 and #139 are the same trap in two places — per-asset fetches, one round trip at a time.
+The named-cursor problem was already removed by the `db_scans` rewrite, so what is left is
+query *count*, and it turned out to be the entire cost: on a six-month effective-universe
+window the per-asset phase was **149.0 s of 165 s (90%)**, and the bulk read took it to
+**34.1 s** with every detail CSV byte-identical. An earlier full-range profile had attributed
+**47.8%** to per-asset scans and **44.6%** to the universe/audit writes; both readings are true
+of their own window, and neither licenses quoting a full-range speedup before measuring one (the
+warning is in `db_scans.py:71`). #138 is a release gate, where the failure mode is a silent miss
+rather than a slow run — which is why its acceptance was output equality, not a timing.
 
 ## M2 — model quality
 
@@ -78,7 +81,7 @@ rematch on the current layout re-measures the harness, not the strategy.
 | [#152](https://github.com/sean7084/FinanceAnalysis/issues/152) | Function-level docstrings on the backtest engine's four decision points |
 | [#153](https://github.com/sean7084/FinanceAnalysis/issues/153) | Remove the eight orphaned screener i18n keys |
 | [#154](https://github.com/sean7084/FinanceAnalysis/issues/154) | Macro semantics: `dxy` name, publication-date alignment, where northbound flow belongs |
-| [#155](https://github.com/sean7084/FinanceAnalysis/issues/155) | Entitlement flags cached with `timeout=None`: TTL or a documented eviction convention |
+| [#155](https://github.com/sean7084/FinanceAnalysis/issues/155) | Entitlement flags cached with `timeout=None` — documented-convention option shipped in [PR #166](https://github.com/sean7084/FinanceAnalysis/pull/166); TTL declined because the condition only changes when the operator changes the token | one operator walk-through of `runbook-provider-blackout.md` §9 |
 | [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) | `amount` unit in `help_text`; count assets holding `raw_close IS NULL` |
 | [#160](https://github.com/sean7084/FinanceAnalysis/issues/160) | Operator model-version selection — and which surface absorbs it |
 | [#161](https://github.com/sean7084/FinanceAnalysis/issues/161) | `apps/macro/tests.py` gitignored-CSV dependency — **verified already fixed** and closed (this host has no `source_data/`, and the pre-2016 yield case still reports `csv_yield_updates=21` from a temp fixture) |
