@@ -440,6 +440,8 @@ windows and the labelled-row set were verified unchanged.
 
 > The first bullet of that section — "the instrument is noisier than the effect" — is now #136; its numbers are reproduced in the issue body.
 
+> Disposition: measured, and each bullet is a decision rather than open work — P25 (20 days stays; ICIR 0.59 → 0.40 from 20 to 60 sessions, sweep reusable via `--horizons 20,40,60`), P22 built with P38 deferred because no arm cleared the tightened gate, P39 with nothing to activate, purge-and-block coupling now superseding report §11, the sensitivity harness and ledger built, and rolling-vs-expanding adjudicated as a measurement variable rather than a strategy knob. The two residues that are still work became #136 (block layout + hashed stopping rule) and #137 (rematch).
+
 - **P25 (label horizon) is measured, and the answer is "20 days stays".** The table shape
   still holds one label horizon per row, so the sweep recomputes the label from `ETFDaily`
   instead of re-backfilling: ICIR falls 0.59 -> 0.40 from 20 to 60 sessions (report section
@@ -703,6 +705,8 @@ production fleet's recovery path, and because `--fail`/`--restart` on live rows 
 write that should not be a side effect of someone cleaning up a changelog.
 
 
+> Two blocks follow. Disposition for the first — **the `2016-06-01` re-baseline**: shipped as part of the universe-contract work and recorded in `CHANGELOG.md` (Re-baselined metrics); archived because every later stock reading is compared against that window, and the reason it was chosen is not derivable from the constant. The 7-day residue inside it is #144; the window-provenance gap is #145. Disposition for the second — **`sentiment_score` constant 0.5**: closed by deletion (#52), and kept verbatim as the standing lesson that an audit phrased as "is this populated" cannot find a value that is always present and always neutral.
+
 ### Stock headline metrics were re-baselined onto the `2016-06-01` window
 
 Done as part of the date-contract change: `rebuild_lightgbm_pipeline --skip-backfill`
@@ -877,6 +881,8 @@ Superseded 2026-11-11: none of those paths exist any more, and the matrix is 36 
   `export_documentation_facts --check` skips the DB-gated sheets -- so it is refreshed by
   decision, not by habit.
 
+
+> Three blocks follow, all root-cause records whose work is now an issue: the DQ latency profile → **#138**; the `list_date` gate collapse (1,385 NULLs → 2, and the 21 historical criticals it exposed) → **#140**; the DB-wedge signature (`ClientWrite`, client at 0% CPU, both socket queues empty, sampled twice) → **#142**. Each is kept because the measurement overturned a premise the entry itself had started from, and because all three are gate or reliability decisions that will be argued again.
 
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
@@ -1129,6 +1135,8 @@ Still open:
 
 
 
+> Disposition: closed 2026-10-10. MinIO is live on the NAS behind `ARTIFACT_STORE_BACKEND=s3`, all 170 on-disk artifacts were migrated, and `models/` is untracked and gitignored. `TECHNICAL_GUIDE.md` §6.5 stated "staged, not cut over yet" until this restructure corrected it — the stale sentence is the reason the record is kept.
+
 ### Artifact storage: DONE (portability + git-bloat, cut over 2026-10-10)
 
 Portability is largely resolved. New artifacts store `BASE_DIR`-relative paths
@@ -1149,6 +1157,8 @@ repopulate via `sync_artifacts_from_store`. Procedure + ops:
 `docs/how-to/artifact-store.md`; NAS runbook: HomeServer `docs/runbooks/minio.md`.
 
 
+
+> Disposition: the ratchet removal shipped and is recorded in `CHANGELOG.md` Unreleased ("The frontend static-check ratchet is gone; `--max-warnings 0` replaces it"). Archived anyway for two things a fix record does not carry: the blind-spot class the ratchet stood for, and the `entry_weekdays` near-miss — a type error that looked like a dropped user selection and was the test deliberately asserting its absence.
 
 ### Frontend static checks — resolved; the ratchet is gone
 
@@ -1221,6 +1231,8 @@ enough to dominate the job runtime.
 
 
 ### OHLCV adjustment semantics, the PIT benchmark chain, and the indicator timestamp key
+
+> Disposition: remediation closed — qfq computed on write with `update_conflicts`, `_resolve_adj_basis` plus `_rebase_pre_window_bars` refusing half-converted assets, and the repair/audit commands shipped; the 2026-11-03 census moved to `docs/reference/price-adjustment.md`. The two residuals here are live work: the `raw_close IS NULL` legacy count → #156, and the `amount` unit note in the same block → #156. The PIT and indicator-timestamp blocks that follow are decisions already settled — the PIT chain rebuilt 2026-11-09 (correlation 0.9927), the read-side truncation closed by the `localtime()` conversions, with the write-side key settled by PR #88.
 
 - **OHLCV adjustment semantics — remediation landed; this entry contradicted the rest of
   the file and is corrected.** It used to say `adj_factor` is not retained and the writer
@@ -1323,6 +1335,8 @@ enough to dominate the job runtime.
 
 ### Timezone and catch-up traps
 
+> Disposition: fixed and recorded in `CHANGELOG.md` Unreleased; kept for the two traps, both easy to re-introduce. The guard belongs on the **repair** path and narrows the gap rather than skipping the series, and `as_of` must stay `session_today()` — ~7h/day of exposure instead of ~15h — which `apps/core/tests_timez.py` pins hour by hour.
+
 - **Fixed: catch-up repaired a session that had not closed, and `--as-of` never parsed.**
   Kept here only for the trap, which is easy to re-introduce. `session_today()` names the
   in-progress session from 08:00 Beijing, so the detectors correctly reported today as missing
@@ -1400,6 +1414,8 @@ enough to dominate the job runtime.
   that helper rather than asserting `find_spec(...) is None` itself.
 
 
+> Disposition: closed by PR #88 — `session_key_timestamp` as the write key, `core.E001` refusing to boot on a drifted `TIME_ZONE`, and `dedupe_technical_indicator_session_keys` as the cross-convention guard (2026-11-08 dry-run: zero pairs, the expected state). Archived because the guard has a specific trigger — a `backfill_technical_indicators` range covering sessions before 2026-11-02 — and a guard with no recorded trigger condition gets mistaken for a chore and skipped.
+
 - `TechnicalIndicator.timestamp` changes meaning at the flip, so a recomputed date becomes a
   second row rather than an update. Every indicator task builds its key the same way —
   `make_aware(combine(trade_date, time.min))`, e.g. `apps/analytics/tasks.py:104` for RSI and
@@ -1474,6 +1490,8 @@ misconfigured.
 
 ### CHANGELOG 0.1.13: re-scoped, not converted
 
+> Disposition: **re-scoped, deliberately not converted** — a decision record. The 0.1.13 tag never came (the project is at 0.1.53), so the condition its own note set has passed rather than been missed; rewriting it would mean writing release notes for a release whose artifacts no longer exist to check them against.
+
 - `CHANGELOG.md` 0.1.13 (557 lines, `:2486-3042`) is an audit checklist rather than release
   notes. **Re-scoped, not converted:** the section already opens with its own note
   (`:2488-2491`) saying it is an audit workflow record and "will be converted to standard
@@ -1486,6 +1504,8 @@ misconfigured.
 
 
 ### Notes with no owner — the no-action half
+
+> Disposition: no action, decided. Browser storage keys left by the pre-v0.1.17 auth UI have no reader and no second deployment, so a migration would be code with no consumer; the arithmetic note in the same block is kept only because deleting it loses the hint that something was being sized.
 
 - Four `localStorage`/`sessionStorage` keys outlive the code that read them:
   `finance_jwt`, `finance_jwt_refresh`, `finance_api_key` and
@@ -1518,6 +1538,8 @@ misconfigured.
   `$23.7 / 0.2257 ≈ 105`. Kept here only because deleting it loses the hint that
   something was being sized.
 
+
+> Disposition: **not taken, on purpose** — the 39 `timezone.now().date()` call sites are exactly `session_today()` by definition, so the rename is behaviour-identical and was left out to keep the regression surface at zero. The view and management-command sites are a per-call-site judgement, which is why they are a deferred pointer rather than a sweep. The orphaned UTC `CrontabSchedule` block after it is the same kind of decision: inert rows, and deleting them only invites the next scheduler sync to recreate them.
 
 - A readability pass over the existing session-date call sites, deliberately not
   taken now. The 39 sites in `apps/*/tasks*.py` still spell the session date as
