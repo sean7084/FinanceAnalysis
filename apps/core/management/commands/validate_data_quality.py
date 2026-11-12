@@ -186,6 +186,21 @@ FACTOR_NEUTRAL_DEFAULT_FIELDS = (
 FUNDAMENTAL_FIELDS = ('pe', 'pe_ttm', 'pb', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'roe', 'roe_qoq')
 FUNDAMENTAL_CONTINUITY_FIELDS = ('pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq')
 CAPITAL_FLOW_FIELDS = ('main_force_net_5d', 'margin_balance_change_5d')
+
+#: Assets per bulk prefetch in the per-asset validation phase.
+#:
+#: Sized from the widest prefetched read, not from a guess: ``TechnicalIndicator`` rows come
+#: as assets x sessions x indicator variants, and holding that for the whole effective
+#: universe at once is the failure mode ``apps/prediction/tasks_lightgbm.py:_query_frame``
+#: records at 22.9 GB peak RSS. A quarter of the universe keeps one chunk's row sets in tens
+#: of megabytes while still cutting ~10 queries per asset down to 8 per chunk.
+PREFETCH_CHUNK_ASSETS = 25
+
+
+def _chunked(items, size):
+    """Contiguous slices of ``items``, ``size`` at a time."""
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
 FUNDAMENTAL_RECONCILIATION_FINA_LOOKBACK_DAYS = 400
 SNAPSHOT_ROW_FIELD = 'snapshot_row'
 MACRO_FIELDS = (
@@ -626,12 +641,10 @@ class Command(BaseCommand):
             )
 
             phase_started = perf_counter()
-            for asset in assets:
-                actual_rows = list(
-                    OHLCV.objects.filter(asset=asset, date__gte=start_date, date__lte=end_date)
-                    .order_by('date')
-                    .values('date', 'open', 'high', 'low', 'close', 'adj_close', 'volume', 'amount')
-                )
+            for asset, scans in self._iter_assets_with_scans(
+                assets, start_date, end_date, technical_indicators
+            ):
+                actual_rows = scans['ohlcv_rows']
                 actual_dates = {row['date'] for row in actual_rows}
                 asset_suspensions = suspensions_by_asset.get(asset.id, {})
                 full_day_suspension_dates = {
@@ -706,6 +719,7 @@ class Command(BaseCommand):
                     counters,
                     table_counters,
                     field_counters,
+                    scans,
                 )
                 self._write_feature_continuity_gaps(
                     asset,
@@ -717,6 +731,7 @@ class Command(BaseCommand):
                     counters,
                     table_counters,
                     field_counters,
+                    scans,
                 )
 
             phase_timings['per_asset_scans'] = round(perf_counter() - phase_started, 3)
@@ -1545,7 +1560,7 @@ class Command(BaseCommand):
                 'gap_missing_count': gap_count,
             })
 
-    def _write_feature_continuity_gaps(self, asset, baseline_dates, technical_indicators, ordered_trading_dates, asset_suspensions, writer, counters, table_counters, field_counters):
+    def _write_feature_continuity_gaps(self, asset, baseline_dates, technical_indicators, ordered_trading_dates, asset_suspensions, writer, counters, table_counters, field_counters, scans):
         if not baseline_dates:
             return
 
@@ -1553,10 +1568,9 @@ class Command(BaseCommand):
         min_date = ordered_baseline_dates[0]
         max_date = ordered_baseline_dates[-1]
 
-        fundamental_rows = list(
-            FundamentalFactorSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date)
-            .values('date', *FUNDAMENTAL_CONTINUITY_FIELDS)
-        )
+        fundamental_rows = [
+            row for row in scans['fundamental_rows'] if min_date <= row['date'] <= max_date
+        ]
         self._write_feature_family_continuity_gaps(
             report_name='fundamental_snapshot_continuity_gaps',
             table='fundamental_factor_snapshot',
@@ -1567,24 +1581,16 @@ class Command(BaseCommand):
             writer=writer,
         )
 
-        capital_flow_rows = list(
-            CapitalFlowSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date)
-            .values('date', *CAPITAL_FLOW_FIELDS)
-        )
-        moneyflow_dates = set(
-            AssetMoneyFlowSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date)
-            .values_list('date', flat=True)
-        )
-        margin_source_dates = list(
-            AssetMarginDetailSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date)
-            .order_by('date')
-            .values_list('date', flat=True)
-        )
-        margin_history_rows = list(
-            AssetMarginDetailSnapshot.objects.filter(asset=asset, date__lte=max_date)
-            .order_by('date')
-            .values_list('date', 'rzrqye')
-        )
+        capital_flow_rows = [
+            row for row in scans['capital_flow_rows'] if min_date <= row['date'] <= max_date
+        ]
+        moneyflow_dates = {
+            source_date for source_date in scans['moneyflow_dates'] if min_date <= source_date <= max_date
+        }
+        margin_source_dates = [
+            source_date for source_date in scans['margin_window_dates'] if min_date <= source_date <= max_date
+        ]
+        margin_history_rows = [pair for pair in scans['margin_history'] if pair[0] <= max_date]
         self._write_capital_flow_continuity_gaps(
             report_name='capital_flow_snapshot_continuity_gaps',
             table='capital_flow_snapshot',
@@ -1597,17 +1603,11 @@ class Command(BaseCommand):
             writer=writer,
         )
 
-        technical_rows = self._run_with_database_retry(
-            lambda: list(
-                TechnicalIndicator.objects.filter(
-                    asset=asset,
-                    timestamp__gte=session_midnight(min_date),
-                    timestamp__lt=session_midnight(max_date + timedelta(days=1)),
-                    indicator_type__in=technical_indicators,
-                ).values('timestamp__date', 'indicator_type', 'parameters', 'value')
-            ),
-            action=f'loading technical indicators for {asset.ts_code}',
-        )
+        lower_bound = session_midnight(min_date)
+        upper_bound = session_midnight(max_date + timedelta(days=1))
+        technical_rows = [
+            row for row in scans['technical_rows'] if lower_bound <= row['timestamp'] < upper_bound
+        ]
         self._write_technical_indicator_continuity_gaps(
             report_name='technical_indicator_snapshot_continuity_gaps',
             asset=asset,
@@ -2087,20 +2087,134 @@ class Command(BaseCommand):
         if window_dates:
             yield window_dates[0], window_dates[-1], list(window_dates)
 
-    def _validate_cross_tables(self, asset, baseline_dates, writer, counters, table_counters, field_counters):
+    def _iter_assets_with_scans(self, assets, start_date, end_date, technical_indicators):
+        """Yield ``(asset, scans)`` with one bulk prefetch per chunk of assets.
+
+        A generator rather than a prefetch dict for the whole universe, so one chunk's row
+        sets are released before the next is fetched: the loop body below stays exactly as
+        it was, and peak memory stays one chunk instead of one history.
+        """
+        for chunk in _chunked(assets, PREFETCH_CHUNK_ASSETS):
+            scans_by_asset = self._prefetch_asset_scans(chunk, start_date, end_date, technical_indicators)
+            for asset in chunk:
+                yield asset, scans_by_asset[asset.id]
+
+    def _prefetch_asset_scans(self, assets, start_date, end_date, technical_indicators):
+        """Read in bulk what the per-asset loop used to query ~10 times per asset.
+
+        Measured 2026-11-12 on ``2026-05-01 .. 2026-11-06 --effective-universe-only``: the
+        per-asset phase was **149.0 s of a 165 s run** -- 90% of the gate, not the "at most
+        half" an earlier triage note assumed. Each asset paid one OHLCV read, three
+        cross-table reads and six feature-continuity reads, every one of them a separate
+        round trip over the WSL2-to-NAS link, which the ``db_scans`` profile puts at ~99 ms
+        per query. Chunked bulk reads turn ~10 queries per asset into 8 per chunk of
+        ``PREFETCH_CHUNK_ASSETS`` assets.
+
+        The per-asset date bounds stay exactly as they were, applied in Python to the rows
+        this returns: the callers filter to each asset's own ``min_date``/``max_date``, so
+        the detail rows must come out byte-identical -- which is the gate this rewrite is
+        checked against, not a speed number. ``TechnicalIndicator`` is the one table whose
+        bound is an instant rather than a date, so both the raw ``timestamp`` and
+        ``timestamp__date`` are carried and the comparison stays on the same axis the SQL
+        filter used.
+
+        Not ``.iterator()`` and not one unbounded ``list()``: see ``apps/core/db_scans.py``
+        for both measurements.
+        """
+        asset_ids = [asset.id for asset in assets]
+
+        def _grouped(queryset):
+            grouped = defaultdict(list)
+            for row in self._run_with_database_retry(
+                lambda: list(queryset), action='bulk prefetch for the per-asset phase'
+            ):
+                grouped[row['asset_id']].append(row)
+            return grouped
+
+        scans_by_ohlcv = _grouped(
+            OHLCV.objects.filter(asset_id__in=asset_ids, date__gte=start_date, date__lte=end_date)
+            .order_by('asset_id', 'date')
+            .values('asset_id', 'date', 'open', 'high', 'low', 'close', 'adj_close', 'volume', 'amount'),
+        )
+        scans_by_factor_date = _grouped(
+            FactorScore.objects.filter(
+                asset_id__in=asset_ids,
+                date__gte=start_date,
+                date__lte=end_date,
+                mode=FactorScore.FactorMode.COMPOSITE,
+            ).order_by('asset_id', 'date').values('asset_id', 'date'),
+        )
+        scans_by_fundamental = _grouped(
+            FundamentalFactorSnapshot.objects.filter(
+                asset_id__in=asset_ids, date__gte=start_date, date__lte=end_date
+            ).order_by('asset_id', 'date').values('asset_id', 'date', *FUNDAMENTAL_CONTINUITY_FIELDS),
+        )
+        scans_by_capital_flow = _grouped(
+            CapitalFlowSnapshot.objects.filter(
+                asset_id__in=asset_ids, date__gte=start_date, date__lte=end_date
+            ).order_by('asset_id', 'date').values('asset_id', 'date', *CAPITAL_FLOW_FIELDS),
+        )
+        scans_by_moneyflow = _grouped(
+            AssetMoneyFlowSnapshot.objects.filter(
+                asset_id__in=asset_ids, date__gte=start_date, date__lte=end_date
+            ).order_by('asset_id', 'date').values('asset_id', 'date'),
+        )
+        scans_by_margin_window = _grouped(
+            AssetMarginDetailSnapshot.objects.filter(
+                asset_id__in=asset_ids, date__gte=start_date, date__lte=end_date
+            ).order_by('asset_id', 'date').values('asset_id', 'date'),
+        )
+        scans_by_margin_history = _grouped(
+            AssetMarginDetailSnapshot.objects.filter(
+                asset_id__in=asset_ids, date__lte=end_date
+            ).order_by('asset_id', 'date').values('asset_id', 'date', 'rzrqye'),
+        )
+        scans_by_technical = _grouped(
+            TechnicalIndicator.objects.filter(
+                asset_id__in=asset_ids,
+                timestamp__gte=session_midnight(start_date),
+                timestamp__lt=session_midnight(end_date + timedelta(days=1)),
+                indicator_type__in=technical_indicators,
+            ).order_by('asset_id', 'timestamp').values(
+                'asset_id', 'timestamp', 'timestamp__date', 'indicator_type', 'parameters', 'value'
+            ),
+        )
+
+        ohlcv_fields = ('date', 'open', 'high', 'low', 'close', 'adj_close', 'volume', 'amount')
+        scans = {}
+        for asset_id in asset_ids:
+            scans[asset_id] = {
+                'ohlcv_rows': [
+                    {name: row[name] for name in ohlcv_fields}
+                    for row in scans_by_ohlcv.get(asset_id, [])
+                ],
+                'factor_dates': {row['date'] for row in scans_by_factor_date.get(asset_id, [])},
+                'fundamental_rows': scans_by_fundamental.get(asset_id, []),
+                'fundamental_dates': {row['date'] for row in scans_by_fundamental.get(asset_id, [])},
+                'capital_flow_rows': scans_by_capital_flow.get(asset_id, []),
+                'capital_flow_dates': {row['date'] for row in scans_by_capital_flow.get(asset_id, [])},
+                'moneyflow_dates': {row['date'] for row in scans_by_moneyflow.get(asset_id, [])},
+                'margin_window_dates': [row['date'] for row in scans_by_margin_window.get(asset_id, [])],
+                'margin_history': [
+                    (row['date'], row['rzrqye']) for row in scans_by_margin_history.get(asset_id, [])
+                ],
+                'technical_rows': scans_by_technical.get(asset_id, []),
+            }
+        return scans
+
+    def _validate_cross_tables(self, asset, baseline_dates, writer, counters, table_counters, field_counters, scans):
         if not baseline_dates:
             return
         min_date = min(baseline_dates)
         max_date = max(baseline_dates)
 
-        factor_dates = set(FactorScore.objects.filter(
-            asset=asset,
-            date__gte=min_date,
-            date__lte=max_date,
-            mode=FactorScore.FactorMode.COMPOSITE,
-        ).values_list('date', flat=True))
-        fundamental_dates = set(FundamentalFactorSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date).values_list('date', flat=True))
-        capital_flow_dates = set(CapitalFlowSnapshot.objects.filter(asset=asset, date__gte=min_date, date__lte=max_date).values_list('date', flat=True))
+        factor_dates = {gap_date for gap_date in scans['factor_dates'] if min_date <= gap_date <= max_date}
+        fundamental_dates = {
+            gap_date for gap_date in scans['fundamental_dates'] if min_date <= gap_date <= max_date
+        }
+        capital_flow_dates = {
+            gap_date for gap_date in scans['capital_flow_dates'] if min_date <= gap_date <= max_date
+        }
 
         checks = (
             (

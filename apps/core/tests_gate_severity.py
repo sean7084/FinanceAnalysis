@@ -107,11 +107,22 @@ class FactorScoreWatermarkTests(TestCase):
         )
         self.command = Command()
 
+    def _scans(self, *assets):
+        """The bulk prefetch that the production loop now hands each asset's checks.
+
+        Built through the real method rather than a hand-made dict, so these tests also
+        prove the prefetch supplies exactly the sets the per-asset queries used to.
+        """
+        return self.command._prefetch_asset_scans(
+            list(assets) or [self.asset], date(2026, 11, 1), date(2026, 11, 30), [],
+        )
+
     def _run(self, dates):
         writer = _Writer()
         self.command._validate_cross_tables(
             self.asset, dates, writer,
-            defaultdict(int), defaultdict(int), defaultdict(int))
+            defaultdict(int), defaultdict(int), defaultdict(int),
+            self._scans()[self.asset.id])
         return [row for _name, row in writer.details]
 
     def test_a_session_after_the_watermark_is_a_warning_with_a_reason(self):
@@ -140,15 +151,17 @@ class FactorScoreWatermarkTests(TestCase):
 
         self.command._validate_cross_tables(
             self.asset, [date(2026, 11, 4)], _Writer(),
-            defaultdict(int), defaultdict(int), defaultdict(int))
+            defaultdict(int), defaultdict(int), defaultdict(int),
+            self._scans()[self.asset.id])
+        other = Asset.objects.create(
+            market=self.asset.market, symbol='600011', ts_code='600011.SH',
+            name='Other', list_date=date(2015, 1, 1),
+        )
+        other_scans = self._scans(other)[other.id]
         with CaptureQueriesContext(connection) as captured:
             # A second asset's call must not re-run the aggregate.
-            other = Asset.objects.create(
-                market=self.asset.market, symbol='600011', ts_code='600011.SH',
-                name='Other', list_date=date(2015, 1, 1),
-            )
             self.command._validate_cross_tables(
                 other, [date(2026, 11, 4)], _Writer(),
-                defaultdict(int), defaultdict(int), defaultdict(int))
+                defaultdict(int), defaultdict(int), defaultdict(int), other_scans)
         aggregates = [q['sql'] for q in captured.captured_queries if 'MAX(' in q['sql'].upper()]
         self.assertEqual(aggregates, [])
