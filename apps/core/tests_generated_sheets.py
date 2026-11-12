@@ -18,10 +18,18 @@ next removal instead of needing the next removal's edit.
 import re
 from pathlib import Path
 
+from types import SimpleNamespace
+from unittest import mock
+
 from django.conf import settings
+from django.core.management.base import CommandError
+from django.db.utils import OperationalError, ProgrammingError
 from django.test import SimpleTestCase
 
-from apps.core.management.commands.export_documentation_facts import _iter_project_models
+from apps.core.management.commands.export_documentation_facts import (
+    _aggregate_field_coverage,
+    _iter_project_models,
+)
 
 METRICS_PATH = Path(settings.BASE_DIR) / 'docs' / 'reference' / 'metrics.md'
 
@@ -146,3 +154,71 @@ class MetricsSheetModelConformanceTests(SimpleTestCase):
             stale, [],
             'breakdown headings name a field the model does not declare: ' + ', '.join(stale),
         )
+
+
+class _RaisingQuery:
+    def __init__(self, exceptions):
+        self._exceptions = exceptions
+
+    def aggregate(self, **_aggregates):
+        exc = self._exceptions.pop(0) if self._exceptions else None
+        if exc is not None:
+            raise exc
+        return {'price__nonnull': 7, 'price__min': 1, 'price__max': 9}
+
+
+class _FakeTable:
+    """A model stand-in whose aggregate raises a scripted sequence of errors.
+
+    The query object is built once, so every retry sees the same script: a fresh one per
+    ``all()`` call would restart the sequence and a "recovers on the third try" case could
+    never be reached.
+    """
+
+    def __init__(self, *exceptions, table='apps_fake'):
+        self._meta = SimpleNamespace(db_table=table)
+        query = _RaisingQuery(list(exceptions))
+        self._default_manager = SimpleNamespace(all=lambda: query)
+
+
+class MetricsFieldCoverageErrorClassTests(SimpleTestCase):
+    """A schema fault must fail the run; a link fault must be retried.
+
+    These two were indistinguishable in ``build_metrics``, which caught both and continued --
+    so a dropped column silently shortened the sheet instead of breaking the build.
+    """
+
+    def test_a_schema_fault_names_the_table_and_raises(self):
+        model = _FakeTable(ProgrammingError('column "adjusted_close" does not exist'))
+        with self.assertRaises(CommandError) as caught:
+            _aggregate_field_coverage(model, {'price__nonnull': None})
+        message = str(caught.exception)
+        self.assertIn('apps_fake', message)
+        self.assertIn('adjusted_close', message)
+
+    def test_the_schema_fault_does_not_return_a_partial_result(self):
+        """The failure must not be reachable as a smaller sheet."""
+        model = _FakeTable(ProgrammingError('column missing'))
+        try:
+            result = _aggregate_field_coverage(model, {'price__nonnull': None})
+        except CommandError:
+            result = None
+        self.assertIsNone(
+            result,
+            'a ProgrammingError came back as a result, which is how a table vanishes from '
+            'metrics.md while the command still exits 0',
+        )
+
+    @mock.patch('apps.core.management.commands.export_documentation_facts.time.sleep')
+    def test_a_link_fault_is_retried_and_then_returns(self, _sleep):
+        model = _FakeTable(OperationalError('server closed the connection unexpectedly'),
+                           OperationalError('connection already closed'))
+        result = _aggregate_field_coverage(model, {'price__nonnull': None})
+        self.assertEqual(result['price__nonnull'], 7)
+
+    @mock.patch('apps.core.management.commands.export_documentation_facts.time.sleep')
+    def test_a_link_fault_that_never_recovers_propagates(self, _sleep):
+        """Retrying must not turn an outage into a silently empty sheet either."""
+        model = _FakeTable(*[OperationalError('connection reset')] * 9)
+        with self.assertRaises(OperationalError):
+            _aggregate_field_coverage(model, {'price__nonnull': None})
