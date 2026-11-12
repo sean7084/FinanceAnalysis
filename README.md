@@ -37,7 +37,7 @@ This README is orientation only. Everything else is split by purpose.
 | Work on the frontend | [`frontend/README.md`](frontend/README.md) |
 | Contribute | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | See what shipped | [`CHANGELOG.md`](CHANGELOG.md) |
-| See what is unfinished | [`BACKLOG.md`](BACKLOG.md) |
+| See what is open | [`BACKLOG.md`](BACKLOG.md) — index of issues, then [`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md) for the evidence |
 
 The five *generated* sheets are produced from the live database and repository
 configuration, never hand-edited:
@@ -194,7 +194,8 @@ blocking backend job and a blocking frontend job, and the servers are pinned.
 
 A cloud deployment (managed PostgreSQL and Redis, container orchestration, CI/CD,
 metrics, error tracking, and the artifact object store already in use locally) is a
-plan, not a capability. Tracked in [`BACKLOG.md`](BACKLOG.md).
+plan, not a capability. The deployment-hygiene decisions that have to be made first are under
+owner decisions in [`BACKLOG.md`](BACKLOG.md).
 
 ---
 
