@@ -47,9 +47,11 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 | [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults | a simulated `ProgrammingError` must fail the run |
 
 #138 and #139 are the same trap in two places — per-asset fetches through a server-side cursor —
-and both reuse `apps/core/db_scans.py`. Neither may quote a full-run speedup before measuring it
-(the warning is in `db_scans.py:71`), and #138 is a release gate, where the failure mode is a silent
-miss rather than a slow run.
+and both reuse `apps/core/db_scans.py`. The measured split says how much to expect from either:
+profiling a 68-minute DQ run put `per_asset_scans` at **47.8%** and `universe_and_audit_writes` at
+**44.6%**, so inverting the loop is **at most half** of #138. Neither may quote a full-run speedup
+before measuring it (the warning is in `db_scans.py:71`), and #138 is a release gate, where the
+failure mode is a silent miss rather than a slow run.
 
 ## M2 — model quality
 
@@ -86,7 +88,7 @@ Not schedulable as diffs: each needs a deployment choice first, and neither clos
 | Issue | The mismatch | What has to be chosen |
 |---|---|---|
 | [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) | mlflow pulls `gunicorn==25.3.0` / `uvicorn==0.54.0` into `local.txt`, while `production.txt` pins the declared `23.0.0` / `0.32.0`; the lockfiles are resolved on Python 3.12 but CI runs 3.14 | align production to what CI exercises, pin the server stack in the `.in` files, or declare the divergence intentional and stop claiming CI covers the production server |
-| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves CPU-only from the default index, yet `windows_gpu` is a valid LightGBM inference backend | record which runtimes actually have a GPU (this host, the NAS, CI, any Windows worker), then decide whether to add a CUDA index as a separate extra or drop `windows_gpu` from the valid set |
+| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves from the default index with **no** `--index-url` / `--extra-index-url` / `--find-links` anywhere, and the hashed closure proves that wheel is the CUDA flavour: `cuda-toolkit[…]`, fifteen `nvidia-*` packages, `triton==3.7.0` — while nothing documents which runtime has a driver, and `windows_gpu` is a valid inference backend | name the GPU-bearing runtimes (this host, the NAS, CI, any Windows worker), then either support GPU inference and pin the CUDA deps by intent, or drop `windows_gpu` and stop shipping ~GB of CUDA wheels that CI downloads to run GPU-less tests |
 
 `scripts/check_requirements_lockfile.py` passes for both of these — each file is internally
 consistent — which is exactly why nothing catches them. The `blocked` label is the honest state.

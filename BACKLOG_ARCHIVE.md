@@ -882,7 +882,7 @@ Superseded 2026-11-11: none of those paths exist any more, and the matrix is 36 
   decision, not by habit.
 
 
-> Three blocks follow, all root-cause records whose work is now an issue: the DQ latency profile → **#138**; the `list_date` gate collapse (1,385 NULLs → 2, and the 21 historical criticals it exposed) → **#140**; the DB-wedge signature (`ClientWrite`, client at 0% CPU, both socket queues empty, sampled twice) → **#142**. Each is kept because the measurement overturned a premise the entry itself had started from, and because all three are gate or reliability decisions that will be argued again.
+> Three blocks follow, all root-cause records whose work is now an issue: the DQ latency profile → **#138**; the `list_date` gate collapse — `null_list_date` 1,385 → 2, then the gate itself going 1,530 → 33 → **21** criticals as each class was attributed (pipeline-lag reclassification, then a 196-row suspension backfill) → **#140**; the DB-wedge signature (`ClientWrite`, client at 0% CPU, both socket queues empty, sampled twice) → **#142**. Each is kept because the measurement overturned a premise the entry itself had started from, and because all three are gate or reliability decisions that will be argued again.
 
 ### `validate_data_quality` is slow because it fetches through a server-side cursor, the same trap the trainer just hit
 
@@ -1333,6 +1333,22 @@ enough to dominate the job runtime.
   zone argument, not that helper.
 
 
+### The Phase D triage bullet, and the profile split inside it
+
+> Disposition: superseded by the issue index, archived because it is the only place the DQ run was attributed by phase — per-asset scans **47.8%** and universe/audit writes **44.6%** of a 68-minute run, which is what makes loop inversion *at most half* of #138, and because run 1468 (2026-11-12) is the measurement that put the backtest engine in the same class (#139).
+
+### Active — owned by a roadmap phase
+
+- **Phase D (measurement power):** instrument is noisier than the effect (block layout must change +
+  a pre-registered, hashed stopping rule); DQ per-asset loop inversion (per_asset 47.8% /
+  universe-and-audit 44.6% of a 68-min run — loop inversion is at most half the fix); `list_date`
+  backfill; newest-session gap. The ML-rematch veto arm does not replicate under the tightened gate
+  (lgb-veto 2/3, lstm-veto 1/3); the open item is the instrument, not the hypothesis. **The backtest
+  engine is the same bottleneck:** a 28-trading-day heuristic `run_backtest` (run 1468, 2026-11-12)
+  hit its 30-min `SoftTimeLimitExceeded` because candidate generation is IO-bound on
+  `TechnicalIndicator` — so the engine needs the same per-asset loop/measurement work the DQ scan
+  does, not just a wider time limit.
+
 ### Timezone and catch-up traps
 
 > Disposition: fixed and recorded in `CHANGELOG.md` Unreleased; kept for the two traps, both easy to re-introduce. The guard belongs on the **repair** path and narrows the gap rather than skipping the series, and `as_of` must stay `session_today()` — ~7h/day of exposure instead of ~15h — which `apps/core/tests_timez.py` pins hour by hour.
@@ -1574,7 +1590,7 @@ One line each: what was deleted rather than archived, and why. Each of these was
 | `:478-507` | 7-day horizon below coin flip | Became #144; the re-baseline history is archived in §E. |
 | `:682-700` | Newest-session cross-sectional gap | Became #141 (verify-and-run; the fix path is already in the tree). |
 | `:1223-1228` | Stuck `RUNNING` backtest runs | Superseded by #131 — `BACKLOG_STALE_PROGRESS_MAX_AGE_SECONDS` — and recorded in `CHANGELOG.md` Unreleased. The owner-gated `--fail`/`--restart` verb is noted in the Triage table of `BACKLOG.md`. |
-| `:1370-1391` | "The ML stack is unpinned" wording | Stale as written (`requirements/base.txt` is `==`-pinned throughout). The live residuals: `torch` CPU-only → #150; `jieba` → moot, deleted with #52. |
+| `:1370-1391` | "The ML stack is unpinned" wording | Stale as written (`requirements/base.txt` is `==`-pinned throughout). The live residuals: the `torch`/GPU story → #150, whose body corrects the CPU-only premise this line inherited (the hashed closure pulls `cuda-toolkit`, fifteen `nvidia-*` packages and `triton`, so the default-index Linux wheel is the CUDA flavour);; `jieba` → moot, deleted with #52. |
 | `:1393-1423` | Transitive dependencies now locked | Shipped, and recorded in `CHANGELOG.md` Unreleased ("Dependencies are locked, with a hash per wheel", including the kombu 5.7.0 incident). The two residuals found while generating them became #149. |
 | `:1429-1441` | `CONTRIBUTING.md` §6 artifact-location and §1 no-PR claims | Already corrected in the file itself — `CONTRIBUTING.md:20-21` and `:308-313` now carry the "this section previously claimed" notes. |
 | `:1442-1447` | `--check` verdict ordering | Fixed in #133 and recorded in `CHANGELOG.md` Unreleased; `docs/how-to/testing.md` updated in the same pass. |
