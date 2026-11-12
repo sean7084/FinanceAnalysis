@@ -165,3 +165,103 @@ class FactorScoreWatermarkTests(TestCase):
                 defaultdict(int), defaultdict(int), defaultdict(int), other_scans)
         aggregates = [q['sql'] for q in captured.captured_queries if 'MAX(' in q['sql'].upper()]
         self.assertEqual(aggregates, [])
+
+
+class TechnicalWindowAxisTests(TestCase):
+    """Re-choosing which axis the window is cut on must not move a row across the edge.
+
+    The per-asset technical window was filtered in Python on the raw instant until
+    2026-11-12, when measuring 8,994,707 rows priced that one extra column at 5.4 s -- two
+    thirds of the bulk read's whole penalty. The prefetch now carries ``timestamp__date``
+    only, so the filter has no instant to work with. That is safe exactly because
+    ``session_midnight`` bounds and the ``__date`` lookup both resolve through
+    ``TIME_ZONE`` (``apps/core/date_floor.py``); if that ever stops holding, the detail CSVs
+    change which rows are in the window while still looking well-formed -- the failure mode
+    a release gate is worst at. So the window is computed twice, through SQL and through the
+    prefetched dict, on instants sitting at either side of a day boundary.
+    """
+
+    def setUp(self):
+        from datetime import datetime, time
+
+        from django.utils import timezone
+
+        from apps.analytics.models import TechnicalIndicator
+
+        market = Market.objects.create(code='CN', name='China')
+        self.asset = Asset.objects.create(
+            market=market, symbol='600012', ts_code='600012.SH', name='Axis',
+            list_date=date(2015, 1, 1),
+        )
+        self.days = [date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4)]
+        # One row late in its own day, one just after the next midnight, one at open.
+        offsets = [
+            timedelta(seconds=1),
+            timedelta(hours=23, minutes=59),
+            timedelta(hours=9, minutes=30),
+        ]
+        for day, offset in zip(self.days, offsets):
+            TechnicalIndicator.objects.create(
+                asset=self.asset,
+                indicator_type='RSI',
+                value='50.0',
+                parameters={},
+                timestamp=timezone.make_aware(datetime.combine(day, time.min) + offset),
+            )
+        self.command = Command()
+        self.indicators = ('RSI',)
+
+    def _sql_window(self, first, last):
+        from apps.analytics.models import TechnicalIndicator
+        from apps.core.date_floor import session_midnight
+
+        return sorted(
+            TechnicalIndicator.objects.filter(
+                asset=self.asset,
+                timestamp__gte=session_midnight(first),
+                timestamp__lt=session_midnight(last + timedelta(days=1)),
+                indicator_type__in=self.indicators,
+            ).values_list('timestamp__date', flat=True)
+        )
+
+    def _prefetched_window(self, first, last):
+        scans = self.command._prefetch_asset_scans(
+            [self.asset], self.days[0], self.days[-1], list(self.indicators)
+        )[self.asset.id]
+        return sorted(
+            row['timestamp__date']
+            for row in scans['technical_rows']
+            if first <= row['timestamp__date'] <= last
+        )
+
+    def test_every_window_cut_agrees_between_the_two_axes(self):
+        windows = [
+            (self.days[0], self.days[0]),
+            (self.days[0], self.days[1]),
+            (self.days[1], self.days[1]),
+            (self.days[1], self.days[2]),
+            (self.days[0], self.days[2]),
+        ]
+        for first, last in windows:
+            with self.subTest(window=(first, last)):
+                self.assertEqual(self._sql_window(first, last), self._prefetched_window(first, last))
+
+    def test_the_window_edges_fall_where_the_instants_sit(self):
+        """A row at 23:59 belongs to its own day and a row at 00:00:01 to the next."""
+        self.assertEqual(self._prefetched_window(self.days[0], self.days[0]), [self.days[0]])
+        self.assertEqual(self._prefetched_window(self.days[1], self.days[1]), [self.days[1]])
+        self.assertEqual(
+            self._prefetched_window(self.days[0], self.days[1]), [self.days[0], self.days[1]]
+        )
+
+    def test_the_prefetch_does_not_carry_the_instant_column(self):
+        """The column that cost 5.4 s must not come back because something re-added it.
+
+        Guards the claim rather than the behaviour: no consumer needs the instant, and
+        re-carrying it would silently put the penalty back.
+        """
+        scans = self.command._prefetch_asset_scans(
+            [self.asset], self.days[0], self.days[-1], list(self.indicators)
+        )[self.asset.id]
+        self.assertTrue(scans['technical_rows'])
+        self.assertNotIn('timestamp', scans['technical_rows'][0])

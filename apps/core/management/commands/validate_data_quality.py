@@ -223,11 +223,19 @@ DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 #:
 #: Over-fetch was the next candidate and it is also refuted: joined against each asset's
 #: own first/last OHLCV date inside the window, the tables this prefetch reads are
-#: 0.0% outside that span (median asset occupies 99% of a 729-day window; 18 of 1,780 assets
-#: have a span under 400 days), so bounding the bulk read per asset would save nothing.
-#: Two hypotheses eliminated, cause still unattributed -- what is measured is that a fixed
-#: chunk is 4.4x better at six months and ~25% worse at two years, with identical output at
-#: every size. Attributing it needs a profile of the phase, not another explanation.
+#: 0.0% outside that span (median asset occupies 99% of a 729-day window), so bounding the
+#: bulk read per asset would save nothing. That check ran over all 1,780 assets; the gate
+#: iterates the 687 in the point-in-time union, which is a weaker population than claimed.
+#:
+#: Attributed 2026-11-12 by replaying three SELECT shapes over the same rows -- one query
+#: per asset (old), one bulk query per chunk (shipped), and the bulk query with the raw
+#: ``timestamp`` column dropped -- over 2024-11-13 .. 2026-11-12 on the 687-asset union:
+#: 8,994,707 identical rows in all three, 58.4 s / 66.4 s / 61.0 s. The bulk read's own
+#: penalty is +8.0 s and 5.4 s of it is that single column, which the callers never needed:
+#: ``_write_technical_indicator_continuity_gaps`` reads only ``timestamp__date``. Row
+#: materialisation per extra column, at ~0.6 us/row, is the term that scales with the
+#: window -- not retention, not round trips, not date span. Residual ~19 s of the ~27 s
+#: phase penalty is spread over the other seven prefetched reads and is still unmeasured.
 PREFETCH_CHUNK_REFERENCE_SESSIONS = 120
 
 #: Floor for the adaptive size. Below this the round-trip saving collapses: the chunk
@@ -1642,10 +1650,8 @@ class Command(BaseCommand):
             writer=writer,
         )
 
-        lower_bound = session_midnight(min_date)
-        upper_bound = session_midnight(max_date + timedelta(days=1))
         technical_rows = [
-            row for row in scans['technical_rows'] if lower_bound <= row['timestamp'] < upper_bound
+            row for row in scans['technical_rows'] if min_date <= row['timestamp__date'] <= max_date
         ]
         self._write_technical_indicator_continuity_gaps(
             report_name='technical_indicator_snapshot_continuity_gaps',
@@ -2186,10 +2192,11 @@ class Command(BaseCommand):
         The per-asset date bounds stay exactly as they were, applied in Python to the rows
         this returns: the callers filter to each asset's own ``min_date``/``max_date``, so
         the detail rows must come out byte-identical -- which is the gate this rewrite is
-        checked against, not a speed number. ``TechnicalIndicator`` is the one table whose
-        bound is an instant rather than a date, so both the raw ``timestamp`` and
-        ``timestamp__date`` are carried and the comparison stays on the same axis the SQL
-        filter used.
+        checked against, not a speed number. ``TechnicalIndicator`` is filtered on
+        ``timestamp__date`` rather than a raw ``timestamp`` column: the two bounds are
+        equivalent because both resolve through ``TIME_ZONE`` (``apps/core/date_floor.py``),
+        and carrying the instant as well cost a measured 5.4 s over 9.0 M rows -- two thirds
+        of the whole bulk-side penalty at a two-year window.
 
         Not ``.iterator()`` and not one unbounded ``list()``: see ``apps/core/db_scans.py``
         for both measurements.
@@ -2249,7 +2256,7 @@ class Command(BaseCommand):
                 timestamp__lt=session_midnight(end_date + timedelta(days=1)),
                 indicator_type__in=technical_indicators,
             ).order_by('asset_id', 'timestamp').values(
-                'asset_id', 'timestamp', 'timestamp__date', 'indicator_type', 'parameters', 'value'
+                'asset_id', 'timestamp__date', 'indicator_type', 'parameters', 'value'
             ),
         )
 
