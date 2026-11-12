@@ -41,7 +41,7 @@ Seven PRs came out of executing the milestones: [#163](https://github.com/sean70
 | Issue | One line | Gate |
 |---|---|---|
 | [#136](https://github.com/sean7084/FinanceAnalysis/issues/136) | ETF instrument: block layout swings ~1 Sharpe on panel start alone; declare a hashed, pre-registered stopping rule | **blocks #137** |
-| [#138](https://github.com/sean7084/FinanceAnalysis/issues/138) | DQ gate: bulk-read the per-asset phase — [PR #165](https://github.com/sean7084/FinanceAnalysis/pull/165) + [PR #169](https://github.com/sean7084/FinanceAnalysis/pull/169) (chunk sizing). Isolated result: **4.4× win at 6 months** (149.0 → 34.1 s), **~25% penalty at 2 years** (107.5 → 134.5 s, 130.7 s adaptive), byte-identical everywhere. Retention and over-fetch both measured and both refuted as causes | narrowing per-asset work to effective-universe sessions (row volume, not query count, is the long-window term) |
+| [#138](https://github.com/sean7084/FinanceAnalysis/issues/138) | DQ gate: bulk-read the per-asset phase — [PR #165](https://github.com/sean7084/FinanceAnalysis/pull/165), [PR #169](https://github.com/sean7084/FinanceAnalysis/pull/169) (sizing) + the timestamp-column removal. **4.4× win at 6 months** (149.0 → 34.1 s). Two-year penalty now **+10.6 s** (105.05 → 115.67 s), down from ~+23 s, after attributing it to one prefetched column no consumer read (58.4/66.4/61.0 s over 8,994,707 identical rows). Byte-identical everywhere. Retention and date-span over-fetch were each measured and refuted first | narrowing per-asset work to effective-universe sessions; and `default_bucket_scans`, untouched code observed swinging 206.7–387.3 s, is larger than this whole effect |
 | [#139](https://github.com/sean7084/FinanceAnalysis/issues/139) | Backtest engine: batch candidate-generation indicator IO (run 1468 hit its time limit) | not a wider `soft_time_limit` |
 | [#140](https://github.com/sean7084/FinanceAnalysis/issues/140) | `list_date`: refresh cadence, class-B range backfill, and a policy for the 21 criticals the attribution left standing | gate re-run over one year + one stated policy |
 | [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Newest-session gap measured **closed** on both feeds (2026-11-12: OHLCV 499/session, ETFDaily 2,183) — what is left is a stock-feed scope question | decide the intended universe for `sync_daily_a_shares` |
@@ -49,14 +49,16 @@ Seven PRs came out of executing the milestones: [#163](https://github.com/sean70
 | [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults — fix in [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) | a simulated `ProgrammingError` must fail the run |
 
 #138 and #139 are the same trap in two places — per-asset fetches, one round trip at a time.
-The named-cursor problem was already removed by the `db_scans` rewrite, so what is left is
-query *count*, and it turned out to be the entire cost: on a six-month effective-universe
-window the per-asset phase was **149.0 s of 165 s (90%)**, and the bulk read took it to
-**34.1 s** with every detail CSV byte-identical. An earlier full-range profile had attributed
-**47.8%** to per-asset scans and **44.6%** to the universe/audit writes; both readings are true
-of their own window, and neither licenses quoting a full-range speedup before measuring one (the
-warning is in `db_scans.py:71`). #138 is a release gate, where the failure mode is a silent miss
-rather than a slow run — which is why its acceptance was output equality, not a timing.
+The named-cursor problem was already removed by the `db_scans` rewrite, so the expectation was
+query *count* — and on a short window that is what it was: the per-asset phase measured
+**149.0 s of 165 s (90%)**, and the bulk read took it to **34.1 s** with every detail CSV
+byte-identical. At two years the same change was *slower*, which is how the real term got
+found: not query count but **per-row materialisation cost**, paid once per extra column per
+row. An earlier full-range profile had attributed **47.8%** to per-asset scans and **44.6%**
+to the universe/audit writes; both readings are true of their own window, and neither licenses
+quoting a full-range speedup before measuring one (the warning is in `db_scans.py:71`). #138 is
+a release gate, where the failure mode is a silent miss rather than a slow run — which is why
+its acceptance was output equality at every window, not a timing.
 
 ## M2 — model quality
 
