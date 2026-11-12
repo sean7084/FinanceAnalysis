@@ -241,6 +241,19 @@ DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 #: most plausibly because 9.0 M fewer parsed datetimes also lowers allocation pressure for
 #: everything else in the loop. That mechanism is inferred, not measured.
 #:
+#: The residual +10.6 s is then NOT in the reads, which was tested rather than assumed. A
+#: per-read replay at the two-year window put the shipped bulk prefetch at 67.18 s against
+#: 74.03 s for the per-asset queries it replaced -- bulk is 6.85 s CHEAPER -- so no residual
+#: can come from the SQL. Three candidates, each measured and each too small: the other
+#: seven reads together cost 11.2 s (technical alone is 56.0 s, 84% of read time, and
+#: margin history 2.84 s over 1.4 M whole-history rows); `.values_list` tuples instead of
+#: per-row dicts plus dropping the OHLCV re-dict pass are worth 0.23 s; the per-asset
+#: `scans[...] =` construction block is worth 0.88 s.
+#:
+#: And the replay cannot resolve what is left: the same shape measured twice came out at
+#: 67.18 s and 72.82 s. A ~6 s noise floor is the same order as the +10.6 s residual, so
+#: locating it needs repeated in-process runs of the real phase, not another replay.
+#:
 #: Timing caveat for anyone re-running this comparison: `default_bucket_scans` is code both
 #: sides share, and it has been observed at 206.7, 217.3, 326.6 and 387.3 s across four
 #: runs. That spread is bigger than the whole effect above, so total wall time cannot carry
