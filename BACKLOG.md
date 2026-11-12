@@ -42,23 +42,26 @@ Seven PRs came out of executing the milestones: [#163](https://github.com/sean70
 |---|---|---|
 | [#136](https://github.com/sean7084/FinanceAnalysis/issues/136) | ETF instrument: block layout swings ~1 Sharpe on panel start alone; declare a hashed, pre-registered stopping rule | **blocks #137** |
 | [#138](https://github.com/sean7084/FinanceAnalysis/issues/138) | DQ gate: bulk-read the per-asset phase — [PR #165](https://github.com/sean7084/FinanceAnalysis/pull/165), [PR #169](https://github.com/sean7084/FinanceAnalysis/pull/169) (sizing) + the timestamp-column removal. **4.4× win at 6 months** (149.0 → 34.1 s). Two-year penalty now **+10.6 s** (105.05 → 115.67 s), down from ~+23 s, after attributing it to one prefetched column no consumer read. Byte-identical everywhere. The residual is **not** in the reads: bulk reads 6.85 s *cheaper* than what they replaced, technical alone 84% of read time, and three further candidates measured and refuted (0.23 s / 0.88 s / 11.2 s total) | narrowing per-asset sessions to effective-universe membership — i.e. stop reading 9.26 M indicator rows; and note the floors: `default_bucket_scans` (shared code) swings 206.7–387.3 s, and a replay of the same shape moved 67.18 → 72.82 s, so only repeated in-process runs can resolve what is left |
-| [#139](https://github.com/sean7084/FinanceAnalysis/issues/139) | Backtest engine: batch candidate-generation indicator IO (run 1468 hit its time limit) | not a wider `soft_time_limit` |
+| [#139](https://github.com/sean7084/FinanceAnalysis/issues/139) | Backtest engine: batch candidate-generation indicator IO. Measured 2026-11-12: run 1468 was a **58-session** window (not 28), 1805.8 s = 31.1 s/day, and one cold candidate day is **20.72 s / 5,490 queries / 11 per asset** — **67%** of the per-day cost, 55% of it `analytics_technicalindicator`. But these queries cost **3.8 ms**, not the ~99 ms `db_scans` carries, so the ceiling is ~600 s and the realistic win ~1,170 s — inside the limit, not by an order of magnitude. Baseline payload hash `067fd96138d90882` seeded for the byte-identity gate | per-group `[:12]` is filtered by `parameters` **before** the limit, so a bulk read must reproduce the per-group LIMIT and its tie policy (or a counted fallback); and the "read-only" path writes — 21 backfill UPDATEs per day, harness must roll back |
 | [#140](https://github.com/sean7084/FinanceAnalysis/issues/140) | `list_date`: refresh cadence, class-B range backfill, and a policy for the 21 criticals the attribution left standing | gate re-run over one year + one stated policy |
 | [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Newest-session gap measured **closed** on both feeds (2026-11-12: OHLCV 499/session, ETFDaily 2,183) — what is left is a stock-feed scope question | decide the intended universe for `sync_daily_a_shares` |
 | [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog — already shipped, wired, tested **and observed**: `scripts/db_wedge_watch.py` records 328 clean passes with zero terminations across a 90-minute full-range DQ run | one controlled true-positive reproduction remains |
 | [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults — fix in [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) | a simulated `ProgrammingError` must fail the run |
 
-#138 and #139 are the same trap in two places — per-asset fetches, one round trip at a time.
-The named-cursor problem was already removed by the `db_scans` rewrite, so the expectation was
-query *count* — and on a short window that is what it was: the per-asset phase measured
-**149.0 s of 165 s (90%)**, and the bulk read took it to **34.1 s** with every detail CSV
-byte-identical. At two years the same change was *slower*, which is how the real term got
+#138 and #139 look like the same trap — per-asset fetches, one round trip at a time — but they
+are not the same size of problem, and the shared number that made them look alike turned out to
+be wrong. The named-cursor problem was already removed by the `db_scans` rewrite, so the
+expectation was query *count* — and on a short window that is what it was: the per-asset phase
+measured **149.0 s of 165 s (90%)**, and the bulk read took it to **34.1 s** with every detail
+CSV byte-identical. At two years the same change was *slower*, which is how the real term got
 found: not query count but **per-row materialisation cost**, paid once per extra column per
-row. An earlier full-range profile had attributed **47.8%** to per-asset scans and **44.6%**
-to the universe/audit writes; both readings are true of their own window, and neither licenses
-quoting a full-range speedup before measuring one (the warning is in `db_scans.py:71`). #138 is
-a release gate, where the failure mode is a silent miss rather than a slow run — which is why
-its acceptance was output equality at every window, not a timing.
+row. #139's candidate day costs 3.8 ms per query, so batching there buys ~1.5–3×, not 4.4×;
+treating the ~99 ms link profile as general was the error. An earlier full-range profile had
+attributed **47.8%** to per-asset scans and **44.6%** to the universe/audit writes; both
+readings are true of their own window, and neither licenses quoting a full-range speedup before
+measuring one (the warning is in `db_scans.py:71`). #138 is a release gate, where the failure
+mode is a silent miss rather than a slow run — which is why its acceptance was output equality
+at every window, not a timing.
 
 ## M2 — model quality
 

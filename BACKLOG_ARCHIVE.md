@@ -912,6 +912,16 @@ the total) over 602 assets, and it issues **six queries per asset**: `Fundamenta
 `CapitalFlowSnapshot`, `AssetMoneyFlowSnapshot`, two `AssetMarginDetailSnapshot` reads, and
 `TechnicalIndicator`. 602 x 6 = ~3,600 round trips for one year; 16 years is the 90-minute run.
 
+> **Corrected 2026-11-12 — the 99 ms was not link latency, and that changes what batching can
+> buy here.** Measured on the same WSL2↔NAS link in a different workload, the backtest engine's
+> candidate generation ran 5,490 queries in 20.72 s = **3.8 ms per query** (issue #139). The DQ
+> calls profiled above are aggregates over tables in the tens of millions of rows, so their
+> ~99 ms was predominantly **server-side execution**, mis-read as round-trip latency. Two
+> consequences: collapsing per-asset queries buys far less than "99 ms × query count" predicts,
+> which is exactly the gap #138 hit when its bulk reads came out 6.85 s *cheaper* while the
+> phase still regressed; and per-query cost is a property of the query, so any future
+> round-trip arithmetic has to be measured in the workload it is being applied to.
+
 So the next change should collapse those per-asset queries into a few batched reads grouped in
 Python — the same shape `_write_effective_universe_daily_coverage` already uses. Expected effect
 is roughly an order of magnitude, because the cost is per round trip rather than per row.
