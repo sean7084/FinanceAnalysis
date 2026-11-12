@@ -402,8 +402,13 @@ def reconcile_prediction_coverage(target_date=None, sources=None, max_assets=Non
                 as_of=gap.trade_date,
                 horizons=resolved_horizons,
             )
-        # Local import: tasks_lightgbm pulls numpy/pandas/lightgbm, and the ops
-        # worker should not pay for that to serve the heuristic path.
+        # Deferred for the web process, not for workers. `apps.prediction.views` imports
+        # this module, so keeping numpy/pandas/lightgbm out of it is a real saving in a
+        # request-serving process. Workers get no such benefit: `autodiscover_tasks()` in
+        # `config/celery.py` imports `apps.backtest.tasks`, which pulls `tasks_lightgbm` at
+        # module scope (apps/backtest/tasks.py:60), so the trainer is already loaded before
+        # a worker runs its first task. Verified 2026-11-12 by calling the worker's own
+        # `loader.import_default_modules()` and inspecting `sys.modules`.
         from apps.prediction.tasks_lightgbm import generate_lightgbm_prediction_for_asset
 
         return generate_lightgbm_prediction_for_asset(
