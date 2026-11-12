@@ -219,12 +219,15 @@ DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 #: Measured, retention is NOT where the two-year penalty comes from. On an isolated adjacent
 #: trio over 2024-11-13 .. 2026-11-12, output byte-identical in all three runs and nothing
 #: else on the link: old code 107.5 s, fixed chunk of 25 134.5 s, adaptive chunk of 6
-#: 130.7 s. Sizing recovered about 4 s of a ~27 s penalty, so it is a minor term. The
-#: leading remaining explanation is over-fetch: a chunk reads every asset's rows across the
-#: whole window, while the per-asset queries this replaced were bounded by each asset's own
-#: min_date/max_date, so assets whose span is a fraction of the window transfer rows that
-#: are then discarded. That has not been measured, and nothing here should be described as
-#: the fix for the penalty until it is.
+#: 130.7 s. Sizing recovered about 4 s of a ~27 s penalty, so it is a minor term.
+#:
+#: Over-fetch was the next candidate and it is also refuted: joined against each asset's
+#: own first/last OHLCV date inside the window, the tables this prefetch reads are
+#: 0.0% outside that span (median asset occupies 99% of a 729-day window; 18 of 1,780 assets
+#: have a span under 400 days), so bounding the bulk read per asset would save nothing.
+#: Two hypotheses eliminated, cause still unattributed -- what is measured is that a fixed
+#: chunk is 4.4x better at six months and ~25% worse at two years, with identical output at
+#: every size. Attributing it needs a profile of the phase, not another explanation.
 PREFETCH_CHUNK_REFERENCE_SESSIONS = 120
 
 #: Floor for the adaptive size. Below this the round-trip saving collapses: the chunk
