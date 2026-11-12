@@ -528,6 +528,11 @@ ARTIFACT_S3_ACCESS_KEY_ID = env('ARTIFACT_S3_ACCESS_KEY_ID', default='')
 ARTIFACT_S3_SECRET_ACCESS_KEY = env('ARTIFACT_S3_SECRET_ACCESS_KEY', default='')
 ARTIFACT_S3_REGION = env('ARTIFACT_S3_REGION', default='us-east-1')
 ARTIFACT_S3_ADDRESSING_STYLE = env('ARTIFACT_S3_ADDRESSING_STYLE', default='path')
+# Assets per bulk prefetch in validate_data_quality's per-asset phase. The bulk read exists
+# to cut round trips over the WSL2<->NAS link, but what it retains scales with the window as
+# well as the chunk, so the value is tunable per run rather than baked in.
+# See apps/core/management/commands/validate_data_quality.py.
+DQ_PREFETCH_CHUNK_ASSETS = env.int('DQ_PREFETCH_CHUNK_ASSETS', default=25)
 # Backtest task health: how long a RUNNING backtest run can sit with no progress
 # before it is considered orphaned. See apps/core/task_health.py.
 BACKTEST_STALE_TASK_MAX_AGE_SECONDS = env.int('BACKTEST_STALE_TASK_MAX_AGE_SECONDS', default=2400)

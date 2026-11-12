@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from django.core.management.base import CommandError
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.core.db_scans import DEFAULT_WINDOW_DAYS, date_windows, iter_windowed, windowed_rows
 from apps.core.management.commands.validate_data_quality import Command as ValidateDataQualityCommand
@@ -288,3 +288,44 @@ class ReportCompletenessGuardTests(SimpleTestCase):
             any('verify_report' in line for line in guard),
             'the verify path must be the first thing handle() does, before any query',
         )
+
+
+class PrefetchChunkSizingTests(SimpleTestCase):
+    """The prefetch chunk knob must degrade to the default, never to one asset at a time.
+
+    A chunk size of zero would make _chunked raise (range step 0), and a chunk size
+    of one is the old per-asset query pattern wearing a bulk-read's clothes -- byte-identical
+    output, so no equivalence run would notice, and none of the round-trip win.
+    """
+
+    def setUp(self):
+        self.command = vdq.Command()
+
+    def test_default_when_settings_say_nothing(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS=5)
+    def test_override_is_honoured(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), 5)
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS='7')
+    def test_numeric_string_is_accepted(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), 7)
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS=0)
+    def test_zero_falls_back_to_the_default(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+        chunks = list(vdq._chunked([1, 2, 3], self.command._prefetch_chunk_assets()))
+        self.assertEqual([len(c) for c in chunks], [3])
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS=-3)
+    def test_negative_falls_back_to_the_default(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS='not-a-number')
+    def test_garbage_falls_back_to_the_default(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS=None)
+    def test_none_falls_back_to_the_default(self):
+        self.assertEqual(self.command._prefetch_chunk_assets(), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)

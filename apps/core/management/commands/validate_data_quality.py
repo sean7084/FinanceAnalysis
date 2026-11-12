@@ -187,14 +187,21 @@ FUNDAMENTAL_FIELDS = ('pe', 'pe_ttm', 'pb', 'total_share', 'float_share', 'free_
 FUNDAMENTAL_CONTINUITY_FIELDS = ('pe', 'pe_ttm', 'pb', 'roe', 'roe_qoq')
 CAPITAL_FLOW_FIELDS = ('main_force_net_5d', 'margin_balance_change_5d')
 
-#: Assets per bulk prefetch in the per-asset validation phase.
+#: Assets per bulk prefetch in the per-asset validation phase, unless
+#: ``settings.DQ_PREFETCH_CHUNK_ASSETS`` overrides it.
 #:
 #: Sized from the widest prefetched read, not from a guess: ``TechnicalIndicator`` rows come
 #: as assets x sessions x indicator variants, and holding that for the whole effective
 #: universe at once is the failure mode ``apps/prediction/tasks_lightgbm.py:_query_frame``
 #: records at 22.9 GB peak RSS. A quarter of the universe keeps one chunk's row sets in tens
 #: of megabytes while still cutting ~10 queries per asset down to 8 per chunk.
-PREFETCH_CHUNK_ASSETS = 25
+#:
+#: It is a default rather than a constant because the measurement says the trade-off moves
+#: with the window: at six months the chunked read cut the per-asset phase 149.0 s -> 34.1 s,
+#: while at two years the same chunk size made it *slower* (106.8 s -> 239.2 s) even though
+#: total wall time fell. Retention, not round trips, is what scales with the window, so the
+#: knob has to be tunable by a run rather than by a commit.
+DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 
 
 def _chunked(items, size):
@@ -2087,6 +2094,21 @@ class Command(BaseCommand):
         if window_dates:
             yield window_dates[0], window_dates[-1], list(window_dates)
 
+    def _prefetch_chunk_assets(self):
+        """Chunk size for the bulk prefetch, read per run so tuning needs no code change.
+
+        Falls back to ``DEFAULT_PREFETCH_CHUNK_ASSETS`` for anything unusable rather than
+        silently running with a chunk of zero or a string: a prefetch that fetched one asset
+        at a time would be the slow path wearing a fast path's clothes, and it would still
+        produce byte-identical output, so no equivalence check would notice.
+        """
+        raw = getattr(settings, 'DQ_PREFETCH_CHUNK_ASSETS', DEFAULT_PREFETCH_CHUNK_ASSETS)
+        try:
+            size = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_PREFETCH_CHUNK_ASSETS
+        return size if size > 0 else DEFAULT_PREFETCH_CHUNK_ASSETS
+
     def _iter_assets_with_scans(self, assets, start_date, end_date, technical_indicators):
         """Yield ``(asset, scans)`` with one bulk prefetch per chunk of assets.
 
@@ -2094,7 +2116,7 @@ class Command(BaseCommand):
         sets are released before the next is fetched: the loop body below stays exactly as
         it was, and peak memory stays one chunk instead of one history.
         """
-        for chunk in _chunked(assets, PREFETCH_CHUNK_ASSETS):
+        for chunk in _chunked(assets, self._prefetch_chunk_assets()):
             scans_by_asset = self._prefetch_asset_scans(chunk, start_date, end_date, technical_indicators)
             for asset in chunk:
                 yield asset, scans_by_asset[asset.id]
