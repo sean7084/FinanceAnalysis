@@ -41,8 +41,8 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 | [#136](https://github.com/sean7084/FinanceAnalysis/issues/136) | ETF instrument: block layout swings ~1 Sharpe on panel start alone; declare a hashed, pre-registered stopping rule | **blocks #137** |
 | [#138](https://github.com/sean7084/FinanceAnalysis/issues/138) | DQ gate: invert the per-asset cursor loop into batched windowed reads | byte-identical detail rows on a fixed window |
 | [#139](https://github.com/sean7084/FinanceAnalysis/issues/139) | Backtest engine: batch candidate-generation indicator IO (run 1468 hit its time limit) | not a wider `soft_time_limit` |
-| [#140](https://github.com/sean7084/FinanceAnalysis/issues/140) | `list_date`: refresh cadence + a stated policy for the 21 historical criticals | re-run the gate over one year |
-| [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Verify startup catch-up closes the newest-session gap | verify-and-run, no new code |
+| [#140](https://github.com/sean7084/FinanceAnalysis/issues/140) | `list_date`: refresh cadence, class-B range backfill, and a policy for the 21 criticals the attribution left standing | gate re-run over one year + one stated policy |
+| [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Newest-session gap measured **closed** on both feeds (2026-11-12: OHLCV 499/session, ETFDaily 2,183) — what is left is a stock-feed scope question | decide the intended universe for `sync_daily_a_shares` |
 | [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog classified by two-sample signature; per-statement timeout for probes | must not kill a legitimate 58-min scan |
 | [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults | a simulated `ProgrammingError` must fail the run |
 
