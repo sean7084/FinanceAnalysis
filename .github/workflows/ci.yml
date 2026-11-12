@@ -235,7 +235,11 @@ jobs:
       # has (A0 classified the active Errno-104 task failures onto the cache, which had no
       # OPTIONS), plus a negative control proving they come from CACHES OPTIONS not redis
       # defaults. Measured 1181.
-      MIN_TEST_COUNT: "1177"
+      #
+      # Raised to 1178 by fix/etf-feature-snapshot-import, which adds the one regression test
+      # exercising compute_etf_features_daily's return line (A0 found it raising NameError on
+      # ETFFeatureSnapshot, which the .models import omitted). Measured 1182.
+      MIN_TEST_COUNT: "1178"
 
     steps:
       - uses: actions/checkout@v4
