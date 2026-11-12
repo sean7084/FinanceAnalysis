@@ -329,3 +329,52 @@ class PrefetchChunkSizingTests(SimpleTestCase):
     @override_settings(DQ_PREFETCH_CHUNK_ASSETS=None)
     def test_none_falls_back_to_the_default(self):
         self.assertEqual(self.command._prefetch_chunk_assets(), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+
+
+class PrefetchChunkScalingTests(SimpleTestCase):
+    """Retention, not round trips, is what scales with the window -- so the chunk shrinks.
+
+    These are pure-function tests on purpose: the cost being controlled is memory held per
+    chunk, and asserting it through a wall-clock budget would measure CI noise instead.
+    """
+
+    def setUp(self):
+        self.command = vdq.Command()
+
+    def test_reference_window_keeps_the_default(self):
+        self.assertEqual(
+            self.command._prefetch_chunk_size(vdq.PREFETCH_CHUNK_REFERENCE_SESSIONS),
+            vdq.DEFAULT_PREFETCH_CHUNK_ASSETS,
+        )
+        self.assertEqual(
+            self.command._prefetch_chunk_size(1), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+
+    def test_two_years_shrinks_the_chunk_to_hold_retention_flat(self):
+        reference = vdq.PREFETCH_CHUNK_REFERENCE_SESSIONS
+        size = self.command._prefetch_chunk_size(2 * reference)
+        self.assertEqual(size, vdq.DEFAULT_PREFETCH_CHUNK_ASSETS // 2)
+        # assets x sessions is the retention term; a flat product is the whole point.
+        self.assertLessEqual(size * 2 * reference, vdq.DEFAULT_PREFETCH_CHUNK_ASSETS * reference + size)
+
+    def test_sixteen_years_lands_on_the_floor_not_on_zero(self):
+        size = self.command._prefetch_chunk_size(3900)
+        self.assertEqual(size, vdq.PREFETCH_CHUNK_MIN_ASSETS)
+
+    def test_monotonic_non_increasing_as_the_window_grows(self):
+        sizes = [self.command._prefetch_chunk_size(n) for n in range(1, 6000, 137)]
+        self.assertTrue(all(a >= b for a, b in zip(sizes, sizes[1:])), sizes)
+
+    def test_never_below_the_floor_for_any_window(self):
+        for sessions in (1, 120, 480, 4000, 400000):
+            self.assertGreaterEqual(
+                self.command._prefetch_chunk_size(sessions), vdq.PREFETCH_CHUNK_MIN_ASSETS)
+
+    def test_missing_session_count_falls_back_to_the_default(self):
+        for value in (None, 0, -5):
+            self.assertEqual(
+                self.command._prefetch_chunk_size(value), vdq.DEFAULT_PREFETCH_CHUNK_ASSETS)
+
+    @override_settings(DQ_PREFETCH_CHUNK_ASSETS=50)
+    def test_override_scales_the_same_way(self):
+        self.assertEqual(self.command._prefetch_chunk_size(120), 50)
+        self.assertEqual(self.command._prefetch_chunk_size(480), 12)

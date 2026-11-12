@@ -203,6 +203,27 @@ CAPITAL_FLOW_FIELDS = ('main_force_net_5d', 'margin_balance_change_5d')
 #: knob has to be tunable by a run rather than by a commit.
 DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 
+#: Sessions at which ``DEFAULT_PREFETCH_CHUNK_ASSETS`` was chosen.
+#:
+#: The prefetch trades round trips for retention: a chunk holds its assets' rows for
+#: every session in the window and across every requested indicator variant, so retained
+#: volume is ``assets x sessions x variants``. Measured, that is what went wrong at scale
+#: -- a six-month window (~120 sessions, ~57k rows per chunk) improved the per-asset
+#: phase 149.0 s -> 34.1 s, while two years (~490 sessions, ~237k rows per chunk) made the
+#: same phase slower, 106.8 s -> 239.2 s, even as total wall time fell.
+#:
+#: So the chunk shrinks as the window grows, holding retention per chunk roughly constant
+#: instead of constant-per-asset-and-window. A 16-year range would otherwise hold ~1.9M
+#: rows with a JSON ``parameters`` dict each -- the 22.9 GB peak-RSS class that
+#: ``apps/prediction/tasks_lightgbm.py:_query_frame`` records, arriving as an OOM kill on
+#: the very invocation the gate exists for.
+PREFETCH_CHUNK_REFERENCE_SESSIONS = 120
+
+#: Floor for the adaptive size. Below this the round-trip saving collapses: the chunk
+#: exists to amortise 8 queries across a set of assets, and a chunk of 1 is the old
+#: per-asset pattern with the prefetch's memory cost on top.
+PREFETCH_CHUNK_MIN_ASSETS = 4
+
 
 def _chunked(items, size):
     """Contiguous slices of ``items``, ``size`` at a time."""
@@ -649,7 +670,7 @@ class Command(BaseCommand):
 
             phase_started = perf_counter()
             for asset, scans in self._iter_assets_with_scans(
-                assets, start_date, end_date, technical_indicators
+                assets, start_date, end_date, technical_indicators, len(trading_dates)
             ):
                 actual_rows = scans['ohlcv_rows']
                 actual_dates = {row['date'] for row in actual_rows}
@@ -2109,14 +2130,33 @@ class Command(BaseCommand):
             return DEFAULT_PREFETCH_CHUNK_ASSETS
         return size if size > 0 else DEFAULT_PREFETCH_CHUNK_ASSETS
 
-    def _iter_assets_with_scans(self, assets, start_date, end_date, technical_indicators):
+    def _prefetch_chunk_size(self, total_sessions):
+        """Assets per prefetch chunk, scaled so retained rows stay roughly constant.
+
+        ``DEFAULT_PREFETCH_CHUNK_ASSETS`` is calibrated at
+        ``PREFETCH_CHUNK_REFERENCE_SESSIONS``; a window four times as long gets a quarter
+        of the assets per chunk, because the chunk holds one row set per session. At or
+        below the reference window the default is returned unchanged, so the measured
+        six-month behaviour is what the six-month run produced.
+
+        The session count is passed in from the run's already-loaded trading calendar --
+        computing it here would put another scan inside the phase this tunes.
+        """
+        base = self._prefetch_chunk_assets()
+        sessions = max(int(total_sessions or 0), 1)
+        if sessions <= PREFETCH_CHUNK_REFERENCE_SESSIONS:
+            return base
+        scaled = base * PREFETCH_CHUNK_REFERENCE_SESSIONS // sessions
+        return max(PREFETCH_CHUNK_MIN_ASSETS, min(base, scaled))
+
+    def _iter_assets_with_scans(self, assets, start_date, end_date, technical_indicators, total_sessions):
         """Yield ``(asset, scans)`` with one bulk prefetch per chunk of assets.
 
         A generator rather than a prefetch dict for the whole universe, so one chunk's row
         sets are released before the next is fetched: the loop body below stays exactly as
         it was, and peak memory stays one chunk instead of one history.
         """
-        for chunk in _chunked(assets, self._prefetch_chunk_assets()):
+        for chunk in _chunked(assets, self._prefetch_chunk_size(total_sessions)):
             scans_by_asset = self._prefetch_asset_scans(chunk, start_date, end_date, technical_indicators)
             for asset in chunk:
                 yield asset, scans_by_asset[asset.id]
