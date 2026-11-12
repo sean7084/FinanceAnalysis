@@ -207,16 +207,24 @@ DEFAULT_PREFETCH_CHUNK_ASSETS = 25
 #:
 #: The prefetch trades round trips for retention: a chunk holds its assets' rows for
 #: every session in the window and across every requested indicator variant, so retained
-#: volume is ``assets x sessions x variants``. Measured, that is what went wrong at scale
-#: -- a six-month window (~120 sessions, ~57k rows per chunk) improved the per-asset
-#: phase 149.0 s -> 34.1 s, while two years (~490 sessions, ~237k rows per chunk) made the
-#: same phase slower, 106.8 s -> 239.2 s, even as total wall time fell.
+#: volume is assets x sessions x variants. At a six-month window (~120 sessions,
+#: ~57k rows per chunk) that trade is strongly favourable: the per-asset phase went
+#: 149.0 s -> 34.1 s. At two years (~490 sessions) it is mildly unfavourable -- 107.5 s
+#: of old code against 134.5 s of chunked code, measured in isolation with byte-identical
+#: output, and the earlier 106.8 -> 239.2 pair quoted here was contaminated by other
+#: database jobs sharing the link at the time.
 #:
-#: So the chunk shrinks as the window grows, holding retention per chunk roughly constant
-#: instead of constant-per-asset-and-window. A 16-year range would otherwise hold ~1.9M
-#: rows with a JSON ``parameters`` dict each -- the 22.9 GB peak-RSS class that
-#: ``apps/prediction/tasks_lightgbm.py:_query_frame`` records, arriving as an OOM kill on
-#: the very invocation the gate exists for.
+#: So the chunk shrinks as the window grows, which keeps retention per chunk roughly flat.
+#:
+#: Measured, retention is NOT where the two-year penalty comes from. On an isolated adjacent
+#: trio over 2024-11-13 .. 2026-11-12, output byte-identical in all three runs and nothing
+#: else on the link: old code 107.5 s, fixed chunk of 25 134.5 s, adaptive chunk of 6
+#: 130.7 s. Sizing recovered about 4 s of a ~27 s penalty, so it is a minor term. The
+#: leading remaining explanation is over-fetch: a chunk reads every asset's rows across the
+#: whole window, while the per-asset queries this replaced were bounded by each asset's own
+#: min_date/max_date, so assets whose span is a fraction of the window transfer rows that
+#: are then discarded. That has not been measured, and nothing here should be described as
+#: the fix for the penalty until it is.
 PREFETCH_CHUNK_REFERENCE_SESSIONS = 120
 
 #: Floor for the adaptive size. Below this the round-trip saving collapses: the chunk
