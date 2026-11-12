@@ -28,11 +28,11 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 
 - **M1 — measurement power** (Phase D): #136, #138–#143
 - **M2 — model quality** (Phase E): #137, #144–#148
-- **M3 — hygiene and micro-tasks**: #151–#156, #160, #161
+- **M3 — hygiene and micro-tasks**: #152–#156, #160 (#151 and #153 shipped/closed)
 - **Owner decisions** — deployment hygiene, not diffs: #149, #150
 - **Blocked on a data source** (not schedulable): #157–#159
 
-Fixes from this pass are open as PRs: [#163](https://github.com/sean7084/FinanceAnalysis/pull/163) closes #143 (schema faults now fail the run, with a mutation check proving the new tests bite), [#164](https://github.com/sean7084/FinanceAnalysis/pull/164) closes #151, [#165](https://github.com/sean7084/FinanceAnalysis/pull/165) closes #138 (per-asset bulk read, 149.0 s → 34.1 s with all 23 detail CSVs byte-identical on two fixed windows), [#166](https://github.com/sean7084/FinanceAnalysis/pull/166) closes #155. Two items closed out differently: #161 was already fixed and its doc claim corrected, and #142's watchdog was already built, wired, tested **and observed** — so the restructure's own first finding was a roadmap scheduling finished work, twice over.
+Six PRs came out of executing the milestones: [#163](https://github.com/sean7084/FinanceAnalysis/pull/163) (#143 schema faults now raise, mutation-checked), [#164](https://github.com/sean7084/FinanceAnalysis/pull/164) (#151 lazy-import rationale), [#165](https://github.com/sean7084/FinanceAnalysis/pull/165) (#138 per-asset bulk read: 149.0 s → 34.1 s, 23 detail CSVs byte-identical on two fixed windows), [#166](https://github.com/sean7084/FinanceAnalysis/pull/166) (#155 entitlement-flag eviction), [#167](https://github.com/sean7084/FinanceAnalysis/pull/167) (#152 engine decision rules), [#168](https://github.com/sean7084/FinanceAnalysis/pull/168) (#153 orphaned i18n keys). Three issues were found to describe work already shipped and were corrected rather than implemented — #142 (watchdog built, wired, observed), #156 (unit already in `help_text`), #161 (temp fixture already in place, then closed). A roadmap that schedules finished work is the defect this restructure exists to remove; it took executing the milestones to find three more instances of it.
 
 ---
 
@@ -78,13 +78,13 @@ rematch on the current layout re-measures the harness, not the strategy.
 | Issue | One line |
 |---|---|
 | [#151](https://github.com/sean7084/FinanceAnalysis/issues/151) | Correct the lazy-import rationale in `apps/prediction/tasks.py` — fix in [PR #164](https://github.com/sean7084/FinanceAnalysis/pull/164); the note's premise was also wrong: the deferral saves the **web** process, while workers load the trainer anyway via `apps/backtest/tasks.py:60` + `autodiscover_tasks()` |
-| [#152](https://github.com/sean7084/FinanceAnalysis/issues/152) | Function-level docstrings on the backtest engine's four decision points |
-| [#153](https://github.com/sean7084/FinanceAnalysis/issues/153) | Remove the eight orphaned screener i18n keys |
+| [#152](https://github.com/sean7084/FinanceAnalysis/issues/152) | Engine decision rules — the four named behaviours already had docstrings; [PR #167](https://github.com/sean7084/FinanceAnalysis/pull/167) adds the five mechanical functions around them (piecewise commission floor, resume-progress coupling) |
+| ~~#153~~ closed | Eight orphaned screener i18n keys removed in [PR #168](https://github.com/sean7084/FinanceAnalysis/pull/168), gated on 408 `t()` literals resolving in both locales — `tsc` and eslint cannot catch an over-deletion here |
 | [#154](https://github.com/sean7084/FinanceAnalysis/issues/154) | Macro semantics: `dxy` name, publication-date alignment, where northbound flow belongs |
 | [#155](https://github.com/sean7084/FinanceAnalysis/issues/155) | Entitlement flags cached with `timeout=None` — documented-convention option shipped in [PR #166](https://github.com/sean7084/FinanceAnalysis/pull/166); TTL declined because the condition only changes when the operator changes the token | one operator walk-through of `runbook-provider-blackout.md` §9 |
-| [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) | `amount` unit in `help_text`; count assets holding `raw_close IS NULL` |
+| [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) | `amount` unit — **already documented** (`models.py:220` states 千元 vs 元 and the do-not-join rule); remainder is the `raw_close IS NULL` asset count and whether the repair walks them |
 | [#160](https://github.com/sean7084/FinanceAnalysis/issues/160) | Operator model-version selection — and which surface absorbs it |
-| [#161](https://github.com/sean7084/FinanceAnalysis/issues/161) | `apps/macro/tests.py` gitignored-CSV dependency — **verified already fixed** and closed (this host has no `source_data/`, and the pre-2016 yield case still reports `csv_yield_updates=21` from a temp fixture) |
+| ~~#161~~ closed | `apps/macro/tests.py` gitignored-CSV dependency — **verified already fixed**: this host has no `source_data/` at all and the pre-2016 yield case still reports `csv_yield_updates=21` from a temp fixture |
 
 ## Owner decisions — deployment hygiene
 
