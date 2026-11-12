@@ -1343,7 +1343,7 @@ enough to dominate the job runtime.
 
 ### Generated-sheet reproducibility and the sentiment app deletion
 
-> Disposition: verify-and-close. The `celery.md` registration note was resolved by #126 (`CELERY_IMPORTS`, `config/settings/base.py:293`) and the derivability guard in `export_documentation_facts.py`; the committed sheet now counts 56 registered project tasks and reproduces from a clean interpreter. Kept because both notes describe a failure mode that is easy to re-introduce.
+> Disposition: verify-and-close. The `celery.md` registration note was resolved by #126 and re-measured on 2026-11-12 for this restructure: `CELERY_IMPORTS` (`config/settings/base.py:293`) names both trainers, `docs/reference/celery.md` counts **56** registered project tasks with **0** mentions of sentiment (the stale queue literal is gone from the generator too), and `export_documentation_facts` refuses to build the sheet if a routed or scheduled task is missing from the building process's registry. Kept because both notes describe a failure mode that is easy to re-introduce.
 
 - `export_documentation_facts` output depends on which sheets are built in the same
   process. `--check` walks `SHEET_NAMES` in order, and `build_commands()` imports every
