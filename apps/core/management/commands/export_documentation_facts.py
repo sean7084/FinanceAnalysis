@@ -237,6 +237,29 @@ def _query_with_reconnect(fn):
     raise last_exc
 
 
+def _aggregate_field_coverage(model, aggregates):
+    """Aggregate one table's column coverage, retrying link faults and failing on schema faults.
+
+    The two exception classes mean opposite things here, and the previous handling treated them
+    the same. ``OperationalError`` is usually the WSL2-to-NAS link dropping mid-scan on a
+    hundred-million-row table, and a fresh connection is worth two more tries.
+    ``ProgrammingError`` means a column this code names is gone -- and swallowing it dropped that
+    table's rows from ``metrics.md`` while the command still exited 0. ``--check`` deliberately
+    skips this sheet without a database, so nothing downstream compared the shrunk sheet to the
+    schema it should cover.
+    """
+    try:
+        return _query_with_reconnect(
+            lambda: model._default_manager.all().aggregate(**aggregates)
+        )
+    except ProgrammingError as exc:
+        raise CommandError(
+            f'field coverage for `{model._meta.db_table}` failed: {exc}. A column this generator '
+            'names no longer exists, and continuing would remove that table from metrics.md '
+            'without a non-zero exit.'
+        ) from exc
+
+
 # --------------------------------------------------------------------------- #
 # metrics.md
 # --------------------------------------------------------------------------- #
@@ -347,10 +370,7 @@ def build_metrics():
             aggregates[f'{field.name}__nonnull'] = Count(field.name, filter=models.Q(**{f'{field.name}__isnull': False}))
             aggregates[f'{field.name}__min'] = Min(field.name)
             aggregates[f'{field.name}__max'] = Max(field.name)
-        try:
-            result = model._default_manager.all().aggregate(**aggregates)
-        except (OperationalError, ProgrammingError):
-            continue
+        result = _aggregate_field_coverage(model, aggregates)
         for field in numeric_fields:
             nonnull = result[f'{field.name}__nonnull']
             span = ''
