@@ -106,7 +106,7 @@ produces a message that overclaims and misattributes it in the permanent record,
 This has already happened here: `ffe2347`'s message describes a two-part fix while its
 diff contains only the second part, because the first part had been committed as
 `6ec691d`. It was left uncorrected rather than rebased, since both were already
-published. See the cluster-3 note in `BACKLOG.md`.
+published. See the cluster-3 note in [`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md) §A.
 
 The same check catches the inverse error — committing less than the message claims,
 which leaves a build or test suite broken at that commit. Verify the commit stands on
@@ -117,7 +117,8 @@ Never commit:
 - `.env` (gitignored — contains `TUSHARE_TOKEN` and database credentials)
 - `reports/` (gitignored — generated local output, including checkpoint state)
 - `get-pip.py` or any other downloaded bootstrap installer
-- Scratch notes, pasted log output, or TODO lists — those belong in `BACKLOG.md`
+- Scratch notes, pasted log output, or TODO lists — those belong in a GitHub issue or
+  [`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md), never in a document
 
 ---
 
@@ -151,6 +152,8 @@ Verify nothing drifted:
 
 ```bash
 python manage.py export_documentation_facts --check
+python scripts/check-backlog-references.py
+python scripts/check-archive-verbatim.py
 ```
 
 `--check` exits non-zero on drift. Generated output is deterministic apart from a
@@ -169,7 +172,8 @@ in a generated sheet, and it will be wrong within weeks otherwise.
 | `docs/reference/api.md` | API contracts the OpenAPI schema cannot express |
 | `docs/how-to/*.md` | Procedures, in task order, with the reasoning that makes the order matter |
 | `CHANGELOG.md` | What shipped, per release |
-| `BACKLOG.md` | What is unfinished, broken, or deferred |
+| `BACKLOG.md` | **Thin index only**: open GitHub issues, data-gated items, owner decisions, deferred pointers |
+| `BACKLOG_ARCHIVE.md` | Verbatim provenance: resolved narratives, measurement evidence, no-action decisions |
 | `frontend/README.md` | Frontend architecture and conventions |
 
 ### Where a fact goes
@@ -181,7 +185,9 @@ in a generated sheet, and it will be wrong within weeks otherwise.
 | A procedure with an order | `docs/how-to/` |
 | A failure mode and its remedy | a runbook under `docs/how-to/` |
 | A reason a design is the way it is | `TECHNICAL_GUIDE.md` |
-| Something broken or unfinished | `BACKLOG.md` |
+| Something broken or unfinished, with work to do | a **GitHub issue**, indexed from `BACKLOG.md` |
+| Something waiting on data or on an owner decision | an issue labelled `blocked`, with the coverage evidence and the restart condition in its body |
+| A finished investigation whose numbers must survive it | `BACKLOG_ARCHIVE.md`, verbatim |
 | Something that shipped | `CHANGELOG.md` |
 
 `README.md` links; it does not explain. `TECHNICAL_GUIDE.md` explains; it does not
@@ -210,7 +216,7 @@ Every released version uses the same sections:
 ```
 
 Do not commit a version section that is still a working checklist. Draft audits go
-in `BACKLOG.md` until they are conclusions.
+in a GitHub issue or `BACKLOG_ARCHIVE.md` until they are conclusions.
 
 ---
 
@@ -351,17 +357,19 @@ of blobs from before the cutover; `.git` simply stops growing one family per ret
 
 Before committing:
 
-- [ ] `python manage.py test --keepdb` passes, or new failures are documented in
-      `BACKLOG.md` with a cause
+- [ ] `python manage.py test --keepdb` passes, or new failures are filed as a GitHub
+      issue with a cause
 - [ ] `cd frontend && npm test` and `npm run lint` pass, if frontend code changed
 - [ ] `python manage.py export_documentation_facts --check` passes
+- [ ] `python scripts/check-backlog-references.py` passes; `--self-test` shows it can fail, and it deliberately does not police paths quoted inside `BACKLOG_ARCHIVE.md` prose
+- [ ] `python scripts/check-archive-verbatim.py` passes — no archived measurement sentence has been reworded (the gate's own control perturbs one and expects a failure)
 - [ ] `python manage.py makemigrations --check` reports no changes
 - [ ] Generated sheets regenerated and their diff reviewed
 - [ ] Authored docs updated where behaviour changed
 - [ ] Nothing hand-typed into a generated file
 - [ ] No row counts, coverage dates, accuracies, or artifact versions added to
       `README.md` or `TECHNICAL_GUIDE.md`
-- [ ] Scratch notes went to `BACKLOG.md`, not into a document
+- [ ] Scratch notes went to an issue or `BACKLOG_ARCHIVE.md`, not into a document
 - [ ] Commits split by category, conventional format, body explains why
 
 ---
@@ -377,7 +385,8 @@ Read in this order:
 4. [`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) §2–§3 — stored versus runtime
    features, and why staleness is refused rather than tolerated
 5. The generated sheets — current facts
-6. [`BACKLOG.md`](BACKLOG.md) — what is known to be broken
+6. [`BACKLOG.md`](BACKLOG.md) — the index of open issues, and
+   [`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md) for the evidence behind a decision
 
 The single most common mistake is assuming a documented number is current. It
 almost never is. Read the generated sheets.
