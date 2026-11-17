@@ -229,6 +229,7 @@ Backend discovery floor **1175 → 1179** for the tests these add.
 
 #### Docs:
 
+- **Entitlement flags that outlive the entitlement (#155).** `catchup:macro_yields_entitlement_denied` is written with `timeout=None` on the first `yc_cb` permission error, which is correct while the denial holds and wrong permanently after a token upgrade — the flag short-circuits the yield refresh before the provider is ever called, so yields stay NULL with a valid token. Nothing in the code or the docs said so. The plan's other option was a TTL; it was declined because the flag exists precisely so each re-probe does not pay the provider sleep, and the condition changes only when the operator changes the token. So the eviction is now a documented step of the upgrade: `runbook-provider-blackout.md` §9 names the flag, gives the Django-cache-API delete (the stored key is `:1:catchup:...` because `KEY_PREFIX` is unset, so a hand-typed `redis-cli DEL` deletes nothing and reports success), and then asks for the two commands that prove the flag was the only thing blocking. `repairs.py:25` points back at it. Measured scope: this is the only `cache.set(..., timeout=None)` in production `apps/` code, so the list is complete rather than sampled.
 - `TECHNICAL_GUIDE.md` section 8 records the contract, why each boundary sits where it
   does, and a re-baseline notice: ETF and stock metrics computed after this change are
   not comparable with numbers from the wider windows. The stock raw bound is documented
