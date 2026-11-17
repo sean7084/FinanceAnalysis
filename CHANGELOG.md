@@ -2,6 +2,10 @@
 
 ### Unreleased
 
+#### Changed:
+
+- **The data-quality gate's per-asset phase reads in bulk (#138).** Measured on `2026-05-01 .. 2026-11-06 --effective-universe-only`: `per_asset_scans` was **149.0 s of a 165 s run** — 90% of the gate, not the "at most half" the triage note assumed, because each of ~500 assets paid ten separate round trips over the WSL2↔NAS link. The loop now receives a chunked prefetch: 8 queries per 25-asset chunk replace ~10 per asset, and `per_asset_scans` drops to **34.1 s** (phase total 160.5 s → 38.4 s). Each asset's own `min_date`/`max_date` bounds are applied in Python to the prefetched rows, so the detail output is unchanged: **all 23 CSVs byte-identical** (`critical_issues=16`, `detail_rows_written=19987`, `detail_rows_dropped=0` before and after), which is the gate this kind of rewrite is checked against rather than the speed number. `TechnicalIndicator` keeps its instant-based bounds on the same axis the SQL used, and the whole-margin-history read stays window-independent. Chunked rather than one dict for the universe because the widest read is assets × sessions × indicator variants — the 22.9 GB failure mode `tasks_lightgbm.py:_query_frame` records.
+
 #### Fixed:
 
 - **`build_metrics` no longer drops a table's field coverage when the schema moved (#143).** The field-coverage loop caught `OperationalError` and `ProgrammingError` together and `continue`d — but those mean opposite things. A link fault on a hundred-million-row scan is worth retrying; a missing column means the sheet silently loses that table while the command still exits 0, and `--check` deliberately skips `metrics.md` without a database, so nothing compared the shrunk sheet to the schema. Link faults now go through the existing `_query_with_reconnect` retry, and a schema fault raises `CommandError` naming the table and the column. Four tests pin both halves, including the retry-recovery path; reverting the raise to a silent `return None` fails one of them, which is what makes the gate real rather than decorative.
