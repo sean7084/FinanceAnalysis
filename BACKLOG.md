@@ -16,7 +16,7 @@ intact, or being archived verbatim.
 
 ## Current state
 
-**Executed 2026-11-12 and awaiting merge:** nine CI-green PRs — #162 (this restructure), #163 (#143), #164 (#151), #165 and #169 (#138), #166 (#155), #167 (#152), #168 (#153), #170 (#139). They are blocked only on an approving review, so merging is an owner action; measured with git merge-tree, the sequence has three CHANGELOG.md conflicts and no code conflicts. #141 and #156 closed on measurement; #138 residual attributed to the bulk read I/O rather than the Python work; #140, #154, #136, #149 and #150 are costed and need a decision, not a diff.
+**Executed 2026-11-12, merged 2026-11-17:** #162 (this restructure), #163 (#143), #164 (#151), #165 and #169 (#138), #166 (#155), #167 (#152), #168 (#153), #170 (#139), plus #172 which wired the two backlog gates into CI and added `docs/reports/decisions-2026-11-17.md`. The three predicted `CHANGELOG.md` conflicts were resolved as proven bullet unions (resolved set == main ∪ branch, 0 missing / 0 extra) with `BACKLOG.md` and `BACKLOG_ARCHIVE.md` asserted untouched at every step; no code conflicts occurred. On `main`: verbatim gate 0 paraphrases over 1,239 lines, reference gate 0 failures, generated sheets current. #156 closed on measurement (zero-row legacy class). **#138 stays open** — its residual is attributed to the bulk read's I/O (prefetch 77.2–86.6 s vs loop body 39–41 s) but not fixed, and it was twice auto-closed by GitHub's keyword parser reading a negated instruction; both times reopened. #141 stays open pending the universe-scope decision. #136, #140, #154, #149, #150 are costed with facts, options, recommendations and counter-arguments — they need a decision, not a diff.
 
 Phases A–C (reliability and closure) are merged as PRs #129–#135: the NAS-Redis cache resilience,
 the `ETFFeatureSnapshot` `NameError`, the freshness rule for immortal `RUNNING` rows, the dead
@@ -30,7 +30,7 @@ results is currently indistinguishable from "the instrument cannot resolve the e
 
 - **M1 — measurement power** (Phase D): #136, #138–#143
 - **M2 — model quality** (Phase E): #137, #144–#148
-- **M3 — hygiene and micro-tasks**: #152–#156, #160 — state is not uniform: #153 and #156 are **closed** (#156 on measurement: zero-row legacy class), #151/#152/#155 stay **open until their PRs merge**, and #154 needs a semantic decision, not code
+- **M3 — hygiene and micro-tasks**: #152–#156, #160 — #151/#152/#153/#155/#156 are **closed** (their PRs merged; #156 on measurement: zero-row legacy class). #154 needs a semantic decision, not code; #160 remains open
 - **Owner decisions** — deployment hygiene, not diffs: #149, #150
 - **Blocked on a data source** (not schedulable): #157–#159
 
