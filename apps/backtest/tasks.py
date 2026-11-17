@@ -54,6 +54,7 @@ from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_asset_ids
 from apps.markets.models import OHLCV
 from apps.macro.models import MarketContext
+from apps.prediction.historical_features import prime_indicator_candidates
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
@@ -893,6 +894,25 @@ def _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_po
     return payload
 
 
+#: The indicator reads one heuristic candidate day performs, as
+#: `(indicator_type, parameter_key, parameter_value, limit)`.
+#:
+#: Listed here rather than discovered because the alternative is priming whatever a probe
+#: happened to see: `_feature_snapshot` alone asks for RSI/14 and MOM_5D/5, while
+#: `estimate_trade_decision` (`apps/prediction/odds.py:99-101`) adds BBANDS/20 and SMA/60 and
+#: SMA/50 -- and the SMA pair is the most expensive part of the day. A signature missing from
+#: this list is not a wrong answer: it falls back to the old per-asset read and shows up in
+#: `INDICATOR_PREFETCH_STATS['fallback']`, which is how staleness becomes visible instead of
+#: silent.
+HEURISTIC_INDICATOR_SIGNATURES = (
+    ('RSI', 'timeperiod', 14, 1),
+    ('MOM_5D', 'n_days', 5, 1),
+    ('BBANDS', 'timeperiod', 20, 1),
+    ('SMA', 'timeperiod', 60, 1),
+    ('SMA', 'timeperiod', 50, 1),
+)
+
+
 def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=None):
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('heuristic_prediction_map', dt.isoformat(), int(horizon), policy_key)
@@ -917,7 +937,9 @@ def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=No
             return cached_mapping
 
     mapping = {}
-    for asset_id in _eligible_backtest_asset_ids(dt, cache):
+    eligible_asset_ids = list(_eligible_backtest_asset_ids(dt, cache))
+    prime_indicator_candidates(eligible_asset_ids, dt, HEURISTIC_INDICATOR_SIGNATURES, cache)
+    for asset_id in eligible_asset_ids:
         mapping[asset_id] = _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
 
     cache[cache_key] = mapping
