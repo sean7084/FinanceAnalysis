@@ -256,7 +256,8 @@ Notes on the semantics that are easy to get wrong:
 
 Macro snapshots currently carry no per-field release date. As-of resolution
 therefore points at the month-start row, which is an approximation of true
-publication availability. Tracked in `BACKLOG.md`.
+publication availability. Tracked in
+[issue #154](https://github.com/sean7084/FinanceAnalysis/issues/154).
 
 ---
 
@@ -354,7 +355,9 @@ confirmed reversal after capping.
 
 **Not included today:** stored MACD, ADX, OBV, SMA/EMA, and RS score analytics do
 not feed `technical_score`. That is a deliberate scoping decision, not an
-oversight — the component measures reversal, not trend. Revisit via `BACKLOG.md`.
+oversight — the component measures reversal, not trend. It is listed under deferred
+features in [`BACKLOG.md`](BACKLOG.md), and the scoping rationale is in §E of
+[`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md).
 
 **Composite weights** (before normalisation): financial `0.4`, capital flow
 `0.3`, technical `0.3`.
@@ -660,8 +663,11 @@ host. That relative path also doubles as the object key for the artifact store
 (`docs/how-to/artifact-store.md`), which can hold the binaries in S3/MinIO instead of
 git. Legacy rows trained on other hosts still carry absolute paths that do not resolve;
 they are inactive, and `migrate_artifacts_to_store --normalize-registry` rewrites any
-that map under the current `BASE_DIR`. The remaining git-bloat half is staged, not cut
-over yet — see `BACKLOG.md`.
+that map under the current `BASE_DIR`. The git-bloat half is **closed**: MinIO on the NAS
+is live behind `ARTIFACT_STORE_BACKEND=s3`, `models/` is untracked and gitignored, and fresh
+clones repopulate through `sync_artifacts_from_store`. It is forward-only — existing history
+keeps its blobs, but `.git` no longer grows one family per retrain. Procedure and ops:
+`docs/how-to/artifact-store.md`.
 
 ### 6.6 Plausible accuracy bounds
 
@@ -850,8 +856,8 @@ and comparison CSVs. `--include-active-lightgbm-artifacts` additionally writes
 
 Model references are collected from executed trades' `signal_payload`. A run with
 zero trades therefore reports zero model references even though it did resolve
-models; that is a reporting blind spot, not evidence that no model was used.
-Tracked in `BACKLOG.md`.
+models; that is a reporting blind spot, not evidence that no model was used. Tracked in
+[issue #147](https://github.com/sean7084/FinanceAnalysis/issues/147).
 
 Exports are generated local output under `reports/`, which is gitignored — they
 are not committed source files.
@@ -953,7 +959,9 @@ rises from 15.8x/yr to 19.3x/yr over the later period while the win rate falls f
 39.5% to 28.4%, so this is not a fee artifact alone.
 
 This is the finding the re-baseline exists to produce, and it quantifies the existing
-`BACKLOG.md` item "The reference RULE parameter set is window-specific". The contract
+the finding recorded as "The reference RULE parameter set is window-specific"
+([`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md) §D), whose re-arbitration is
+[issue #137](https://github.com/sean7084/FinanceAnalysis/issues/137). The contract
 does not cause the deterioration; it removes the flattering years that were hiding it.
 It also supports the rationale for `ETF_TRAINING_START` rather than undermining it: a
 configuration whose measured edge is concentrated in a 24-fund universe was never

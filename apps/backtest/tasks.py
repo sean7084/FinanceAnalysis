@@ -54,6 +54,7 @@ from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_asset_ids
 from apps.markets.models import OHLCV
 from apps.macro.models import MarketContext
+from apps.prediction.historical_features import prime_indicator_candidates
 from apps.prediction.odds import estimate_trade_decision
 from apps.prediction.models import ModelVersion
 from apps.prediction.tasks import _confidence, _feature_snapshot, _predicted_label, _probabilities_from_features
@@ -499,6 +500,22 @@ def _fee_breakdown_payload(breakdown):
 
 
 def _max_buy_amount_for_budget(total_budget, fee_config):
+    """Largest gross buy amount whose fees still fit ``total_budget``.
+
+    The affordability equation is piecewise because a CN A-share commission is
+    ``max(rate x amount, commission_min)``, not a flat rate. Dividing the budget by
+    ``1 + levy + rate`` -- the obvious formula -- over-buys whenever the minimum
+    floor applies, because then the fee stops scaling with the amount and the
+    surplus has nowhere to come from.
+
+    Three cases, in order:
+
+    - No minimum configured: the variable-rate branch is the whole answer.
+    - Rate-based commission already clears the minimum: same, the floor is inert.
+    - Otherwise the floor dominates: subtract it as a fixed cost and divide what is
+      left by ``1 + levy``. If the budget cannot even cover the minimum, the answer
+      is zero -- an order that cannot be paid for is not a small order.
+    """
     if total_budget <= 0:
         return DECIMAL_0
 
@@ -666,6 +683,15 @@ def _use_macro_context(run):
 
 
 def _enable_stop_target_exit(run):
+    """Whether early ``STOP_LOSS`` / ``TARGET_PRICE`` exits are on for this run.
+
+    Off by default, and the default is a measurement choice rather than a caution:
+    with only a daily close there is no intraday path, so a stop that would have
+    triggered mid-session cannot be distinguished from one that did. Enabling it lets
+    the engine exit early on a condition it cannot actually observe, which changes
+    which positions are open on the scheduled exit day -- so results across the flag
+    are not comparable and a run must state which mode produced them.
+    """
     return bool((run.parameters or {}).get('enable_stop_target_exit', False))
 
 
@@ -868,6 +894,25 @@ def _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_po
     return payload
 
 
+#: The indicator reads one heuristic candidate day performs, as
+#: `(indicator_type, parameter_key, parameter_value, limit)`.
+#:
+#: Listed here rather than discovered because the alternative is priming whatever a probe
+#: happened to see: `_feature_snapshot` alone asks for RSI/14 and MOM_5D/5, while
+#: `estimate_trade_decision` (`apps/prediction/odds.py:99-101`) adds BBANDS/20 and SMA/60 and
+#: SMA/50 -- and the SMA pair is the most expensive part of the day. A signature missing from
+#: this list is not a wrong answer: it falls back to the old per-asset read and shows up in
+#: `INDICATOR_PREFETCH_STATS['fallback']`, which is how staleness becomes visible instead of
+#: silent.
+HEURISTIC_INDICATOR_SIGNATURES = (
+    ('RSI', 'timeperiod', 14, 1),
+    ('MOM_5D', 'n_days', 5, 1),
+    ('BBANDS', 'timeperiod', 20, 1),
+    ('SMA', 'timeperiod', 60, 1),
+    ('SMA', 'timeperiod', 50, 1),
+)
+
+
 def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=None):
     policy_key = _trade_decision_policy_cache_key(trade_decision_policy)
     cache_key = ('heuristic_prediction_map', dt.isoformat(), int(horizon), policy_key)
@@ -892,7 +937,9 @@ def _build_heuristic_prediction_map(dt, horizon, cache, trade_decision_policy=No
             return cached_mapping
 
     mapping = {}
-    for asset_id in _eligible_backtest_asset_ids(dt, cache):
+    eligible_asset_ids = list(_eligible_backtest_asset_ids(dt, cache))
+    prime_indicator_candidates(eligible_asset_ids, dt, HEURISTIC_INDICATOR_SIGNATURES, cache)
+    for asset_id in eligible_asset_ids:
         mapping[asset_id] = _predict_heuristic_for_asset(asset_id, dt, horizon, cache, trade_decision_policy)
 
     cache[cache_key] = mapping
@@ -2172,6 +2219,15 @@ def _deserialize_open_positions(rows):
 
 
 def _load_runtime_state(run):
+    """Rebuild the resumable engine state from ``BacktestRun.report.runtime_state``.
+
+    Returns ``None`` when there is nothing to resume, which is how the caller
+    distinguishes a fresh run from a chunked continuation. Every value is re-coerced
+    rather than trusted: the state crosses a JSON boundary, so decimals arrive as
+    strings and a ``current_index`` that fails to parse would otherwise silently
+    restart the run from a wrong day -- resuming from the middle of a window and
+    reporting it as a whole run.
+    """
     raw_state = (run.report or {}).get('runtime_state')
     if not raw_state:
         return None
@@ -2188,6 +2244,19 @@ def _load_runtime_state(run):
 
 
 def _save_runtime_state(run, state, total_trading_days):
+    """Persist the engine state, and the progress counters, into ``run.report``.
+
+    Two fields, one purpose each, and the second is load-bearing for something other
+    than the resume: ``apps/core/task_health.py:64`` grants a stalled-looking run the
+    chunked-continuation exemption when the report carries ``runtime_state`` or
+    ``progress``, and ``:94`` then requires that progress to be *recent* rather than
+    merely present. So writing here is what keeps a legitimately running chunk off the
+    reap list -- and a run that resumes without refreshing it is a run the orphan
+    sweep is entitled to clear.
+
+    Assigns a new dict rather than mutating in place, so a concurrent read of the old
+    report cannot observe a half-written state.
+    """
     report = dict(run.report or {})
     report['runtime_state'] = {
         'current_index': state['current_index'],
@@ -2206,6 +2275,13 @@ def _save_runtime_state(run, state, total_trading_days):
 
 
 def _clear_runtime_state(report):
+    """Drop the resume scratch from a finished run's report.
+
+    Both keys are engine bookkeeping: ``runtime_state`` is only meaningful while a run
+    is mid-chunk, and a stale ``progress`` left behind after completion is what makes a
+    finished run look resumable -- and look freshly progressing to the orphan sweep.
+    Returns a copy; the caller swaps it in.
+    """
     cleaned_report = dict(report or {})
     cleaned_report.pop('runtime_state', None)
     cleaned_report.pop('progress', None)

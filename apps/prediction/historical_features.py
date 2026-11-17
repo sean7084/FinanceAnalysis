@@ -84,6 +84,111 @@ def _parameter_compatibility_filter(parameter_key, parameter_value):
     )
 
 
+#: Counted so a priming pass that quietly stops covering anything is visible rather than
+#: assumed: a fallback that fires on every asset is the old cost with extra machinery.
+#: `installed` counts candidate lists the priming wrote, `cache_hit` counts reads served from
+#: one, and `fallback` counts reads that had to query -- the middle number is what separates a
+#: prefetch that works from one that installs entries nobody reads.
+INDICATOR_PREFETCH_STATS = {'installed': 0, 'cache_hit': 0, 'fallback': 0}
+
+
+def _candidate_take(limit):
+    """How many raw candidate rows a read needs before the Python scoring pass.
+
+    The multiplier is the existing behaviour, kept in one place so the per-day priming and
+    the single-asset fallback cannot ask for different depths.
+    """
+    return max(int(limit or 1) * 4, 12)
+
+
+def _indicator_candidate_queryset(asset_filter, as_of, indicator_type, parameter_key, parameter_value, take):
+    """The one spelling of "the most recent `take` candidate rows for this asset".
+
+    Both paths call it -- the single-asset read with `Q(asset_id=...)` and the per-day
+    priming with `Q(asset=OuterRef('pk'))` -- so the primed path cannot drift from the
+    filter it is replacing. That matters because the JSONField compatibility test below is
+    permissive in a way that is easy to get wrong by hand: it accepts rows whose
+    `parameters` are empty as well as rows whose key matches, and the scoring pass then
+    picks among them. Hand-writing that predicate in SQL was measured to be wider than this
+    filter while returning the same row COUNT, which is why the prefetch reuses the
+    queryset object instead of restating it.
+    """
+    queryset = TechnicalIndicator.objects.filter(
+        asset_filter,
+        indicator_type=indicator_type,
+        timestamp__date__lte=as_of,
+    )
+    if parameter_key:
+        queryset = queryset.filter(_parameter_compatibility_filter(parameter_key, parameter_value))
+    return queryset.order_by('-timestamp')[:take]
+
+
+def _candidate_cache_key(asset_id, as_of, indicator_type, parameter_key, parameter_value, take):
+    return _cache_key(
+        'indicator_candidates',
+        int(asset_id),
+        str(as_of),
+        str(indicator_type),
+        str(parameter_key or ''),
+        '' if parameter_value is None else str(parameter_value),
+        int(take),
+    )
+
+
+def prime_indicator_candidates(asset_ids, as_of, signatures, cache):
+    """Fetch one day's candidate lists for every asset in one query per signature.
+
+    `signatures` is an iterable of ``(indicator_type, parameter_key, parameter_value, limit)``
+    exactly as the single-asset reads pass them. Each becomes a correlated
+    `ArraySubquery` that Postgres evaluates per asset with the same index descent and the
+    same `LIMIT take` the single-asset query uses -- deliberately not a `ROW_NUMBER()`
+    window, which would read every row below the bound and discard all but `take` of them,
+    paying server-side work the current code never pays.
+
+    Unprimed assets fall back to the single-asset read and are counted in
+    ``INDICATOR_PREFETCH_STATS``, because a prefetch that silently covers nothing would look
+    identical to one that works.
+    """
+    from django.contrib.postgres.expressions import ArraySubquery
+    from django.db.models import OuterRef
+
+    asset_ids = list(asset_ids)
+    if not asset_ids or not signatures:
+        return 0
+
+    per_signature = []
+    for indicator_type, parameter_key, parameter_value, limit in signatures:
+        take = _candidate_take(limit)
+        correlated = _indicator_candidate_queryset(
+            models.Q(asset=OuterRef('pk')), as_of, indicator_type, parameter_key, parameter_value, take
+        ).values('pk')
+        rows = list(
+            Asset.objects.filter(id__in=asset_ids)
+            .annotate(candidate_pks=ArraySubquery(correlated))
+            .values_list('id', 'candidate_pks')
+        )
+        # Hydrated per signature, not as one union across the day. A single `pk__in` list for
+        # every signature was measured at 33.96 s for a candidate day that costs 20.72 s
+        # without prefetching at all: Postgres parses a ~30,000-parameter IN list, which is
+        # more expensive than the 2,495 small reads it replaces. One query per signature keeps
+        # the round-trip win (~6,000 ids) without the parse cost.
+        wanted_ids = sorted({pk for _asset_id, candidate_pks in rows for pk in (candidate_pks or [])})
+        hydrated = {}
+        if wanted_ids:
+            for row in TechnicalIndicator.objects.filter(pk__in=wanted_ids):
+                hydrated[row.pk] = row
+        per_signature.append((indicator_type, parameter_key, parameter_value, take, rows, hydrated))
+
+    primed = 0
+    for indicator_type, parameter_key, parameter_value, take, rows, hydrated in per_signature:
+        for asset_id, candidate_pks in rows:
+            candidates = [hydrated[pk] for pk in (candidate_pks or []) if pk in hydrated]
+            cache[_candidate_cache_key(asset_id, as_of, indicator_type, parameter_key, parameter_value, take)] = candidates
+            primed += 1
+    INDICATOR_PREFETCH_STATS['installed'] += primed
+    return primed
+
+
 def _matching_indicator_rows(
     asset_id,
     as_of,
@@ -110,15 +215,20 @@ def _matching_indicator_rows(
     if cache is not None and cache_entry in cache:
         return cache[cache_entry]
 
-    queryset = TechnicalIndicator.objects.filter(
-        asset_id=asset_id,
-        indicator_type=indicator_type,
-        timestamp__date__lte=as_of,
-    )
-    if parameter_key:
-        queryset = queryset.filter(_parameter_compatibility_filter(parameter_key, parameter_value))
-
-    candidates = list(queryset.order_by('-timestamp')[: max(int(limit or 1) * 4, 12)])
+    take = _candidate_take(limit)
+    candidate_key = _candidate_cache_key(asset_id, as_of, indicator_type, parameter_key, parameter_value, take)
+    if cache is not None and candidate_key in cache:
+        candidates = cache[candidate_key]
+        INDICATOR_PREFETCH_STATS['cache_hit'] += 1
+    else:
+        candidates = list(
+            _indicator_candidate_queryset(
+                models.Q(asset_id=asset_id), as_of, indicator_type, parameter_key, parameter_value, take
+            )
+        )
+        INDICATOR_PREFETCH_STATS['fallback'] += 1
+        if cache is not None:
+            cache[candidate_key] = candidates
     best_rows_by_date = {}
     for indicator in candidates:
         score = _indicator_parameter_score(
