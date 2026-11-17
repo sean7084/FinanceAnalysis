@@ -83,10 +83,11 @@ its window is present. A missing entry (the `MOM_*` family) resolves to `None`
 from `technical_indicator_max_gap_trading_days`, which callers treat as "no gap
 tolerance".
 
-> **Known documentation defect.** `TECHNICAL_GUIDE.md` states that
-> `relative_volume_5d` and `relative_volume_20d` inherit the 5-day and 20-day
-> moving-average gap rules (2 and 5). The code sets both to `0`. The code is
-> authoritative. Tracked in `BACKLOG.md`.
+> `relative_volume_5d` and `relative_volume_20d` require a gap of **0**: they are computed from the
+> same bar's volume, so the 5-day and 20-day moving-average gap rules (2 and 5) do not apply to
+> them. An earlier revision of this runbook called that a documentation defect in
+> `TECHNICAL_GUIDE.md`; the guide no longer states the inherited gaps, so the code and the
+> documentation now agree.
 
 ### Runtime fallbacks
 

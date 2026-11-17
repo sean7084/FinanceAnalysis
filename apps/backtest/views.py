@@ -14,7 +14,7 @@ Creation enqueues asynchronously onto the ``backtest`` queue; a worker consuming
 only ``ops`` will accept the run and never execute it.
 
 Note that ``queue_backtest_run`` is defined here and in ``tasks.py``. The two must
-stay in sync; consolidating them is tracked in ``BACKLOG.md``.
+stay in sync.
 """
 
 from rest_framework import status, viewsets
