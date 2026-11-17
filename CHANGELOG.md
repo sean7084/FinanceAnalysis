@@ -227,6 +227,22 @@ Backend discovery floor **1175 → 1179** for the tests these add.
   does, and a re-baseline notice: ETF and stock metrics computed after this change are
   not comparable with numbers from the wider windows. The stock raw bound is documented
   as the observed `2008-07-02`, since 365,224 rows across 1,077 assets predate the floor.
+- **`BACKLOG.md` is a thin index now, and its finished prose has a home.** The file had grown to
+  1,825 lines with resolved work interleaved into live work, which is how a triage table came to
+  sit above sixty entries whose status nobody could re-derive. Three destinations, one rule each:
+  **26 GitHub issues** (#136–#161) for open actionable work, **`BACKLOG_ARCHIVE.md`** for
+  measurement evidence and decision records — copied *verbatim*, never summarised, each block
+  headed with a `Disposition:` line naming what closed it — and this file, 148 lines of index.
+  Every item deleted rather than archived is logged line-by-line in archive §G with its reason,
+  and each of those was checked against this file's Unreleased section or against the current tree
+  first. Three dangling pointers found on the way and fixed by rewriting the text, not just the
+  link: `runbook-sync-failure.md` claimed `BACKTEST_STALE_TASK_MAX_AGE_SECONDS` needed a code edit
+  (it has been `env.int` at `base.py:533` all along, and `env.md` lists it as environment-readable),
+  `runbook-stale-data.md` still described a `relative_volume` documentation defect the guide no
+  longer contains, and `testing.md` §6.2 described non-hermetic sentiment tests in a module deleted
+  with #52 — that last one is now a record of why green here proves nothing. The macro-fixture note
+  in `testing.md` pointed at "an entry in BACKLOG.md" that never existed, so the work is filed
+  (#161) instead of re-pointed.
 
 #### Re-baselined metrics:
 
