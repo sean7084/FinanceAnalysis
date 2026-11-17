@@ -247,6 +247,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, not the default depth-1: scripts/check-archive-verbatim.py compares
+          # archived prose against `git show c225c0d:BACKLOG.md`, and that commit does not
+          # exist in a shallow clone. A gate that silently cannot read its baseline would be
+          # worse than no gate, so the history is fetched rather than the check weakened.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
