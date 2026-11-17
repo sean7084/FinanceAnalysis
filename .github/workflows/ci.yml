@@ -266,6 +266,21 @@ jobs:
         # .in and forgets to recompile. See scripts/check_requirements_lockfile.py.
         run: python scripts/check_requirements_lockfile.py
 
+      - name: Backlog archive is verbatim and its references resolve
+        # Stdlib-only, so this runs before dependency install. Both gates carry their own
+        # failure controls (--control / --self-test), because a check that cannot fail is
+        # not a check: the first version of the archive audit matched generic English words
+        # and reported 22/22 while proving nothing.
+        #
+        # Why CI needs this at all: a documentation file that contradicts itself still lints
+        # clean. BACKLOG_ARCHIVE.md §A records a union merge silently re-creating prose that
+        # had been deliberately deleted, and no test or linter could see it.
+        run: |
+          python scripts/check-archive-verbatim.py
+          python scripts/check-archive-verbatim.py --control
+          python scripts/check-backlog-references.py
+          python scripts/check-backlog-references.py --self-test
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
