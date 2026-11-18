@@ -49,7 +49,7 @@ Seven PRs came out of executing the milestones: [#163](https://github.com/sean70
 | [#141](https://github.com/sean7084/FinanceAnalysis/issues/141) | Newest-session gap **closed**: `detect_ohlcv_gap` reports `missing=0` and `cross_sectional_gap_dates` returns `()` over 81 open sessions (499 rows each). Verified through the detectors, not the command — `catch_up` holds a Redis lock for `CATCHUP_LOCK_SECONDS = 1500`, which would suppress the hourly tick. The issue's "~1,760 rows" criterion was wrong in kind: the detector compares each date against its neighbours' median × 0.5, never against an absolute | decide the intended universe for `sync_daily_a_shares` (1,912 assets exist, 499 are fed). If 1,760 is intended, the gap is uniform under-coverage — invisible to a neighbour-relative rule by construction, and an absolute floor is #140's false-positive problem |
 | [#142](https://github.com/sean7084/FinanceAnalysis/issues/142) | DB-wedge watchdog — already shipped, wired, tested **and observed**: `scripts/db_wedge_watch.py` records 328 clean passes with zero terminations across a 90-minute full-range DQ run | one controlled true-positive reproduction remains |
 | [#143](https://github.com/sean7084/FinanceAnalysis/issues/143) | `build_metrics`: retry link faults, **raise** schema faults — fix in [PR #163](https://github.com/sean7084/FinanceAnalysis/pull/163) | a simulated `ProgrammingError` must fail the run |
-| [#171](https://github.com/sean7084/FinanceAnalysis/issues/171) | `MacroSnapshot` coverage holes found while costing #154: `dxy` NULL on **12 of 202 months (5.9%)**, every yield on 4–5, `cny_usd` on none. Two different shapes, so two attributions are needed — the yield set is the same size across tenors (calendar/fetch-window), `dxy` is 2.4× worse and is the only two-code fallback column | name the months and their cause; then either backfill or declare NULL expected in `help_text` with a DQ check that can fail. Blocks #154 item 2: "shift to the previous month" is undefined on a gapped series |
+| [#171](https://github.com/sean7084/FinanceAnalysis/issues/171) | `MacroSnapshot` coverage holes found while costing #154: `fxcm_usdollar` NULL on **12 of 202 months (5.9%)**, every yield on 4–5, `cny_usd` on none. Two different shapes, so two attributions are needed — the yield set is the same size across tenors (calendar/fetch-window), `fxcm_usdollar` is 2.4× worse and is the only two-code fallback column | name the months and their cause; then either backfill or declare NULL expected in `help_text` with a DQ check that can fail. Blocks #154 item 2: "shift to the previous month" is undefined on a gapped series |
 
 #138 and #139 look like the same trap — per-asset fetches, one round trip at a time — but they
 are not the same size of problem, and the shared number that made them look alike turned out to
@@ -90,7 +90,7 @@ rematch on the current layout re-measures the harness, not the strategy.
 | [#151](https://github.com/sean7084/FinanceAnalysis/issues/151) | Correct the lazy-import rationale in `apps/prediction/tasks.py` — fix in [PR #164](https://github.com/sean7084/FinanceAnalysis/pull/164); the note's premise was also wrong: the deferral saves the **web** process, while workers load the trainer anyway via `apps/backtest/tasks.py:60` + `autodiscover_tasks()` |
 | [#152](https://github.com/sean7084/FinanceAnalysis/issues/152) | Engine decision rules — the four named behaviours already had docstrings; [PR #167](https://github.com/sean7084/FinanceAnalysis/pull/167) adds the five mechanical functions around them (piecewise commission floor, resume-progress coupling) |
 | ~~#153~~ closed | Eight orphaned screener i18n keys removed in [PR #168](https://github.com/sean7084/FinanceAnalysis/pull/168), gated on 408 `t()` literals resolving in both locales — `tsc` and eslint cannot catch an over-deletion here |
-| [#154](https://github.com/sean7084/FinanceAnalysis/issues/154) | Macro semantics: `dxy` name, publication-date alignment, where northbound flow belongs |
+| [#154](https://github.com/sean7084/FinanceAnalysis/issues/154) | Macro semantics: `fxcm_usdollar` name, publication-date alignment, where northbound flow belongs |
 | [#155](https://github.com/sean7084/FinanceAnalysis/issues/155) | Entitlement flags cached with `timeout=None` — documented-convention option shipped in [PR #166](https://github.com/sean7084/FinanceAnalysis/pull/166); TTL declined because the condition only changes when the operator changes the token | one operator walk-through of `runbook-provider-blackout.md` §9 |
 | [#156](https://github.com/sean7084/FinanceAnalysis/issues/156) — closed | `amount` unit **already documented** (`models.py:220`: 千元 vs 元 plus the do-not-join rule); remainder measured: **0 rows / 0 assets with `raw_close IS NULL` out of 6,546,368**, and 0 NULL `adj_close`/`close`. The class was removed by a full OHLCV re-fetch, not by migration 0014, which added both columns nullable with no `RunPython` |
 | [#160](https://github.com/sean7084/FinanceAnalysis/issues/160) | Operator model-version selection — and which surface absorbs it |
@@ -98,16 +98,17 @@ rematch on the current layout re-measures the harness, not the strategy.
 
 ## Owner decisions — deployment hygiene
 
-Not schedulable as diffs: each needs a deployment choice first, and neither closes with a PR.
+#149 is now decided and shipped (the production lockfile pair is gone, lockfiles recompiled
+for the CI interpreter). #150 still needs a runtime decision before it closes with a PR.
 
 | Issue | The mismatch | What has to be chosen |
 |---|---|---|
-| [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) | mlflow pulls `gunicorn==25.3.0` / `uvicorn==0.54.0` into `local.txt`, while `production.txt` pins the declared `23.0.0` / `0.32.0`; the lockfiles are resolved on Python 3.12 but CI runs 3.14 | align production to what CI exercises, pin the server stack in the `.in` files, or declare the divergence intentional and stop claiming CI covers the production server |
-| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves from the default index with **no** `--index-url` / `--extra-index-url` / `--find-links` anywhere, and the hashed closure proves that wheel is the CUDA flavour: `cuda-toolkit[…]`, fifteen `nvidia-*` packages, `triton==3.7.0` — while nothing documents which runtime has a driver, and `windows_gpu` is a valid inference backend | name the GPU-bearing runtimes (this host, the NAS, CI, any Windows worker), then either support GPU inference and pin the CUDA deps by intent, or drop `windows_gpu` and stop shipping ~GB of CUDA wheels that CI downloads to run GPU-less tests |
+| [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) — **decided (d)** | `production.txt` was installed nowhere (CI and the only Docker image both install `local.txt`) and no process invokes gunicorn/uvicorn — the only start path is `manage.py runserver`. The version divergence was therefore cosmetic; the live risk was lockfiles resolved on Python 3.12 while CI runs 3.14 | **done**: delete `production.in`/`.txt` (and the daphne pin with them), drop `production` from the checker's `PAIRS` and the CI cache path, recompile `base`/`local` for 3.14 with a pin-drift gate |
+| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves from the default index with **no** `--index-url` / `--extra-index-url` / `--find-links` anywhere, and the hashed closure proves that wheel is the CUDA flavour: `cuda-toolkit[…]`, fifteen `nvidia-*` packages, `triton==3.7.0` — while nothing documents which runtime has a driver, and the inference backend string is now `cuda` (hard rename from `windows_gpu`, no alias) | name the GPU-bearing runtimes (this host, the NAS, CI, any Windows worker), then either support GPU inference and pin the CUDA deps by intent, or drop the `cuda` backend and stop shipping ~GB of CUDA wheels that CI downloads to run GPU-less tests |
 
-`scripts/check_requirements_lockfile.py` passes for both of these — each file is internally
-consistent — which is exactly why nothing catches them. The `blocked` label is the honest state.
-
+`scripts/check_requirements_lockfile.py` passed for both — each file was internally
+consistent — which is exactly why nothing caught them. #149 is resolved; #150 keeps the
+`blocked` label until the runtime question is answered.
 ## Blocked on a data source
 
 These are **not schedulable code work**. Each re-opens only on a purchasing decision or on a
@@ -128,7 +129,7 @@ because none is actionable as written; the reasoning that made it a deferral is 
 [`BACKLOG_ARCHIVE.md`](BACKLOG_ARCHIVE.md) §D and §F.
 
 - **Market rules**: limit-up / limit-down regimes (10% / 20% / ST; main board vs ChiNext vs STAR vs BSE) are not modelled, and limit-up days are not marked.
-- **Features**: promote the stored macro series (`dxy`, `cny_usd`, `cpi_yoy`, `ppi_yoy`) into features; decide whether `technical_score` should read the stored analytics (MACD, ADX, OBV, SMA/EMA, RS score) instead of the reversal scorer, and say so where a reader will look.
+- **Features**: promote the stored macro series (`fxcm_usdollar`, `cny_usd`, `cpi_yoy`, `ppi_yoy`) into features; decide whether `technical_score` should read the stored analytics (MACD, ADX, OBV, SMA/EMA, RS score) instead of the reversal scorer, and say so where a reader will look.
 - **Architecture**: replace the heuristic in the ensemble with a tuned multi-factor linear model; replace LSTM with a Transformer / TFT; add a 14-day horizon.
 - **Pipeline**: backfill as a validation-only step, off the model-rebuild path.
 - **Execution**: entry price at the close is not achievable (intraday minute data would model real cost); the Tuesday/Thursday entry weekday is unjustified as far as anyone has measured; position sizing from binary `suggested` to half-Kelly or a `trade_score` tier map.

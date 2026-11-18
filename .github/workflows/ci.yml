@@ -243,7 +243,7 @@ jobs:
       # Raised to 1179 by fix/orphan-progress-freshness, which adds the one regression test
       # proving a RUNNING backtest whose progress stopped 171 days ago is sweepable (the orphan
       # exemption now requires fresh progress, not merely a progress key). Measured 1183.
-      MIN_TEST_COUNT: "1179"
+      MIN_TEST_COUNT: "1247"
 
     steps:
       - uses: actions/checkout@v4
@@ -263,7 +263,6 @@ jobs:
           cache-dependency-path: |
             requirements/base.txt
             requirements/local.txt
-            requirements/production.txt
 
       - name: Lockfiles match their .in files
         # Offline text comparison. A full `pip-compile --dry-run` here would re-resolve
@@ -390,7 +389,6 @@ jobs:
           # No --source: .coveragerc already says `source = apps` and `branch = True`.
           coverage run manage.py test --noinput
           coverage report
-
   frontend:
     name: Frontend tests, type-check, and lint
     runs-on: ubuntu-latest
