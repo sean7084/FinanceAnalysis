@@ -5,6 +5,11 @@ benchmark universe. It ingests market, fundamental and macro data; derives
 technical and factor features; runs three prediction models; and
 backtests trading strategies against point-in-time benchmarks.
 
+The daily stock feed is scoped to that contract: roughly 499 OHLCV rows per session,
+one per current CSI 500 constituent. The ~1,912 assets in `markets_asset` are the
+historical union accumulated since the 2010 onboarding, not a feed target — so a
+per-session row count near 500 is the expected state, not a coverage gap.
+
 Bilingual (English / Simplified Chinese). REST API plus a React dashboard and a
 live WebSocket alert stream.
 
