@@ -9,7 +9,7 @@ from apps.core.date_floor import get_historical_data_floor
 
 
 MACRO_FIELDS = [
-    'dxy',
+    'fxcm_usdollar',
     'cny_usd',
     'cn6m_yield',
     'cn1y_yield',
@@ -24,7 +24,7 @@ MACRO_FIELDS = [
     'ppi_yoy',
 ]
 
-DXY_TUSHARE_CODES = ['USDOLLAR.FXCM', 'USDOLLAR']
+FXCM_USDOLLAR_TUSHARE_CODES = ['USDOLLAR.FXCM', 'USDOLLAR']
 TUSHARE_YIELD_CURVE_TYPE = '0'
 YIELD_TENOR_SPECS = (
     (0.5, 'cn6m_yield', 'yield_6m'),
@@ -134,7 +134,7 @@ def normalize_cny_usd_from_usd_quote(value):
         return None
 
 
-def normalize_dxy_quote(value):
+def normalize_fxcm_usdollar_quote(value):
     quote = _parse_decimal(value)
     if quote is None:
         return None
@@ -232,7 +232,7 @@ def build_monthly_yield_points(yield_df, *, required_curve_type=None):
 def _empty_payload(snapshot_date, source):
     return {
         'date': snapshot_date,
-        'dxy': None,
+        'fxcm_usdollar': None,
         'cny_usd': None,
         'cn6m_yield': None,
         'cn1y_yield': None,
@@ -448,7 +448,7 @@ def fetch_macro_snapshot_from_tushare(snapshot_date=None):
             payload['metadata'][f'{error_key}_error'] = str(exc)
 
     fx_specs = [
-        ('dxy', DXY_TUSHARE_CODES, normalize_dxy_quote),
+        ('fxcm_usdollar', FXCM_USDOLLAR_TUSHARE_CODES, normalize_fxcm_usdollar_quote),
         ('cny_usd', ['USDCNH.FXCM'], normalize_cny_usd_from_usd_quote),
     ]
     for field, ts_codes, normalizer in fx_specs:

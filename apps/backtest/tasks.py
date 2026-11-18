@@ -120,6 +120,12 @@ LIGHTGBM_RUNTIME_FLOAT_FIELDS = (
     'asset_loop_seconds',
     'prediction_map_build_seconds',
 )
+LIGHTGBM_RUNTIME_BOOL_FIELDS = (
+    'used_gpu',
+)
+LIGHTGBM_RUNTIME_STR_FIELDS = (
+    'gpu_device_type',
+)
 LIGHTGBM_RUNTIME_INT_FIELDS = (
     'batch_prediction_calls',
     'batch_prediction_rows',
@@ -162,6 +168,8 @@ def clear_backtest_process_caches():
 def _default_lightgbm_runtime_metrics():
     metrics = {
         'inference_backend': 'cpu_serial',
+        'used_gpu': False,
+        'gpu_device_type': '',
     }
     for field in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
         metrics[field] = 0.0
@@ -176,6 +184,8 @@ def _deserialize_lightgbm_runtime_metrics(raw_metrics):
 
     metrics = _default_lightgbm_runtime_metrics()
     metrics['inference_backend'] = str(raw_metrics.get('inference_backend') or 'cpu_serial')
+    metrics['used_gpu'] = bool(raw_metrics.get('used_gpu'))
+    metrics['gpu_device_type'] = str(raw_metrics.get('gpu_device_type') or '')
 
     for field in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
         try:
@@ -198,6 +208,8 @@ def _serialize_lightgbm_runtime_metrics(metrics):
 
     serialized = {
         'inference_backend': str(metrics.get('inference_backend') or 'cpu_serial'),
+        'used_gpu': bool(metrics.get('used_gpu')),
+        'gpu_device_type': str(metrics.get('gpu_device_type') or ''),
     }
     for field in LIGHTGBM_RUNTIME_FLOAT_FIELDS:
         serialized[field] = round(float(metrics.get(field, 0.0) or 0.0), 6)
@@ -805,8 +817,8 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
     )
     if resolved_backend == 'cpu_batched':
         _set_lightgbm_runtime_execution(cache, 'cpu_batched', _lightgbm_batch_size(run))
-    elif resolved_backend == 'windows_gpu':
-        _set_lightgbm_runtime_execution(cache, 'windows_gpu', _lightgbm_batch_size(run))
+    elif resolved_backend == 'cuda':
+        _set_lightgbm_runtime_execution(cache, 'cuda', _lightgbm_batch_size(run))
     else:
         _set_lightgbm_runtime_execution(cache, 'cpu_serial', 1)
 
@@ -822,7 +834,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             run=run,
             inference_backend='cpu_batched',
         )
-    elif resolved_backend == 'windows_gpu':
+    elif resolved_backend == 'cuda':
         mapping = _predict_lightgbm_for_assets_batched(
             asset_ids,
             dt,
@@ -830,7 +842,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             cache,
             trade_decision_policy=trade_decision_policy,
             run=run,
-            inference_backend='windows_gpu',
+            inference_backend='cuda',
         )
     else:
         mapping = {}
@@ -1388,14 +1400,14 @@ def _resolved_lightgbm_gpu_device_type(runtime):
     if runtime is None:
         return None
 
-    if not runtime.get('windows_gpu_device_resolved'):
-        runtime['windows_gpu_device_type'] = _resolve_lightgbm_gpu_predict_device(
+    if not runtime.get('cuda_device_resolved'):
+        runtime['cuda_device_type'] = _resolve_lightgbm_gpu_predict_device(
             runtime['artifacts'],
             feature_count=len(runtime['feature_names']),
         )
-        runtime['windows_gpu_device_resolved'] = True
+        runtime['cuda_device_resolved'] = True
 
-    return runtime.get('windows_gpu_device_type')
+    return runtime.get('cuda_device_type')
 
 
 def _resolved_lightgbm_inference_backend(run, horizon=None, cache=None, runtime=None):
@@ -1403,12 +1415,12 @@ def _resolved_lightgbm_inference_backend(run, horizon=None, cache=None, runtime=
     if requested in {'auto', 'cpu_batched'}:
         return 'cpu_batched'
 
-    if requested == 'windows_gpu':
+    if requested == 'cuda':
         resolved_runtime = runtime
         if resolved_runtime is None and horizon is not None and cache is not None:
             resolved_runtime = _get_lightgbm_runtime(run, horizon, cache)
         if _resolved_lightgbm_gpu_device_type(resolved_runtime):
-            return 'windows_gpu'
+            return 'cuda'
     return 'cpu_serial'
 
 
@@ -1416,6 +1428,19 @@ def _set_lightgbm_runtime_execution(cache, backend, batch_size):
     metrics = _lightgbm_runtime_metrics(cache)
     metrics['inference_backend'] = str(backend or 'cpu_serial')
     metrics['batch_size'] = max(1, int(batch_size or 1))
+
+
+def _set_lightgbm_runtime_gpu(cache, prediction_result):
+    """Record what the runtime ACTUALLY used, not what was requested.
+
+    The probe returns used_gpu/gpu_device_type and the caller used to discard them, so a
+    report could say 'cuda' while every prediction ran on CPU. The LightGBM wheel in this
+    environment has no GPU device (docs/reference/ml-runtime.md), so the honest expectation
+    is used_gpu=False with a CPU fallback -- and the report must show that, not hide it.
+    """
+    metrics = _lightgbm_runtime_metrics(cache)
+    metrics['used_gpu'] = bool((prediction_result or {}).get('used_gpu'))
+    metrics['gpu_device_type'] = str((prediction_result or {}).get('gpu_device_type') or '')
 
 
 def _get_selected_lightgbm_artifact(run, horizon):
@@ -1595,11 +1620,12 @@ def _predict_lightgbm_for_assets_batched(
         prediction_result = _predict_lightgbm_probabilities_for_scaled_matrix(
             artifacts,
             X_scaled,
-            prefer_gpu=inference_backend == 'windows_gpu',
+            prefer_gpu=inference_backend == 'cuda',
         )
         calibrated_probs = prediction_result['calibrated_probabilities']
+        _set_lightgbm_runtime_gpu(cache, prediction_result)
         _add_lightgbm_runtime_time(cache, 'probability_inference_seconds', perf_counter() - inference_started)
-        if inference_backend == 'windows_gpu' and not prediction_result['used_gpu']:
+        if inference_backend == 'cuda' and not prediction_result['used_gpu']:
             _set_lightgbm_runtime_execution(cache, 'cpu_batched', batch_size)
         _increment_lightgbm_runtime_count(cache, 'batch_prediction_calls')
         _increment_lightgbm_runtime_count(cache, 'batch_prediction_rows', len(batch_asset_ids))

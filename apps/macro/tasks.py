@@ -111,7 +111,7 @@ def sync_macro_data_monthly(payload=None):
         )
 
     defaults = {
-        'dxy': payload.get('dxy'),
+        'fxcm_usdollar': payload.get('fxcm_usdollar'),
         'cny_usd': payload.get('cny_usd'),
         'pmi_manufacturing': payload.get('pmi_manufacturing'),
         'pmi_non_manufacturing': payload.get('pmi_non_manufacturing'),

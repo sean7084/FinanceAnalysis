@@ -688,9 +688,13 @@ Run anything long-lived inside `tmux` (present in this install; `screen` is not)
 CSI 500 runbook's onboarding step alone is hours of backfill plus a full LightGBM and
 LSTM retrain, and a terminal disconnect without it loses the run.
 
-`torch` from `requirements/base.txt` is a CPU-only build on both platforms.
-GPU-dependent paths need CUDA-enabled PyTorch installed explicitly into the WSL venv,
-with the NVIDIA driver staying on the Windows side.
+`torch` from `requirements/base.txt` resolves from the default index with no
+`--index-url`, and on Linux that wheel is the **CUDA-flavoured** build: the hashed
+closure carries `cuda-toolkit[...]`, `cuda-bindings`, fifteen `nvidia-*` packages and
+`triton`. `torch.cuda.is_available()` is True on this WSL2 host (Windows keeps the
+NVIDIA driver). The LightGBM wheel, by contrast, has no GPU device, so LightGBM
+inference falls back to CPU and the runtime metrics record `used_gpu=False`. See
+`docs/reference/ml-runtime.md` and `docs/how-to/backfill.md`.
 
 ---
 

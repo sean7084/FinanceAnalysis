@@ -23,7 +23,7 @@ VALID_ENTRY_WEEKDAYS = {'MON', 'TUE', 'WED', 'THU', 'FRI'}
 VALID_CANDIDATE_MODES = {'top_n', 'trade_score'}
 VALID_TRADE_SCORE_SCOPES = {'independent', 'combined'}
 VALID_TOP_N_METRICS = {'trade_score', 'up_prob_3d', 'up_prob_7d', 'up_prob_30d'}
-VALID_LIGHTGBM_INFERENCE_BACKENDS = {'auto', 'cpu_serial', 'cpu_batched', 'windows_gpu'}
+VALID_LIGHTGBM_INFERENCE_BACKENDS = {'auto', 'cpu_serial', 'cpu_batched', 'cuda'}
 DEFAULT_LIGHTGBM_BATCH_SIZE = 256
 TOP_N_METRIC_HORIZON_MAP = {
     'up_prob_3d': 3,
@@ -100,7 +100,7 @@ class BacktestRunSerializer(serializers.ModelSerializer):
                 lightgbm_inference_backend = str(parameters.get('lightgbm_inference_backend', 'auto')).lower()
                 if lightgbm_inference_backend not in VALID_LIGHTGBM_INFERENCE_BACKENDS:
                     raise serializers.ValidationError({
-                        'parameters': 'lightgbm_inference_backend must be one of auto, cpu_serial, cpu_batched, or windows_gpu.',
+                        'parameters': 'lightgbm_inference_backend must be one of auto, cpu_serial, cpu_batched, or cuda.',
                     })
 
                 try:
