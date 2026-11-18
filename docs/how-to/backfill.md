@@ -373,9 +373,13 @@ python manage.py run_core_backtest_matrix \
   --output-dir reports/<label>
 ```
 
-Inline execution groups runs by horizon and drains each group round-robin,
-clearing the in-process trading-date, price-map, and signal caches between
-groups so a long matrix does not grow unbounded. Choose
-`--lightgbm-inference-backend` deliberately — it is the dominant performance
-variable, and `windows_gpu` requires a CUDA-capable runtime that the default
-Windows `torch`/LightGBM install does not provide.
+`cuda` requests GPU inference. Two facts decide what actually happens, and they
+differ per library: the hashed `torch` closure IS CUDA-flavoured (nvidia-* wheels,
+cuda-bindings, triton) and `torch.cuda.is_available()` is True on this WSL2 host,
+so torch/LSTM can use the GPU; but the LightGBM wheel ships **no GPU device**
+(`device=gpu` errors, see `docs/reference/ml-runtime.md`), so the LightGBM probe
+fails and inference falls back to CPU. The runtime metrics now record `used_gpu`
+and `gpu_device_type` alongside the requested backend, so a report shows what ran
+rather than what was asked for. The backend value was renamed from `windows_gpu`
+to `cuda` in #150 with no alias; persisted `BacktestRun.parameters` were migrated,
+and pre-rename local report artifacts still carry the legacy string.

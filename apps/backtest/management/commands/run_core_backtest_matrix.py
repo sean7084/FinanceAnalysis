@@ -18,15 +18,15 @@ the next one. Continuations are detected from persisted run state -- a run still
 the queued path does.
 
 ``--lightgbm-inference-backend`` is the dominant performance variable and is easy to
-leave at ``auto`` by accident; ``windows_gpu`` needs a CUDA-capable runtime that the
+leave at ``auto`` by accident; ``cuda`` needs a CUDA-capable runtime that the
 default Windows install does not provide.
 
 The full option surface is generated in ``docs/reference/commands.md``.
 """
 
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowsgpuqueue --queue --lightgbm-inference-backend windows_gpu
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowsgpuqueue --queue --lightgbm-inference-backend cuda
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuqueue --queue --lightgbm-inference-backend cpu_serial
-# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260603-windowsgpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend windows_gpu --output-dir reports/20260603-windowsgpuinline
+# python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260603-windowsgpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend cuda --output-dir reports/20260603-windowsgpuinline
 # python manage.py run_core_backtest_matrix --start-date 2025-01-01 --end-date 2025-12-31 --variants top-n --sources lightgbm --name-prefix core18-20260601-windowscpuinline --execute-inline --chunk-trading-days 60 --lightgbm-inference-backend cpu_serial --output-dir reports/20260601-windowscpuinline
 
 import json
@@ -78,7 +78,7 @@ VARIANT_DEFINITIONS = {
 }
 
 VALID_SOURCES = {'heuristic', 'lightgbm'}
-VALID_LIGHTGBM_INFERENCE_BACKENDS = {'auto', 'cpu_serial', 'cpu_batched', 'windows_gpu'}
+VALID_LIGHTGBM_INFERENCE_BACKENDS = {'auto', 'cpu_serial', 'cpu_batched', 'cuda'}
 
 def _parse_date(value, name):
     try:
@@ -139,7 +139,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--lightgbm-inference-backend',
             default='auto',
-            help='LightGBM-only inference backend stamped into created runs. Supported: auto,cpu_serial,cpu_batched,windows_gpu.',
+            help='LightGBM-only inference backend stamped into created runs. Supported: auto,cpu_serial,cpu_batched,cuda.',
         )
         parser.add_argument(
             '--lightgbm-batch-size',

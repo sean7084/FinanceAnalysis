@@ -2233,7 +2233,7 @@ class Phase15BacktestTests(TestCase):
         mock_delay.assert_called_once()
 
     @patch('apps.backtest.views.run_backtest.delay')
-    def test_backtest_serializer_accepts_windows_gpu_runtime_params(self, mock_delay):
+    def test_backtest_serializer_accepts_cuda_runtime_params(self, mock_delay):
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 '/api/v1/backtest/',
@@ -2248,7 +2248,7 @@ class Phase15BacktestTests(TestCase):
                         'horizon_days': 7,
                         'up_threshold': 0.55,
                         'prediction_source': 'lightgbm',
-                        'lightgbm_inference_backend': 'windows_gpu',
+                        'lightgbm_inference_backend': 'cuda',
                         'lightgbm_batch_size': '64',
                     },
                 },
@@ -2257,7 +2257,7 @@ class Phase15BacktestTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         run = BacktestRun.objects.latest('id')
-        self.assertEqual(run.parameters['lightgbm_inference_backend'], 'windows_gpu')
+        self.assertEqual(run.parameters['lightgbm_inference_backend'], 'cuda')
         self.assertEqual(run.parameters['lightgbm_batch_size'], 64)
         mock_delay.assert_called_once()
 
@@ -2375,7 +2375,7 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._extract_features_for_asset')
     @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
     @patch('apps.backtest.tasks._load_model_artifacts')
-    def test_lightgbm_prediction_map_windows_gpu_matches_cpu_serial(
+    def test_lightgbm_prediction_map_cuda_matches_cpu_serial(
         self,
         mock_load_artifacts,
         mock_eligible_asset_ids,
@@ -2462,7 +2462,7 @@ class Phase15BacktestTests(TestCase):
                 'horizon_days': 7,
                 'up_threshold': 0.55,
                 'prediction_source': 'lightgbm',
-                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_inference_backend': 'cuda',
                 'lightgbm_batch_size': 16,
                 'lightgbm_model_artifact_id': artifact.id,
             },
@@ -2475,7 +2475,7 @@ class Phase15BacktestTests(TestCase):
 
         self.assertEqual(serial_map, gpu_map)
         self.assertEqual(serial_cache['lightgbm_runtime_metrics']['inference_backend'], 'cpu_serial')
-        self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['inference_backend'], 'windows_gpu')
+        self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['inference_backend'], 'cuda')
         self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['batch_size'], 16)
         self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['batch_prediction_calls'], 1)
         self.assertEqual(gpu_cache['lightgbm_runtime_metrics']['batch_prediction_rows'], 2)
@@ -2488,7 +2488,7 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._extract_features_for_asset')
     @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
     @patch('apps.backtest.tasks._load_model_artifacts')
-    def test_lightgbm_matrix_cache_hit_preserves_windows_gpu_backend(
+    def test_lightgbm_matrix_cache_hit_preserves_cuda_backend(
         self,
         mock_load_artifacts,
         mock_eligible_asset_ids,
@@ -2536,7 +2536,7 @@ class Phase15BacktestTests(TestCase):
                 'horizon_days': 7,
                 'up_threshold': 0.55,
                 'prediction_source': 'lightgbm',
-                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_inference_backend': 'cuda',
                 'lightgbm_batch_size': 16,
                 'lightgbm_model_artifact_id': artifact.id,
                 'matrix_signal_cache_key': shared_scope,
@@ -2553,7 +2553,7 @@ class Phase15BacktestTests(TestCase):
                 'horizon_days': 7,
                 'up_threshold': 0.55,
                 'prediction_source': 'lightgbm',
-                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_inference_backend': 'cuda',
                 'lightgbm_batch_size': 16,
                 'lightgbm_model_artifact_id': artifact.id,
                 'matrix_signal_cache_key': shared_scope,
@@ -2566,8 +2566,8 @@ class Phase15BacktestTests(TestCase):
         second_map = backtest_tasks._build_lightgbm_prediction_map(self.d1, 7, second_cache, run=second_run)
 
         self.assertEqual(first_map, second_map)
-        self.assertEqual(first_cache['lightgbm_runtime_metrics']['inference_backend'], 'windows_gpu')
-        self.assertEqual(second_cache['lightgbm_runtime_metrics']['inference_backend'], 'windows_gpu')
+        self.assertEqual(first_cache['lightgbm_runtime_metrics']['inference_backend'], 'cuda')
+        self.assertEqual(second_cache['lightgbm_runtime_metrics']['inference_backend'], 'cuda')
         self.assertEqual(second_cache['lightgbm_runtime_metrics']['matrix_cache_hits'], 1)
         self.assertEqual(second_cache['lightgbm_runtime_metrics']['batch_prediction_calls'], 0)
         self.assertEqual(second_cache['lightgbm_runtime_metrics']['batch_prediction_rows'], 0)
@@ -2576,7 +2576,7 @@ class Phase15BacktestTests(TestCase):
     @patch('apps.backtest.tasks._extract_features_for_asset')
     @patch('apps.backtest.tasks._eligible_backtest_asset_ids')
     @patch('apps.backtest.tasks._load_model_artifacts')
-    def test_lightgbm_prediction_map_windows_gpu_falls_back_to_cpu_serial(
+    def test_lightgbm_prediction_map_cuda_falls_back_to_cpu_serial(
         self,
         mock_load_artifacts,
         mock_eligible_asset_ids,
@@ -2623,7 +2623,7 @@ class Phase15BacktestTests(TestCase):
                 'horizon_days': 7,
                 'up_threshold': 0.55,
                 'prediction_source': 'lightgbm',
-                'lightgbm_inference_backend': 'windows_gpu',
+                'lightgbm_inference_backend': 'cuda',
                 'lightgbm_batch_size': 16,
                 'lightgbm_model_artifact_id': artifact.id,
             },
@@ -3143,7 +3143,7 @@ class BacktestManagementCommandTests(TestCase):
         self.assertEqual(manifest['lightgbm_batch_size'], 128)
 
     @patch('apps.backtest.management.commands.run_core_backtest_matrix.queue_backtest_run')
-    def test_run_core_backtest_matrix_stamps_windows_gpu_runtime_params(self, mock_queue_backtest_run):
+    def test_run_core_backtest_matrix_stamps_cuda_runtime_params(self, mock_queue_backtest_run):
         LightGBMModelArtifact.objects.create(
             horizon_days=3,
             version='lgb-matrix-gpu-3d',
@@ -3182,7 +3182,7 @@ class BacktestManagementCommandTests(TestCase):
                 name_prefix='matrixlgbmgpu',
                 output_dir=str(output_dir),
                 queue=True,
-                lightgbm_inference_backend='windows_gpu',
+                lightgbm_inference_backend='cuda',
                 lightgbm_batch_size=64,
                 stdout=output,
             )
@@ -3192,9 +3192,9 @@ class BacktestManagementCommandTests(TestCase):
         runs = list(BacktestRun.objects.order_by('id'))
         self.assertEqual(mock_queue_backtest_run.call_count, 9)
         self.assertEqual(len(runs), 9)
-        self.assertTrue(all(run.parameters['lightgbm_inference_backend'] == 'windows_gpu' for run in runs))
+        self.assertTrue(all(run.parameters['lightgbm_inference_backend'] == 'cuda' for run in runs))
         self.assertTrue(all(run.parameters['lightgbm_batch_size'] == 64 for run in runs))
-        self.assertEqual(manifest['lightgbm_inference_backend'], 'windows_gpu')
+        self.assertEqual(manifest['lightgbm_inference_backend'], 'cuda')
         self.assertEqual(manifest['lightgbm_batch_size'], 64)
 
     def test_run_core_backtest_matrix_inline_scheduler_round_robins_continuations(self):
