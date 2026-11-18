@@ -6,7 +6,7 @@
 
 # Celery Task and Queue Reference
 
-_Generated: 2026-11-18T01:43:51Z_
+_Generated: 2026-11-18T02:53:10Z_
 
 Operational guidance -- which worker to start, how to scale backtests, what to do when a task times out -- lives in `docs/how-to/local-setup.md` and `docs/how-to/runbook-sync-failure.md`.
 
@@ -49,6 +49,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 | `reconcile-prediction-coverage-hourly` | `apps.prediction.tasks.reconcile_prediction_coverage` | `45 * * * *` | &mdash; |
 | `report-etf-rotation-live-track-monthly` | `apps.etf_rotation.tasks.report_etf_rotation_live_track` | `0 5 * 2 *` | &mdash; |
 | `sync-a-shares-daily-from-tushare` | `apps.markets.tasks.sync_daily_a_shares` | `10 0 * * *` | &mdash; |
+| `sync-asset-suspensions-weekly` | `apps.markets.tasks.sync_asset_suspensions_weekly` | `0 3 0 * *` | &mdash; |
 | `sync-etf-benchmark-index-daily` | `apps.etf_rotation.tasks.sync_etf_benchmark_index` | `5 1 * * *` | &mdash; |
 | `sync-etf-daily-bars-daily` | `apps.etf_rotation.tasks.sync_etf_daily_recent` | `45 0 * * *` | &mdash; |
 | `sync-etf-fund-shares-weekly` | `apps.etf_rotation.tasks.sync_etf_fund_shares` | `10 2 0 * *` | &mdash; |
@@ -57,7 +58,7 @@ A task decorated with its own `soft_time_limit` / `time_limit` overrides the glo
 
 Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`, which beat reads them against and which must equal `TIME_ZONE`. Celery does not fall back to Django's `TIME_ZONE`, so a deploy that flips one without the other shifts the whole nightly pipeline eight hours and still looks healthy until the data lands late. `apps/core/tests_beat_schedule.py` is the gate.
 
-**56** registered project tasks, **18** beat entries, **38** reachable only through management commands, API actions, or other tasks.
+**57** registered project tasks, **19** beat entries, **38** reachable only through management commands, API actions, or other tasks.
 
 
 ## Task inventory
@@ -107,6 +108,7 @@ Hour numbers are wall clock in `Asia/Shanghai` -- the value of `CELERY_TIMEZONE`
 | `apps.macro.tasks.sync_macro_data_monthly` | `ops` | default | global | global | `sync-macro-data-monthly` |
 | `apps.markets.tasks.run_post_sync_universal_refresh` | `ops` | default | **1800** | **2100** | &mdash; |
 | `apps.markets.tasks.sync_asset_history` | `ops` | default | global | global | &mdash; |
+| `apps.markets.tasks.sync_asset_suspensions_weekly` | `ops` | default | global | global | `sync-asset-suspensions-weekly` |
 | `apps.markets.tasks.sync_daily_a_shares` | `ops` | default | global | global | `sync-a-shares-daily-from-tushare` |
 | `apps.markets.tasks.sync_monthly_index_memberships` | `ops` | default | global | global | `sync-index-memberships-monthly` |
 | `apps.markets.tasks.sync_official_benchmark_index_history` | `ops` | default | global | global | &mdash; |
