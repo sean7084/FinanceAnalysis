@@ -442,6 +442,41 @@ def _rule_scores(snapshots, momentum_lookback):
     return complete[['ts_code', 'score']].reset_index(drop=True), metadata
 
 
+def rule_predictor(momentum_lookback):
+    """A RULE scorer with the same row-aligned contract as the model predictors.
+
+    For IC measurement only. The engine still runs RULE with ``predictors={}``, so this cannot
+    change selection, sizing or execution -- it exposes the ranking the engine already uses.
+
+    Two things it has to do that ``_rule_scores`` does not: rank **per date**, because a
+    percentile over a pooled multi-date frame is not the cross-section the engine ranks; and
+    put back the rows ``_rule_scores`` drops for missing inputs, as NaN, because the measurement
+    contract is one row per input snapshot in the input's order.
+    """
+    lookback = int(momentum_lookback or 60)
+
+    def score(snapshots_df) -> pd.DataFrame:
+        if snapshots_df is None or len(snapshots_df) == 0:
+            return pd.DataFrame({'ts_code': [], 'score': []})
+        if 'date' not in snapshots_df.columns:
+            raise ValueError(
+                'RULE scoring for IC needs a date column: the engine ranks one cross-section '
+                'at a time, and a pooled percentile would be a different score.'
+            )
+        values = pd.Series(np.nan, index=snapshots_df.index, dtype='float64')
+        for _, group in snapshots_df.groupby('date', sort=False):
+            scored, _metadata = _rule_scores(group, lookback)
+            scored = scored.drop_duplicates('ts_code', keep='first')
+            mapped = group[['ts_code']].merge(scored, on='ts_code', how='left')['score']
+            values.loc[group.index] = mapped.to_numpy()
+        return pd.DataFrame({
+            'ts_code': list(snapshots_df['ts_code']),
+            'score': values.to_numpy(),
+        })
+
+    return score
+
+
 def _call_predictor(predictor, snapshots, model_type):
     """Run ``(snapshots_df) -> DataFrame[ts_code, score]`` on the feature slice only.
 

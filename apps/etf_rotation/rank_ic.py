@@ -120,9 +120,22 @@ def block_rank_ic(predictor, *, block_start, block_end, horizon_days=None,
     scored = predictor(frame.drop(columns=dropped))
     if scored is None or len(scored) == 0:
         return {'dates': 0, 'mean_ic': None, 'per_date_ic': {}, 'horizon_days': horizon}
-    merged = labels.merge(
-        scored[['ts_code', 'score']], on='ts_code', how='inner',
-    ).dropna(subset=['score'])
+    # The predictor contract is row-aligned -- one row per input snapshot, in the input's order
+    # -- but it returns only ts_code/score, so the date has to be reattached before joining.
+    # Joining on ts_code alone over a multi-date block is many-to-many: each label row matches
+    # every date's score for that code, and the per-date IC then correlates one day's labels
+    # against the whole block's pooled scores. A perfect per-date scorer measured 0.813 instead
+    # of 1.0 that way, with the sample inflated by the number of dates in the block.
+    if len(scored) != len(frame) or list(scored['ts_code']) != list(frame['ts_code']):
+        raise ValueError(
+            f'predictor must return one row per input snapshot in the same order; got '
+            f'{len(scored)} rows for {len(frame)} snapshots, or a different order. Row '
+            'alignment is what lets the date be reattached, so a scorer that drops or reorders '
+            'rows cannot be measured here.'
+        )
+    scored = scored[['ts_code', 'score']].copy()
+    scored['date'] = frame['date'].to_numpy()
+    merged = labels.merge(scored, on=['date', 'ts_code'], how='inner').dropna(subset=['score'])
 
     per_date: dict[str, float] = {}
     for day, group in merged.groupby('date', sort=True):

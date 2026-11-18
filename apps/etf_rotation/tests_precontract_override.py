@@ -14,7 +14,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import SimpleTestCase
 
-PREREG = Path(__file__).resolve().parents[2] / 'docs/reports/preregistration/etf-icir-verdict-2026-11-18.md'
+PREREG = Path(__file__).resolve().parents[2] / 'docs/reports/preregistration/etf-icir-verdict-2026-11-18-rev2.md'
 
 
 class PreContractOverrideTests(SimpleTestCase):

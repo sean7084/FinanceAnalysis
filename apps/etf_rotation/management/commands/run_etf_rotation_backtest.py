@@ -2035,7 +2035,13 @@ class Command(BaseCommand):
                     f'held-out block ({inside[0]}..{inside[-1]}); refusing to train on a leaky split.'
                 )
             if model_type == 'RULE':
-                predictor, predictors = None, {}
+                # IC measurement only: `predictors` stays empty, so the engine still runs RULE
+                # without a model and selection/sizing are unchanged. Without a scorer the RULE
+                # arm produced no per_date_ic, which left the pre-registered arm-minus-baseline
+                # paired leg inert (shared_dates=0 against an empty baseline series).
+                from apps.etf_rotation import rotation_engine
+                predictor = rotation_engine.rule_predictor(knobs['momentum_lookback'])
+                predictors = {}
             else:
                 predictor = self._fold_predictor(
                     fold, model_type=model_type, options=options,
@@ -2082,7 +2088,8 @@ class Command(BaseCommand):
                 # The daily series, not just its mean: the pre-registered verdict (#136) is a
                 # Newey-West t on daily ICs, which cannot be recomputed from a block mean.
                 # Storing it here is what lets a verdict be re-derived without spending the
-                # panel again. Absent for the RULE arm, which has no scorer.
+                # panel again. Every arm has one, including RULE, whose scorer reproduces the
+                # engine's own per-date ranking without taking part in execution.
                 'per_date_ic': ic.get('per_date_ic') or {},
                 # Session-level Sharpe SE for the pre-registered secondary gate (#136). The
                 # equity curve is available here, so the SE comes from return observations
