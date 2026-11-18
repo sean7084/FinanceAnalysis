@@ -399,7 +399,7 @@ MACRO_RELEASE_LAG_DAYS = env.json('MACRO_RELEASE_LAG_DAYS', default={
     'pmi_non_manufacturing': 1,
     'cpi_yoy': 9,
     'ppi_yoy': 9,
-    'dxy': 1,
+    'fxcm_usdollar': 1,
     'cny_usd': 1,
     'cn10y_yield': 2,
     'cn3y_yield': 2,

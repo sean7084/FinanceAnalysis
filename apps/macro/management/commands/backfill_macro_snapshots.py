@@ -11,7 +11,7 @@ from django.utils import timezone
 from apps.core.date_floor import get_historical_data_floor
 from apps.macro.models import MacroSnapshot
 from apps.macro.providers import (
-    DXY_TUSHARE_CODES,
+    FXCM_USDOLLAR_TUSHARE_CODES,
     MACRO_FIELDS,
     TUSHARE_YIELD_CURVE_TYPE,
     YIELD_TENOR_SPECS,
@@ -21,7 +21,7 @@ from apps.macro.providers import (
     extract_pmi_month,
     extract_fx_quote,
     fetch_macro_snapshot_from_akshare,
-    normalize_dxy_quote,
+    normalize_fxcm_usdollar_quote,
     normalize_cny_usd_from_usd_quote,
 )
 from apps.macro.tasks import refresh_current_market_context
@@ -375,10 +375,10 @@ class Command(BaseCommand):
             'cpi': {},
             'ppi': {},
             'pmi': {},
-            'dxy': {},
+            'fxcm_usdollar': {},
             'cny_usd': {},
             'fx_sources': {
-                'dxy': {},
+                'fxcm_usdollar': {},
                 'cny_usd': {},
             },
             'errors': {},
@@ -440,7 +440,7 @@ class Command(BaseCommand):
             maps['errors']['pmi'] = str(exc)
 
         fx_specs = [
-            ('dxy', DXY_TUSHARE_CODES, normalize_dxy_quote),
+            ('fxcm_usdollar', FXCM_USDOLLAR_TUSHARE_CODES, normalize_fxcm_usdollar_quote),
             ('cny_usd', ['USDCNH.FXCM'], normalize_cny_usd_from_usd_quote),
         ]
         csv_cny_usd_month_end = CSV_CNY_USD_MONTH_END.strftime('%Y%m')
@@ -525,7 +525,7 @@ class Command(BaseCommand):
             metadata['errors'] = maps['errors']
             field_sources = dict(metadata.get('field_sources') or {})
             fx_sources = dict(metadata.get('fx_sources') or {})
-            for fx_field in ('dxy', 'cny_usd'):
+            for fx_field in ('fxcm_usdollar', 'cny_usd'):
                 source_metadata = ((maps.get('fx_sources') or {}).get(fx_field) or {}).get(month)
                 if source_metadata is None:
                     field_sources.pop(fx_field, None)
@@ -550,7 +550,7 @@ class Command(BaseCommand):
             metadata['retry_errors'] = retry_errors
 
             defaults = {
-                'dxy': maps['dxy'].get(month),
+                'fxcm_usdollar': maps['fxcm_usdollar'].get(month),
                 'cny_usd': maps['cny_usd'].get(month),
                 'pmi_manufacturing': (maps['pmi'].get(month) or {}).get('pmi_manufacturing'),
                 'pmi_non_manufacturing': (maps['pmi'].get(month) or {}).get('pmi_non_manufacturing'),
