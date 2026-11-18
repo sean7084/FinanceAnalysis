@@ -609,6 +609,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.markets.tasks.sync_daily_a_shares',
         'schedule': crontab(hour='0', minute='10'),
     },
+    'sync-asset-suspensions-weekly': {
+        'task': 'apps.markets.tasks.sync_asset_suspensions_weekly',
+        'schedule': crontab(day_of_week='0', hour='3', minute='0'),
+    },
     'sync-index-memberships-monthly': {
         'task': 'apps.markets.tasks.sync_monthly_index_memberships',
         'schedule': crontab(day_of_month='1', hour='10', minute='15'),

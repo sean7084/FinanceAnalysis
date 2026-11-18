@@ -509,6 +509,28 @@ def sync_asset_suspensions(start_date=None, end_date=None, ts_codes=None):
     }
 
 
+@shared_task
+def sync_asset_suspensions_weekly():
+    """Weekly bounded-range suspension backfill (#140).
+
+    The daily dispatcher only writes TODAY's suspensions for the CSI500 union, and the
+    catch-up path replays gap windows event-driven from a watermark. Neither guarantees that
+    a window which was never detected as a gap gets walked. This job re-walks a trailing
+    90-day range on a fixed cadence, whole market, idempotently.
+
+    90 days is ~2 of the 60-day sync windows, i.e. a handful of paginated suspend_d calls --
+    two orders of magnitude below CATCHUP_MAX_CALLS_PER_RUN. It deliberately does NOT touch
+    the daily dispatcher's watermark, so the event-driven path keeps its own grace semantics.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    end_date = timezone.localdate()
+    start_date = end_date - timedelta(days=90)
+    return sync_asset_suspensions(start_date=start_date, end_date=end_date)
+
+
 def sync_benchmark_index_history(index_codes=None, start_date=None, end_date=None):
     normalized_index_codes = _parse_index_codes(index_codes)
     resolved_end_date = _resolve_target_date(end_date)
