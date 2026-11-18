@@ -16,12 +16,12 @@ from apps.macro.models import MacroSnapshot, release_lag_days
 #: The five declared inputs plus the yield slope. None of these may ever enter
 #: ``features.FEATURE_COLUMNS`` -- a date constant cannot separate two funds.
 REGIME_INPUT_NAMES = (
-    'pmi_level', 'pmi_delta_3m', 'cpi_ppi_scissors', 'dxy_trend_3m', 'cny_trend_3m',
+    'pmi_level', 'pmi_delta_3m', 'cpi_ppi_scissors', 'fxcm_usdollar_trend_3m', 'cny_trend_3m',
     'yield_slope',
 )
 
 _SERIES_FIELDS = (
-    'pmi_manufacturing', 'cpi_yoy', 'ppi_yoy', 'dxy', 'cny_usd', 'cn10y_yield', 'cn3y_yield',
+    'pmi_manufacturing', 'cpi_yoy', 'ppi_yoy', 'fxcm_usdollar', 'cny_usd', 'cn10y_yield', 'cn3y_yield',
 )
 
 
@@ -91,7 +91,7 @@ def macro_regime_inputs(session: date, *, rows=None) -> dict:
         ),
         'pmi_delta_3m': pmi_delta,
         'cpi_ppi_scissors': scissors,
-        'dxy_trend_3m': _trend(_recent(rows, dates, 'dxy', session)),
+        'fxcm_usdollar_trend_3m': _trend(_recent(rows, dates, 'fxcm_usdollar', session)),
         'cny_trend_3m': _trend(_recent(rows, dates, 'cny_usd', session)),
         'yield_slope': yield_slope,
         'yield_slope_status': yield_status,
