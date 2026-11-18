@@ -243,7 +243,8 @@ jobs:
       # Raised to 1179 by fix/orphan-progress-freshness, which adds the one regression test
       # proving a RUNNING backtest whose progress stopped 171 days ago is sweepable (the orphan
       # exemption now requires fresh progress, not merely a progress key). Measured 1183.
-      MIN_TEST_COUNT: "1227"
+      MIN_TEST_COUNT: "1236"
+      MIN_TEST_COUNT: "1236"
 
     steps:
       - uses: actions/checkout@v4
@@ -468,7 +469,7 @@ jobs:
       # well before this batch, which added no frontend tests but did remove three lint
       # warnings and the ratchet that tolerated them. Raised to the measured total so the
       # floor bites again.
-      MIN_TEST_COUNT: "100"
+      MIN_TEST_COUNT: "1236"
 
     steps:
       - uses: actions/checkout@v4

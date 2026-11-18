@@ -28,6 +28,8 @@ from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.etf_rotation import verdict_stats
+
 from apps.etf_rotation import evidence
 
 #: Arm -> the engine/model combination it stands for. Embargo is 20 for a sequence model
@@ -60,6 +62,11 @@ ARMS = {
 
 #: A drawdown median within this margin of the baseline still counts as "not worse".
 DRAWDOWN_MARGIN = 0.02
+
+
+def _fmt(value) -> str:
+    """Four decimals, or n/a -- never a blank that could be read as zero."""
+    return 'n/a' if value is None else f'{value:.4f}'
 
 
 def prereg_digest(text: str) -> str:
@@ -154,6 +161,14 @@ class Command(BaseCommand):
                 call_command(
                     'run_etf_rotation_backtest',
                     start=start, end=options['end'], model=spec['model'],
+                    # The pre-registered grid starts in 2016/2017/2018, all before
+                    # ETF_BACKTEST_START (2021-01-13). Without this override
+                    # enforce_date_contract raises ContractBoundaryError and the grid cannot
+                    # run at all -- a reproducibility regression, since these are the very
+                    # starts the existing ledger rows were measured on. Every cell is
+                    # research-only pre-contract history and must not be reported alongside
+                    # production metrics; the pre-registration declares that explicitly.
+                    allow_pre_contract_history=True,
                     frequency='BIWEEKLY', max_positions=3, momentum_lookback=120,
                     absolute_momentum_filter=False, weighting='equal',
                     cpcv_blocks=options['blocks'], cpcv_test_blocks=1,
@@ -221,6 +236,73 @@ class Command(BaseCommand):
                 + ('Effect replicates.' if wins == len(arm_verdicts) and wins > 1
                    else 'Not reproduced across contexts.')
             )
+        # -- Pre-registered ICIR verdict (#136) -------------------------------------------
+        # The block-median table above is retained as a ROBUSTNESS VIEW only: it has no
+        # adjudication authority. The verdict below is a Newey-West t on daily ICs, with a
+        # Sharpe secondary gate whose SE comes from session-level equity returns.
+        lines.extend([
+            '', '## Pre-registered ICIR verdict (#136)', '',
+            'Primary criterion is REJECT-not-select: an arm must clear Newey-West t >= '
+            f'{verdict_stats.T_MIN} AND mean daily IC > 0 on a panel start to avoid rejection. '
+            'Clearing it selects nothing. The block-median table above is a robustness view '
+            'and carries no adjudication authority.', '',
+            f'Frozen constants: NW_LAG={verdict_stats.NW_LAG}, T_MIN={verdict_stats.T_MIN}, '
+            f'SHARPE_CI_Z={verdict_stats.SHARPE_CI_Z}. Autocorrelation is handled by '
+            'Newey-West, not by inflating the threshold; the choice is pre-registered.', '',
+            '| arm | panel start | n ICs | mean IC | NW t | naive t | avoids rejection | Sharpe gate |',
+            '| :--- | :--- | ---: | ---: | ---: | ---: | :--- | :--- |',
+        ])
+        pooled_ics: dict = {}
+        paired_by_arm: dict = {}
+        for (arm, start), payload in results.items():
+            blocks = (payload['results'].get('blocks') or [])
+            merged: dict = {}
+            for block in blocks:
+                if isinstance(block, dict):
+                    merged.update(block.get('per_date_ic') or {})
+            pooled_ics[(arm, start)] = merged
+            stats = verdict_stats.ic_stats(merged)
+            gate = verdict_stats.panel_sharpe_gate(
+                [block.get('sharpe_ratio') for block in blocks if isinstance(block, dict)],
+                [block.get('sharpe_se') for block in blocks if isinstance(block, dict)],
+            )
+            avoids = verdict_stats.primary_reject(stats['nw_t'], stats['mean_ic'])
+            lines.append(
+                f'| {arm} | {start} | {stats["n"]} | '
+                f'{_fmt(stats["mean_ic"])} | {_fmt(stats["nw_t"])} | {_fmt(stats["naive_t"])} | '
+                f'{"yes" if avoids else "no"} | '
+                f'{"pass" if gate["passed"] else ("fail" if gate["passed"] is False else "n/a")} |'
+            )
+            if arm != baseline_arm:
+                base_merged = pooled_ics.get((baseline_arm, start)) or {}
+                paired_by_arm.setdefault(arm, {})[start] = verdict_stats.paired_ic_stats(merged, base_merged)
+
+        lines.extend(['', '### Paired differences vs baseline (same blocks, same days)', ''])
+        for arm, per_start in sorted(paired_by_arm.items()):
+            estimates = []
+            for start, stats in sorted(per_start.items()):
+                lines.append(
+                    f'- `{arm}@{start}`: shared={stats["shared_dates"]} '
+                    f'arm-only={stats["arm_only_dates"]} baseline-only={stats["baseline_only_dates"]} '
+                    f'mean diff={_fmt(stats["mean_ic"])} NW t={_fmt(stats["nw_t"])}'
+                )
+                if stats['nw_t'] is not None and stats['nw_se']:
+                    estimates.append((stats['mean_ic'], stats['nw_se']))
+            meta = verdict_stats.random_effects_meta(estimates)
+            lines.append(
+                f'- `{arm}` random-effects pool across {meta["k"]} start(s): '
+                f'pooled={_fmt(meta["pooled"])} SE={_fmt(meta["pooled_se"])} '
+                f'tau2={_fmt(meta["tau2"])} I2={_fmt(meta["i2"])}'
+            )
+        lines.extend([
+            '',
+            'Heterogeneity caveat, frozen: when tau2 dominates, pooling cannot manufacture '
+            'independence. A large I2 means the starts measure different things, and the '
+            'pooled number describes that heterogeneity rather than sharpening one common '
+            'effect. tau2 and I2 are reported above for exactly this reason.',
+            '',
+        ])
+
         report = '\n'.join(lines) + '\n'
 
         out_dir = options['out_dir'] or os.path.join(

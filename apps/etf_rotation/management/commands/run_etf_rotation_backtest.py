@@ -69,7 +69,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.core import finance_metrics
 from apps.core.date_contract import ASSET_ETF, MIN_TRAIN_SESSIONS, STAGE_BACKTEST, enforce_date_contract
-from apps.etf_rotation import evidence, rank_ic, tasks
+from apps.etf_rotation import evidence, rank_ic, tasks, verdict_stats
 from apps.etf_rotation.backtest_engine import (
     MODEL_TYPES,
     REBALANCE_FREQUENCIES,
@@ -2079,6 +2079,15 @@ class Command(BaseCommand):
                 'max_drawdown': metrics.get('max_drawdown'),
                 'sharpe_ratio': metrics.get('sharpe_ratio'),
                 'mean_ic': ic.get('mean_ic'),
+                # The daily series, not just its mean: the pre-registered verdict (#136) is a
+                # Newey-West t on daily ICs, which cannot be recomputed from a block mean.
+                # Storing it here is what lets a verdict be re-derived without spending the
+                # panel again. Absent for the RULE arm, which has no scorer.
+                'per_date_ic': ic.get('per_date_ic') or {},
+                # Session-level Sharpe SE for the pre-registered secondary gate (#136). The
+                # equity curve is available here, so the SE comes from return observations
+                # rather than from the dispersion of six block medians.
+                'sharpe_se': verdict_stats.sharpe_se_from_equity(result.get('equity_curve')),
                 'horizon_ic': horizon_ic,
             })
             self.stdout.write(
