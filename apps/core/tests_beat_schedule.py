@@ -35,6 +35,7 @@ BEIJING = ZoneInfo('Asia/Shanghai')
 # baseline: change it only to record a deliberate schedule move.
 PRE_UNIFICATION_UTC = {
     'sync-a-shares-daily-from-tushare': {'hour': '16', 'minute': '10'},
+    'sync-asset-suspensions-weekly': {'day_of_week': '6', 'hour': '19', 'minute': '0'},
     'sync-index-memberships-monthly': {'day_of_month': '1', 'hour': '2', 'minute': '15'},
     'check-alert-rules-every-5-min': {'minute': '*/5'},
     'sync-macro-data-monthly': {'day_of_month': '2-8', 'hour': '0', 'minute': '10'},
