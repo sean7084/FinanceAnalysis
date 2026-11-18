@@ -209,7 +209,7 @@ BACKLOG.md -- Open > configuration and infrastructure
 - [ ] Pin at least the ML stack in ``requirements/base.txt``
 - [ ] Record the resolved set used for each artifact family
 
-Also: ``torch`` installs as a **CPU-only** build from the default index on Windows, which conflicts with the ``windows_gpu`` LightGBM inference backend. Document which runtimes actually have GPU.
+Also: ``torch`` installs as a **CPU-only** build from the default index on Windows, which conflicts with the ``cuda`` LightGBM inference backend. Document which runtimes actually have GPU.
 
 ## Source
 BACKLOG.md -- Open > configuration and infrastructure

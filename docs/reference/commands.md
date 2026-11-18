@@ -109,7 +109,7 @@ Create and optionally queue the heuristic/lightgbm core-profile backtest matrix 
 | `--queue` | flag | `False` |  | Queue created runs asynchronously instead of executing the first chunk inline. |
 | `--execute-inline` | flag | `False` |  | Execute all matrix runs to completion in this process, round-robin by queued chunk while preserving the in-memory matrix signal cache. |
 | `--chunk-trading-days` | value | `60` |  | Per-run chunk size stamped into matrix BacktestRun parameters. Defaults to 60. |
-| `--lightgbm-inference-backend` | value | `auto` |  | LightGBM-only inference backend stamped into created runs. Supported: auto,cpu_serial,cpu_batched,windows_gpu. |
+| `--lightgbm-inference-backend` | value | `auto` |  | LightGBM-only inference backend stamped into created runs. Supported: auto,cpu_serial,cpu_batched,cuda. |
 | `--lightgbm-batch-size` | value | `256` |  | LightGBM-only inference batch size stamped into created runs. Defaults to 256. |
 | `--dry-run` | flag | `False` |  | Print the planned matrix without creating BacktestRun rows. |
 | `--output-dir` | value | `""` |  | Optional compact export directory. Defaults to reports/<name-prefix>-<timestamp>. |
