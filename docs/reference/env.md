@@ -6,7 +6,7 @@
 
 # Environment Variable Reference
 
-_Generated: 2026-11-12T16:51:20Z_
+_Generated: 2026-11-18T01:43:51Z_
 
 `.env` at the repository root is the only env file the native stack needs; `manage.py` sets `DJANGO_READ_DOT_ENV_FILE=True` when it exists. OS environment variables take precedence over `.env` values.
 
@@ -100,7 +100,7 @@ _Generated: 2026-11-12T16:51:20Z_
 | `ETF_WEIGHTING` | `str` | `'score'` | **no** | base.py:436 |
 | `HISTORICAL_DATA_FLOOR` | `str` | `'2010-01-01'` | yes | base.py:388 |
 | `MACRO_PUBLICATION_LAG_DAYS_FALLBACK` | `int` | `35` | yes | base.py:396 |
-| `MACRO_RELEASE_LAG_DAYS` | `json` | `{'pmi_manufacturing': 1, 'pmi_non_manufacturing': 1, 'cpi_yoy': 9, 'ppi_yoy': 9, 'dxy': 1, 'cny_usd': 1, 'cn10y_yield': 2, 'cn3y_yield': 2}` | yes | base.py:397 |
+| `MACRO_RELEASE_LAG_DAYS` | `json` | `{'pmi_manufacturing': 1, 'pmi_non_manufacturing': 1, 'cpi_yoy': 9, 'ppi_yoy': 9, 'fxcm_usdollar': 1, 'cny_usd': 1, 'cn10y_yield': 2, 'cn3y_yield': 2}` | yes | base.py:397 |
 | `MACRO_SYNC_FALLBACK_PROVIDER` | `str` | `'akshare'` | yes | base.py:390 |
 | `MACRO_SYNC_PRIMARY_PROVIDER` | `str` | `'tushare'` | yes | base.py:389 |
 | `MACRO_SYNC_PROVIDER_SLEEP_SECONDS` | `float` | `0.2` | yes | base.py:391 |

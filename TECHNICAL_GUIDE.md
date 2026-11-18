@@ -233,7 +233,7 @@ series — measured coverage is in
 
 | Field | Upstream source | Stored semantics | Consumed by |
 | --- | --- | --- | --- |
-| `dxy` | TuShare `fx_daily`, `USDOLLAR.FXCM` then `USDOLLAR` | Month-start normalisation of the index close | Storage and API only |
+| `fxcm_usdollar` | TuShare `fx_daily`, `USDOLLAR.FXCM` then `USDOLLAR` | Month-start normalisation of the index close | Storage and API only |
 | `cny_usd` | TuShare `fx_daily`, `USDCNH.FXCM` | Inverted `CNY/USD` from the offshore `USD/CNH` quote | Storage and API only |
 | `cn6m_yield` … `cn30y_yield` | ChinaBond CSV for the earliest years, then TuShare `yc_cb` with `curve_term in [0.5, 1, 3, 5, 7, 10, 30]` and `curve_type=0` | Month-start rows from the first available trade date | `cn10y_yield − cn3y_yield` drives the yield-curve feature and regime inference; the full tenor surface is stored for inspection |
 | `pmi_manufacturing` | TuShare `cn_pmi`, field `PMI010000` | Manufacturing PMI | Regime inference and macro features |

@@ -7863,7 +7863,7 @@ class FoldShapeAndRegimeTests(SimpleTestCase):
         rows = [
             {
                 'date': date(2024, month, 1), 'pmi_manufacturing': 49.0 + month * 0.1,
-                'cpi_yoy': 2.0, 'ppi_yoy': -1.0, 'dxy': 100.0, 'cny_usd': 7.0,
+                'cpi_yoy': 2.0, 'ppi_yoy': -1.0, 'fxcm_usdollar': 100.0, 'cny_usd': 7.0,
                 'cn10y_yield': None, 'cn3y_yield': None,
             }
             for month in (1, 2, 3, 4)
