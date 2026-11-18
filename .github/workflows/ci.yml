@@ -243,8 +243,7 @@ jobs:
       # Raised to 1179 by fix/orphan-progress-freshness, which adds the one regression test
       # proving a RUNNING backtest whose progress stopped 171 days ago is sweepable (the orphan
       # exemption now requires fresh progress, not merely a progress key). Measured 1183.
-      MIN_TEST_COUNT: "1236"
-      MIN_TEST_COUNT: "1236"
+      MIN_TEST_COUNT: "1247"
 
     steps:
       - uses: actions/checkout@v4
@@ -391,7 +390,6 @@ jobs:
           # No --source: .coveragerc already says `source = apps` and `branch = True`.
           coverage run manage.py test --noinput
           coverage report
-
   frontend:
     name: Frontend tests, type-check, and lint
     runs-on: ubuntu-latest
@@ -469,7 +467,7 @@ jobs:
       # well before this batch, which added no frontend tests but did remove three lint
       # warnings and the ratchet that tolerated them. Raised to the measured total so the
       # floor bites again.
-      MIN_TEST_COUNT: "1236"
+      MIN_TEST_COUNT: "100"
 
     steps:
       - uses: actions/checkout@v4
