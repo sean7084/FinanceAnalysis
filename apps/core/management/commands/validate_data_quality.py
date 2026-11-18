@@ -282,7 +282,7 @@ def _chunked(items, size):
 FUNDAMENTAL_RECONCILIATION_FINA_LOOKBACK_DAYS = 400
 SNAPSHOT_ROW_FIELD = 'snapshot_row'
 MACRO_FIELDS = (
-    'dxy',
+    'fxcm_usdollar',
     'cny_usd',
     'cn6m_yield',
     'cn1y_yield',

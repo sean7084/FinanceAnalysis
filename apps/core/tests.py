@@ -401,7 +401,7 @@ class DataQualityValidationCommandTests(TestCase):
             self.assertTrue(missing_macro_rows)
             self.assertTrue(any(
                 row['required_table'] == 'macro_snapshot'
-                and row['field'] == 'dxy'
+                and row['field'] == 'fxcm_usdollar'
                 and row['date'] == '2024-01-01'
                 and row['metric_family'] == 'macro_snapshot'
                 for row in missing_macro_rows
@@ -467,7 +467,7 @@ class DataQualityValidationCommandTests(TestCase):
             ))
             self.assertTrue(any(
                 row['table'] == 'macro_snapshot'
-                and row['field'] == 'dxy'
+                and row['field'] == 'fxcm_usdollar'
                 and row['issue_type'] == 'missing_macro_field'
                 for row in missing_field_rows
             ))
@@ -1064,7 +1064,7 @@ class DataQualityValidationCommandTests(TestCase):
 
         MacroSnapshot.objects.create(
             date=timezone.datetime(2024, 2, 1).date(),
-            dxy=Decimal('100.0'),
+            fxcm_usdollar=Decimal('100.0'),
             cny_usd=Decimal('0.1400'),
             cn6m_yield=Decimal('2.1000'),
             cn1y_yield=Decimal('2.1500'),

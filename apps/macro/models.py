@@ -6,7 +6,16 @@ from django.utils import timezone
 class MacroSnapshot(models.Model):
     """Daily/monthly macro data snapshot."""
     date = models.DateField(_('Date'), unique=True, db_index=True)
-    dxy = models.DecimalField(_('US Dollar Index (DXY)'), max_digits=10, decimal_places=4, null=True, blank=True)
+    fxcm_usdollar = models.DecimalField(
+        _('Dow Jones FXCM US Dollar Index Basket'),
+        max_digits=10, decimal_places=4, null=True, blank=True,
+        help_text=_(
+            "TuShare USDOLLAR.FXCM (legacy code USDOLLAR): the Dow Jones FXCM Dollar Index "
+            "Basket, NOT the ICE DXY. Renamed from dxy in #154 because the old name claimed an "
+            "instrument this column never held. Per-row provenance is recorded in "
+            "metadata.fx_quote_sources['fxcm_usdollar']."
+        ),
+    )
     cny_usd = models.DecimalField(_('CNY/USD'), max_digits=10, decimal_places=4, null=True, blank=True)
     cn6m_yield = models.DecimalField(_('China 6M Yield'), max_digits=8, decimal_places=4, null=True, blank=True)
     cn1y_yield = models.DecimalField(_('China 1Y Yield'), max_digits=8, decimal_places=4, null=True, blank=True)

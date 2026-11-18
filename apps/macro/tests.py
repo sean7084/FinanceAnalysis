@@ -131,7 +131,7 @@ class Phase12MacroTests(TestCase):
     def test_sync_macro_data_monthly_writes_month_start_row_from_asof_payload(self, mock_refresh_delay):
         result = sync_macro_data_monthly(payload={
             'date': '2026-05-05',
-            'dxy': Decimal('101.0'),
+            'fxcm_usdollar': Decimal('101.0'),
             'cny_usd': Decimal('0.1400'),
             'cn6m_yield': Decimal('2.10'),
             'cn1y_yield': Decimal('2.20'),
@@ -352,9 +352,9 @@ class MacroProviderAndBackfillTests(TestCase):
 
         payload = providers.fetch_macro_snapshot_from_tushare(snapshot_date=timezone.datetime(2026, 4, 1).date())
 
-        self.assertEqual(payload['dxy'], Decimal('126.4300'))
+        self.assertEqual(payload['fxcm_usdollar'], Decimal('126.4300'))
         self.assertEqual(payload['cny_usd'], Decimal('0.1463'))
-        self.assertEqual(payload['metadata']['field_sources']['dxy'], 'tushare')
+        self.assertEqual(payload['metadata']['field_sources']['fxcm_usdollar'], 'tushare')
         self.assertEqual(payload['metadata']['fx_quote_sources']['cny_usd'], 'USDCNH.FXCM')
 
     @patch('apps.macro.providers._sleep_if_needed')
@@ -423,7 +423,7 @@ class MacroProviderAndBackfillTests(TestCase):
 
     @patch('apps.macro.providers._sleep_if_needed')
     @patch('apps.macro.providers._safe_tushare_client')
-    def test_fetch_macro_snapshot_from_tushare_uses_legacy_dxy_code_for_older_history(self, mock_client, _mock_sleep):
+    def test_fetch_macro_snapshot_from_tushare_uses_legacy_fxcm_usdollar_code_for_older_history(self, mock_client, _mock_sleep):
         class StubClient:
             def cn_cpi(self, **kwargs):
                 return pd.DataFrame([
@@ -460,15 +460,15 @@ class MacroProviderAndBackfillTests(TestCase):
 
         payload = providers.fetch_macro_snapshot_from_tushare(snapshot_date=timezone.datetime(2011, 1, 1).date())
 
-        self.assertEqual(payload['dxy'], Decimal('80.1100'))
-        self.assertEqual(payload['metadata']['fx_quote_sources']['dxy'], 'USDOLLAR.FXCM')
+        self.assertEqual(payload['fxcm_usdollar'], Decimal('80.1100'))
+        self.assertEqual(payload['metadata']['fx_quote_sources']['fxcm_usdollar'], 'USDOLLAR.FXCM')
 
     @patch('apps.macro.providers.fetch_macro_snapshot_from_akshare')
     @patch('apps.macro.providers.fetch_macro_snapshot_from_tushare')
     def test_fetch_macro_snapshot_with_fallback_backfills_missing_fx_fields(self, mock_tushare, mock_akshare):
         mock_tushare.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': None,
+            'fxcm_usdollar': None,
             'cny_usd': None,
             'cn10y_yield': Decimal('2.30'),
             'pmi_manufacturing': Decimal('50.2'),
@@ -479,7 +479,7 @@ class MacroProviderAndBackfillTests(TestCase):
         }
         mock_akshare.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': Decimal('104.2'),
+            'fxcm_usdollar': Decimal('104.2'),
             'cny_usd': Decimal('0.1389'),
             'cn10y_yield': None,
             'pmi_manufacturing': None,
@@ -491,11 +491,11 @@ class MacroProviderAndBackfillTests(TestCase):
 
         payload = providers.fetch_macro_snapshot_with_fallback()
 
-        self.assertEqual(payload['dxy'], Decimal('104.2'))
+        self.assertEqual(payload['fxcm_usdollar'], Decimal('104.2'))
         self.assertEqual(payload['cny_usd'], Decimal('0.1389'))
         self.assertEqual(payload['cn10y_yield'], Decimal('2.30'))
         self.assertEqual(payload['metadata']['source_used'], 'tushare+akshare')
-        self.assertEqual(payload['metadata']['fallback_fields'], ['dxy', 'cny_usd'])
+        self.assertEqual(payload['metadata']['fallback_fields'], ['fxcm_usdollar', 'cny_usd'])
         self.assertEqual(payload['metadata']['field_sources']['cn10y_yield'], 'tushare')
         self.assertEqual(payload['metadata']['field_sources']['cny_usd'], 'akshare')
 
@@ -529,7 +529,7 @@ class MacroProviderAndBackfillTests(TestCase):
         mock_pro_api.return_value = StubPro()
         mock_fallback.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': None,
+            'fxcm_usdollar': None,
             'cny_usd': None,
             'cn10y_yield': None,
             'pmi_manufacturing': None,
@@ -616,7 +616,7 @@ class MacroProviderAndBackfillTests(TestCase):
         mock_pro_api.return_value = StubPro()
         mock_fallback.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': Decimal('104.2'),
+            'fxcm_usdollar': Decimal('104.2'),
             'cny_usd': Decimal('0.1389'),
             'cn10y_yield': None,
             'cn6m_yield': None,
@@ -643,7 +643,7 @@ class MacroProviderAndBackfillTests(TestCase):
         snapshot = MacroSnapshot.objects.get(date='2024-01-01')
         self.assertEqual(snapshot.cn10y_yield, Decimal('2.5'))
         self.assertEqual(snapshot.cn3y_yield, Decimal('2.1'))
-        self.assertEqual(snapshot.dxy, Decimal('104.2400'))
+        self.assertEqual(snapshot.fxcm_usdollar, Decimal('104.2400'))
         self.assertEqual(snapshot.cny_usd, Decimal('0.1389'))
         self.assertEqual(snapshot.metadata['retries']['yield_10y'], 1)
         self.assertEqual(snapshot.metadata['yield_sources']['cn10y_yield']['curve_type'], '0')
@@ -725,7 +725,7 @@ class MacroProviderAndBackfillTests(TestCase):
         mock_pro_api.return_value = stub_pro
         mock_fallback.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': None,
+            'fxcm_usdollar': None,
             'cny_usd': None,
             'cn10y_yield': None,
             'cn6m_yield': None,
@@ -806,7 +806,7 @@ class MacroProviderAndBackfillTests(TestCase):
         mock_pro_api.return_value = StubPro()
         mock_fallback.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': None,
+            'fxcm_usdollar': None,
             'cny_usd': None,
             'cn6m_yield': None,
             'cn1y_yield': None,
@@ -933,7 +933,7 @@ class MacroProviderAndBackfillTests(TestCase):
         mock_pro_api.return_value = StubPro()
         mock_fallback.return_value = {
             'date': timezone.localdate().replace(day=1),
-            'dxy': None,
+            'fxcm_usdollar': None,
             'cny_usd': None,
             'cn6m_yield': None,
             'cn1y_yield': None,

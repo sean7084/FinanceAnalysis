@@ -89,7 +89,7 @@ with the field null. It is not an error and cannot be retried into existence.
 | `margin_balance_change_5d` | Roughly three quarters of capital-flow rows; starts later than its siblings | Raw `margin_detail` history begins later, plus mid-history and trailing TuShare blackout windows |
 | `main_force_net_5d` | Starts materially later than OHLCV | Raw moneyflow history floor |
 | `pe_ttm` | A small number of assets have null rows despite a same-day `daily_basic` record | TuShare `daily_basic.pe_ttm` null/blackout behaviour |
-| `dxy` | Starts later than other macro fields | TuShare `fx_daily` history floor |
+| `fxcm_usdollar` | Starts later than other macro fields | TuShare `fx_daily` history floor |
 | `cny_usd` | Starts later still | Same |
 | `cn3y_yield` … `cn30y_yield` | A few rows fewer than `cn6m_yield` | Some tenors published later |
 
