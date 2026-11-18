@@ -28,8 +28,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = PROJECT_ROOT / 'requirements'
 
-#: base is compiled first because the other two include it.
-PAIRS = ('base', 'local', 'production')
+#: base is compiled first because local includes it.
+PAIRS = ('base', 'local')
 
 NAME_VERSION = re.compile(r'^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;]+)', re.IGNORECASE)
 
@@ -109,8 +109,9 @@ def main():
         for problem in problems:
             print(f'::error::{problem}' if on_actions else problem, file=sys.stderr)
         print(
-            '\nRecompile: pip-compile --generate-hashes --no-emit-index-url '
-            '--no-emit-trusted-host requirements/<name>.in',
+            '\nRecompile: pip-compile --generate-hashes --allow-unsafe --no-emit-index-url '
+            '--no-emit-trusted-host --python-version 3.14 requirements/<name>.in'
+            '\nSee docs/how-to/recompile-requirements.md',
             file=sys.stderr,
         )
         return 1

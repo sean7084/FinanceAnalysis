@@ -263,7 +263,6 @@ jobs:
           cache-dependency-path: |
             requirements/base.txt
             requirements/local.txt
-            requirements/production.txt
 
       - name: Lockfiles match their .in files
         # Offline text comparison. A full `pip-compile --dry-run` here would re-resolve
