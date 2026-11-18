@@ -189,13 +189,21 @@ drop prompt that fails in any non-interactive shell. Detail in
 ## Deployment
 
 **Not implemented.** There is no infrastructure-as-code and no cloud deployment. The
-local stack runs `manage.py runserver`, and `production.txt` now carries real ASGI/WSGI
-servers (`daphne`, `gunicorn`, `uvicorn`) for whoever wires one up — but nothing here
-deploys them.
+local stack runs `manage.py runserver` (`compose/local/django/start.sh`,
+`scripts/run_backend.sh`), and **no process invokes an ASGI/WSGI server**. `config/asgi.py`
+does define a Channels/websocket ASGI app, but nothing serves it.
 
-This section used to claim "there is no CI configuration … and no ASGI/WSGI server in
-`requirements/production.txt`". Both are stale: `.github/workflows/ci.yml` runs a
-blocking backend job and a blocking frontend job, and the servers are pinned.
+`requirements/production.txt` and its `.in` have been **removed** (#149): they were
+installed nowhere — CI and the only Docker image both install `local.txt` — so their
+`daphne` / `gunicorn` / `uvicorn` pins described a deployment that does not happen.
+`gunicorn` and `uvicorn` still appear in `local.txt` as mlflow transitive dependencies;
+that is a closure fact, not a deployment claim. `channels` remains a direct pin in
+`base.in` because the ASGI app and the channel layer use it.
+
+`.github/workflows/ci.yml` runs a blocking backend job and a blocking frontend job. If a
+real server is ever wired up, that is a deployment project: serve the existing ASGI app,
+pin the server by intent in `base.in`, and recompile (see
+[`docs/how-to/recompile-requirements.md`](docs/how-to/recompile-requirements.md)).
 
 A cloud deployment (managed PostgreSQL and Redis, container orchestration, CI/CD,
 metrics, error tracking, and the artifact object store already in use locally) is a

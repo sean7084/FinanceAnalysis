@@ -1,5 +1,5 @@
-# Direct dependency intent. The matching .txt beside this file is GENERATED from it by
-# pip-compile and must not be hand-edited; scripts/check_requirements_lockfile.py fails CI
+# Direct dependency intent. The matching .txt beside this file is GENERATED from it (the .txt
+# header names the compiler) and must not be hand-edited; scripts/check_requirements_lockfile.py fails CI
 # if the two disagree, and the lockfile check runs before anything is installed.
 #
 # The .txt exists because a transitive dependency cannot be allowed to float between CI
@@ -7,10 +7,11 @@
 # redis==5.0.4 pinned below, so a fresh resolve on 2026-11-03 turned every branch red
 # without a code change. The lockfile pins the whole closure and carries a hash per wheel.
 #
-# Regenerate (about twenty minutes per file; needs the network):
-#   pip install pip-tools
-#   pip-compile --generate-hashes --allow-unsafe --no-emit-index-url #       --no-emit-trusted-host requirements/<name>.in
-# --allow-unsafe pins setuptools, which pip otherwise refuses to hash-check.
+# Regenerate (needs the network). Full procedure and the pin-drift gate:
+# docs/how-to/recompile-requirements.md
+#   uv pip compile --generate-hashes --python-version 3.14 -o requirements/<name>.txt requirements/<name>.in
+# uv is the generator of record: a pip-compile run for this graph wedged on a stalled TLS read
+# (0.09s of CPU in 70 minutes). pip-compile still works; the runbook carries its flags.
 #
 -r base.in
 

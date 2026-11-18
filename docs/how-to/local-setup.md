@@ -274,9 +274,11 @@ python manage.py test --keepdb --settings=config.settings.test
 into `pyvenv.cfg` and the console-script shims; `scripts/_native_env.*` detects
 this and refuses to start rather than failing obscurely later.
 
-`requirements/local.txt` and `requirements/production.txt` are both a single
-`-r base.txt` line. There is no separate dev or test dependency set, and no
-ASGI/WSGI server is declared — the local stack runs `manage.py runserver`.
+`requirements/local.txt` is a single `-r base.txt` line; it is the only lockfile besides
+`base.txt` (`production.in`/`.txt` were removed in #149 because nothing installed them).
+There is no separate dev or test dependency set, and no ASGI/WSGI server is declared —
+the local stack runs `manage.py runserver`. Both lockfiles are compiled for the CI
+interpreter; see [`recompile-requirements.md`](recompile-requirements.md).
 
 ---
 

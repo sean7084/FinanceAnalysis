@@ -250,13 +250,11 @@ BACKLOG.md -- Open > documentation
 "@
     },
     @{
-        title = "requirements/production.txt cannot support the documented deployment"
+        title = "requirements/production.txt was removed: no server is deployed (see #149)"
         labels = @("enhancement", "P3 - Low", "component: docker-infra")
         body = @"
 ## Description
-``requirements/production.txt`` is a single ``-r base.txt`` line. No ``gunicorn``, ``uvicorn``, or ``daphne`` anywhere -- and the WebSocket surface requires an ASGI server. The README's production section describes Kubernetes, RDS, CDN, CI/CD, Prometheus, Sentry, and ELK, none of which exists.
-
-This is a plan, not a working configuration.
+Historical entry, kept for provenance. ``requirements/production.txt`` and its ``.in`` were removed in #149: nothing installed them (CI and the only Docker image both install ``local.txt``), and no process invokes an ASGI/WSGI server -- the only start path is ``manage.py runserver``. ``config/asgi.py`` defines a Channels/websocket ASGI app that nothing serves. If a real server is ever wired up, pin it by intent in ``base.in`` and recompile; see ``docs/how-to/recompile-requirements.md``.
 
 ## Source
 BACKLOG.md -- Open > configuration and infrastructure

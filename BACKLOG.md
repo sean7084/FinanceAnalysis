@@ -98,16 +98,17 @@ rematch on the current layout re-measures the harness, not the strategy.
 
 ## Owner decisions — deployment hygiene
 
-Not schedulable as diffs: each needs a deployment choice first, and neither closes with a PR.
+#149 is now decided and shipped (the production lockfile pair is gone, lockfiles recompiled
+for the CI interpreter). #150 still needs a runtime decision before it closes with a PR.
 
 | Issue | The mismatch | What has to be chosen |
 |---|---|---|
-| [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) | mlflow pulls `gunicorn==25.3.0` / `uvicorn==0.54.0` into `local.txt`, while `production.txt` pins the declared `23.0.0` / `0.32.0`; the lockfiles are resolved on Python 3.12 but CI runs 3.14 | align production to what CI exercises, pin the server stack in the `.in` files, or declare the divergence intentional and stop claiming CI covers the production server |
-| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves from the default index with **no** `--index-url` / `--extra-index-url` / `--find-links` anywhere, and the hashed closure proves that wheel is the CUDA flavour: `cuda-toolkit[…]`, fifteen `nvidia-*` packages, `triton==3.7.0` — while nothing documents which runtime has a driver, and `windows_gpu` is a valid inference backend | name the GPU-bearing runtimes (this host, the NAS, CI, any Windows worker), then either support GPU inference and pin the CUDA deps by intent, or drop `windows_gpu` and stop shipping ~GB of CUDA wheels that CI downloads to run GPU-less tests |
+| [#149](https://github.com/sean7084/FinanceAnalysis/issues/149) — **decided (d)** | `production.txt` was installed nowhere (CI and the only Docker image both install `local.txt`) and no process invokes gunicorn/uvicorn — the only start path is `manage.py runserver`. The version divergence was therefore cosmetic; the live risk was lockfiles resolved on Python 3.12 while CI runs 3.14 | **done**: delete `production.in`/`.txt` (and the daphne pin with them), drop `production` from the checker's `PAIRS` and the CI cache path, recompile `base`/`local` for 3.14 with a pin-drift gate |
+| [#150](https://github.com/sean7084/FinanceAnalysis/issues/150) | `torch==2.12.0` resolves from the default index with **no** `--index-url` / `--extra-index-url` / `--find-links` anywhere, and the hashed closure proves that wheel is the CUDA flavour: `cuda-toolkit[…]`, fifteen `nvidia-*` packages, `triton==3.7.0` — while nothing documents which runtime has a driver, and the inference backend string is now `cuda` (hard rename from `windows_gpu`, no alias) | name the GPU-bearing runtimes (this host, the NAS, CI, any Windows worker), then either support GPU inference and pin the CUDA deps by intent, or drop the `cuda` backend and stop shipping ~GB of CUDA wheels that CI downloads to run GPU-less tests |
 
-`scripts/check_requirements_lockfile.py` passes for both of these — each file is internally
-consistent — which is exactly why nothing catches them. The `blocked` label is the honest state.
-
+`scripts/check_requirements_lockfile.py` passed for both — each file was internally
+consistent — which is exactly why nothing caught them. #149 is resolved; #150 keeps the
+`blocked` label until the runtime question is answered.
 ## Blocked on a data source
 
 These are **not schedulable code work**. Each re-opens only on a purchasing decision or on a
