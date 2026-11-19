@@ -39,6 +39,8 @@ STACK_TRAIN_CONCURRENCY="${STACK_TRAIN_CONCURRENCY:-2}"
 # Set STACK_SKIP_BEAT=1 to start everything except the scheduler (used when a beat is already
 # running elsewhere and only the rest of the stack is needed).
 STACK_SKIP_BEAT="${STACK_SKIP_BEAT:-0}"
+# Set STACK_SKIP_DB_WATCHDOG=1 to start everything except the wedge watcher.
+STACK_SKIP_DB_WATCHDOG="${STACK_SKIP_DB_WATCHDOG:-0}"
 
 # Bound on the TERM-then-KILL teardown. Celery escalates warm-to-cold shutdown on
 # its own worker_shutdown_timeout (unset here, so the 10s default) and beat needs
