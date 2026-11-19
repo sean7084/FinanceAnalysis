@@ -24,6 +24,7 @@ from apps.analytics.management.commands.backfill_technical_indicators import (
     EMA_PERIODS as BACKFILL_TECHNICAL_EMA_PERIODS,
     SMA_PERIODS as BACKFILL_TECHNICAL_SMA_PERIODS,
 )
+from apps.analytics.indicator_params import canonical_param_key
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import TechnicalIndicator
 from apps.core.date_floor import get_historical_data_floor, session_midnight
@@ -1853,18 +1854,20 @@ class Command(BaseCommand):
             if trading_date not in expected_date_set:
                 continue
             indicator_type = row['indicator_type']
-            parameters = dict(row.get('parameters') or {})
-            variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
+            # Group by the canonical key, not the raw jsonb payload. BBANDS and FIB_RET
+            # store their computed outputs inside ``parameters``, so a stored payload can
+            # never equal the expected input-only payload and every expected date used to
+            # look missing (602 rows of missing_pct=1.000000 that were pure false alerts).
+            variant_key = (indicator_type, row.get('param_key'))
             rows_by_variant[variant_key].append({
                 'date': trading_date,
                 'value': row.get('value'),
-                'parameters': parameters,
             })
 
         expected_variants = self._technical_indicator_expected_variants(technical_indicators)
         for indicator_type, parameters in expected_variants:
             variant_name = self._technical_indicator_variant_name(indicator_type, parameters)
-            variant_key = (indicator_type, self._technical_indicator_parameters_key(parameters))
+            variant_key = (indicator_type, canonical_param_key(indicator_type, parameters))
             variant_rows = rows_by_variant.get(variant_key, [])
             bounded_range = TECHNICAL_INDICATOR_BOUNDED_RANGES.get(indicator_type)
 
@@ -2301,7 +2304,7 @@ class Command(BaseCommand):
                 timestamp__lt=session_midnight(end_date + timedelta(days=1)),
                 indicator_type__in=technical_indicators,
             ).order_by('asset_id', 'timestamp').values(
-                'asset_id', 'timestamp__date', 'indicator_type', 'parameters', 'value'
+                'asset_id', 'timestamp__date', 'indicator_type', 'param_key', 'value'
             ),
         )
 

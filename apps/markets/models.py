@@ -207,7 +207,7 @@ class OHLCV(models.Model):
     ``docs/reference/price-adjustment.md`` -- the adjusted columns are only
     self-consistent when every row of an asset shares one ``adj_factor`` basis.
     """
-    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='ohlcv_data', verbose_name=_("Asset"))
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='ohlcv_data', verbose_name=_("Asset"), db_index=False)
     date = models.DateField(_("Date"))
     open = models.DecimalField(_("Open"), max_digits=12, decimal_places=4)
     high = models.DecimalField(_("High"), max_digits=12, decimal_places=4)
@@ -232,9 +232,9 @@ class OHLCV(models.Model):
         verbose_name = _("OHLCV Data")
         verbose_name_plural = _("OHLCV Data")
         ordering = ['-date']
-        indexes = [
-            models.Index(fields=['asset', 'date']),
-        ]
+        # No separate (asset, date) index: unique_together below already builds one on
+        # exactly that pair, so this was a byte-identical duplicate.
+        indexes = []
         unique_together = ('asset', 'date')
 
     def __str__(self):

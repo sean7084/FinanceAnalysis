@@ -33,7 +33,7 @@ Because those names are branch-protection rules, **renaming a job requires re-ap
 branch protection** — deleting or adding steps inside a job does not.
 
 Both test jobs assert a **minimum discovered test count** as well as a green result
-(`MIN_TEST_COUNT`, currently 1023 backend and 87 frontend, live only in
+(`MIN_TEST_COUNT`, currently 1316 backend and 100 frontend, live only in
 `.github/workflows/ci.yml`). That floor is the load-bearing part: a workflow checking
 only the exit code reported success through the whole period when `manage.py test` was
 discovering **zero** tests, which is how 109 failures stayed hidden. Raise the floor when

@@ -641,7 +641,14 @@ class DashboardStockViewSet(viewsets.ViewSet):
                 timezone.get_current_timezone(),
             ),
             indicator_type__in=['RSI', 'MACD', 'BBANDS', 'SMA'],
-        ).order_by('asset_id', 'indicator_type', '-timestamp').distinct('asset_id', 'indicator_type')
+        # DISTINCT ON must include the variant. SMA stores six timeperiods per session, so
+        # distinct('asset_id', 'indicator_type') picked an arbitrary one -- frequently
+        # timeperiod=5, which the branch below discards, leaving the board with no SMA at
+        # all. Keying on param_key keeps the newest row per variant so the 50/60 preference
+        # can actually decide.
+        ).order_by('asset_id', 'indicator_type', 'param_key', '-timestamp').distinct(
+            'asset_id', 'indicator_type', 'param_key'
+        )
 
         indicator_map = {}
         for indicator in indicator_queryset:
@@ -1225,7 +1232,7 @@ class ScreenerViewSet(viewsets.ViewSet):
         rsi_threshold = request.query_params.get('rsi_threshold', 35)
         rsi_qs = TechnicalIndicator.objects.filter(indicator_type='RSI', value__lte=rsi_threshold).select_related('asset')
         symbols = {r.asset.symbol for r in rsi_qs}
-        macd_qs = TechnicalIndicator.objects.filter(indicator_type='MACD', asset__symbol__in=symbols, value__gt=0).select_related('asset')
+        macd_qs = TechnicalIndicator.objects.filter(indicator_type='MACD', asset__symbol__in=symbols, value__gt=0).select_related('asset').order_by('-timestamp', 'asset_id')
         results = [
             {
                 'asset_id': item.asset.id,

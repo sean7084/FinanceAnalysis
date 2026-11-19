@@ -512,6 +512,30 @@ class Phase17DashboardStockApiTests(DashboardStockFixtures, TestCase):
         self.assertEqual(first['rsi'], '62.50000000')
         self.assertEqual(first['bb_upper'], '11.00000000')
 
+    def test_dashboard_prefers_sma_60_over_lower_variants_in_the_same_session(self):
+        # The fixtures store SMA timeperiod=60 at 9.9. Add the sibling variants the
+        # indicator backfill also stores for that session: distinct('asset_id',
+        # 'indicator_type') used to keep ONE arbitrary variant, and whenever it was not
+        # 50 or 60 the gate below discarded it, so the board showed no SMA at all.
+        session = timezone.make_aware(
+            timezone.datetime.combine(self.as_of, timezone.datetime.min.time())
+        )
+        for period in (5, 10, 20, 50, 100, 200):
+            TechnicalIndicator.objects.create(
+                asset=self.asset1,
+                indicator_type='SMA',
+                value=Decimal('123.45678900'),
+                parameters={'timeperiod': period},
+                timestamp=session,
+            )
+
+        response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        first = response.data['results'][0]
+        self.assertEqual(first['asset_symbol'], '600111')
+        self.assertEqual(first['sma_60'], '9.90000000')
+
     def test_dashboard_stocks_filters_and_orders_rows(self):
         response = self.client.get('/api/v1/dashboard/stocks/?prediction_horizon=7&model_family=lightgbm&suggested_only=true&ordering=-lightgbm_trade_score&search=alpha')
 
@@ -658,6 +682,34 @@ class Phase8IndicatorTests(TestCase):
         self.assertIsNotNone(fib)
         self.assertIn('levels', fib.parameters)
         self.assertIn('0.618', fib.parameters['levels'])
+
+    def test_fibonacci_retracement_is_idempotent(self):
+        """Re-running must update, not insert.
+
+        The payload carries high/low/range/levels/close, so the old payload-keyed
+        get_or_create never matched the row it wrote and every run added another one.
+        """
+        calculate_fibonacci_retracement_for_asset(self.asset.id, lookback_days=5)
+        calculate_fibonacci_retracement_for_asset(self.asset.id, lookback_days=5)
+
+        rows = TechnicalIndicator.objects.filter(asset=self.asset, indicator_type='FIB_RET')
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().param_key, 'lookback_days=5')
+        self.assertIn('levels', rows.first().parameters)
+
+    def test_bollinger_bands_is_idempotent(self):
+        from apps.analytics.tasks import calculate_bollinger_bands_for_asset
+
+        # The class fixture seeds six bars, so use a period it can actually resolve.
+        calculate_bollinger_bands_for_asset(self.asset.id, timeperiod=3)
+        calculate_bollinger_bands_for_asset(self.asset.id, timeperiod=3)
+
+        rows = TechnicalIndicator.objects.filter(asset=self.asset, indicator_type='BBANDS')
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().param_key, 'nbdevdn=2,nbdevup=2,timeperiod=3')
+        # The payload still carries the bands consumers read.
+        self.assertIn('upper', rows.first().parameters)
+        self.assertIn('lower', rows.first().parameters)
 
     @patch('apps.analytics.views.calculate_fibonacci_retracement_for_asset.delay')
     def test_recalculate_endpoint_queues_with_custom_params(self, mock_delay):

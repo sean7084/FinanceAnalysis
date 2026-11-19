@@ -14,6 +14,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.analytics.management.commands.backfill_technical_indicators import Command as TechnicalIndicatorBackfillCommand
+from apps.analytics.indicator_params import canonical_param_key
 from apps.analytics.indicator_warmup import technical_indicator_variant_warmup_lookback
 from apps.analytics.models import SignalEvent, TechnicalIndicator
 from apps.backtest.models import BacktestRun, BacktestTrade
@@ -1627,7 +1628,13 @@ class TechnicalIndicatorValidationRegressionTests(TestCase):
     def _build_indicator_rows(self, asset, start_date, end_date, indicator_types):
         command = TechnicalIndicatorBackfillCommand()
         df = command._load_ohlcv_df(asset.id, end_date)
-        return command._build_rows(asset, df, start_date, end_date, indicator_types)
+        rows = command._build_rows(asset, df, start_date, end_date, indicator_types)
+        # bulk_create bypasses save(), so the fixture must set the derived key the way every
+        # production writer does. Without it every stored variant is NULL-keyed and the
+        # continuity gate -- which groups on param_key -- reports all of them as missing.
+        for row in rows:
+            row.param_key = canonical_param_key(row.indicator_type, row.parameters)
+        return rows
 
     def test_technical_indicator_variant_warmup_lookback_uses_variant_parameters(self):
         self.assertEqual(technical_indicator_variant_warmup_lookback('RSI', {'timeperiod': 14}), 14)
