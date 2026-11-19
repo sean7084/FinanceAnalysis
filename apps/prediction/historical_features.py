@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.db import models
@@ -10,7 +11,29 @@ from apps.analytics.technical_staleness import (
     trading_date_positions,
 )
 from apps.analytics.models import TechnicalIndicator
+from apps.core.date_floor import session_midnight
 from apps.markets.models import Asset, OHLCV
+
+
+def _session_upper_bound(as_of):
+    """Half-open instant equivalent to ``timestamp__date__lte=as_of``, but sargable.
+
+    ``timestamp__date`` wraps the column in a cast, so Postgres applies it as a heap
+    Filter after fetching the row rather than as an index bound. On the indicator table
+    that turns a "give me the latest 12" descent into a scan of the asset's whole history
+    whenever the requested variant does not exist. Both spellings resolve the date through
+    the same ``TIME_ZONE``, so they select the same rows -- including across the 2026-11-02
+    write-key flip, where old rows sit at 00:00+00 and new ones at 00:00+08.
+    The ORM ``timestamp__date`` lookup converts an aware datetime to the current timezone
+    BEFORE taking its date, so this must too -- a bare ``.date()`` would be a day short for
+    instants between 16:00 and 24:00 UTC under Asia/Shanghai. Callers pass ``date`` objects;
+    the datetime branch exists to match the ORM rather than to widen the contract.
+    """
+    if isinstance(as_of, datetime):
+        day = timezone.localtime(as_of).date()
+    else:
+        day = as_of
+    return session_midnight(day + timedelta(days=1))
 
 
 def _cache_key(*parts):
@@ -116,7 +139,7 @@ def _indicator_candidate_queryset(asset_filter, as_of, indicator_type, parameter
     queryset = TechnicalIndicator.objects.filter(
         asset_filter,
         indicator_type=indicator_type,
-        timestamp__date__lte=as_of,
+        timestamp__lt=_session_upper_bound(as_of),
     )
     if parameter_key:
         queryset = queryset.filter(_parameter_compatibility_filter(parameter_key, parameter_value))
@@ -442,7 +465,7 @@ def latest_rs_score(asset_id, as_of, default=Decimal('0.5'), cache=None):
         indicator = TechnicalIndicator.objects.filter(
             asset_id=asset_id,
             indicator_type='RS_SCORE',
-            timestamp__date__lte=as_of,
+            timestamp__lt=_session_upper_bound(as_of),
         ).order_by('-timestamp').first()
         if cache is not None:
             cache[cache_entry] = indicator

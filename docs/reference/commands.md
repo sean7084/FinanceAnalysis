@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-18T01:43:51Z_
+_Generated: 2026-11-19T16:32:41Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,10 +14,30 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**58** project commands across **9** apps.
+**60** project commands across **9** apps.
 
 
 ## `apps.analytics`
+
+
+### `backfill_indicator_param_key`
+
+Backfill TechnicalIndicator.param_key (dry-run unless --execute).
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--execute` | flag | `False` |  | Actually write. Without this the command only reports. |
+| `--asset-id` | value | &mdash; |  | Restrict to one asset (used by the equivalence sample). |
+| `--max-assets` | value | &mdash; |  | Bound the run to the first N assets, for incremental rollout. |
+| `--after-asset-id` | value | &mdash; |  | Skip assets with id <= this. Assets are processed in id order and each is completed fully, so a restart can resume past the last logged asset instead of re-scanning every finished chunk. |
+| `--start-year` | value | `2008` |  |  |
+| `--end-year` | value | `2027` |  |  |
+| `--verify-sample` | value | `2000` |  | Rows to cross-check SQL canonicalisation against Python before writing. |
+| `--statement-timeout` | value | `600` |  |  |
+| `--by-ctid` | flag | `False` |  | Sweep physical block ranges instead of asset-year chunks. |
+| `--blocks-per-chunk` | value | `20000` |  | Block range size for --by-ctid (~156 MiB of heap per chunk). |
+| `--by-id` | flag | `False` |  | Chunk by primary-key range. Ids are clustered by asset (measured: 5,000 consecutive ids = 1 asset), so this keeps the asset locality that makes asset-year chunking fast while using the pkey instead of the hot index. |
+| `--id-chunk` | value | `5000` |  | Id-range size for --by-id. |
 
 
 ### `backfill_signal_events`
@@ -50,6 +70,8 @@ Backfill historical TechnicalIndicator rows from OHLCV history for non-RS indica
 | `--chunk-size-days` | value | `365` |  | Maximum inclusive date span per delete/insert transaction. Use 0 to process the full range in one chunk. |
 | `--checkpoint-file` | value | `""` |  |  |
 | `--resume-from-checkpoint` | flag | `False` |  |  |
+| `--sma-periods` | value | `""` |  | Comma-separated SMA periods to compute. Empty means every period in SMA_PERIODS. |
+| `--insert-only` | flag | `False` |  | Skip the per-chunk delete and ignore rows that already exist. Use to add a new variant (e.g. SMA-60) without rewriting the variants already stored. |
 
 
 ### `dedupe_technical_indicator_session_keys`
@@ -82,6 +104,17 @@ Export BacktestRun configuration and results to CSV files. Defaults to light exp
 | `--light-export` | flag | `False` |  | Export only run_summary.csv, run_config_results.csv, and model_references.csv (default). |
 | `--detail-export` | flag | `False` |  | Also export trades.csv, macro_context_monthly.csv, and comparison CSVs. |
 | `--include-active-lightgbm-artifacts` | flag | `False` |  | Also export lightgbm_model_artifacts.csv for the current active LightGBM artifacts. |
+
+
+### `replay_decision_day`
+
+Replay one decision day through the matrix engine and ROLL THE WRITES BACK.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--date` | value | &mdash; | yes | Session date (YYYY-MM-DD). |
+| `--output-dir` | value | &mdash; | yes | Where the run artifacts go. Written to disk; survives the rollback. |
+| `--sources` | value | `heuristic` |  | Comma-separated prediction sources. |
 
 
 ### `rerun_backtests_for_comparison`

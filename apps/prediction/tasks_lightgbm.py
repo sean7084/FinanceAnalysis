@@ -31,6 +31,7 @@ from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext
+from apps.analytics.indicator_params import canonical_param_key
 from apps.analytics.models import TechnicalIndicator
 from apps.analytics.technical_staleness import (
     asset_exchange_code,
@@ -253,8 +254,14 @@ def _lightgbm_gpu_predict_cache_key(model):
 
 
 def _probe_lightgbm_gpu_predict_device(model, sample_matrix):
+    # Only a real booster (which carries ``_handle``) gets a cache entry. Without a handle
+    # the key degenerates to id(model), and CPython reuses addresses once an earlier model
+    # is collected -- so a dead model's verdict was handed to an unrelated model that
+    # landed on the same address. That is how a CUDA-fallback test failed only in
+    # full-suite order while passing on its own.
     cache_key = _lightgbm_gpu_predict_cache_key(model)
-    if cache_key in _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE:
+    cacheable = getattr(model, '_handle', None) is not None
+    if cacheable and cache_key in _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE:
         return _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE[cache_key]
 
     resolved_device = None
@@ -273,7 +280,8 @@ def _probe_lightgbm_gpu_predict_device(model, sample_matrix):
             resolved_device = device_type
             break
 
-    _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE[cache_key] = resolved_device
+    if cacheable:
+        _LIGHTGBM_GPU_PREDICT_DEVICE_CACHE[cache_key] = resolved_device
     return resolved_device
 
 
@@ -1137,20 +1145,31 @@ def _indicator_frame_from_queryset(
     plan on the 172M-row TechnicalIndicator table: measured 2026-11-05
     (tmp/retrain/iterator-ab.log), the same RSI query returned 5,703,455 rows in 86.1s in bulk
     and had still not finished after 432s through the cursor. Memory is bounded instead by
-    dropping `parameters` the moment it has been scored and releasing the row list before
-    returning.
+    releasing the row list before returning. The projection carries ``param_key`` rather than
+    the jsonb payload, which keeps every projected column inside the covering index so the
+    read can be index-only.
     """
     rows = list(queryset)
     if not rows:
         return pd.DataFrame({'asset_id': [], 'date': [], value_column: []})
 
     if parameter_key:
+        # Score from param_key rather than the jsonb payload: param_key is in the covering
+        # index, so the read can be index-only. The 1-vs-2 distinction is preserved because
+        # drop_duplicates(keep='last') below relies on an exact match outranking a
+        # parameterless row for the same (asset_id, timestamp).
+        expected = canonical_param_key(None, {parameter_key: parameter_value})
         kept = []
         for row in rows:
-            resolved = dict(row['parameters'] or {})
-            if not resolved:
+            resolved = row['param_key']
+            if resolved is None:
+                # Unbackfilled row: its variant cannot be verified. Exclude it rather than
+                # treating it as parameterless -- score 1 would let a WRONG variant survive
+                # and win the drop_duplicates tie-break, silently corrupting the matrix.
+                score = -1
+            elif resolved == '':
                 score = 1
-            elif resolved.get(parameter_key) == parameter_value:
+            elif resolved == expected:
                 score = 2
             else:
                 score = -1
@@ -1400,7 +1419,7 @@ def _create_feature_matrix(
             indicator_type='RSI',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'rsi',
         parameter_key='timeperiod',
         parameter_value=14,
@@ -1413,7 +1432,7 @@ def _create_feature_matrix(
             indicator_type='MOM_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'mom_5d',
         parameter_key='n_days',
         parameter_value=5,
@@ -1437,7 +1456,7 @@ def _create_feature_matrix(
             indicator_type='RETURN_3D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'return_3d',
         parameter_key='n_days',
         parameter_value=3,
@@ -1450,7 +1469,7 @@ def _create_feature_matrix(
             indicator_type='RETURN_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'return_5d',
         parameter_key='n_days',
         parameter_value=5,
@@ -1463,7 +1482,7 @@ def _create_feature_matrix(
             indicator_type='RETURN_10D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'return_10d',
         parameter_key='n_days',
         parameter_value=10,
@@ -1476,7 +1495,7 @@ def _create_feature_matrix(
             indicator_type='RELATIVE_VOLUME_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'relative_volume_5d',
         parameter_key='n_days',
         parameter_value=5,
@@ -1489,7 +1508,7 @@ def _create_feature_matrix(
             indicator_type='RELATIVE_VOLUME_20D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'relative_volume_20d',
         parameter_key='n_days',
         parameter_value=20,
@@ -1502,7 +1521,7 @@ def _create_feature_matrix(
             indicator_type='REALIZED_VOLATILITY_5D',
             timestamp__gte=session_midnight(warmup_start),
             timestamp__lt=session_midnight(end_date + timedelta(days=1)),
-        ).values('asset_id', 'timestamp', 'value', 'parameters').order_by('asset_id', 'timestamp'),
+        ).values('asset_id', 'timestamp', 'value', 'param_key').order_by('asset_id', 'timestamp'),
         'realized_volatility_5d',
         parameter_key='window',
         parameter_value=5,

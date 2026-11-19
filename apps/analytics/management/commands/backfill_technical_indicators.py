@@ -14,6 +14,7 @@ from django.db.models import Q
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
+from apps.analytics.indicator_params import canonical_param_key
 from apps.analytics.models import TechnicalIndicator
 from apps.core.date_floor import get_historical_data_floor, session_key_timestamp
 from apps.markets.models import Asset, OHLCV
@@ -41,7 +42,7 @@ DEFAULT_TECHNICAL_INDICATORS = (
 )
 DECIMAL_QUANTIZER = Decimal('0.00000001')
 EMA_PERIODS = (5, 10, 20, 50, 100, 200)
-SMA_PERIODS = (5, 10, 20, 50, 100, 200)
+SMA_PERIODS = (5, 10, 20, 50, 60, 100, 200)
 
 
 def _parse_date(value, label):
@@ -98,6 +99,10 @@ class Command(BaseCommand):
     CHECKPOINT_WRITE_RETRY_DELAY_SECONDS = 0.05
     DATABASE_OPERATION_RETRIES = 8
     DATABASE_OPERATION_RETRY_DELAY_SECONDS = 5.0
+    # Class-level defaults so ``_build_rows`` also works for callers that instantiate the
+    # command directly instead of going through ``handle`` (the test fixtures do).
+    sma_periods = SMA_PERIODS
+    insert_only = False
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', default=get_historical_data_floor().isoformat())
@@ -113,6 +118,17 @@ class Command(BaseCommand):
         )
         parser.add_argument('--checkpoint-file', default='')
         parser.add_argument('--resume-from-checkpoint', action='store_true')
+        parser.add_argument(
+            '--sma-periods',
+            default='',
+            help='Comma-separated SMA periods to compute. Empty means every period in SMA_PERIODS.',
+        )
+        parser.add_argument(
+            '--insert-only',
+            action='store_true',
+            help='Skip the per-chunk delete and ignore rows that already exist. Use to add a new '
+                 'variant (e.g. SMA-60) without rewriting the variants already stored.',
+        )
 
     def handle(self, *args, **options):
         floor_date = get_historical_data_floor()
@@ -122,6 +138,10 @@ class Command(BaseCommand):
             raise CommandError('end-date must be on or after start-date.')
 
         indicator_types = _parse_indicator_types(options['technical_indicators'])
+        self.sma_periods = tuple(
+            int(period) for period in str(options['sma_periods'] or '').split(',') if period.strip()
+        ) or SMA_PERIODS
+        self.insert_only = bool(options['insert_only'])
         chunk_size_days = self._parse_chunk_size_days(options.get('chunk_size_days'))
 
         symbols = [token.strip() for token in str(options['symbols'] or '').split(',') if token.strip()]
@@ -416,14 +436,24 @@ class Command(BaseCommand):
 
     def _replace_chunk_rows(self, asset, chunk_start, chunk_end, indicator_types, rows):
         with transaction.atomic():
-            deleted_count, _ = TechnicalIndicator.objects.filter(
-                asset=asset,
-                timestamp__date__gte=chunk_start,
-                timestamp__date__lte=chunk_end,
-                indicator_type__in=indicator_types,
-            ).delete()
+            deleted_count = 0
+            if not self.insert_only:
+                deleted_count, _ = TechnicalIndicator.objects.filter(
+                    asset=asset,
+                    timestamp__date__gte=chunk_start,
+                    timestamp__date__lte=chunk_end,
+                    indicator_type__in=indicator_types,
+                ).delete()
             if rows:
-                TechnicalIndicator.objects.bulk_create(rows, batch_size=2000)
+                # bulk_create bypasses save(), so the derived key is set at the choke point.
+                for row in rows:
+                    row.param_key = canonical_param_key(row.indicator_type, row.parameters)
+                # insert_only is how a new variant is added without disturbing the others:
+                # the covering unique index turns the already-stored rows into conflicts,
+                # which are skipped rather than raised.
+                TechnicalIndicator.objects.bulk_create(
+                    rows, batch_size=2000, ignore_conflicts=self.insert_only
+                )
         return deleted_count, len(rows)
 
     def _load_ohlcv_df(self, asset_id, end_date):
@@ -490,7 +520,7 @@ class Command(BaseCommand):
                 ))
 
         if 'SMA' in indicator_types:
-            for period in SMA_PERIODS:
+            for period in self.sma_periods:
                 rows.extend(self._series_rows(
                     asset,
                     pd.Series(talib.SMA(df['close'], timeperiod=period), index=df.index),

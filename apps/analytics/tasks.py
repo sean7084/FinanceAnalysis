@@ -19,6 +19,7 @@ from apps.core.date_floor import session_key_timestamp
 from apps.markets.benchmarking import ensure_pit_membership_coverage, point_in_time_union_asset_ids
 from apps.markets.models import Asset, OHLCV
 from .consumers import ALERTS_GROUP
+from .indicator_params import canonical_param_key
 from .models import TechnicalIndicator, AlertRule, AlertEvent, SignalEvent
 from .technical_staleness import (
     exact_trading_window_available,
@@ -196,35 +197,29 @@ def calculate_bollinger_bands_for_asset(asset_id, timeperiod=20, nbdevup=2, nbde
     latest_date = last_valid_index
     latest_timestamp = session_key_timestamp(latest_date)
     
-    # Store all three bands as separate records or as JSON value
-    # Using middle band as primary value, storing all three in parameters
+    # Look up by the canonical INPUT key, not by the payload. The payload carries the
+    # computed bands, so a payload-keyed lookup can never match the row it just wrote:
+    # every run inserted a new row and the update branch below was dead code.
+    band_inputs = {'timeperiod': timeperiod, 'nbdevup': nbdevup, 'nbdevdn': nbdevdn}
+    band_payload = {
+        **band_inputs,
+        'upper': float(upper[last_valid_index]),
+        'middle': float(middle[last_valid_index]),
+        'lower': float(lower[last_valid_index]),
+    }
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
         timestamp=latest_timestamp,
         indicator_type='BBANDS',
-        parameters={'timeperiod': timeperiod, 'nbdevup': nbdevup, 'nbdevdn': nbdevdn},
+        param_key=canonical_param_key('BBANDS', band_inputs),
         defaults={
             'value': float(middle[last_valid_index]),
-            'parameters': {
-                'timeperiod': timeperiod,
-                'nbdevup': nbdevup,
-                'nbdevdn': nbdevdn,
-                'upper': float(upper[last_valid_index]),
-                'middle': float(middle[last_valid_index]),
-                'lower': float(lower[last_valid_index])
-            }
+            'parameters': band_payload,
         }
     )
     if not created:
         obj.value = float(middle[last_valid_index])
-        obj.parameters = {
-            'timeperiod': timeperiod,
-            'nbdevup': nbdevup,
-            'nbdevdn': nbdevdn,
-            'upper': float(upper[last_valid_index]),
-            'middle': float(middle[last_valid_index]),
-            'lower': float(lower[last_valid_index])
-        }
+        obj.parameters = band_payload
         obj.save()
     
     action = "Created" if created else "Updated"
@@ -568,11 +563,14 @@ def calculate_fibonacci_retracement_for_asset(asset_id, lookback_days=60):
         'close': float(latest.close),
     }
 
+    # Same defect as BBANDS: the payload carries high/low/range/levels/close, so a
+    # payload-keyed lookup never matches and the update branch was dead. The nested
+    # levels dict also made a payload-derived key exceed the column width.
     obj, created = TechnicalIndicator.objects.get_or_create(
         asset=asset,
         timestamp=latest_timestamp,
         indicator_type='FIB_RET',
-        parameters={'lookback_days': lookback_days},
+        param_key=canonical_param_key('FIB_RET', {'lookback_days': lookback_days}),
         defaults={
             'value': levels['0.500'],
             'parameters': params,
@@ -722,6 +720,9 @@ def persist_ranked_rs_scores(ranked_scores, timestamp, update_existing=False):
             )
 
     if indicators:
+        # bulk_create bypasses save(), so the derived key is set at the choke point.
+        for row in indicators:
+            row.param_key = canonical_param_key(row.indicator_type, row.parameters)
         TechnicalIndicator.objects.bulk_create(indicators, batch_size=5000, ignore_conflicts=True)
     if signals:
         SignalEvent.objects.bulk_create(signals, batch_size=5000, ignore_conflicts=True)

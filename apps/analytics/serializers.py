@@ -10,7 +10,7 @@ class TechnicalIndicatorSerializer(serializers.ModelSerializer):
         model = TechnicalIndicator
         fields = [
             'id', 'asset', 'asset_symbol', 'asset_name',
-            'timestamp', 'indicator_type', 'value', 'parameters'
+            'timestamp', 'indicator_type', 'value', 'parameters', 'param_key'
         ]
 
 

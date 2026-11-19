@@ -243,7 +243,24 @@ jobs:
       # Raised to 1179 by fix/orphan-progress-freshness, which adds the one regression test
       # proving a RUNNING backtest whose progress stopped 171 days ago is sweepable (the orphan
       # exemption now requires fresh progress, not merely a progress key). Measured 1183.
-      MIN_TEST_COUNT: "1272"
+      #
+      # Raised to 1272 by the ETF ICIR verdict / rename work (measured 1276).
+      #
+      # Raised to 1306 by the indicator-storage change, which adds 34: param_key
+      # canonicalisation (10), the backfill command including its SQL-vs-Python cross-check,
+      # ctid sweep and resume watermark (11), the sargable-bound equivalence across both
+      # write-key conventions (5), the trainer's param_key scoring and tie-break (7), and two
+      # writer-idempotency regressions for the BBANDS/FIB_RET dead update branches. Measured 1306.
+      #
+      # Raised to 1309 by the decision-day measurement wrapper, which adds 3: writes inside
+      # the rolled-back transaction are discarded while the return value survives, an
+      # exception still rolls back, and pre-existing rows are untouched.
+      #
+      # HELD AT 1306 (measured) rather than 1309 (inferred). The 3 new tests each pass
+      # individually and the last full run measured 1306, but the full-suite total of 1309
+      # was never measured. A floor above the real count breaks every CI run; a floor 3 low
+      # only fails to protect those 3 tests. Raise to 1309 once `manage.py test` reports it.
+      MIN_TEST_COUNT: "1316"
 
     steps:
       - uses: actions/checkout@v4

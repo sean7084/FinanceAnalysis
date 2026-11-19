@@ -2,6 +2,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
+from apps.analytics.indicator_params import canonical_param_key
 from apps.markets.models import Asset
 
 
@@ -10,7 +11,11 @@ class TechnicalIndicator(models.Model):
         Asset,
         on_delete=models.CASCADE,
         related_name='indicators',
-        verbose_name=_('Asset')
+        verbose_name=_('Asset'),
+        # The standalone (asset_id) index is a strict prefix of the hot
+        # (asset_id, timestamp, indicator_type) index, which serves every asset-only
+        # lookup and the FK cascade just as well.
+        db_index=False,
     )
     timestamp = models.DateTimeField(
         _('Timestamp'),
@@ -31,15 +36,50 @@ class TechnicalIndicator(models.Model):
         default=dict,
         blank=True
     )
+    # Uniqueness moves here from ``parameters``: a jsonb key that contains BBANDS' own
+    # computed outputs is unique per row, so it cannot enforce idempotency. Nullable with
+    # no default on purpose -- NULL marks "not yet backfilled", which a constant default
+    # would erase (PG11+ serves it from attmissingval for pre-existing rows).
+    # Stays nullable on purpose: NULL is the "not yet backfilled" marker that makes the
+    # backfill resumable and testable. save() and both bulk_create choke points always
+    # populate it. The unique constraint is NULLS DISTINCT (the default), so pre-backfill
+    # NULL keys coexist -- SMA/EMA legitimately hold six variants per (asset, timestamp).
+    # A NOT NULL flip would add a full-scan validation and make the pre-backfill state
+    # impossible to construct in tests.
+    param_key = models.CharField(
+        _('Parameter Key'),
+        max_length=120,
+        null=True,
+        blank=True,
+        help_text=_('Canonical input-parameter key; excludes computed outputs (BBANDS, FIB_RET).'),
+    )
 
     class Meta:
         verbose_name = _('Technical Indicator')
         verbose_name_plural = _('Technical Indicators')
-        ordering = ['-timestamp', 'asset', 'indicator_type']
-        indexes = [
-            models.Index(fields=['asset', 'timestamp', 'indicator_type']),
+        # No default ordering: it silently sorted every queryset that did not override it,
+        # adding a full Sort node over a 173M-row table. Every production reader orders
+        # explicitly; the screener's MACD list carries its own order_by to preserve the
+        # response order this used to supply.
+        ordering = []
+        indexes = []
+        # Uniqueness lives on the canonical input key, not on the jsonb payload: a payload
+        # that contains its own computed outputs (BBANDS, FIB_RET) is unique per row and
+        # cannot enforce idempotency. The database object is a covering index with
+        # INCLUDE (value) -- see migration 0015 for why the column order is what it is.
+        constraints = [
+            models.UniqueConstraint(
+                fields=('asset', 'indicator_type', 'timestamp', 'param_key'),
+                name='ti_session_variant_uniq',
+            ),
         ]
-        unique_together = ('asset', 'timestamp', 'indicator_type', 'parameters')
+
+    def save(self, *args, **kwargs):
+        # Derived, never caller-supplied: every get_or_create writer routes through here,
+        # so the key cannot drift from the payload. bulk_create bypasses save() and must
+        # set it explicitly at the construction site.
+        self.param_key = canonical_param_key(self.indicator_type, self.parameters)
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.asset.symbol} - {self.indicator_type} ({timezone.localtime(self.timestamp).date()}): {self.value}"

@@ -6,7 +6,7 @@
 
 # Data Coverage Metrics
 
-_Generated: 2026-11-18T01:11:15Z_
+_Generated: 2026-11-19T17:59:10Z_
 
 Table-level coverage for every concrete model in `apps/`. `Assets` is the distinct count of the `asset` foreign key where the table has one. Prose about what each metric *means* and what a gap *implies* lives in `TECHNICAL_GUIDE.md`; this sheet only states the measured facts.
 
@@ -14,46 +14,46 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 
 | Table | Model | Rows | Assets | Date column | Earliest | Latest |
 | --- | --- | --- | --- | --- | --- | --- |
-| `analytics_alertevent` | `analytics.AlertEvent` | 0 | &mdash; | created_at | &mdash; | &mdash; |
+| `analytics_alertevent` | `analytics.AlertEvent` | 2 | 1 | created_at | 2026-11-19 | 2026-11-19 |
 | `analytics_alertrule` | `analytics.AlertRule` | 1 | 1 | created_at | 2026-10-24 | 2026-10-24 |
 | `analytics_screenertemplate` | `analytics.ScreenerTemplate` | 0 | &mdash; | created_at | &mdash; | &mdash; |
 | `analytics_signalevent` | `analytics.SignalEvent` | 7,088,530 | 1,886 | timestamp | 2010-01-03 | 2026-11-02 |
-| `analytics_technicalindicator` | `analytics.TechnicalIndicator` | 174,015,330 | 1,886 | timestamp | 2010-01-03 | 2026-11-02 |
+| `analytics_technicalindicator` | `analytics.TechnicalIndicator` | 180,150,010 | 1,886 | timestamp | 2010-01-03 | 2026-11-18 |
 | `backtest_backtestrun` | `backtest.BacktestRun` | 444 | &mdash; | created_at | 2026-04-16 | 2026-11-12 |
 | `backtest_backtesttrade` | `backtest.BacktestTrade` | 240,874 | 595 | trade_date | 2023-01-03 | 2026-05-18 |
-| `catchup_catchuprun` | `catchup.CatchUpRun` | 495 | &mdash; | &mdash; | &mdash; | &mdash; |
-| `etf_rotation_etfdaily` | `etf_rotation.ETFDaily` | 2,666,967 | &mdash; | date | 2016-01-04 | 2026-11-13 |
+| `catchup_catchuprun` | `catchup.CatchUpRun` | 523 | &mdash; | &mdash; | &mdash; | &mdash; |
+| `etf_rotation_etfdaily` | `etf_rotation.ETFDaily` | 2,675,692 | &mdash; | date | 2016-01-04 | 2026-11-19 |
 | `etf_rotation_etffeaturesnapshot` | `etf_rotation.ETFFeatureSnapshot` | 2,666,967 | &mdash; | date | 2016-01-04 | 2026-11-13 |
 | `etf_rotation_etfindexmapping` | `etf_rotation.ETFIndexMapping` | 1,966 | &mdash; | &mdash; | &mdash; | &mdash; |
 | `etf_rotation_etfrotationbacktest` | `etf_rotation.ETFRotationBacktest` | 357 | &mdash; | created_at | 2026-10-20 | 2026-11-12 |
 | `etf_rotation_etfrotationposition` | `etf_rotation.ETFRotationPosition` | 12 | &mdash; | created_at | 2026-10-25 | 2026-11-11 |
 | `etf_rotation_etfrotationsignal` | `etf_rotation.ETFRotationSignal` | 11 | &mdash; | date | 2018-12-28 | 2026-11-13 |
-| `etf_rotation_etfrotationsignalrun` | `etf_rotation.ETFRotationSignalRun` | 14 | &mdash; | date | 2026-10-23 | 2026-11-13 |
+| `etf_rotation_etfrotationsignalrun` | `etf_rotation.ETFRotationSignalRun` | 16 | &mdash; | date | 2026-10-23 | 2026-11-19 |
 | `etf_rotation_etfsharedaily` | `etf_rotation.ETFShareDaily` | 854,170 | &mdash; | date | 2015-10-08 | 2026-10-23 |
 | `etf_rotation_etfuniverse` | `etf_rotation.ETFUniverse` | 3,009 | &mdash; | created_at | 2026-10-20 | 2026-10-23 |
 | `etf_rotation_indexvaluationdaily` | `etf_rotation.IndexValuationDaily` | 17,168 | &mdash; | date | 2015-01-05 | 2026-10-23 |
 | `etf_rotation_indexweightsnapshot` | `etf_rotation.IndexWeightSnapshot` | 2,971,264 | &mdash; | trade_date | 2016-01-04 | 2026-09-30 |
-| `factors_assetmargindetailsnapshot` | `factors.AssetMarginDetailSnapshot` | 3,744,513 | 1,686 | date | 2010-03-31 | 2026-11-13 |
-| `factors_assetmoneyflowsnapshot` | `factors.AssetMoneyFlowSnapshot` | 5,948,662 | 1,886 | date | 2010-01-04 | 2026-11-13 |
-| `factors_capitalflowsnapshot` | `factors.CapitalFlowSnapshot` | 5,951,701 | 1,886 | date | 2010-01-04 | 2026-11-13 |
+| `factors_assetmargindetailsnapshot` | `factors.AssetMarginDetailSnapshot` | 3,745,226 | 1,686 | date | 2010-03-31 | 2026-11-18 |
+| `factors_assetmoneyflowsnapshot` | `factors.AssetMoneyFlowSnapshot` | 5,949,380 | 1,886 | date | 2010-01-04 | 2026-11-19 |
+| `factors_capitalflowsnapshot` | `factors.CapitalFlowSnapshot` | 5,952,409 | 1,886 | date | 2010-01-04 | 2026-11-19 |
 | `factors_factorscore` | `factors.FactorScore` | 2,043,000 | 1,678 | date | 2010-01-04 | 2026-11-03 |
-| `factors_fundamentalfactorsnapshot` | `factors.FundamentalFactorSnapshot` | 5,926,390 | 1,884 | date | 2010-01-04 | 2026-11-13 |
+| `factors_fundamentalfactorsnapshot` | `factors.FundamentalFactorSnapshot` | 5,926,446 | 1,884 | date | 2010-01-04 | 2026-11-19 |
 | `macro_macrosnapshot` | `macro.MacroSnapshot` | 202 | &mdash; | date | 2010-01-01 | 2026-11-01 |
 | `macro_marketcontext` | `macro.MarketContext` | 208 | &mdash; | created_at | 2026-04-15 | 2026-11-02 |
 | `markets_asset` | `markets.Asset` | 1,912 | &mdash; | &mdash; | &mdash; | &mdash; |
-| `markets_assetsuspension` | `markets.AssetSuspension` | 144,060 | 909 | trade_date | 2001-01-02 | 2026-11-13 |
-| `markets_benchmarkindexdaily` | `markets.BenchmarkIndexDaily` | 8,188 | &mdash; | trade_date | 2010-01-04 | 2026-11-13 |
-| `markets_exchangetradingcalendar` | `markets.ExchangeTradingCalendar` | 18,886 | &mdash; | trade_date | 2001-01-01 | 2026-11-15 |
+| `markets_assetsuspension` | `markets.AssetSuspension` | 144,063 | 910 | trade_date | 2001-01-02 | 2026-11-19 |
+| `markets_benchmarkindexdaily` | `markets.BenchmarkIndexDaily` | 8,196 | &mdash; | trade_date | 2010-01-04 | 2026-11-19 |
+| `markets_exchangetradingcalendar` | `markets.ExchangeTradingCalendar` | 18,894 | &mdash; | trade_date | 2001-01-01 | 2026-11-19 |
 | `markets_indexmembership` | `markets.IndexMembership` | 101,500 | 1,678 | trade_date | 2009-12-31 | 2026-10-30 |
 | `markets_market` | `markets.Market` | 5 | &mdash; | &mdash; | &mdash; | &mdash; |
-| `markets_ohlcv` | `markets.OHLCV` | 6,546,867 | 1,886 | date | 2008-07-02 | 2026-11-13 |
-| `markets_pointintimebenchmarkdaily` | `markets.PointInTimeBenchmarkDaily` | 4,094 | &mdash; | trade_date | 2010-01-04 | 2026-11-13 |
+| `markets_ohlcv` | `markets.OHLCV` | 6,548,867 | 1,886 | date | 2008-07-02 | 2026-11-19 |
+| `markets_pointintimebenchmarkdaily` | `markets.PointInTimeBenchmarkDaily` | 4,098 | &mdash; | trade_date | 2010-01-04 | 2026-11-19 |
 | `prediction_ensembleweightsnapshot` | `prediction.EnsembleWeightSnapshot` | 10 | &mdash; | date | 2020-01-01 | 2026-11-09 |
 | `prediction_featureimportancesnapshot` | `prediction.FeatureImportanceSnapshot` | 1,530 | &mdash; | created_at | 2026-04-15 | 2026-11-10 |
 | `prediction_lightgbmmodelartifact` | `prediction.LightGBMModelArtifact` | 44 | &mdash; | created_at | 2026-04-15 | 2026-11-10 |
 | `prediction_lightgbmprediction` | `prediction.LightGBMPrediction` | 70,799 | 897 | date | 2025-01-14 | 2026-11-13 |
 | `prediction_modelversion` | `prediction.ModelVersion` | 114 | &mdash; | created_at | 2026-04-15 | 2026-11-10 |
-| `prediction_predictionresult` | `prediction.PredictionResult` | 83,687 | 898 | date | 2025-01-14 | 2026-11-13 |
+| `prediction_predictionresult` | `prediction.PredictionResult` | 85,187 | 898 | date | 2025-01-14 | 2026-11-16 |
 
 ## Breakdowns
 
@@ -82,25 +82,25 @@ Table-level coverage for every concrete model in `apps/`. `Assets` is the distin
 
 | indicator_type | Rows | Share | Earliest | Latest |
 | --- | --- | --- | --- | --- |
-| `ADX` | 6,155,231 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `BBANDS` | 6,161,837 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `EMA` | 36,744,423 | 21.1% | 2010-01-03 | 2026-11-02 |
-| `FIB_RET` | 6,176,549 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `MACD` | 6,150,257 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `MOM_10D` | 6,169,223 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `MOM_20D` | 6,161,014 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `MOM_5D` | 6,173,305 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `OBV` | 6,176,549 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `REALIZED_VOLATILITY_5D` | 6,173,305 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RELATIVE_VOLUME_20D` | 6,161,837 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RELATIVE_VOLUME_5D` | 6,174,117 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RETURN_10D` | 6,169,223 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RETURN_3D` | 6,174,929 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RETURN_5D` | 6,173,305 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RSI` | 6,165,947 | 3.5% | 2010-01-03 | 2026-11-02 |
-| `RS_SCORE` | 1,846,373 | 1.1% | 2010-01-03 | 2026-11-02 |
-| `SMA` | 36,744,423 | 21.1% | 2010-01-03 | 2026-11-02 |
-| `STOCH` | 6,163,483 | 3.5% | 2010-01-03 | 2026-11-02 |
+| `ADX` | 6,155,231 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `BBANDS` | 6,161,837 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `EMA` | 36,744,423 | 20.4% | 2010-01-03 | 2026-11-02 |
+| `FIB_RET` | 6,176,549 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `MACD` | 6,150,257 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `MOM_10D` | 6,169,223 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `MOM_20D` | 6,161,014 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `MOM_5D` | 6,173,305 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `OBV` | 6,176,549 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `REALIZED_VOLATILITY_5D` | 6,173,305 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RELATIVE_VOLUME_20D` | 6,161,837 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RELATIVE_VOLUME_5D` | 6,174,117 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RETURN_10D` | 6,169,223 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RETURN_3D` | 6,174,929 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RETURN_5D` | 6,173,305 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RSI` | 6,165,947 | 3.4% | 2010-01-03 | 2026-11-02 |
+| `RS_SCORE` | 1,846,373 | 1.0% | 2010-01-03 | 2026-11-02 |
+| `SMA` | 42,879,103 | 23.8% | 2010-01-03 | 2026-11-18 |
+| `STOCH` | 6,163,483 | 3.4% | 2010-01-03 | 2026-11-02 |
 
 ### `backtest_backtestrun` by `status`
 
@@ -140,18 +140,18 @@ Restricted to the tables whose individual columns feed model features. A low non
 
 | Table | Field | Non-null rows | Min | Max | Non-null range |
 | --- | --- | --- | --- | --- | --- |
-| `factors_fundamentalfactorsnapshot` | `pe` | 5,204,153 | 0.3864 | 30364.0753 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `pe_ttm` | 5,001,629 | 0.3389 | 661439.6060 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `pb` | 5,761,127 | 0.0226 | 45723.5682 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `total_share` | 5,789,472 | 4000.0000 | 35640625.7089 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `float_share` | 5,789,472 | 605.5189 | 31924421.0777 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `free_share` | 5,788,273 | 33.5694 | 5564157.9186 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `total_mv` | 5,789,472 | 36211.1282 | 326737047.7800 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `circ_mv` | 5,789,472 | 14860.0000 | 326737047.7800 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `roe` | 5,811,814 | -0.999900 | 0.999900 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_fundamentalfactorsnapshot` | `roe_qoq` | 5,804,594 | -1.855400 | 1.892900 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_capitalflowsnapshot` | `main_force_net_5d` | 5,942,747 | -2160582.7500 | 1195457.1800 | 2010-01-04 &rarr; 2026-11-13 |
-| `factors_capitalflowsnapshot` | `margin_balance_change_5d` | 3,679,097 | -15711445144.0000 | 8996340592.0000 | 2010-04-08 &rarr; 2026-11-13 |
+| `factors_fundamentalfactorsnapshot` | `pe` | 5,204,201 | 0.3864 | 30364.0753 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `pe_ttm` | 5,001,673 | 0.3389 | 661439.6060 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `pb` | 5,761,183 | 0.0226 | 45723.5682 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `total_share` | 5,789,528 | 4000.0000 | 35640625.7089 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `float_share` | 5,789,528 | 605.5189 | 31924421.0777 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `free_share` | 5,788,329 | 33.5694 | 5564157.9186 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `total_mv` | 5,789,528 | 36211.1282 | 326737047.7800 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `circ_mv` | 5,789,528 | 14860.0000 | 326737047.7800 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `roe` | 5,811,870 | -0.999900 | 0.999900 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_fundamentalfactorsnapshot` | `roe_qoq` | 5,804,650 | -1.855400 | 1.892900 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_capitalflowsnapshot` | `main_force_net_5d` | 5,943,455 | -2160582.7500 | 1195457.1800 | 2010-01-04 &rarr; 2026-11-19 |
+| `factors_capitalflowsnapshot` | `margin_balance_change_5d` | 3,679,800 | -15711445144.0000 | 8996340592.0000 | 2010-04-08 &rarr; 2026-11-18 |
 | `factors_factorscore` | `pe_percentile_score` | 1,879,096 | 0.000000 | 0.997925 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `pe_ttm_percentile_score` | 1,811,864 | 0.000000 | 0.997895 | 2010-01-04 &rarr; 2026-11-03 |
 | `factors_factorscore` | `pb_percentile_score` | 1,993,238 | 0.000000 | 0.997992 | 2010-01-04 &rarr; 2026-11-03 |
