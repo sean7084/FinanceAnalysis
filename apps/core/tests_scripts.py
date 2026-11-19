@@ -19,6 +19,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -208,6 +209,41 @@ class LocalStackTeardownTests(SimpleTestCase):
     def test_a_held_port_is_refused_before_anything_starts(self):
         self.assertIn("port_holders", self.text)
         self.assertIn("STACK_RECLAIM_PORTS", self.text)
+
+
+class LocalStackServiceResolutionTests(SimpleTestCase):
+    """``build_services`` has to survive a clean environment.
+
+    The text assertions above never execute the script, which is how the db-wedge
+    watcher's gate shipped reading ``STACK_SKIP_DB_WATCHDOG`` with no default: under
+    ``set -u`` every plain start died there, before one service came up.
+    """
+
+    SCRIPT = REPO_ROOT / "scripts" / "run_local_stack.sh"
+
+    def _check(self, **overrides) -> subprocess.CompletedProcess:
+        # --check starts nothing, so this is safe even on a host running the stack.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("STACK_")}
+        # The watcher's launcher resolves through PYTHON_BIN, and CI has no .venv.
+        env["PYTHON_BIN"] = sys.executable
+        env.update(overrides)
+        return subprocess.run(
+            ["bash", "-x", str(self.SCRIPT), "--check"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_a_clean_environment_resolves_the_services(self):
+        result = self._check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_watcher_is_on_by_default_and_opts_out(self):
+        # -x traces the resolved SERVICES list, which --check itself does not print.
+        self.assertIn("db_wedge_watch.py", self._check().stderr)
+        self.assertNotIn("db_wedge_watch.py", self._check(STACK_SKIP_DB_WATCHDOG="1").stderr)
 
 
 class NativeEnvExportTests(SimpleTestCase):
