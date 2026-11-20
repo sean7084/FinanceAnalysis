@@ -37,6 +37,21 @@ class LightGBMModelArtifact(models.Model):
             models.Index(fields=['status']),
         ]
 
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        from apps.prediction.activation import validate_activation_metrics
+
+        if self.is_active and self.status == self.Status.ARCHIVED:
+            raise ValidationError(
+                f'LightGBM artifact {self.version} (horizon {self.horizon_days}) is ARCHIVED and cannot be active. '
+                'Archiving means the artifact must not be selected; clear is_active '
+                'in the same write. Pinned loaders already refuse archived versions.'
+            )
+        if self.is_active:
+            validate_activation_metrics(self.metrics_json)
+        super().save(*args, **kwargs)
+
 
 class LightGBMPrediction(models.Model):
     """Daily LightGBM-generated predictions (parallel to heuristic PredictionResult)."""

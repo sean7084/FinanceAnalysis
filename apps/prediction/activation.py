@@ -2,8 +2,9 @@
 
 A financial direction model that reports 95% accuracy is not a good model; it is a leaked
 feature, an off-by-one label or a scoring bug. The registry is shared by stock and ETF arms, so
-the bound is enforced once, in ``ModelVersion.save``: an implausible metric cannot carry
-``is_active=True`` no matter which code path set it.
+the bound is enforced in ``ModelVersion.save`` and ``LightGBMModelArtifact.save`` (the artifact
+table is the per-horizon deployment authority the daily beat actually loads): an implausible
+metric cannot carry ``is_active=True`` no matter which code path set it.
 """
 from __future__ import annotations
 
