@@ -102,10 +102,9 @@ def apply_universe_policy(
 
     if st_on:
         if st_asset_ids is None:
-            raise UniversePolicyError(
-                'ST layer enabled but no ST interval data provided; run '
-                'sync_asset_namechanges and wire st_history (card B2).'
-            )
+            from apps.markets.st_history import st_asset_ids_as_of
+
+            st_asset_ids = st_asset_ids_as_of(trade_date)
         ids = [i for i in ids if i not in st_asset_ids]
 
     if cap_exclude or policy == POLICY_RESEARCH_CAP:
