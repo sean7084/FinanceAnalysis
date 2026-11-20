@@ -503,10 +503,27 @@ def _resolve_prediction_feature_value(
             ),
         )
 
+    if _preserves_true_missing(missing_value_strategy):
+        raise ValueError(
+            f'feature schema mismatch: {feature_name!r} is in the artifact feature_names '
+            'but the extractor produced no such column (and no legacy alias maps it). '
+            'Refusing to neutral-fill a missing column under native_nan (#146).'
+        )
     return _default_numeric(
         0.0,
         missing_value_strategy=missing_value_strategy,
         preserve_missing=True,
+    )
+
+
+def _resolve_missing_value_strategy(model_artifact, artifacts):
+    """Single precedence for train/serve/backtest: on-disk metadata, then the DB
+    artifact metadata, then the legacy neutral-fill default (#146 / STK-07)."""
+    artifact_metadata = dict((artifacts or {}).get('metadata') or {})
+    return (
+        artifact_metadata.get(MISSING_VALUE_STRATEGY_METADATA_KEY)
+        or (model_artifact.metadata or {}).get(MISSING_VALUE_STRATEGY_METADATA_KEY)
+        or MISSING_VALUE_STRATEGY_LEGACY
     )
 
 
@@ -2326,6 +2343,11 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 'pruned_features': pruned_feature_names,
                 'pruning': pruning_audit,
                 'feature_schema_size': len(selected_feature_names),
+                'feature_schema': {
+                    'names': list(selected_feature_names),
+                    'dtype': 'float64',
+                    'schema_version': 1,
+                },
                 'version_tag': normalized_version_tag,
                 'lgb_params': dict(lgb_params),
             }
@@ -2470,12 +2492,7 @@ def _predict_with_lightgbm(asset_id, target_date, horizon_days, cache=None):
         return None
 
     # Extract features
-    artifact_metadata = dict(artifacts.get('metadata') or {})
-    missing_value_strategy = (
-        artifact_metadata.get(MISSING_VALUE_STRATEGY_METADATA_KEY)
-        or (model_artifact.metadata or {}).get(MISSING_VALUE_STRATEGY_METADATA_KEY)
-        or MISSING_VALUE_STRATEGY_LEGACY
-    )
+    missing_value_strategy = _resolve_missing_value_strategy(model_artifact, artifacts)
     features_dict = _extract_features_for_asset(
         asset_id,
         target_date,

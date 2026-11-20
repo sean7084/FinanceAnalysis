@@ -95,6 +95,17 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 分支 feat/holdout-provenance。models.md active-artifact 表 +5 列（Eval mode/Rank IC/IC t-stat/ICIR/Holdout start），ModelVersion 表 +4 列；
   训练调用点 ModelVersion.metrics 补 holdout_start/purge_sessions（artifact 已有）。
 - 测试 4 个（render×3 + register×1）+ mutation + models.md 再生（live registry 只读）；落地见 PR。
+- **A6 落地**：PR #204 合并 ef57183（CI 双绿，预授权）。
+
+## 2026-11-20 — A3（STK-07 / #146）实施
+
+- 分支 feat/backtest-fill-consistency（从 main ef57183；A3 代码曾误落 A5 工作区 → patch 保全后迁移，A5 日志增量单独提交 8bd459d）。
+- _resolve_missing_value_strategy 共享优先级（disk→DB→legacy）；backtest runtime 携带策略；serial/batched 传策略 + 共享 _resolve_prediction_feature_value。
+- native_nan 下缺失列（无 alias）⇒ raise 点名（#146）；legacy 保持零填充。训练 artifact metadata 增 feature_schema{names,dtype,schema_version}。
+- 测试 10 个 + 训练 metadata 断言 + 双 mutation；落地见 PR。
+- 修复两跑：mutation1 靶测试改 missing-column raise（.get 对存在 NaN 键返回 NaN，NaN 测试不敏感）；_patch.call_args → p.start() 返回 mock；旧 missing-key→NaN 测试替换为三测试新契约（raise/现键 NaN/legacy 零填充）+ LEGACY import。三跑 **281 OK**，双 mutation rc=1/1。
+- **A5 落地**：PR #205 合并 520d525（CI 双绿含日志增量 8bd459d，预授权）。
+- **A3 落地**：rebase 到 520d525（tasks_lightgbm 自动合并；tests_lightgbm union v3+feature_schema），复测 **288 OK** → **PR #206**（3a3f35d）。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
