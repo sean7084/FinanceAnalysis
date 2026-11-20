@@ -168,3 +168,10 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - A4 合并 #208 → main 3a86e3e（9 PR 合并）；B2 rebase 时 union。
 - 修复：helper 插入把 @shared_task 装饰器挤到 sync_recent_namechanges 上 ⇒ sync_daily_a_shares 失注册（core.E002）→ 装饰器移回。复跑 markets **163 OK**，mutation rc=1，gates 绿。
 - **B2 落地**：commit ed025cf → rebase（CHANGELOG union）→ **PR #209**（0389864）。剩余 Wave 1：B1b / B3（DR6 门）/ C2 / 地板。
+- **B2 合并**：#209 → main 2ffea20。B1b part1 → **PR #210**（aef0a24）。
+
+## 2026-11-20 — C2（UNI-03，#196）实施
+
+- 分支 feat/dual-pit-series（从 2ffea20）。ACTIVE_PIT_BENCHMARK_SPECS（legacy full + 默认 ex-board）；run_post_sync 逐 spec refresh；BENCHMARK_SERIES_SPECS += 000852.SH。
+- 测试 4 个（共存独立 constituent_count / 按序列增量 seed 保留 seed return / 循环逐 spec / comparison specs）。首跑 4 OK。
+- mutation + markets 套件 + gates + 落地见 PR（待 B1b #210 合并后开）。
