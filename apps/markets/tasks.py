@@ -1322,6 +1322,38 @@ def run_post_sync_universal_refresh(sync_results=None, target_date=None):
     )
 
 
+def sync_recent_namechanges(today, lookback_days=60):
+    """Trailing-window namechange refresh + ST divergence check (B2, no new beat row).
+
+    Runs inside the existing daily dispatcher. Ingests through the shared
+    look-ahead gate, rebuilds touched assets' intervals, and logs (never fails
+    the dispatch on) divergences between open ST intervals and current names.
+    """
+    from apps.markets.models import AssetSTInterval
+    from apps.markets.price_limits import is_st_name
+    from apps.markets.st_history import ingest_namechange_records, rebuild_asset_st_intervals
+
+    token = getattr(settings, 'TUSHARE_TOKEN', None)
+    if not token:
+        return {'rows_stored': 0, 'quarantined': 0, 'divergences': 0}
+    pro = ts.pro_api(token)
+    start = today - timedelta(days=lookback_days)
+    frame = pro.namechange(start_date=start.strftime('%Y%m%d'), end_date=today.strftime('%Y%m%d'))
+    records = [] if frame is None or frame.empty else frame.to_dict('records')
+    asset_map = dict(Asset.objects.values_list('ts_code', 'id'))
+    stored, quarantined, touched = ingest_namechange_records(records, asset_map)
+    for asset_id in sorted(touched):
+        with transaction.atomic():
+            rebuild_asset_st_intervals(asset_id)
+    open_ids = set(AssetSTInterval.objects.filter(end_date__isnull=True).values_list('asset_id', flat=True))
+    check_ids = open_ids | touched
+    names = dict(Asset.objects.filter(id__in=check_ids).values_list('id', 'name'))
+    divergences = sum(1 for aid, name in names.items() if (aid in open_ids) != is_st_name(name))
+    if divergences:
+        print(f'WARNING: ST divergence check: {divergences} asset(s) disagree between intervals and current names')
+    return {'rows_stored': stored, 'quarantined': len(quarantined), 'divergences': divergences}
+
+
 @shared_task
 def sync_daily_a_shares(target_date=None):
     """
@@ -1358,6 +1390,8 @@ def sync_daily_a_shares(target_date=None):
             ts_codes=summary.get('current_union_ts_codes', []),
         )
 
+        namechange_summary = sync_recent_namechanges(today)
+
         asset_map = Asset.objects.in_bulk(summary.get('current_union_ts_codes', []), field_name='ts_code')
         signatures = _build_asset_history_signatures(
             asset_map,
@@ -1392,6 +1426,10 @@ def sync_daily_a_shares(target_date=None):
         print(
             f"Synchronized suspension days: rows_written={suspension_summary['rows_written']} "
             f"full_day_rows={suspension_summary['full_day_rows']}"
+        )
+        print(
+            f"Refreshed namechanges: rows_stored={namechange_summary['rows_stored']} "
+            f"quarantined={namechange_summary['quarantined']} divergences={namechange_summary['divergences']}"
         )
         print(f"Dispatched {len(signatures)} unique sync tasks and queued post-sync refresh.")
         return (

@@ -239,3 +239,54 @@ class OHLCV(models.Model):
 
     def __str__(self):
         return f"{self.asset.ts_code} on {self.date}"
+
+
+class AssetNameChange(models.Model):
+    """Raw TuShare namechange record — a CHANGE, not a state (B2 / STK-12).
+
+    Ingested through the ann_date <= start_date look-ahead gate; violating rows
+    are quarantined to a report, never stored. A stock already ST before its
+    first record never appears here — the reconciliation command bounds that
+    blind spot against current stock_basic names before the ST layer enables.
+    """
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='name_changes')
+    name = models.CharField(_("Name"), max_length=100)
+    start_date = models.DateField(_("Start Date"), db_index=True)
+    end_date = models.DateField(_("End Date"), null=True, blank=True)
+    ann_date = models.DateField(_("Announcement Date"), null=True, blank=True)
+    change_reason = models.CharField(_("Change Reason"), max_length=100, blank=True, default='')
+    source = models.CharField(_("Source"), max_length=50, default='tushare_namechange')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Asset Name Change")
+        verbose_name_plural = _("Asset Name Changes")
+        unique_together = ('asset', 'start_date', 'name')
+        indexes = [models.Index(fields=['asset', 'start_date'])]
+
+    def __str__(self):
+        return f"{self.asset.ts_code} {self.name} from {self.start_date}"
+
+
+class AssetSTInterval(models.Model):
+    """Derived as-of ST / *ST / delisting-consolidation interval [start_date, end_date).
+
+    end_date null = open-ended. Rebuilt transactionally from AssetNameChange by
+    apps.markets.st_history; the universe filter resolves these per trading day,
+    never from the current asset name (look-ahead). Delisted non-ST assets keep
+    their historical universe membership — this table never reads listing_status.
+    """
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='st_intervals')
+    start_date = models.DateField(_("Start Date"), db_index=True)
+    end_date = models.DateField(_("End Date"), null=True, blank=True)
+    ann_date = models.DateField(_("Announcement Date"), null=True, blank=True)
+    change_reason = models.CharField(_("Change Reason"), max_length=100, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Asset ST Interval")
+        verbose_name_plural = _("Asset ST Intervals")
+        indexes = [models.Index(fields=['asset', 'start_date'])]
+
+    def __str__(self):
+        return f"{self.asset.ts_code} ST [{self.start_date}, {self.end_date or 'open'})"

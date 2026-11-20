@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-20T04:25:06Z_
+_Generated: 2026-11-20T05:36:55Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**61** project commands across **9** apps.
+**63** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -784,6 +784,16 @@ Onboard the CSI 500 effective universe: sync historical memberships, backfill ra
 | `--lstm-max-samples-per-horizon` | value | `30000` |  |  |
 
 
+### `reconcile_st_history`
+
+Reconcile reconstructed current-ST intervals vs current asset names (ST enablement gate).
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--as-of` | value | `""` |  | YYYY-MM-DD (default today). |
+| `--report-dir` | value | `docs/reports/stock` |  |  |
+
+
 ### `reconcile_suspension_ohlcv_overlaps`
 
 Verify OHLCV/full-day suspension overlaps against AkShare Baidu suspension notices and optionally delete confirmed OHLCV rows.
@@ -809,6 +819,20 @@ Re-fetch OHLCV history so every row stores its unadjusted close and adjustment f
 | `--limit` | value | `0` |  | Stop after this many assets. |
 | `--max-calls` | value | `0` |  | Stop after this many TuShare calls (two per asset). 0 means no cap. |
 | `--dry-run` | flag | `False` |  | Report what would be re-fetched without calling the provider. |
+
+
+### `sync_asset_namechanges`
+
+Sync namechange history (ann_date windows) and rebuild as-of ST intervals.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start-date` | value | `2009-01-01` |  | Announcement-window start (YYYY-MM-DD). |
+| `--end-date` | value | `""` |  | Announcement-window end (default today). |
+| `--window-months` | value | `12` |  |  |
+| `--pause` | value | `0.4` |  |  |
+| `--skip-rebuild` | flag | `False` |  | Ingest only; rebuild intervals separately. |
+| `--quarantine-dir` | value | `docs/reports/stock` |  |  |
 
 
 ### `sync_benchmark_index_history`
