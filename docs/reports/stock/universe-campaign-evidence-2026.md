@@ -106,6 +106,13 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 修复两跑：mutation1 靶测试改 missing-column raise（.get 对存在 NaN 键返回 NaN，NaN 测试不敏感）；_patch.call_args → p.start() 返回 mock；旧 missing-key→NaN 测试替换为三测试新契约（raise/现键 NaN/legacy 零填充）+ LEGACY import。三跑 **281 OK**，双 mutation rc=1/1。
 - **A5 落地**：PR #205 合并 520d525（CI 双绿含日志增量 8bd459d，预授权）。
 - **A3 落地**：rebase 到 520d525（tasks_lightgbm 自动合并；tests_lightgbm union v3+feature_schema），复测 **288 OK** → **PR #206**（3a3f35d）。
+
+## 2026-11-20 — B1 核心（UNI-05/STK-11，#197）实施
+
+- 分支 feat/universe-policy-board-switch。**B1 拆两 PR**（流程细化）：B1 核心 = 策略模块 + benchmarking 全卡口穿线 + 地板 + 基准代码方案 + 13 测试；B1b = 调用方覆写（训练/回测/命令）+ provenance 写入。
+- universe_policy.py：BOARD_TRADING_PERMISSIONS（chinext/star/bse False，O1）；ST_LAYER_ENABLED False（B3 门）；research_full/research_cap；apply_universe_policy 单一过滤（绝不读 listing_status）。
+- benchmarking：单日/批量/effective_*/builder/refresh×2 全穿 policy/st_layer/policy_caches；required_pit_index_codes_for_date 按指数地板（000852→2014-10-31）；pit_benchmark_code_for 5+ 序列共存方案。
+- 测试 13 + mutation + 全套件；落地见 PR。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施

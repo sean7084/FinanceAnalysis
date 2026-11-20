@@ -20,6 +20,13 @@ from apps.core.date_floor import get_historical_data_floor
 from apps.factors.models import FundamentalFactorSnapshot
 
 from .models import Asset, IndexMembership, OHLCV, PointInTimeBenchmarkDaily
+from .universe_policy import (
+    POLICY_DEFAULT,
+    POLICY_RESEARCH_CAP,
+    POLICY_RESEARCH_FULL,
+    apply_universe_policy,
+    resolve_st_layer,
+)
 
 
 DECIMAL_0 = Decimal('0')
@@ -33,6 +40,39 @@ ACTIVE_UNIVERSE_TAGS = {'CSI500'}
 #: coverage-requirement date, not a model window; the training and backtest
 #: boundaries live in ``apps/core/date_contract.py``.
 PIT_UNIVERSE_START_DATE = date(2010, 1, 1)
+
+#: Per-index data-availability floors (UNI-04): a single index's first published
+#: snapshot, NOT the deleted A500 launch-date splice and NOT a model window.
+#: STOCK_TRAINING_START in apps/core/date_contract.py is untouched.
+PIT_INDEX_AVAILABILITY_FLOORS = {
+    '000905.SH': date(2010, 1, 1),
+    '000852.SH': date(2014, 10, 31),
+}
+
+
+def pit_benchmark_code_for(index_codes=None, policy=None, st_layer=None):
+    """Benchmark series code for an (index, policy) combination (D4).
+
+    The full-universe series keep the legacy codes (CSI500_PIT); executable
+    variants carry _EXBOARD / _EXBOARD_ST / _EXBOARD_CAP suffixes so the series
+    coexist under the (benchmark_code, trade_date) upsert key.
+    """
+    codes = _normalize_index_codes(index_codes)
+    if codes == ('000905.SH',):
+        base = 'CSI500_PIT'
+    elif codes == ('000852.SH',):
+        base = 'CSI1000_PIT'
+    else:
+        base = 'PIT_UNION_' + '_'.join(codes)
+    resolved_policy = policy or POLICY_DEFAULT
+    if resolved_policy == POLICY_RESEARCH_FULL:
+        return base
+    suffix = '_EXBOARD'
+    if resolve_st_layer(resolved_policy, st_layer):
+        suffix += '_ST'
+    if resolved_policy == POLICY_RESEARCH_CAP:
+        suffix += '_CAP'
+    return base + suffix
 
 
 class PITMembershipCoverageError(ValueError):
@@ -90,18 +130,21 @@ def _load_membership_snapshots_by_index(trade_dates, index_codes=None):
     return normalized_dates, snapshots_by_index, snapshot_dates_by_index
 
 
-def required_pit_index_codes_for_date(trade_date):
+def required_pit_index_codes_for_date(trade_date, index_codes=None):
     """Return the required index codes for the canonical effective universe.
 
-    The contract is inclusive on `2010-01-01`: CSI 500 (`000905.SH`) is the sole
-    required index from that date onward.
+    Each index is required only from its own availability floor onward
+    (UNI-04): CSI500 from 2010-01-01, CSI1000 from its first snapshot
+    2014-10-31. Dates before an index's floor require nothing of it.
     """
     if isinstance(trade_date, str):
         trade_date = date.fromisoformat(trade_date)
 
-    if trade_date >= PIT_UNIVERSE_START_DATE:
-        return tuple(DEFAULT_PIT_INDEX_CODES)
-    return ()
+    codes = _normalize_index_codes(index_codes)
+    return tuple(
+        code for code in codes
+        if trade_date >= PIT_INDEX_AVAILABILITY_FLOORS.get(code, PIT_UNIVERSE_START_DATE)
+    )
 
 
 def pit_membership_coverage_gaps(trade_dates, index_codes=None):
@@ -115,7 +158,7 @@ def pit_membership_coverage_gaps(trade_dates, index_codes=None):
     explicit_index_codes = _normalize_index_codes(index_codes) if index_codes is not None else None
     missing_by_date = {}
     for target_date in normalized_dates:
-        required_codes = explicit_index_codes or required_pit_index_codes_for_date(target_date)
+        required_codes = explicit_index_codes or required_pit_index_codes_for_date(target_date, index_codes=explicit_index_codes)
         missing_codes = []
         for index_code in required_codes:
             snapshot_dates = snapshot_dates_by_index.get(index_code) or []
@@ -154,7 +197,7 @@ def resolve_effective_index_snapshot_dates(trade_date, index_codes=None):
     return snapshot_dates
 
 
-def resolve_point_in_time_union_membership(trade_date, index_codes=None):
+def resolve_point_in_time_union_membership(trade_date, index_codes=None, policy=None, st_layer=None, policy_caches=None):
     resolved_index_codes = _normalize_index_codes(index_codes)
     snapshot_dates = resolve_effective_index_snapshot_dates(trade_date, index_codes=resolved_index_codes)
 
@@ -189,6 +232,14 @@ def resolve_point_in_time_union_membership(trade_date, index_codes=None):
                 current['membership_weights'][index_code] = float(row.weight)
 
     constituents = sorted(members_by_asset_id.values(), key=lambda item: item['ts_code'])
+    filtered_ids = set(apply_universe_policy(
+        [item['asset_id'] for item in constituents],
+        trade_date,
+        policy=policy or POLICY_DEFAULT,
+        st_layer=st_layer,
+        **(policy_caches or {}),
+    ))
+    constituents = [item for item in constituents if item['asset_id'] in filtered_ids]
     overlap_count = sum(1 for item in constituents if len(item['index_codes']) > 1)
 
     return {
@@ -205,11 +256,13 @@ def resolve_point_in_time_union_membership(trade_date, index_codes=None):
     }
 
 
-def point_in_time_union_asset_ids(trade_date, index_codes=None):
-    return resolve_point_in_time_union_membership(trade_date, index_codes=index_codes)['asset_ids']
+def point_in_time_union_asset_ids(trade_date, index_codes=None, policy=None, st_layer=None, policy_caches=None):
+    return resolve_point_in_time_union_membership(
+        trade_date, index_codes=index_codes, policy=policy, st_layer=st_layer, policy_caches=policy_caches,
+    )['asset_ids']
 
 
-def point_in_time_union_asset_ids_by_dates(trade_dates, index_codes=None):
+def point_in_time_union_asset_ids_by_dates(trade_dates, index_codes=None, policy=None, st_layer=None, policy_caches=None):
     normalized_dates, snapshots_by_index, snapshot_dates_by_index = _load_membership_snapshots_by_index(
         trade_dates,
         index_codes=index_codes,
@@ -231,28 +284,50 @@ def point_in_time_union_asset_ids_by_dates(trade_dates, index_codes=None):
             asset_ids.update(snapshots_by_index[index_code][snapshot_date])
         memberships_by_date[target_date] = asset_ids
 
+    resolved_policy = policy or POLICY_DEFAULT
+    caches = dict(policy_caches or {})
+    all_ids = set()
+    for asset_ids in memberships_by_date.values():
+        all_ids.update(asset_ids)
+    if all_ids and 'asset_ts_codes' not in caches:
+        caches['asset_ts_codes'] = dict(
+            Asset.objects.filter(id__in=all_ids).values_list('id', 'ts_code')
+        )
+    st_map = caches.pop('st_asset_ids_by_date', None)
+    cap_map = caches.pop('cap_asset_ids_by_date', None)
+    for target_date, asset_ids in memberships_by_date.items():
+        per_date = dict(caches)
+        if st_map is not None:
+            per_date['st_asset_ids'] = st_map.get(target_date, set())
+        if cap_map is not None:
+            per_date['cap_asset_ids'] = cap_map.get(target_date, set())
+        memberships_by_date[target_date] = set(apply_universe_policy(
+            asset_ids, target_date,
+            policy=resolved_policy, st_layer=st_layer, **per_date,
+        ))
+
     return memberships_by_date
 
 
-def effective_universe_asset_ids(trade_date, index_codes=None, context='Effective universe'):
+def effective_universe_asset_ids(trade_date, index_codes=None, context='Effective universe', policy=None, st_layer=None, policy_caches=None):
     """Resolve the canonical `effective_universe(date)` asset ids.
 
     This helper enforces the shared date-aware universe contract and must not
     silently widen to all assets when PIT membership coverage is missing.
     """
     ensure_pit_membership_coverage([trade_date], index_codes=index_codes, context=context)
-    return point_in_time_union_asset_ids(trade_date, index_codes=index_codes)
+    return point_in_time_union_asset_ids(trade_date, index_codes=index_codes, policy=policy, st_layer=st_layer, policy_caches=policy_caches)
 
 
-def effective_universe_assets(trade_date, index_codes=None, context='Effective universe'):
-    asset_ids = effective_universe_asset_ids(trade_date, index_codes=index_codes, context=context)
+def effective_universe_assets(trade_date, index_codes=None, context='Effective universe', policy=None, st_layer=None, policy_caches=None):
+    asset_ids = effective_universe_asset_ids(trade_date, index_codes=index_codes, context=context, policy=policy, st_layer=st_layer, policy_caches=policy_caches)
     if not asset_ids:
         return []
     return list(Asset.objects.filter(id__in=asset_ids).order_by('id'))
 
 
-def effective_universe_tradeable_asset_ids(trade_date, index_codes=None, context='Effective universe'):
-    asset_ids = effective_universe_asset_ids(trade_date, index_codes=index_codes, context=context)
+def effective_universe_tradeable_asset_ids(trade_date, index_codes=None, context='Effective universe', policy=None, st_layer=None, policy_caches=None):
+    asset_ids = effective_universe_asset_ids(trade_date, index_codes=index_codes, context=context, policy=policy, st_layer=st_layer, policy_caches=policy_caches)
     if not asset_ids:
         return []
 
@@ -268,8 +343,8 @@ def effective_universe_tradeable_asset_ids(trade_date, index_codes=None, context
     return [asset_id for asset_id in tradeable_asset_ids if asset_id in effective_asset_id_set]
 
 
-def effective_universe_tradeable_assets(trade_date, index_codes=None, context='Effective universe'):
-    asset_ids = effective_universe_tradeable_asset_ids(trade_date, index_codes=index_codes, context=context)
+def effective_universe_tradeable_assets(trade_date, index_codes=None, context='Effective universe', policy=None, st_layer=None, policy_caches=None):
+    asset_ids = effective_universe_tradeable_asset_ids(trade_date, index_codes=index_codes, context=context, policy=policy, st_layer=st_layer, policy_caches=policy_caches)
     if not asset_ids:
         return []
     return list(Asset.objects.filter(id__in=asset_ids).order_by('id'))
@@ -306,7 +381,7 @@ def _benchmark_weight(row, current_close):
     return None, None
 
 
-def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None, emit_seed_row=True):
+def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None, emit_seed_row=True, policy=None, st_layer=None, policy_caches=None, benchmark_code=None):
     """Build the NAV chain over ``[start_date, end_date]``.
 
     The range's first date is structurally a seed: it has no predecessor inside the
@@ -330,11 +405,12 @@ def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=D
         return []
 
     resolved_index_codes = tuple(index_codes or DEFAULT_PIT_INDEX_CODES)
+    resolved_benchmark_code = benchmark_code or pit_benchmark_code_for(resolved_index_codes, policy=policy, st_layer=st_layer)
     rows = []
     nav = _to_decimal(initial_nav)
 
     for index, trade_date in enumerate(trading_dates):
-        membership = resolve_point_in_time_union_membership(trade_date, index_codes=resolved_index_codes)
+        membership = resolve_point_in_time_union_membership(trade_date, index_codes=resolved_index_codes, policy=policy, st_layer=st_layer, policy_caches=policy_caches)
         asset_ids = membership['asset_ids']
         daily_return = DECIMAL_0
         weighted_constituent_count = 0
@@ -381,7 +457,7 @@ def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=D
         if index > 0 or emit_seed_row:
             rows.append(
                 PointInTimeBenchmarkDaily(
-                    benchmark_code=PIT_BENCHMARK_CODE,
+                    benchmark_code=resolved_benchmark_code,
                     benchmark_name=PIT_BENCHMARK_NAME,
                     trade_date=trade_date,
                     daily_return=daily_return,
@@ -403,22 +479,27 @@ def build_point_in_time_union_benchmark_rows(start_date, end_date, initial_nav=D
     return rows
 
 
-def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None, emit_seed_row=True):
+def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Decimal('100000'), index_codes=None, emit_seed_row=True, policy=None, st_layer=None, policy_caches=None, benchmark_code=None):
     if isinstance(start_date, str):
         start_date = date.fromisoformat(start_date)
     if isinstance(end_date, str):
         end_date = date.fromisoformat(end_date)
 
+    resolved_benchmark_code = benchmark_code or pit_benchmark_code_for(index_codes, policy=policy, st_layer=st_layer)
     rows = build_point_in_time_union_benchmark_rows(
         start_date=start_date,
         end_date=end_date,
         initial_nav=initial_nav,
         index_codes=index_codes,
         emit_seed_row=emit_seed_row,
+        policy=policy,
+        st_layer=st_layer,
+        policy_caches=policy_caches,
+        benchmark_code=resolved_benchmark_code,
     )
     if not rows:
         return {
-            'benchmark_code': PIT_BENCHMARK_CODE,
+            'benchmark_code': resolved_benchmark_code,
             'rows_written': 0,
             'start_date': start_date.isoformat(),
             'end_date': end_date.isoformat(),
@@ -432,7 +513,7 @@ def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Deci
         update_fields=['benchmark_name', 'daily_return', 'nav', 'constituent_count', 'overlap_count', 'weighting_method', 'metadata', 'updated_at'],
     )
     return {
-        'benchmark_code': PIT_BENCHMARK_CODE,
+        'benchmark_code': resolved_benchmark_code,
         'rows_written': len(rows),
         'start_date': start_date.isoformat(),
         'end_date': end_date.isoformat(),
@@ -440,13 +521,14 @@ def refresh_point_in_time_union_benchmark(start_date, end_date, initial_nav=Deci
     }
 
 
-def refresh_latest_point_in_time_union_benchmark(target_date, initial_nav=Decimal('100000'), index_codes=None):
+def refresh_latest_point_in_time_union_benchmark(target_date, initial_nav=Decimal('100000'), index_codes=None, policy=None, st_layer=None, policy_caches=None, benchmark_code=None):
     if isinstance(target_date, str):
         target_date = date.fromisoformat(target_date)
 
+    resolved_benchmark_code = benchmark_code or pit_benchmark_code_for(index_codes, policy=policy, st_layer=st_layer)
     previous_row = (
         PointInTimeBenchmarkDaily.objects.filter(
-            benchmark_code=PIT_BENCHMARK_CODE,
+            benchmark_code=resolved_benchmark_code,
             trade_date__lt=target_date,
         )
         .order_by('-trade_date')
@@ -458,6 +540,10 @@ def refresh_latest_point_in_time_union_benchmark(target_date, initial_nav=Decima
             end_date=target_date,
             initial_nav=initial_nav,
             index_codes=index_codes,
+            policy=policy,
+            st_layer=st_layer,
+            policy_caches=policy_caches,
+            benchmark_code=resolved_benchmark_code,
         )
         summary['refresh_mode'] = 'seed'
         return summary
@@ -468,6 +554,10 @@ def refresh_latest_point_in_time_union_benchmark(target_date, initial_nav=Decima
         initial_nav=previous_row.nav,
         index_codes=index_codes,
         emit_seed_row=False,
+        policy=policy,
+        st_layer=st_layer,
+        policy_caches=policy_caches,
+        benchmark_code=resolved_benchmark_code,
     )
     summary['refresh_mode'] = 'incremental'
     summary['seed_trade_date'] = previous_row.trade_date.isoformat()
