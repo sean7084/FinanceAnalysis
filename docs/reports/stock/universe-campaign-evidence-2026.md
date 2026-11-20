@@ -113,6 +113,9 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - universe_policy.py：BOARD_TRADING_PERMISSIONS（chinext/star/bse False，O1）；ST_LAYER_ENABLED False（B3 门）；research_full/research_cap；apply_universe_policy 单一过滤（绝不读 listing_status）。
 - benchmarking：单日/批量/effective_*/builder/refresh×2 全穿 policy/st_layer/policy_caches；required_pit_index_codes_for_date 按指数地板（000852→2014-10-31）；pit_benchmark_code_for 5+ 序列共存方案。
 - 测试 13 + mutation + 全套件；落地见 PR。
+- 修复一跑：coverage 测试误用 2009 日期（<2010 合法不要求覆盖）→ 改 2010-01-04 无快照。复跑 **全套件 1367 OK**（默认板块过滤全仓零既有冲突），mutation rc=1。
+- **A3 落地**：PR #206 合并 8b29845（CI 双绿，预授权）。
+- **B1 核心落地**：rebase 到 8b29845（journal union；脚本 UU 检查先于 add 的小 bug 已手工补 add）→ **PR #207**（e280607）。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
