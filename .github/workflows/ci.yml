@@ -256,11 +256,12 @@ jobs:
       # the rolled-back transaction are discarded while the return value survives, an
       # exception still rolls back, and pre-existing rows are untouched.
       #
-      # HELD AT 1306 (measured) rather than 1309 (inferred). The 3 new tests each pass
-      # individually and the last full run measured 1306, but the full-suite total of 1309
-      # was never measured. A floor above the real count breaks every CI run; a floor 3 low
-      # only fails to protect those 3 tests. Raise to 1309 once `manage.py test` reports it.
-      MIN_TEST_COUNT: "1316"
+      # Wave-1 universe campaign floor. Measured: local full suite `manage.py test` reports
+      # Ran 1500 tests (== CI's discovered count, verified identical across prior campaigns),
+      # plus C2b's 2 command-flag tests = 1502. Set to measured-minus-four (1498) per the
+      # repo convention: a floor above the real count breaks every CI run; a floor a few low
+      # only under-protects. Re-measure and raise when tests are added.
+      MIN_TEST_COUNT: "1498"
 
     steps:
       - uses: actions/checkout@v4
