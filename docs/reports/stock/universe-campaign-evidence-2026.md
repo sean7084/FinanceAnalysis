@@ -196,11 +196,4 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **Wave 1 代码卡全部完成**。剩地板 PR：#212 合并后读 CI 实测 Ran N（measured−4 惯例，注释写明测量来源）。之后 owner-gated：DR1-7 → B3 → H1/H2 → STK-10 → P1 → CMP → R1 → S1。
 - DR 执行脚本已备好（**未执行**，待 owner 批准）：tmp/dr1_sync_csi1000.sh（DR1-3 年分块 + 连续性 + 官方基准）、tmp/dr6_namechange_reconcile.sh（DR6 全史 + 对账，diff 非零退出）。bash -n 通过。
 - P1 预登记草稿已备（tmp/prereg_draft_csi500_vs_csi1000.md，**未注册**）：4+2 臂/5 起点/7 折/v3/next_day_open/§6 修订/并存条款/触发/盲区/D1-D10（D7 更正 2020-12）/JSON manifest。O3/O4/O5 待 owner 签署。H2 设计细化已写入计划卡。
-
-## 2026-11-20 — Wave 1 完成 + H1
-
-- **Floor #214 合并 → 151d348。Wave 1 全部完成（15 PR 合并）**：W0-2 + Gate A A1-A6 + B1/B2/B1b + C1/C2/C2b + floor。
-- **H1**：_fit_lightgbm_horizon 纯核心抽出（零 DB/磁盘写入）；train 调用+映射，副作用留生产任务。修复两 bug：@shared_task 装饰器被挤掉（移回 train）；len(X_train) 残留×2 → fit[training_samples]。
-- 测试 3 个（purity/structure/short-window）；prediction 189 OK；ruff 绿。H1 PR #215（66cb41b；docs 锚点首次失败因分支切于 floor 合并前，rebase 后补 docs）。
-- 教训：unquoted heredoc 内反引号被 shell 执行（C2b bullet 损坏已修）；helper 插入挤掉 @shared_task（B2/H1 各一次）——插入函数时检查装饰器归属。
-- 下一：H2 harness（设计已细化）→ owner-gated DR1-7/B3 → STK-10 → P1（O3O4O5 待签）→ CMP → R1 → S1。
+- **H2 part 1（stock ledger）**：apps/prediction/evidence.py 复用 ETF digest/measurement_id 单实现 + 独立 stock 路径（STOCK_EVIDENCE_PATH 测试覆写）+ record/read/context_repeats。5 测试 OK，ruff 绿。分支 feat/stock-walk-forward。
