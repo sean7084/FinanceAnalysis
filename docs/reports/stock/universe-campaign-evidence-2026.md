@@ -89,3 +89,10 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 测试 9 个 + mutation + 落地见 PR。
 - 修正：首版 BY_INDEX 含 000905:10 覆盖了可 patch 的模块常量 ⇒ 两个旧测试挂（chunks/prefill 断言旧窗口机制）；
   改为仅 000852.SH:5 覆写、000905 回落模块常量（保持测试/运维可 patch），旧测试意图不变、无需改断言。markets 套件复测 **128 OK**。
+
+## 2026-11-20 — A6（#144 余项）实施
+
+- 分支 feat/holdout-provenance。models.md active-artifact 表 +5 列（Eval mode/Rank IC/IC t-stat/ICIR/Holdout start），ModelVersion 表 +4 列；
+  训练调用点 ModelVersion.metrics 补 holdout_start/purge_sessions（artifact 已有）。
+- 测试 4 个（render×3 + register×1）+ mutation + models.md 再生（live registry 只读）；落地见 PR。
+- 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
