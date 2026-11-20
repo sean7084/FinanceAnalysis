@@ -149,12 +149,21 @@ class LightGBMPredictionTests(TestCase):
 
     def test_extract_features_for_asset_uses_10y_minus_3y_yield_curve(self):
         d = self._seed_features()
+        # Published before as_of minus the PMI release lag (A5 / STK-08).
         MacroSnapshot.objects.create(
-            date=d,
+            date=d - timezone.timedelta(days=2),
             pmi_manufacturing=Decimal('50.2'),
             pmi_non_manufacturing=Decimal('51.0'),
             cn10y_yield=Decimal('2.80'),
             cn3y_yield=Decimal('2.30'),
+        )
+        # A same-day snapshot is not yet published at as_of and must not be read.
+        MacroSnapshot.objects.create(
+            date=d,
+            pmi_manufacturing=Decimal('55.0'),
+            pmi_non_manufacturing=Decimal('56.0'),
+            cn10y_yield=Decimal('3.50'),
+            cn3y_yield=Decimal('2.00'),
         )
 
         features = _extract_features_for_asset(self.asset.id, d)
@@ -673,7 +682,7 @@ class LightGBMPredictionTests(TestCase):
 
         artifact = LightGBMModelArtifact.objects.filter(horizon_days=3).latest('created_at')
         self.assertEqual(artifact.version, f'lgb-3d-{d.isoformat()}-regstrong-v1')
-        self.assertEqual(artifact.metadata['engineered_feature_version'], 'v2')
+        self.assertEqual(artifact.metadata['engineered_feature_version'], 'v3')
         self.assertEqual(artifact.metadata['missing_value_strategy'], MISSING_VALUE_STRATEGY_NATIVE_NAN)
         self.assertEqual(artifact.metadata['pruning']['rule'], 'none')
         self.assertEqual(artifact.metadata['version_tag'], 'regstrong-v1')
