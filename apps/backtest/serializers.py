@@ -16,6 +16,12 @@ whose worker disappeared, without polling Celery directly.
 from rest_framework import serializers
 
 from .models import BacktestRun, BacktestTrade
+from apps.core.date_contract import (
+    ASSET_STOCKS,
+    STAGE_BACKTEST,
+    ContractBoundaryError,
+    enforce_date_contract,
+)
 from apps.core.task_health import get_backtest_run_task_owner_state
 
 
@@ -90,6 +96,20 @@ class BacktestRunSerializer(serializers.ModelSerializer):
 
         strategy_type = attrs.get('strategy_type') or getattr(self.instance, 'strategy_type', None)
         parameters = dict(attrs.get('parameters') or getattr(self.instance, 'parameters', {}) or {})
+
+        allow_pre_contract = parameters.get('allow_pre_contract_history', False)
+        if not isinstance(allow_pre_contract, bool):
+            raise serializers.ValidationError({'parameters': 'allow_pre_contract_history must be a boolean.'})
+        requested_start = start_date if start_date is not None else getattr(self.instance, 'start_date', None)
+        try:
+            enforce_date_contract(
+                asset_class=ASSET_STOCKS,
+                stage=STAGE_BACKTEST,
+                requested_start=requested_start,
+                allow_pre_contract=allow_pre_contract,
+            )
+        except ContractBoundaryError as exc:
+            raise serializers.ValidationError({'start_date': str(exc)}) from exc
 
         if strategy_type == BacktestRun.StrategyType.PREDICTION_THRESHOLD:
             prediction_source = str(parameters.get('prediction_source', 'heuristic')).lower()

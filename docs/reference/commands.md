@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-19T16:32:41Z_
+_Generated: 2026-11-20T04:08:16Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -126,6 +126,7 @@ Clone existing backtests into new comparison runs, setting compare_backtest_run_
 | `--run-ids` | value | &mdash; | yes | Comma-separated ids and/or inclusive ranges, e.g. 525-532 or 525,526,530-532. |
 | `--name-suffix` | value | `comparison-rerun` |  | Suffix appended to the cloned BacktestRun names. |
 | `--queue` | flag | `False` |  | Queue reruns asynchronously instead of executing them inline. |
+| `--allow-pre-contract-history` | flag | `False` |  | Research-only: permit cloned windows before STOCK_BACKTEST_START (recorded in parameters). |
 
 
 ### `run_core_backtest_matrix`
@@ -147,6 +148,7 @@ Create and optionally queue the heuristic/lightgbm core-profile backtest matrix 
 | `--dry-run` | flag | `False` |  | Print the planned matrix without creating BacktestRun rows. |
 | `--output-dir` | value | `""` |  | Optional compact export directory. Defaults to reports/<name-prefix>-<timestamp>. |
 | `--include-active-lightgbm-artifacts` | flag | `False` |  | Also export active LightGBM artifact metadata in the compact bundle. |
+| `--allow-pre-contract-history` | flag | `False` |  | Research-only: permit windows before STOCK_BACKTEST_START (recorded in parameters). |
 
 
 ### `run_reference_benchmark_suite`
@@ -167,6 +169,7 @@ Run a rolling benchmark backtest suite and export the resulting report bundle un
 | `--min-up-probability` | value | `0.0` |  | Minimum up probability threshold. |
 | `--name-prefix` | value | `validation` |  | Prefix used for BacktestRun names. |
 | `--queue` | flag | `False` |  | Queue runs asynchronously instead of running inline. |
+| `--allow-pre-contract-history` | flag | `False` |  | Research-only: permit windows before STOCK_BACKTEST_START (forwarded to run_validation_backtests). |
 | `--output-dir` | value | `""` |  | Optional report output directory. Defaults to reports/<suite-name>. |
 | `--suite-name` | value | `""` |  | Optional suite name used for the output directory and manifest. |
 | `--include-active-lightgbm-artifacts` | flag | `False` |  | Also export active LightGBM artifact metadata. |
@@ -190,6 +193,7 @@ Run systematic backtest validations over rolling windows for heuristic, LightGBM
 | `--min-up-probability` | value | `0.0` |  | Minimum up probability threshold. |
 | `--name-prefix` | value | `validation` |  | Prefix used for BacktestRun names. |
 | `--queue` | flag | `False` |  | Queue runs asynchronously instead of running inline. |
+| `--allow-pre-contract-history` | flag | `False` |  | Research-only: permit windows before STOCK_BACKTEST_START (recorded in parameters). |
 
 
 ## `apps.catchup`

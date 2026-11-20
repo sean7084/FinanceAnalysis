@@ -42,6 +42,7 @@ from django.utils import timezone
 
 from apps.backtest.models import BacktestRun
 from apps.backtest.tasks import clear_backtest_process_caches, queue_backtest_run, run_backtest
+from apps.core.date_contract import ASSET_STOCKS, STAGE_BACKTEST, enforce_date_contract
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 
 
@@ -162,8 +163,13 @@ class Command(BaseCommand):
             action='store_true',
             help='Also export active LightGBM artifact metadata in the compact bundle.',
         )
+        parser.add_argument(
+            '--allow-pre-contract-history',
+            action='store_true',
+            help='Research-only: permit windows before STOCK_BACKTEST_START (recorded in parameters).',
+        )
 
-    def _build_run_specs(self, start_date, end_date, variants, sources, name_prefix):
+    def _build_run_specs(self, start_date, end_date, variants, sources, name_prefix, allow_pre_contract=False):
         specs = []
         date_token = f'{start_date.isoformat()}-{end_date.isoformat()}'
         for variant_name in variants:
@@ -183,6 +189,8 @@ class Command(BaseCommand):
                             'enable_stop_target_exit': False,
                             'candidate_mode': variant['candidate_mode'],
                         }
+                        if allow_pre_contract:
+                            params['allow_pre_contract_history'] = True
                         if variant['candidate_mode'] == 'trade_score':
                             params.update({
                                 'top_n_metric': variant['top_n_metric'],
@@ -299,6 +307,12 @@ class Command(BaseCommand):
         end_date = _parse_date(options['end_date'], 'end-date')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
+        enforce_date_contract(
+            asset_class=ASSET_STOCKS,
+            stage=STAGE_BACKTEST,
+            requested_start=start_date,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
         if options['queue'] and options['execute_inline']:
             raise CommandError('--queue and --execute-inline cannot be used together.')
         if int(options['chunk_trading_days']) <= 0:
@@ -339,6 +353,7 @@ class Command(BaseCommand):
             variant_names,
             source_names,
             str(options['name_prefix'] or '').strip() or 'core18',
+            allow_pre_contract=options['allow_pre_contract_history'],
         )
         if not specs:
             raise CommandError('No backtest specifications were generated.')
