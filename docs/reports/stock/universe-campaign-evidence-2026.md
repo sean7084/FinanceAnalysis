@@ -248,3 +248,8 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 
 ### P1 prereg 定稿草稿备好（tmp/prereg_final_csi500_vs_csi1000.md）
 - 修正 manifest：arms board_only/board_st，conditional cap，index_codes 000905/000852；33 特征逐字；simulator_params 逐 horizon（h3/h7 top_n5/0.45，h30 top_n3/0.45，common 费率）；validate_cell 通过。panel_end 待 DR 数据完成后冻结哈希。STK-10 prereg 草稿备好（描述性，6 runs）。
+
+### DR5 完成 + DR6 启动（2026-11-20）
+- **DR5 成功**：1089 repair windows 全处理；复测 DR4 **missing OHLCV entirely=0**（ex-board 1955 全覆盖）。late_start=386 为 2016 后上市股（合法晚上市，非缺口；entry-warmup 处理技术指标初始化）。
+- **DR6 启动**（task b5dko57a8）：sync_asset_namechanges 2009+ 12月窗 + reconcile_st_history（diff 非零退出=B3 门）。watchdog 伴跑。
+- 下一步：DR6 报告归档（diff=0/全解释/|ΔIC|<0.01）→ DR7 pass1（PIT 序列）→ B3（ST 启用，门控 DR6）→ DR7 pass2（EXBOARD_ST）→ STK-10 + P1 哈希 → CMP。
