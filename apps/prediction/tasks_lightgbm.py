@@ -28,7 +28,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
 
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import effective_universe_tradeable_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
+from apps.markets.benchmarking import DEFAULT_PIT_INDEX_CODES, effective_universe_tradeable_assets, ensure_pit_membership_coverage, pit_benchmark_code_for, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
 from apps.macro.models import MacroSnapshot, MarketContext, release_lag_days
 from apps.analytics.indicator_params import canonical_param_key
@@ -1359,6 +1359,8 @@ def _create_feature_matrix(
     end_date,
     asset_ids=None,
     missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
+    universe_policy=None,
+    pit_index_codes=None,
 ):
     """
     Create a feature matrix for all assets over a date range.
@@ -1390,11 +1392,14 @@ def _create_feature_matrix(
 
     ensure_pit_membership_coverage(
         target_trade_dates,
+        index_codes=pit_index_codes,
         context=f'Training feature matrix for {start_date}..{end_date}',
     )
     timer.tick('pit membership coverage ensured')
 
-    membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
+    membership_by_date = point_in_time_union_asset_ids_by_dates(
+        target_trade_dates, index_codes=pit_index_codes, policy=universe_policy,
+    )
     asset_id_set = set(asset_ids)
     eligible_asset_ids = sorted({
         asset_id
@@ -1927,7 +1932,7 @@ def _create_feature_matrix(
     return df
 
 
-def _label_records_for_training(start_date, end_date, horizon_days):
+def _label_records_for_training(start_date, end_date, horizon_days, universe_policy=None, pit_index_codes=None):
     """Direction label *and* forward return for each trainable (date, asset).
 
     UP:   forward_return >= +2%
@@ -1954,10 +1959,13 @@ def _label_records_for_training(start_date, end_date, horizon_days):
 
     ensure_pit_membership_coverage(
         target_trade_dates,
+        index_codes=pit_index_codes,
         context=f'Training labels for {start_date}..{end_date}',
     )
 
-    membership_by_date = point_in_time_union_asset_ids_by_dates(target_trade_dates)
+    membership_by_date = point_in_time_union_asset_ids_by_dates(
+        target_trade_dates, index_codes=pit_index_codes, policy=universe_policy,
+    )
     eligible_asset_ids = sorted({
         asset_id
         for member_asset_ids in membership_by_date.values()
@@ -2133,7 +2141,7 @@ def _holdout_metrics(y_true, proba, dates, forward_returns):
 
 
 @shared_task
-def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None, version_tag='', use_snapshot_pruning=False):
+def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None, version_tag='', use_snapshot_pruning=False, universe_policy=None, pit_index_codes=None):
     """
     Train LightGBM models for 3, 7, 30-day horizons.
     Invoke manually or from an explicit operational workflow.
@@ -2192,6 +2200,8 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
         training_start,
         training_end,
         missing_value_strategy=missing_value_strategy,
+        universe_policy=universe_policy,
+        pit_index_codes=pit_index_codes,
     )
     feature_names = list(X_df.attrs.get('feature_names') or [col for col in X_df.columns if col not in ['date', 'asset_id']])
 
@@ -2218,7 +2228,10 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
             pruned_feature_names = pruning_plan['pruned_features']
             pruning_audit = pruning_plan['audit']
 
-            label_records = _label_records_for_training(training_start, training_end, horizon)
+            label_records = _label_records_for_training(
+                training_start, training_end, horizon,
+                universe_policy=universe_policy, pit_index_codes=pit_index_codes,
+            )
             if label_records:
                 labels_df = pd.DataFrame([
                     {'date': key[0], 'asset_id': key[1],
@@ -2348,6 +2361,10 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                     'dtype': 'float64',
                     'schema_version': 1,
                 },
+                'effective_universe_policy': universe_policy or 'default',
+                'pit_index_codes': list(pit_index_codes) if pit_index_codes else list(DEFAULT_PIT_INDEX_CODES),
+                'universe_version': 'v1',
+                'pit_benchmark_code': pit_benchmark_code_for(pit_index_codes, policy=universe_policy),
                 'version_tag': normalized_version_tag,
                 'lgb_params': dict(lgb_params),
             }

@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-20T05:36:55Z_
+_Generated: 2026-11-20T06:03:00Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -932,6 +932,8 @@ Backfill features and retrain 3/7/30-day LightGBM models end-to-end.
 | `--skip-backfill` | flag | `False` |  | Skip model data backfill and retrain directly. |
 | `--version-tag` | value | `""` |  | Optional suffix added to the LightGBM model version to preserve existing artifact families. |
 | `--use-snapshot-pruning` | flag | `False` |  | Prune features from the latest active FeatureImportanceSnapshot before retraining. |
+| `--universe-policy` | value | &mdash; |  | Executable-universe policy for training (default / research_full / research_cap). Default: serving default. |
+| `--pit-index-codes` | value | &mdash; |  | Comma-separated PIT index codes for training (e.g. 000852.SH). Default: serving default. |
 
 
 ### `rebuild_lstm_pipeline`

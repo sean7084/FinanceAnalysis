@@ -60,6 +60,16 @@ class Command(BaseCommand):
             action='store_true',
             help='Prune features from the latest active FeatureImportanceSnapshot before retraining.',
         )
+        parser.add_argument(
+            '--universe-policy',
+            default=None,
+            help='Executable-universe policy for training (default / research_full / research_cap). Default: serving default.',
+        )
+        parser.add_argument(
+            '--pit-index-codes',
+            default=None,
+            help='Comma-separated PIT index codes for training (e.g. 000852.SH). Default: serving default.',
+        )
 
     def _parse_date(self, value, name):
         try:
@@ -136,6 +146,11 @@ class Command(BaseCommand):
             horizons=horizons,
             version_tag=version_tag,
             use_snapshot_pruning=options['use_snapshot_pruning'],
+            universe_policy=options['universe_policy'] or None,
+            pit_index_codes=(
+                [code.strip() for code in options['pit_index_codes'].split(',') if code.strip()]
+                if options['pit_index_codes'] else None
+            ),
         )
 
         self.stdout.write(json.dumps(results, ensure_ascii=True, indent=2, sort_keys=True))

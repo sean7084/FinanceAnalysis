@@ -168,6 +168,14 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - A4 合并 #208 → main 3a86e3e（9 PR 合并）；B2 rebase 时 union。
 - 修复：helper 插入把 @shared_task 装饰器挤到 sync_recent_namechanges 上 ⇒ sync_daily_a_shares 失注册（core.E002）→ 装饰器移回。复跑 markets **163 OK**，mutation rc=1，gates 绿。
 - **B2 落地**：commit ed025cf → rebase（CHANGELOG union）→ **PR #209**（0389864）。剩余 Wave 1：B1b / B3（DR6 门）/ C2 / 地板。
+- **B1b part1 合并** #210 → 89e80d0；**C2** → PR #211（81f4195，markets 167 OK，mutation rc=1）。
+
+## 2026-11-20 — B1b part 2 核心（训练穿线 + provenance）
+
+- 分支 feat/training-universe-provenance（从 89e80d0）。matrix/labels/train 穿 universe_policy/pit_index_codes；artifact_metadata += 4 provenance 字段（自动入 ModelVersion.metadata）。
+- 训练 metadata 测试 += 4 断言（默认 → CSI500_PIT_EXBOARD）；prediction **182 OK**；ruff/makemigrations 绿；commit fcb07cc（文档补提交）。
+- part 2b 待做：rebuild/backfill 命令 flags + _reference_metadata_subset 读取侧 + 测试 → 地板 PR → owner-gated DR/B3。
+
 - **B2 合并**：#209 → main 2ffea20。B1b part1 → **PR #210**（aef0a24）。
 
 ## 2026-11-20 — C2（UNI-03，#196）实施
@@ -179,3 +187,9 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **B1b 合并**：#210 CI 双绿 → --admin → main 89e80d0（**11 PR 合并**）。
 - **C2 落地**：mutation rc=1；markets **167 OK**；gates 绿；commit 8b91406 → rebase（CHANGELOG union 脚本自动）→ **PR #211**（81f4195）。
 - 剩余 Wave 1 代码：B1b part 2（训练/命令 --universe-policy + artifact/ModelVersion provenance 写入侧）+ 地板 PR（CI 实测 Ran N）。之后 B3/DR1-7 待 owner 逐次批准。
+- **B1b p2b**：rebuild --universe-policy/--pit-index-codes + reader subset += pit_index_codes/pit_benchmark_code；backfill 无 flags（默认继承 ex-board + fixed-engine D7）。测试 4 个（TestCase + enforce passthrough 修复）。prediction+backtest 套件绿；commands.md 再生。
+- **C2 合并** #211 → a2555f7（**12 PR 合并**）。B1b 全卡 rebase 后开 PR。
+- **B1b 全卡落地**：p2b commit 571208c（prediction+backtest **385 OK**，gates 绿，commands.md 再生）；rebase 3 commits（journal union×2）；push 首次瞬断（curl 7，已知路径现象）→ ls-remote 确认远端无分支 → 重试成功 → **PR #212**（19d96e9）。
+- **Wave 1 代码卡全部完成**。剩地板 PR：#212 合并后读 CI 实测 Ran N（measured−4 惯例，注释写明测量来源）。之后 owner-gated：DR1-7 → B3 → H1/H2 → STK-10 → P1 → CMP → R1 → S1。
+- DR 执行脚本已备好（**未执行**，待 owner 批准）：tmp/dr1_sync_csi1000.sh（DR1-3 年分块 + 连续性 + 官方基准）、tmp/dr6_namechange_reconcile.sh（DR6 全史 + 对账，diff 非零退出）。bash -n 通过。
+- P1 预登记草稿已备（tmp/prereg_draft_csi500_vs_csi1000.md，**未注册**）：4+2 臂/5 起点/7 折/v3/next_day_open/§6 修订/并存条款/触发/盲区/D1-D10（D7 更正 2020-12）/JSON manifest。O3/O4/O5 待 owner 签署。H2 设计细化已写入计划卡。

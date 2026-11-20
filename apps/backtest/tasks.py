@@ -1341,6 +1341,8 @@ def _reference_metadata_subset(metadata):
         'schema_version',
         'effective_universe_policy',
         'universe_version',
+        'pit_index_codes',
+        'pit_benchmark_code',
         'label_definition',
         'data_snapshot_version',
         'code_version',
