@@ -191,3 +191,4 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **C2 合并** #211 → a2555f7（**12 PR 合并**）。B1b 全卡 rebase 后开 PR。
 - **B1b 全卡落地**：p2b commit 571208c（prediction+backtest **385 OK**，gates 绿，commands.md 再生）；rebase 3 commits（journal union×2）；push 首次瞬断（curl 7，已知路径现象）→ ls-remote 确认远端无分支 → 重试成功 → **PR #212**（19d96e9）。
 - **Wave 1 代码卡全部完成**。剩地板 PR：#212 合并后读 CI 实测 Ran N（measured−4 惯例，注释写明测量来源）。之后 owner-gated：DR1-7 → B3 → H1/H2 → STK-10 → P1 → CMP → R1 → S1。
+- DR 执行脚本已备好（**未执行**，待 owner 批准）：tmp/dr1_sync_csi1000.sh（DR1-3 年分块 + 连续性 + 官方基准）、tmp/dr6_namechange_reconcile.sh（DR6 全史 + 对账，diff 非零退出）。bash -n 通过。
