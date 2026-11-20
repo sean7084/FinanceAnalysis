@@ -117,6 +117,7 @@ BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES = _int_env('BACKTEST_MATRIX_SIGNAL_CACH
 
 _TRADING_DATES_CACHE = OrderedDict()
 _PRICE_MAP_CACHE = OrderedDict()
+_DETAIL_MAP_CACHE = OrderedDict()
 _MATRIX_SIGNAL_CACHE = OrderedDict()
 
 LIGHTGBM_RUNTIME_FLOAT_FIELDS = (
@@ -170,6 +171,7 @@ def clear_backtest_process_caches():
     """
     _TRADING_DATES_CACHE.clear()
     _PRICE_MAP_CACHE.clear()
+    _DETAIL_MAP_CACHE.clear()
     _MATRIX_SIGNAL_CACHE.clear()
 
 
@@ -595,6 +597,33 @@ def _build_price_map(start_date, end_date):
     rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list('asset_id', 'date', 'close')
     price_map = {(asset_id, dt): _d(close) for asset_id, dt, close in rows}
     return _bounded_cache_set(_PRICE_MAP_CACHE, cache_key, price_map, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
+
+
+def _build_ohlcv_detail_map(start_date, end_date):
+    """Per-(asset, date) open / close / raw_close / adj_factor for execution realism (A4).
+
+    Kept separate from _build_price_map so the scalar-close consumers are
+    untouched. raw_open reconstructs as open * raw_close / close (the same-row
+    adjustment factor cancels, exact across ex-div days because the previous
+    raw close comes from the previous row). Legacy rows without raw_close yield
+    None so callers fall back to the adjusted series rather than invent prices.
+    """
+    cache_key = (start_date.isoformat(), end_date.isoformat(), _ohlcv_range_signature(start_date, end_date))
+    cached = _bounded_cache_get(_DETAIL_MAP_CACHE, cache_key)
+    if cached is not None:
+        return cached
+    rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list(
+        'asset_id', 'date', 'open', 'close', 'raw_close', 'adj_factor',
+    )
+    detail_map = {}
+    for asset_id, dt, open_, close, raw_close, adj_factor in rows:
+        detail_map[(asset_id, dt)] = {
+            'open': _d(open_) if open_ is not None else None,
+            'close': _d(close) if close is not None else None,
+            'raw_close': _d(raw_close) if raw_close is not None else None,
+            'adj_factor': _d(adj_factor) if adj_factor is not None else None,
+        }
+    return _bounded_cache_set(_DETAIL_MAP_CACHE, cache_key, detail_map, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
 
 
 def _eligible_backtest_asset_ids(dt, cache):

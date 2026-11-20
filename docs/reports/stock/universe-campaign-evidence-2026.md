@@ -122,6 +122,10 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 分支 feat/backtest-execution-realism 已切（从 8b29845）。读引擎：price_map(:589) 标量 close、_close_positions_for_date(:2006)、_open_positions_for_date(:2085)、主循环(:2491+)。
 - 机制推导已写入计划 A4 卡（并行 detail map / pending_entry+pending_exit 进 runtime_state / session 开头成交处理 / 锁死重试≤3 / is_st 占位待 B2 / legacy 逐字节不变）。
 - 待实现（下一上下文窗口按计划卡执行）。B1 #207 CI 绿后合并（预授权）。
+- **B1 合并**：#207 CI 双绿 → --admin 合并（main 前进）。CI 判读修正：in-progress conclusion 是空串非 null，jq 须 `if . == null or . == "" then "running"`。
+- **A4 part 1（增量，已测未开 PR）**：limit_pct_for is_st kwarg（as-of 覆写，主板 ST 5% / ChiNext/STAR ST 保持板限）；_build_ohlcv_detail_map（open/close/raw_close/adj_factor，独立缓存，raw_open=open×raw_close/close，legacy null→None）+ clear 纳入；serializer execution_model 校验（same_day_close 默认 / next_day_open / 非法拒）。
+  测试 apps/backtest/tests_execution.py 8 个 + 既有 price_limits；backtest+price_limits **135 OK**（fixture 补 adj_close 非空）。
+- **A4 part 2 待做**：pending_entry/pending_exit 进 runtime_state + session 开头成交处理 + 锁死重试 + 停牌 + legacy 不变测试 + provenance（机制见计划 A4 卡）。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
