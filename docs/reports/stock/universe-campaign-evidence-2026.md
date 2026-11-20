@@ -253,3 +253,9 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **DR5 成功**：1089 repair windows 全处理；复测 DR4 **missing OHLCV entirely=0**（ex-board 1955 全覆盖）。late_start=386 为 2016 后上市股（合法晚上市，非缺口；entry-warmup 处理技术指标初始化）。
 - **DR6 启动**（task b5dko57a8）：sync_asset_namechanges 2009+ 12月窗 + reconcile_st_history（diff 非零退出=B3 门）。watchdog 伴跑。
 - 下一步：DR6 报告归档（diff=0/全解释/|ΔIC|<0.01）→ DR7 pass1（PIT 序列）→ B3（ST 启用，门控 DR6）→ DR7 pass2（EXBOARD_ST）→ STK-10 + P1 哈希 → CMP。
+
+### DR6 完成 + B3 门通过 + DR7 pass1 启动（2026-11-20）
+- **DR6**：namechange 5335 行存储，0 隔离，2908 资产，916 区间。对账 diff：missing=0，extra=113。
+- **diff 全解释**（归档 st-reconciliation-2026-11-20.md，commit 0632a7b）：112 为退市(退)股（D5 标退市整理期为 ST-state，is_st_name 不标退后缀；退市股由成员资格排除）；1 为 000972.SZ Asset.name 滞后（namechange 示 2026-11-04 起 *ST中基，区间正确，当前名 stale）。missing=0 无盲区，无需两变体敏感性。**B3 门通过**。
+- **DR7 pass1 启动**（task b7y270tdl）：年分块建 CSI500_PIT/CSI500_PIT_EXBOARD/CSI1000_PIT_EXBOARD（ST 仍 False，EXBOARD 正确）。**B3 翻转须待 DR7 pass1 完成**（年分块重导入工作树代码）。
+- 下一步：DR7 pass1 完成 → B3（翻 ST_LAYER_ENABLED=True + CSI1000 EXBOARD_ST spec + 测试）→ DR7 pass2 → STK-10 + P1 哈希 → CMP。
