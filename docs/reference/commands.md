@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-20T04:08:16Z_
+_Generated: 2026-11-20T04:25:06Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**60** project commands across **9** apps.
+**61** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -834,6 +834,17 @@ Sync CSI 500 index constituents, persist membership history, refresh current tag
 | `--skip-sync-dispatch` | flag | `False` |  | Persist membership/tags only and skip dispatching sync_asset_history tasks. |
 | `--force-floor-backfill` | flag | `False` |  | Dispatch sync_asset_history with force_floor_backfill=True. |
 | `--dispatch-changed-assets-only` | flag | `False` |  | Dispatch only assets whose current CSI 500 membership changed. |
+
+
+### `verify_index_membership_continuity`
+
+Verify per-snapshot row counts and month continuity for an index membership history.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--index-code` | value | `000852.SH` |  |  |
+| `--start-date` | value | `""` |  | YYYY-MM-DD; default: the index history floor. |
+| `--end-date` | value | `""` |  | YYYY-MM-DD; default: the last stored snapshot. |
 
 
 ## `apps.prediction`
