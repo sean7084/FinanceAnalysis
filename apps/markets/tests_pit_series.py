@@ -80,3 +80,28 @@ class DualPitSeriesTests(TestCase):
         from apps.backtest.comparison import BENCHMARK_SERIES_SPECS
         codes = {spec['code'] for spec in BENCHMARK_SERIES_SPECS}
         self.assertEqual(codes, {'000905.SH', '000852.SH'})
+
+    def test_build_command_flags_reach_refresh(self):
+        from django.core.management import call_command
+        with patch('apps.markets.management.commands.build_pit_union_benchmark.refresh_point_in_time_union_benchmark') as refresh:
+            refresh.return_value = {'benchmark_code': 'CSI1000_PIT_EXBOARD', 'rows_written': 0, 'start_date': '2020-01-02', 'end_date': '2020-01-03'}
+            call_command(
+                'build_pit_union_benchmark',
+                '--start-date', '2020-01-02', '--end-date', '2020-01-03',
+                '--index-codes', '000852.SH', '--policy', 'default',
+                '--benchmark-code', 'CSI1000_PIT_EXBOARD',
+            )
+        kwargs = refresh.call_args.kwargs
+        self.assertEqual(kwargs['index_codes'], ['000852.SH'])
+        self.assertEqual(kwargs['policy'], 'default')
+        self.assertEqual(kwargs['benchmark_code'], 'CSI1000_PIT_EXBOARD')
+
+    def test_build_command_defaults_are_none(self):
+        from django.core.management import call_command
+        with patch('apps.markets.management.commands.build_pit_union_benchmark.refresh_point_in_time_union_benchmark') as refresh:
+            refresh.return_value = {'benchmark_code': 'CSI500_PIT_EXBOARD', 'rows_written': 0, 'start_date': '2020-01-02', 'end_date': '2020-01-03'}
+            call_command('build_pit_union_benchmark', '--start-date', '2020-01-02', '--end-date', '2020-01-03')
+        kwargs = refresh.call_args.kwargs
+        self.assertIsNone(kwargs['index_codes'])
+        self.assertIsNone(kwargs['policy'])
+        self.assertIsNone(kwargs['benchmark_code'])

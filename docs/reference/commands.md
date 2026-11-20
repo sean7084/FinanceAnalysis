@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-20T06:03:00Z_
+_Generated: 2026-11-20T06:20:14Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -741,13 +741,16 @@ Backfill official exchange trading calendar data from TuShare trade_cal.
 
 ### `build_pit_union_benchmark`
 
-Build or refresh the internal point-in-time CSI 500 benchmark.
+Build or refresh a point-in-time union benchmark series (index / policy / code selectable).
 
 | Option | Takes | Default | Required | Help |
 | --- | --- | --- | --- | --- |
 | `--start-date` | value | &mdash; | yes | Inclusive start date (YYYY-MM-DD). |
 | `--end-date` | value | &mdash; | yes | Inclusive end date (YYYY-MM-DD). |
 | `--initial-nav` | value | `100000` |  | Initial NAV used for the first benchmark row. |
+| `--index-codes` | value | &mdash; |  | Comma-separated PIT index codes (default: serving default). |
+| `--policy` | value | &mdash; |  | Universe policy: default / research_full / research_cap (default: serving default). |
+| `--benchmark-code` | value | &mdash; |  | Explicit benchmark series code (default: derived from index codes + policy). |
 
 
 ### `onboard_csi500_universe`

@@ -7,12 +7,15 @@ from apps.markets.benchmarking import refresh_point_in_time_union_benchmark
 
 
 class Command(BaseCommand):
-    help = 'Build or refresh the internal point-in-time CSI 500 benchmark.'
+    help = 'Build or refresh a point-in-time union benchmark series (index / policy / code selectable).'
 
     def add_arguments(self, parser):
         parser.add_argument('--start-date', required=True, help='Inclusive start date (YYYY-MM-DD).')
         parser.add_argument('--end-date', required=True, help='Inclusive end date (YYYY-MM-DD).')
         parser.add_argument('--initial-nav', default='100000', help='Initial NAV used for the first benchmark row.')
+        parser.add_argument('--index-codes', default=None, help='Comma-separated PIT index codes (default: serving default).')
+        parser.add_argument('--policy', default=None, help='Universe policy: default / research_full / research_cap (default: serving default).')
+        parser.add_argument('--benchmark-code', default=None, help='Explicit benchmark series code (default: derived from index codes + policy).')
 
     def _parse_date(self, value, name):
         try:
@@ -26,10 +29,17 @@ class Command(BaseCommand):
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
 
+        index_codes = (
+            [code.strip() for code in options['index_codes'].split(',') if code.strip()]
+            if options['index_codes'] else None
+        )
         summary = refresh_point_in_time_union_benchmark(
             start_date=start_date,
             end_date=end_date,
             initial_nav=Decimal(str(options['initial_nav'])),
+            index_codes=index_codes,
+            policy=options['policy'] or None,
+            benchmark_code=options['benchmark_code'] or None,
         )
         self.stdout.write(
             self.style.SUCCESS(
