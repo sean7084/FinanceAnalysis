@@ -197,3 +197,5 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - DR 执行脚本已备好（**未执行**，待 owner 批准）：tmp/dr1_sync_csi1000.sh（DR1-3 年分块 + 连续性 + 官方基准）、tmp/dr6_namechange_reconcile.sh（DR6 全史 + 对账，diff 非零退出）。bash -n 通过。
 - P1 预登记草稿已备（tmp/prereg_draft_csi500_vs_csi1000.md，**未注册**）：4+2 臂/5 起点/7 折/v3/next_day_open/§6 修订/并存条款/触发/盲区/D1-D10（D7 更正 2020-12）/JSON manifest。O3/O4/O5 待 owner 签署。H2 设计细化已写入计划卡。
 - **H2 part 1（stock ledger）**：apps/prediction/evidence.py 复用 ETF digest/measurement_id 单实现 + 独立 stock 路径（STOCK_EVIDENCE_PATH 测试覆写）+ record/read/context_repeats。5 测试 OK，ruff 绿。分支 feat/stock-walk-forward。
+- **H2 part 2（fold plan）**：apps/prediction/walk_forward.py 包装 ETF expanding_folds（训练恒从 STOCK_TRAINING_START，min_train=panel_start session 索引，7 折，30 tail，purge 经 train_dates_for_fold）。4 测试 OK（7 折/验证从 panel_start/purge/非 session 与不足 250 报错）。
+- H2 剩余：run_stock_walk_forward 命令（prereg JSON manifest 门控）+ 矩阵缓存（D7 key）+ 向量化模拟器（D10）+ 对账 + 测试。设计在计划 H2 卡。
