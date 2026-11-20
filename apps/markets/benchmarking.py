@@ -75,6 +75,17 @@ def pit_benchmark_code_for(index_codes=None, policy=None, st_layer=None):
     return base + suffix
 
 
+#: Daily-maintained PIT benchmark series (C2): (index_codes, policy, benchmark_code).
+#: None policy/code resolves to the serving default. The legacy full series is kept
+#: for historical continuity; the executable default series serves the ex-board
+#: universe (B1). EXBOARD_ST joins after B3 enables the ST layer; Wave 5 adjusts
+#: the specs per the comparison verdict (replace / coexist).
+ACTIVE_PIT_BENCHMARK_SPECS = (
+    (('000905.SH',), POLICY_RESEARCH_FULL, 'CSI500_PIT'),
+    (('000905.SH',), None, None),
+)
+
+
 class PITMembershipCoverageError(ValueError):
     pass
 

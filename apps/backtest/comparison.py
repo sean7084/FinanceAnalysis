@@ -21,6 +21,7 @@ DECIMAL_0 = Decimal('0')
 DECIMAL_1 = Decimal('1')
 BENCHMARK_SERIES_SPECS = (
     {'code': '000905.SH', 'key': 'csi500', 'label': 'CSI 500'},
+    {'code': '000852.SH', 'key': 'csi1000', 'label': 'CSI 1000'},
 )
 
 

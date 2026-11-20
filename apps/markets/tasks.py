@@ -15,7 +15,7 @@ from apps.analytics.indicator_warmup import technical_indicator_warmup_prefill_s
 from apps.analytics.tasks import calculate_indicators_for_all_assets, calculate_signals_for_all_assets
 from apps.core.date_floor import get_historical_data_floor
 from apps.factors.tasks import calculate_factor_scores_for_date, sync_daily_capital_flow_snapshots
-from .benchmarking import refresh_latest_point_in_time_union_benchmark
+from .benchmarking import ACTIVE_PIT_BENCHMARK_SPECS, refresh_latest_point_in_time_union_benchmark
 
 from .models import Asset, AssetSuspension, BenchmarkIndexDaily, ExchangeTradingCalendar, IndexMembership, OHLCV, Market
 
@@ -1309,7 +1309,14 @@ def run_post_sync_universal_refresh(sync_results=None, target_date=None):
     daily predictions silently stuck on the last successful date.
     """
     as_of = _resolve_target_date(target_date)
-    pit_benchmark_result = refresh_latest_point_in_time_union_benchmark(target_date=as_of.isoformat())
+    pit_benchmark_results = []
+    for spec_index_codes, spec_policy, spec_code in ACTIVE_PIT_BENCHMARK_SPECS:
+        pit_benchmark_results.append(refresh_latest_point_in_time_union_benchmark(
+            target_date=as_of.isoformat(),
+            index_codes=spec_index_codes,
+            policy=spec_policy,
+            benchmark_code=spec_code,
+        ))
     capital_flow_result = sync_daily_capital_flow_snapshots(target_date=as_of.isoformat())
     factor_result = calculate_factor_scores_for_date(target_date=as_of.isoformat())
     technical_indicator_result = calculate_indicators_for_all_assets()
@@ -1317,7 +1324,7 @@ def run_post_sync_universal_refresh(sync_results=None, target_date=None):
     synced_assets = len(sync_results or [])
     return (
         f"Post-sync refresh queued for {as_of}: synced_assets={synced_assets}; "
-        f"pit_benchmark={pit_benchmark_result}; capital_flow={capital_flow_result}; "
+        f"pit_benchmark={pit_benchmark_results}; capital_flow={capital_flow_result}; "
         f"factor_scores={factor_result}; technical_indicators={technical_indicator_result}; signals={signal_result}"
     )
 
