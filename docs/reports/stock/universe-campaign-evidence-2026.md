@@ -21,4 +21,53 @@
 - 存储 campaign：PR **#188** 已合并（b16a1ed）——param_key 唯一性 + SMA-60 + DQ variant key；CHANGELOG 记录 remaining_null=0、dup 0 groups、0016–0018 applied、VACUUM FULL 48 min、132.46→51.2 GiB（B 后 54.9）、速度偏差诚实记录、全套件 1316 OK、地板 1306→1316。
 - G 门：G1–G6 ✅（上条证据）；G7 WSL clone ✅ / Windows clone 待数据运行前核；G8 stack ✅ / 全套件后台跑（`tmp/w0_baseline_suite.log`）。
 
-待补：基线套件结果；Windows clone 状态。
+待补：Windows clone 状态（数据运行前）。
+
+## 2026-11-20 — W0-2 BACKLOG 卫生 PR
+
+- 基线全套件：**Ran 1316 tests in 119.733s, OK**（G8 ✅）。
+- gates：reference 0 failures + self-test 双控通过；verbatim 0 paraphrases / 1239 lines + probe（original True / perturbed False）。
+- commit eb1c456 → **PR #191**（docs/backlog-index-issue-state）：closed 行移除（M1 #140/#141/#143、M3 #151/#152/#153/#155/#156/#161、Owner #149）、过期断言修正、#183–#187/#189 补录、campaign Current state 行 + 本日志。archive 未动。
+
+## 2026-11-20 — W0-3 立项（去重后）
+
+issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 残余 / **#196** UNI-01..04 /
+**#197** UNI-05+STK-11+板块默认-disable 开关 / **#198** STK-12 ST 层 / **#199** 股票 walk-forward / **#200** UNI-V2A（2027-07-01）。
+评论：#146（A3 整体覆盖）/ #145（B1 写入侧）/ #144（前提已假，余项 A6；30d icir 0.250<0.3）。
+
+## 2026-11-20 — W0-4 STK-03 审计（只读）
+
+- MarketContext.macro_phase 源分布：**RECOVERY 178 / OVERHEAT 20 / STAGFLATION 9 / RECESSION 1**（4 distinct；RECESSION 2025-04；OVERHEAT 至 2023-02，STAGFLATION 至 2022-07）。
+  ⚠️ 这是源分布，**训练面板是否常数取决于 join 路径**（tasks_lightgbm 默认填充 1.0 的疑点）——代码核实中，结论补记。
+- MacroSnapshot：202 行，cn10y/cn3y 各 5 NULL，both_nonnull 197；slope mean 0.40401 / **variance 0.04679849** / min 0.038 / max 1.2229；latest yield **2026-06-01**。
+  yield_curve 历史有方差但 **#183 权限持续丢失 ⇒ 按预决必删**（live 不可算，train/serve 分歧）。
+- northbound_flow ≡ 0.5 by construction（:1009/:1752/:1772），交互项 = 0.5×mom_5d 精确线性冗余 ⇒ 无条件删。
+
+## 2026-11-20 — W0-6 namechange 探针（2 次只读调用）
+
+- 按个股全史：000001.SZ 1 行（2012 更名平安银行，reason 其他）；字段 ts_code/name/start_date/end_date/ann_date/change_reason ✓。
+- 按日期窗（20230420..20230430）：**90 行**；ST/*ST/退市整理期/从ST变为*ST reason 齐全；**ann_date > start_date 行数 = 0**（前视安全再确认）。
+- **B2 同步设计输入**：日期窗参数按 **ann_date** 过滤（样本行 ann_date 在窗内、start_date 在其后）⇒ 同步按 ann_date 分窗拉取，as-of 解析用 start_date；
+  市场-wide 稀疏（~8 行/日）⇒ 12 月窗 ≈3k 行 < 7000，全史 2009+ ≈17-34 次调用（远少于逐股 ~1900 次）；满页 bisect 仍作安全网。
+
+## 2026-11-20 — W0-2 合并 + W0-4b 裁决 + W0-5 补测
+
+- **PR #191 合并**（584e7b9，CI 双绿，预授权 --admin）。本地 main 曾滞后致 switch 拒绝（日志增量在工作区）；`git branch -f main origin/main` 后切换，增量带入下一 PR。
+- **W0-4b（训练精确过滤 context_key=current, is_active=True）**：201 active 月度历史行；post-2016-06 **124 行 / 4 phases**
+  （OVERHEAT 2017-09/2020-11/2023-02；STAGFLATION 2019-05..10/2020-02/2022-07；RECESSION 2025-04）⇒ **macro_phase 非常数，保留**（含两交互项），D9 接 release_lag。
+  W0-4 无过滤查询（178/20/9/1）是错误总体，以此条为准。context 历史缺 2026-07/08（#171 相关），merge_asof 从 2026-06 填充——记录，非阻塞。
+- **A5 终版特征决定：36 − 3 = 33**（删 northbound_flow / northbound_flow_x_mom_5d / yield_curve；保留 macro_phase+2 交互 / pmi×2）。已评论 #195。
+- **W0-5 UNI-06**（~27 次 TuShare 调用，tmp/w05_uni06.py）：两指数 2017-01..2025-12 **missing months: NONE**；
+  CSI1000 6 月窗恒 6000 行（月快照×1000，无截断）；CSI500 12 月窗无满页。表：tmp/uni06_board_shares.md。
+  **2019-07/08/09 两指数科创板成分均 0**（开板 ≠ 入指）⇒ D7 断点 = 首次科创成分快照（定位中），不是 2019-07-22。
+  CSI500 不可交易权重 2019 年仅 ~7.3%（36 只创业板）→ 2026-10 34.50%，漂移证实。
+- **待 owner**：KB spec §2.1 追加 UNI-06 表 + D7 日期更正（2019-07→2020-12）[PW]。
+- **D7 断点定位**：两指数首次科创成分快照均 **20201231**（CSI500 5 只/1.24%；CSI1000 19 只/2.12%）；2019-07..2020-11 恒 0。
+  计划正文 D7 已更正。#195 评论已发（特征决定 33 列）。
+
+## 2026-11-20 — A1（STK-04，#192）实施
+
+- 分支 feat/backtest-date-contract-enforcement。双守卫：serializer.validate() + run_backtest 任务入口（命令直建 run 绕过 serializer ⇒ 任务守卫是承重墙）；
+  override = parameters.allow_pre_contract_history（布尔校验）+ 四命令 --allow-pre-contract-history（fail-fast，reference suite 透传，rerun 亦继承源 run）。
+- 验证：新测试 **9 OK**；apps.backtest 全套件 **96 OK**（无既有 fixture 破坏）；apps.core.tests_date_contract **24 OK**；ruff 通过。
+- mutation 证明：删除任务守卫 ⇒ 拒绝测试须挂（控制输出 tmp/a1_mutation.log，rc 非零为通过）；落地记录见 PR body 与 CI 时间线。

@@ -24,6 +24,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.backtest.models import BacktestRun
 from apps.backtest.tasks import run_backtest
+from apps.core.date_contract import ASSET_STOCKS, STAGE_BACKTEST, enforce_date_contract
 
 
 def _parse_date(value, name):
@@ -49,6 +50,7 @@ class Command(BaseCommand):
         parser.add_argument('--min-up-probability', type=float, default=0.0, help='Minimum up probability threshold.')
         parser.add_argument('--name-prefix', default='validation', help='Prefix used for BacktestRun names.')
         parser.add_argument('--queue', action='store_true', help='Queue runs asynchronously instead of running inline.')
+        parser.add_argument('--allow-pre-contract-history', action='store_true', help='Research-only: permit windows before STOCK_BACKTEST_START (recorded in parameters).')
 
     def _build_windows(self, start_date, end_date, window_days, step_days):
         windows = []
@@ -65,6 +67,13 @@ class Command(BaseCommand):
         end_date = _parse_date(options['end_date'], 'end-date')
         if end_date < start_date:
             raise CommandError('end-date must be on or after start-date.')
+
+        enforce_date_contract(
+            asset_class=ASSET_STOCKS,
+            stage=STAGE_BACKTEST,
+            requested_start=start_date,
+            allow_pre_contract=options['allow_pre_contract_history'],
+        )
 
         window_days = options['window_days']
         step_days = options['step_days']
@@ -108,6 +117,7 @@ class Command(BaseCommand):
                         'prediction_source': source,
                         'holding_period_days': options['holding_period_days'],
                         'capital_fraction_per_entry': options['capital_fraction_per_entry'],
+                        'allow_pre_contract_history': options['allow_pre_contract_history'],
                     },
                 )
 

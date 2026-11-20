@@ -23,6 +23,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.backtest.models import BacktestRun
 from apps.backtest.tasks import run_backtest
+from apps.core.date_contract import ASSET_STOCKS, STAGE_BACKTEST, enforce_date_contract
 
 
 def _parse_run_ids(raw_value):
@@ -97,6 +98,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Queue reruns asynchronously instead of executing them inline.',
         )
+        parser.add_argument(
+            '--allow-pre-contract-history',
+            action='store_true',
+            help='Research-only: permit cloned windows before STOCK_BACKTEST_START (recorded in parameters).',
+        )
 
     def handle(self, *args, **options):
         source_run_ids = _parse_run_ids(options['run_ids'])
@@ -105,6 +111,17 @@ class Command(BaseCommand):
         missing_ids = [run_id for run_id in source_run_ids if run_id not in source_run_map]
         if missing_ids:
             raise CommandError(f'Backtest runs not found: {missing_ids}')
+
+        for source_run in source_runs:
+            enforce_date_contract(
+                asset_class=ASSET_STOCKS,
+                stage=STAGE_BACKTEST,
+                requested_start=source_run.start_date,
+                allow_pre_contract=(
+                    options['allow_pre_contract_history']
+                    or bool((source_run.parameters or {}).get('allow_pre_contract_history', False))
+                ),
+            )
 
         name_suffix = str(options['name_suffix'] or '').strip()
         if not name_suffix:
@@ -117,6 +134,8 @@ class Command(BaseCommand):
             source_run = source_run_map[source_run_id]
             cloned_parameters = deepcopy(source_run.parameters or {})
             cloned_parameters['compare_backtest_run_id'] = source_run.id
+            if options['allow_pre_contract_history']:
+                cloned_parameters['allow_pre_contract_history'] = True
 
             cloned_run = BacktestRun.objects.create(
                 name=f'{source_run.name} [{name_suffix}]',

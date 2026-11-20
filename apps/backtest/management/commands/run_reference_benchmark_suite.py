@@ -44,6 +44,7 @@ class Command(BaseCommand):
         parser.add_argument('--min-up-probability', type=float, default=0.0, help='Minimum up probability threshold.')
         parser.add_argument('--name-prefix', default='validation', help='Prefix used for BacktestRun names.')
         parser.add_argument('--queue', action='store_true', help='Queue runs asynchronously instead of running inline.')
+        parser.add_argument('--allow-pre-contract-history', action='store_true', help='Research-only: permit windows before STOCK_BACKTEST_START (forwarded to run_validation_backtests).')
         parser.add_argument('--output-dir', default='', help='Optional report output directory. Defaults to reports/<suite-name>.')
         parser.add_argument('--suite-name', default='', help='Optional suite name used for the output directory and manifest.')
         parser.add_argument(
@@ -73,6 +74,7 @@ class Command(BaseCommand):
             min_up_probability=options['min_up_probability'],
             name_prefix=run_name_prefix,
             queue=options['queue'],
+            allow_pre_contract_history=options['allow_pre_contract_history'],
             stdout=self.stdout,
         )
 

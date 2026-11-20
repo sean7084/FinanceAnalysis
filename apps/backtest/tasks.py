@@ -50,6 +50,12 @@ from django.db import connections, models, transaction
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
+from apps.core.date_contract import (
+    ASSET_STOCKS,
+    STAGE_BACKTEST,
+    ContractBoundaryError,
+    enforce_date_contract,
+)
 from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_asset_ids
 from apps.markets.models import OHLCV
@@ -2433,6 +2439,19 @@ def run_backtest(self, backtest_run_id):
 
     if early_update_fields:
         run.save(update_fields=[*early_update_fields, 'updated_at'])
+
+    try:
+        enforce_date_contract(
+            asset_class=ASSET_STOCKS,
+            stage=STAGE_BACKTEST,
+            requested_start=run.start_date,
+            allow_pre_contract=bool((run.parameters or {}).get('allow_pre_contract_history', False)),
+        )
+    except ContractBoundaryError as exc:
+        run.status = BacktestRun.Status.FAILED
+        run.error_message = str(exc)
+        run.save(update_fields=['status', 'error_message', 'updated_at'])
+        return f'Backtest run {run.id} refused by the date contract: {exc}'
 
     runtime_state = _load_runtime_state(run)
     if runtime_state is None:
