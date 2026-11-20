@@ -218,3 +218,9 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **H2 代码完成（parts 1-9）**：ledger/fold plan/prereg gating/cache key/simulator primitives+loop/arm masks/编排核心+命令/引擎对账。feat/stock-walk-forward push 48b1a12，base=main f88d6b7（0 behind），无开放 PR。
 - 落地：land-pr dry-run 跑全 8 gate+全套件验证中；H2 PR 不改地板（CI discovered>1498 即绿），地板按 plan 另起 PR 从 CI 实测 Ran N 设 N−4、每波最后合。
 - campaign 实跑仍门控 DR1-7 + P1 签署（owner）。
+
+### 2026-11-20 H2 落地
+- 全 8 gate rc=0（doccheck/makemigrations/djangocheck/archive 0 paraphrase/backlog 0 failure/lockfile/pindrift/ruff）。
+- 全套件 --noinput（CI 同式）：**Ran 1577 tests in 118.772s OK**（实测 1577，committed floor 1498，H2 +79 测试）。
+- **PR #216  opened**（feat/stock-walk-forward → main，body-file，无反引号）；CI 经 run API watch_ci.sh 监控中（含 false control）。
+- 地板：H2 PR 不改地板（1498<1577 CI 绿）；合并后另起地板 PR 从 CI 实测 Ran N 设 N−4（预期 1573），每波最后合。
