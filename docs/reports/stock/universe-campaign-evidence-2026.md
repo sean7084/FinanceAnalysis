@@ -96,3 +96,10 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
   训练调用点 ModelVersion.metrics 补 holdout_start/purge_sessions（artifact 已有）。
 - 测试 4 个（render×3 + register×1）+ mutation + models.md 再生（live registry 只读）；落地见 PR。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
+
+## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
+
+- 分支 feat/feature-schema-v3。v3 schema = TRAINING_BASE_FEATURES_V3(30) + 3 交互 = **33**；删 northbound_flow / northbound_flow_x_mom_5d / yield_curve；macro_phase 保留（W0-4b 非常数）。
+- **设计细化（记录）**：extractor 保留 legacy keys（northbound/yield_curve）——生产 v2 fleet 按工件 feature_names 取特征，删 extractor 键会断 v2 服务；只从训练选择侧删列。满足计划的 v2 兼容测试。
+- STK-08：_prepare_macro_dataframe 按 release_lag 平移（PMI 1d / yield 2d）+ 单日推理同 lag 过滤。v2 工件在月界有 ≤2 天取值偏移（caveat，Wave-5 重训替换）。
+- engineered_feature_version v2→v3。测试 7 个 + mutation + 落地见 PR。

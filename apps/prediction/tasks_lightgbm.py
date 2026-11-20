@@ -30,7 +30,7 @@ except ImportError:
 from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_assets, ensure_pit_membership_coverage, point_in_time_union_asset_ids_by_dates
 from apps.markets.models import Asset, OHLCV
-from apps.macro.models import MacroSnapshot, MarketContext
+from apps.macro.models import MacroSnapshot, MarketContext, release_lag_days
 from apps.analytics.indicator_params import canonical_param_key
 from apps.analytics.models import TechnicalIndicator
 from apps.analytics.technical_staleness import (
@@ -438,12 +438,28 @@ def _exact_window_valid_mask(trade_positions, periods):
     )
 
 
+#: v3 training schema (2026-11-20, campaign A5 / #195). northbound_flow (constant
+#: 0.5 by construction) and yield_curve (yc_cb entitlement lost since 2026-09,
+#: #183) are removed; macro_phase stays — measured non-constant on the training
+#: panel (124 post-2016 rows, 4 phases). The single-asset extractor still produces
+#: the legacy keys so v2 artifacts keep serving until the Wave-5 retrain.
+TRAINING_BASE_FEATURES_V3 = (
+    'rsi', 'mom_5d', 'rs_score',
+    'rsi_lag_3d', 'rsi_delta_3d', 'mom_5d_delta_3d', 'rs_score_delta_3d',
+    'rsi_lag_5d', 'rsi_delta_5d', 'mom_5d_delta_5d', 'rs_score_delta_5d',
+    'rsi_lag_10d', 'rsi_delta_10d', 'mom_5d_delta_10d', 'rs_score_delta_10d',
+    'return_3d', 'return_5d', 'return_10d',
+    'relative_volume_5d', 'relative_volume_20d', 'realized_volatility_5d',
+    'pe_ttm_percentile', 'pb_percentile', 'roe_trend',
+    'main_force_flow', 'margin_flow', 'factor_composite',
+    'macro_phase', 'pmi_manufacturing', 'pmi_non_manufacturing',
+)
 INTERACTION_FEATURE_SPECS = (
     ('rsi_x_relative_volume_5d', 'rsi', 'relative_volume_5d'),
     ('rsi_x_macro_phase', 'rsi', 'macro_phase'),
     # 'factor_composite_x_sentiment' was here until the news module was decommissioned
-    # (#52). Its left operand still exists; its right one was the dead feature.
-    ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
+    # (#52); 'northbound_flow_x_mom_5d' until A5 — it was 0.5 * mom_5d, an exact
+    # linear redundancy of mom_5d, not an interaction.
     ('pe_ttm_percentile_x_macro_phase', 'pe_ttm_percentile', 'macro_phase'),
 )
 LEGACY_PREDICTION_FEATURE_ALIASES = {
@@ -1014,6 +1030,8 @@ def _extract_features_for_asset(
         )
         if factor else _default_numeric(0.5, missing_value_strategy, preserve_missing=True)
     )
+    # Legacy v2 artifact compatibility (A5): excluded from the v3 training schema,
+    # still extracted so serving v2 artifacts sees the constant they trained with.
     features['northbound_flow'] = 0.5
     features['main_force_flow'] = (
         _safe_float(
@@ -1047,7 +1065,7 @@ def _extract_features_for_asset(
     current_context = MarketContext.objects.filter(
         context_key='current',
         is_active=True,
-        starts_at__lte=as_of,
+        starts_at__lte=as_of - timedelta(days=release_lag_days('cn10y_yield')),
     ).order_by('-starts_at').first()
 
     phase_to_int = {'RECOVERY': 1, 'OVERHEAT': 2, 'STAGFLATION': 3, 'RECESSION': 0}
@@ -1061,7 +1079,11 @@ def _extract_features_for_asset(
             preserve_missing=True,
         )
 
-    macro_snap = MacroSnapshot.objects.filter(date__lte=as_of).order_by('-date').first()
+    # Legacy v2 artifact compatibility (A5): yield_curve left the v3 training schema
+    # (yc_cb entitlement lost, #183) but v2 artifacts still list it.
+    macro_snap = MacroSnapshot.objects.filter(
+        date__lte=as_of - timedelta(days=release_lag_days('pmi_manufacturing')),
+    ).order_by('-date').first()
     if macro_snap is None:
         features['pmi_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
         features['pmi_non_manufacturing'] = _default_numeric(50.0, missing_value_strategy, preserve_missing=True)
@@ -1281,6 +1303,15 @@ def _prepare_macro_dataframe(end_date, missing_value_strategy=MISSING_VALUE_STRA
         if not _preserves_true_missing(missing_value_strategy):
             context_df['macro_phase'] = context_df['macro_phase'].fillna(1.0)
         context_df = context_df[['date', 'macro_phase']]
+
+    # STK-08 / A5: month-stamped macro rows were treated as known on the 1st.
+    # Shift each frame by its publication lag before the backward as-of join so
+    # training (and the lag-filtered inference path) see only published values.
+    # Empty frames keep their object-dtype date column; there is nothing to shift.
+    if not macro_df.empty:
+        macro_df['date'] = macro_df['date'] + pd.Timedelta(days=release_lag_days('pmi_manufacturing'))
+    if not context_df.empty:
+        context_df['date'] = context_df['date'] + pd.Timedelta(days=release_lag_days('cn10y_yield'))
 
     return macro_df.sort_values('date'), context_df.sort_values('date')
 
@@ -1861,18 +1892,7 @@ def _create_feature_matrix(
             errors='ignore',
         )
 
-        frames.append(asset_df[[
-            'date', 'asset_id',
-            'rsi', 'mom_5d', 'rs_score',
-            'rsi_lag_3d', 'rsi_delta_3d', 'mom_5d_delta_3d', 'rs_score_delta_3d',
-            'rsi_lag_5d', 'rsi_delta_5d', 'mom_5d_delta_5d', 'rs_score_delta_5d',
-            'rsi_lag_10d', 'rsi_delta_10d', 'mom_5d_delta_10d', 'rs_score_delta_10d',
-            'return_3d', 'return_5d', 'return_10d',
-            'relative_volume_5d', 'relative_volume_20d', 'realized_volatility_5d',
-            'pe_ttm_percentile', 'pb_percentile', 'roe_trend',
-            'northbound_flow', 'main_force_flow', 'margin_flow', 'factor_composite',
-            'macro_phase', 'pmi_manufacturing', 'pmi_non_manufacturing', 'yield_curve',
-        ]])
+        frames.append(asset_df[['date', 'asset_id', *TRAINING_BASE_FEATURES_V3]])
 
     if not frames:
         timer.tick('per-asset masking produced no frames')
@@ -2299,7 +2319,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
 
             model_version = _build_lightgbm_model_version(horizon, training_end, normalized_version_tag)
             artifact_metadata = {
-                'engineered_feature_version': 'v2',
+                'engineered_feature_version': 'v3',
                 'calibration_method': calibration_method,
                 MISSING_VALUE_STRATEGY_METADATA_KEY: missing_value_strategy,
                 'interaction_features': [name for name in selected_feature_names if '_x_' in name],
