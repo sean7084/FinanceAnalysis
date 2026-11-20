@@ -133,6 +133,17 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
   **156 OK**（含 next_day 集成 + cross-chunk final_value 不变）。mutation + 全套件 + 落地见 PR。
 - **A4 落地**：mutation rc=1 ✓；backtest 全套件 **194 OK** ✓；gates 绿；commit 34d7662 → rebase 到 32fb40f（CHANGELOG union A4+B1；脚本 union 失败一次 → 手工 resolve_a4_changelog.py）→ **PR #208**（e8259c3，3 commits）。
 - **Gate A 全卡完成**（A1✅ A2✅ A3✅ A4⏳CI）。剩余 Wave 1：B1b（调用方覆写+provenance）/ B2（ST 层）/ B3（启用门）/ C2（双 PIT）/ 地板 PR。
+
+## 2026-11-20 — B1b part 1（backtest per-run policy）实施
+
+- 分支 feat/backtest-universe-policy（从 3a86e3e；编辑曾误落 B2 分支 → patch 迁移）。
+- parameters.universe_policy/pit_index_codes（serializer 校验）→ candidate_cache 注入（零调用方改动）→ _eligible_backtest_asset_ids（cache key 含 policy+codes）→ report.universe{policy,index_codes,benchmark_code}（#145 读取侧）。
+- 测试 5 个；mutation rc=1（内联 heredoc 引号曾致假 rc=0 → 脚本文件版复验）；backtest 全套件 **199 OK**。
+- part 2 待做：训练/命令 --universe-policy flags + artifact/ModelVersion provenance 写入侧。PR 待 B2 #209 合并后开。
+- **B1b part 1 提交**：4f71fbd（gates 绿：sheets --check / makemigrations / check / ruff）。C2 设计细化已写入计划（日 refresh 维护 legacy full + 默认 ex-board 双系列）。
+- **B2 合并**：#209 CI 双绿 → --admin → main 2ffea20（**10 PR 合并**）。
+- **B1b part 1 落地**：rebase（CHANGELOG union B1b+B2；journal 自动合并）→ **PR #210**（aef0a24）。
+- 下一窗口：C2 实现（设计在计划 C2 卡）→ B1b part 2（训练 flags + provenance）→ 地板 PR（CI 实测 Ran N）→ B3/DR 待 owner。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施

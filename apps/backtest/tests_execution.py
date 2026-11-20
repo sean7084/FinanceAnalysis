@@ -18,7 +18,7 @@ from apps.backtest.tasks import (
     run_backtest,
 )
 from apps.backtest.tests import Phase15BacktestTests
-from apps.markets.models import Asset, Market, OHLCV
+from apps.markets.models import Asset, IndexMembership, Market, OHLCV
 from apps.markets.price_limits import limit_pct_for
 
 
@@ -100,6 +100,60 @@ class ExecutionModelParamTests(TestCase):
         serializer = BacktestRunSerializer(data=self._payload(execution_model='magic'))
         self.assertFalse(serializer.is_valid())
         self.assertIn('parameters', serializer.errors)
+
+    def test_universe_policy_validated(self):
+        serializer = BacktestRunSerializer(data=self._payload(universe_policy='research_full'))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data['parameters']['universe_policy'], 'research_full')
+        bad = BacktestRunSerializer(data=self._payload(universe_policy='nonsense'))
+        self.assertFalse(bad.is_valid())
+
+    def test_pit_index_codes_validated(self):
+        serializer = BacktestRunSerializer(data=self._payload(pit_index_codes=['000852.SH']))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        bad = BacktestRunSerializer(data=self._payload(pit_index_codes='000852.SH'))
+        self.assertFalse(bad.is_valid())
+
+
+class BacktestUniversePolicyTests(TestCase):
+    """Per-run universe policy reaches eligibility via the run cache (B1b)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.market = Market.objects.create(code='SZSE', name='SZSE')
+        cls.main = Asset.objects.create(market=cls.market, symbol='600001', ts_code='600001.SH', name='主板')
+        cls.chinext = Asset.objects.create(market=cls.market, symbol='300001', ts_code='300001.SZ', name='创业')
+        cls.d = date(2020, 1, 2)
+        for asset in (cls.main, cls.chinext):
+            IndexMembership.objects.create(asset=asset, index_code='000905.SH', trade_date=cls.d, weight=1.0)
+            OHLCV.objects.create(
+                asset=asset, date=cls.d,
+                open=Decimal('10'), high=Decimal('11'), low=Decimal('9'), close=Decimal('10.5'),
+                adj_close=Decimal('10.5'), volume=100, amount=1000,
+            )
+
+    def tearDown(self):
+        clear_backtest_process_caches()
+
+    def test_default_excludes_chinext(self):
+        from apps.backtest.tasks import _eligible_backtest_asset_ids
+        cache = {'universe_policy': None, 'pit_index_codes': None}
+        ids = _eligible_backtest_asset_ids(self.d, cache)
+        self.assertEqual(set(ids), {self.main.id})
+
+    def test_research_full_includes_chinext(self):
+        from apps.backtest.tasks import _eligible_backtest_asset_ids
+        cache = {'universe_policy': 'research_full', 'pit_index_codes': None}
+        ids = _eligible_backtest_asset_ids(self.d, cache)
+        self.assertEqual(set(ids), {self.main.id, self.chinext.id})
+
+    def test_cache_key_separates_policies(self):
+        from apps.backtest.tasks import _eligible_backtest_asset_ids
+        cache = {'universe_policy': None, 'pit_index_codes': None}
+        default_ids = _eligible_backtest_asset_ids(self.d, cache)
+        cache['universe_policy'] = 'research_full'
+        full_ids = _eligible_backtest_asset_ids(self.d, cache)
+        self.assertNotEqual(set(default_ids), set(full_ids))
 
 
 class PendingFillMechanismTests(TestCase):

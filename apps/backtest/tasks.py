@@ -57,7 +57,11 @@ from apps.core.date_contract import (
     enforce_date_contract,
 )
 from apps.factors.models import FactorScore
-from apps.markets.benchmarking import effective_universe_tradeable_asset_ids
+from apps.markets.benchmarking import (
+    DEFAULT_PIT_INDEX_CODES,
+    effective_universe_tradeable_asset_ids,
+    pit_benchmark_code_for,
+)
 from apps.markets.models import OHLCV, Asset, AssetSuspension
 from apps.markets.price_limits import NEW_LISTING_FREE_SESSIONS, limit_pct_for
 from apps.macro.models import MarketContext
@@ -635,13 +639,20 @@ def _eligible_backtest_asset_ids(dt, cache):
     when required membership coverage is missing rather than widening to all
     assets. See ``TECHNICAL_GUIDE.md`` section 1.
     """
-    cache_key = ('eligible_backtest_asset_ids', dt.isoformat())
+    cache_key = (
+        'eligible_backtest_asset_ids',
+        dt.isoformat(),
+        cache.get('universe_policy'),
+        tuple(cache.get('pit_index_codes') or ()),
+    )
     if cache_key in cache:
         return cache[cache_key]
 
     eligible_asset_ids = effective_universe_tradeable_asset_ids(
         dt,
         context=f'Backtest universe selection for {dt}',
+        index_codes=cache.get('pit_index_codes') or None,
+        policy=cache.get('universe_policy') or None,
     )
     cache[cache_key] = eligible_asset_ids
     return eligible_asset_ids
@@ -2808,6 +2819,8 @@ def run_backtest(self, backtest_run_id):
         capital_fraction = _capital_fraction_per_entry(run, entry_weekdays)
         max_positions = _max_positions(run)
         candidate_cache = {}
+        candidate_cache['universe_policy'] = (run.parameters or {}).get('universe_policy') or None
+        candidate_cache['pit_index_codes'] = (run.parameters or {}).get('pit_index_codes') or None
         if _matrix_signal_scope(run):
             candidate_cache['matrix_signal_scope_run'] = run
         macro_monthly_report = {}
@@ -2981,6 +2994,14 @@ def run_backtest(self, backtest_run_id):
             'strategy': run.strategy_type,
             'prediction_source': _prediction_source(run),
             'execution_model': execution_model,
+            'universe': {
+                'policy': (run.parameters or {}).get('universe_policy') or 'default',
+                'index_codes': (run.parameters or {}).get('pit_index_codes') or list(DEFAULT_PIT_INDEX_CODES),
+                'benchmark_code': pit_benchmark_code_for(
+                    (run.parameters or {}).get('pit_index_codes') or None,
+                    policy=(run.parameters or {}).get('universe_policy') or None,
+                ),
+            },
             'candidate_mode': _candidate_mode(run),
             'trade_score_scope': _trade_score_scope(run),
             'use_macro_context': _use_macro_context(run),
