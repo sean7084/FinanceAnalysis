@@ -205,3 +205,9 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - H2 剩余：完整模拟器日循环（top-N/成本/净值）+ run_stock_walk_forward 命令编排 + 矩阵辅助列 + 引擎对账。分支已 push 保全。
 - **H2 part 6（模拟器日循环）**：simulate_topn_returns 等权 top-N 日 rebalance，next_day_open/same_day_close，成本（2×滑点+2×佣金+印花税），涨停锁死/停牌跳过；14 测试 OK（d735782；fixture 曾误触 +10% 涨停已修）。H2 parts 1-6 共 41 测试。
 - H2 剩余：run_stock_walk_forward 命令编排（矩阵构建+缓存+逐折 fit+模拟器+台账+prereg 门控）+ 矩阵辅助列 + 引擎对账。
+
+### 2026-11-20 H2 parts 7-8（臂掩码 + 编排核心 + 命令）
+- **part 7 臂掩码**（8a54906）：apps/prediction/universe_arms.py — 并行 aux 帧（st_flag_asof 经 as-of ST 区间；circ_mv_asof 经最新 FundamentalFactorSnapshot<=date），仅辅助列绝非特征；arm_row_mask board_only/board_st/cap（按日剔最小 30% circ_mv，NaN fail-closed）。board_st/cap 掩码与 apply_universe_policy 重建等价测试；cap 方向 mutation 证明（翻转排序 2 测试挂）。10 测试 OK。
+- **part 8 编排+命令**（f677f59）：walk_forward_runner.run_cell 逐折（臂掩码→H1 纯 fit→OOS 验证指标≠内部 holdout→模拟器净值→每 horizon 一行台账带 digest）；collaborator 注入故无 DB 可测。stock_matrix_provider.DBMatrixProvider 用生产训练函数建一次矩阵+逐 horizon 标签+prices+aux，切 purged 折帧。run_stock_walk_forward 命令接真实 fit/predict/simulate/ledger，拒缺 prereg/panel-end 漂移/未声明臂；折工件 is_active=False（mutation：翻 is_active 挂不变量测试；禁 prereg 门控挂 3 拒绝测试）。22 新测试（runner 8/command 4/arm 10）；apps.prediction **252 OK**；commands.md 再生（celery/env 仅时间戳漂移已还原）。
+- H2 剩余：模拟器 vs 全引擎抽样折窗对账（decision_replay 回滚内，逐日净值差<1bp 或可归因）——数据依赖，DR 数据落地后实测。
+- campaign 实跑仍门控于 DR1-7 数据 + P1 签署（owner O3/O4/O5）。
