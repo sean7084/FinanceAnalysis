@@ -1,0 +1,27 @@
+# Sensitivity grid `7cb8179bc078`
+
+Panel starts: 2016-01-29. End: 2023-12-31. Blocks: 6. Baseline arm: `rule`.
+Pre-registration: `docs/reports/preregistration/etf-icir-verdict-2026-11-18-rev2.md` (sha256 7cb8179bc078).
+
+| arm | panel start | median Sharpe | positive blocks | maxDD median | legs won | passed |
+| :--- | :--- | ---: | ---: | ---: | :--- | :--- |
+| rule | 2016-01-29 | 0.0604 | 66.67% | 19.23% | - | no |
+
+## Replication
+
+
+## Pre-registered ICIR verdict (#136)
+
+Primary criterion is REJECT-not-select: an arm must clear Newey-West t >= 2.0 AND mean daily IC > 0 on a panel start to avoid rejection. Clearing it selects nothing. The block-median table above is a robustness view and carries no adjudication authority.
+
+Frozen constants: NW_LAG=20, T_MIN=2.0, SHARPE_CI_Z=1.96. Autocorrelation is handled by Newey-West, not by inflating the threshold; the choice is pre-registered.
+
+| arm | panel start | n ICs | mean IC | NW t | naive t | avoids rejection | Sharpe gate |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- | :--- |
+| rule | 2016-01-29 | 1805 | -0.0090 | -0.2881 | -0.9732 | no | pass |
+
+### Paired differences vs baseline (same blocks, same days)
+
+
+Heterogeneity caveat, frozen: when tau2 dominates, pooling cannot manufacture independence. A large I2 means the starts measure different things, and the pooled number describes that heterogeneity rather than sharpening one common effect. tau2 and I2 are reported above for exactly this reason.
+
