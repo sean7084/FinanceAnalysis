@@ -187,6 +187,9 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **B1b 合并**：#210 CI 双绿 → --admin → main 89e80d0（**11 PR 合并**）。
 - **C2 落地**：mutation rc=1；markets **167 OK**；gates 绿；commit 8b91406 → rebase（CHANGELOG union 脚本自动）→ **PR #211**（81f4195）。
 - 剩余 Wave 1 代码：B1b part 2（训练/命令 --universe-policy + artifact/ModelVersion provenance 写入侧）+ 地板 PR（CI 实测 Ran N）。之后 B3/DR1-7 待 owner 逐次批准。
+
+- **C2b**：build_pit_union_benchmark += --index-codes/--policy/--benchmark-code（DR7 工具补全）；2 测试 OK；commands.md 再生；gates 绿。分支 feat/build-pit-command-flags（PR 待 #212 合并后开）。
+
 - **B1b p2b**：rebuild --universe-policy/--pit-index-codes + reader subset += pit_index_codes/pit_benchmark_code；backfill 无 flags（默认继承 ex-board + fixed-engine D7）。测试 4 个（TestCase + enforce passthrough 修复）。prediction+backtest 套件绿；commands.md 再生。
 - **C2 合并** #211 → a2555f7（**12 PR 合并**）。B1b 全卡 rebase 后开 PR。
 - **B1b 全卡落地**：p2b commit 571208c（prediction+backtest **385 OK**，gates 绿，commands.md 再生）；rebase 3 commits（journal union×2）；push 首次瞬断（curl 7，已知路径现象）→ ls-remote 确认远端无分支 → 重试成功 → **PR #212**（19d96e9）。
