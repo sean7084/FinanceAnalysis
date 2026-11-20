@@ -126,6 +126,11 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **A4 part 1（增量，已测未开 PR）**：limit_pct_for is_st kwarg（as-of 覆写，主板 ST 5% / ChiNext/STAR ST 保持板限）；_build_ohlcv_detail_map（open/close/raw_close/adj_factor，独立缓存，raw_open=open×raw_close/close，legacy null→None）+ clear 纳入；serializer execution_model 校验（same_day_close 默认 / next_day_open / 非法拒）。
   测试 apps/backtest/tests_execution.py 8 个 + 既有 price_limits；backtest+price_limits **135 OK**（fixture 补 adj_close 非空）。
 - **A4 part 2 待做**：pending_entry/pending_exit 进 runtime_state + session 开头成交处理 + 锁死重试 + 停牌 + legacy 不变测试 + provenance（机制见计划 A4 卡）。
+- part 2 序列化核实：position spread ⇒ pending_exit 零改动过 chunk；pending_entries 新键 + Decimal→str；四同步点（load/save/fresh-resume/chunk-save）已定位。part 1 commit eb12ec0。
+- **本窗口收尾**：8 PR 合并（#191/#201/#202/#203/#204/#205/#206/#207 → main 32fb40f）；A4 part 1 在分支待 part 2；B1b/B2/B3/C2/地板待做。下一窗口按计划 A4 卡实现 part 2。
+- **A4 part 2 实现完成（同窗口续）**：pending_exit（position spread 天然过 chunk）+ pending_entries（runtime_state 新键，Decimal→str）+ _session_fill_lock（raw 价涨跌停/停牌/缺 bar）+ _process_pending_fills（开盘成交、重试≤3、卖不强平）+ 主循环 session 开头处理 + report.execution_model。
+  修复三跑：cls.run 遮蔽 TestCase.run 方法 → backtest_run；sessions_since_listing 窗口前首 bar ⇒ 视为已过免费期（保守近似，PR 记录 caveat）；chunked 续跑需循环调用 run_backtest（delay 不 eager）。
+  **156 OK**（含 next_day 集成 + cross-chunk final_value 不变）。mutation + 全套件 + 落地见 PR。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
