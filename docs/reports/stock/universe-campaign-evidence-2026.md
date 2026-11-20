@@ -140,6 +140,7 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - parameters.universe_policy/pit_index_codes（serializer 校验）→ candidate_cache 注入（零调用方改动）→ _eligible_backtest_asset_ids（cache key 含 policy+codes）→ report.universe{policy,index_codes,benchmark_code}（#145 读取侧）。
 - 测试 5 个；mutation rc=1（内联 heredoc 引号曾致假 rc=0 → 脚本文件版复验）；backtest 全套件 **199 OK**。
 - part 2 待做：训练/命令 --universe-policy flags + artifact/ModelVersion provenance 写入侧。PR 待 B2 #209 合并后开。
+- **B1b part 1 提交**：4f71fbd（gates 绿：sheets --check / makemigrations / check / ruff）。C2 设计细化已写入计划（日 refresh 维护 legacy full + 默认 ex-board 双系列）。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
