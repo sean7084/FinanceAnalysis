@@ -79,3 +79,11 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 分支 feat/artifact-activation-guard（从 main，与 A1 无文件重叠）。LightGBMModelArtifact.save() 镜像 ModelVersion.save（ARCHIVED+active 拒；active 过 validate_activation_metrics(metrics_json)）；activation.py docstring 同步。
 - 绕过审计：artifact 唯一写路径 = 训练 update_or_create(:2363，走 save())；.update(is_active=False)(:2339) 为去激活方向，安全。
 - 验证：apps.prediction 全套件 **163 OK**（无 fixture 冲突）；新测试 **9 OK**；mutation rc=1 ✓ 还原后绿 ✓；gates 全绿；commit 66eaa6c（rebase 到 0fdaef0 后 PR 待开）。
+
+## 2026-11-20 — C1（UNI-01/02，#196）实施
+
+- 分支 feat/csi1000-sync-acceptance（从 main）。INDEX_CODE_SPECS += 000852.SH（CSI1000）；DEFAULT_* 不动（切换是裁决门控的后续卡）。
+- _fetch_index_weight_frames：满页（7000）⇒ 二分重取；单日满页 ⇒ ValueError（比 ETF note 更严，spec 要求报错不丢月）；保留 _call_tushare_with_retry。
+  窗日按指数 {000905:10, 000852:5}；"6000 cap" 注释更正。
+- verify_index_membership_continuity（只读）：按快照行数带（950–1050 / 475–525）+ 月度存在（地板 2014-10 / 2009-12）；违规非零退出。
+- 测试 9 个 + mutation + 落地见 PR。

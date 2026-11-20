@@ -35,6 +35,7 @@ DEFAULT_INDEX_CODES = ('000905.SH', 'H00905.CSI')
 DEFAULT_MEMBERSHIP_INDEX_CODES = ('000905.SH',)
 INDEX_CODE_SPECS = {
     '000905.SH': {'name': 'CSI 500', 'tag': 'CSI500'},
+    '000852.SH': {'name': 'CSI 1000', 'tag': 'CSI1000'},
     'H00905.CSI': {'name': 'CSI 500 Total Return', 'tag': 'CSI500TR'},
 }
 INDEX_WEIGHT_PROVIDER_CODES = {}
@@ -59,9 +60,16 @@ MARKET_SUFFIX_TO_CODE = {
     'SZ': 'SZSE',
     'BJ': 'BSE',
 }
-# TuShare caps index_weight responses at 6000 rows, so keep windows small enough
-# to cover daily 500-member snapshots without truncating the front of a range.
+# TuShare caps index_weight responses at 7000 rows and does NOT mark truncation
+# (measured 2026-11-09: a 27-month CSI1000 request returned only the tail 7000 rows).
+# Window size is a performance knob; _fetch_index_weight_frames is the correctness
+# net: a full page bisects the window, and a single day still at the cap raises.
+INDEX_WEIGHT_PAGE_LIMIT = 7000
 INDEX_WEIGHT_SYNC_WINDOW_DAYS = 10
+INDEX_WEIGHT_SYNC_WINDOW_DAYS_BY_INDEX = {
+    '000905.SH': 10,
+    '000852.SH': 5,
+}
 INDEX_WEIGHT_REQUEST_SLEEP_SECONDS = 0.4
 INDEX_WEIGHT_RETRY_SLEEP_SECONDS = 15.0
 INDEX_WEIGHT_MAX_RETRIES = 5
@@ -689,6 +697,72 @@ def _build_asset_history_warmup_signatures(asset_map, ts_codes, target_date):
     return signatures
 
 
+def _fetch_index_weight_frames(pro, provider_index_code, window_start, window_end):
+    """Fetch one window's index_weight rows, bisecting any full page.
+
+    A response at INDEX_WEIGHT_PAGE_LIMIT means the window was silently cut, so it
+    is split in half and re-fetched until every piece is below the cap. A single
+    day still at the cap is a loud error: that index's constituent history would
+    be partial, and the fail-closed universe contract must not be fed partial months.
+    """
+    weights_df = _call_tushare_with_retry(
+        lambda: pro.index_weight(
+            index_code=provider_index_code,
+            start_date=window_start.strftime('%Y%m%d'),
+            end_date=window_end.strftime('%Y%m%d'),
+        ),
+        label=f'index_weight:{provider_index_code}:{window_start}:{window_end}',
+    )
+    if weights_df is None or weights_df.empty:
+        return []
+    if len(weights_df) >= INDEX_WEIGHT_PAGE_LIMIT:
+        if window_start >= window_end:
+            raise ValueError(
+                f'index_weight:{provider_index_code}:{window_start} returned {len(weights_df)} rows '
+                f'at the {INDEX_WEIGHT_PAGE_LIMIT}-row page cap for a single day; constituent '
+                'history would be partial. Refusing to sync silently.'
+            )
+        middle = window_start + (window_end - window_start) // 2
+        return (
+            _fetch_index_weight_frames(pro, provider_index_code, window_start, middle)
+            + _fetch_index_weight_frames(pro, provider_index_code, middle + timedelta(days=1), window_end)
+        )
+    return [weights_df.copy()]
+
+
+#: Per-snapshot row-count bands for continuity verification (index size +/- 5%).
+MEMBERSHIP_CONTINUITY_BANDS = {
+    '000852.SH': (950, 1050),
+    '000905.SH': (475, 525),
+}
+#: First month each index's index_weight history is expected to cover.
+MEMBERSHIP_CONTINUITY_FLOORS = {
+    '000852.SH': date(2014, 10, 1),
+    '000905.SH': date(2009, 12, 1),
+}
+
+
+def _membership_continuity_violations(snapshot_counts, *, start_date, end_date, band):
+    """Violations for {snapshot_date: row_count}: thin snapshots and missing months.
+
+    Bands apply per snapshot, not per month: recent months carry several snapshots,
+    so a month-sum would exceed the band even when every snapshot is complete.
+    """
+    low, high = band
+    violations = []
+    for snapshot_date, count in sorted(snapshot_counts.items()):
+        if not low <= count <= high:
+            violations.append(f'snapshot {snapshot_date.isoformat()} has {count} rows, outside [{low}, {high}]')
+    months_with_data = {(d.year, d.month) for d in snapshot_counts}
+    cursor = date(start_date.year, start_date.month, 1)
+    last_month = date(end_date.year, end_date.month, 1)
+    while cursor <= last_month:
+        if (cursor.year, cursor.month) not in months_with_data:
+            violations.append(f'month {cursor.strftime("%Y-%m")} has no snapshot')
+        cursor = date(cursor.year + (cursor.month == 12), cursor.month % 12 + 1, 1)
+    return violations
+
+
 def sync_index_constituent_universe(
     index_codes=DEFAULT_MEMBERSHIP_INDEX_CODES,
     start_date=None,
@@ -722,22 +796,15 @@ def sync_index_constituent_universe(
     for index_code in normalized_index_codes:
         provider_index_code = _provider_index_code_for_membership(index_code)
         weight_frames = []
+        window_days = INDEX_WEIGHT_SYNC_WINDOW_DAYS_BY_INDEX.get(index_code, INDEX_WEIGHT_SYNC_WINDOW_DAYS)
         for window_start, window_end in _iter_date_windows(
             pull_start_date,
             resolved_end_date,
-            INDEX_WEIGHT_SYNC_WINDOW_DAYS,
+            window_days,
         ):
-            weights_df = _call_tushare_with_retry(
-                lambda provider_index_code=provider_index_code, window_start=window_start, window_end=window_end: pro.index_weight(
-                    index_code=provider_index_code,
-                    start_date=window_start.strftime('%Y%m%d'),
-                    end_date=window_end.strftime('%Y%m%d'),
-                ),
-                label=f'index_weight:{provider_index_code}:{window_start}:{window_end}',
+            weight_frames.extend(
+                _fetch_index_weight_frames(pro, provider_index_code, window_start, window_end)
             )
-            if weights_df is None or weights_df.empty:
-                continue
-            weight_frames.append(weights_df.copy())
 
         if not weight_frames:
             latest_trade_dates[index_code] = None
