@@ -268,7 +268,12 @@ jobs:
       # harness adds the evidence ledger, fold plan, prereg gating, matrix cache key,
       # vectorized simulator, universe arm masks, orchestration runner + command, and
       # simulator-vs-engine reconciliation. Frontend floor unchanged (100).
-      MIN_TEST_COUNT: "1573"
+      #
+      # H2b harness completion (PR #218). CI's own run measured `Ran 1590 tests in 107.224s`
+      # (run 44737656582). Set to measured-minus-four (1586). H2b adds per-horizon simulator
+      # params, IS-Sharpe, alpha/beta + Newey-West t verdict metrics, the per_date_ic dict,
+      # transfer fee, and index_codes gating. Frontend floor unchanged (100).
+      MIN_TEST_COUNT: "1586"
 
     steps:
       - uses: actions/checkout@v4
