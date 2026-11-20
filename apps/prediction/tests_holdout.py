@@ -188,6 +188,15 @@ class HoldoutMetricsTests(SimpleTestCase):
         self.assertEqual(metrics['holdout_samples'], 20)
         self.assertEqual(metrics['rank_ic_dates'], 2)
 
+    def test_per_date_ic_is_a_date_keyed_dict_for_newey_west(self):
+        dates = [date(2026, 1, 5)] * 10 + [date(2026, 1, 6)] * 10
+        metrics = _holdout_metrics(
+            np.zeros(20), self._proba(np.linspace(0.8, -0.8, 20)),
+            dates, list(np.linspace(-0.1, 0.1, 20)))
+        self.assertIsInstance(metrics['per_date_ic'], dict)
+        self.assertEqual(set(metrics['per_date_ic']), {date(2026, 1, 5), date(2026, 1, 6)})
+        self.assertEqual(len(metrics['per_date_ic']), metrics['rank_ic_dates'])
+
 
 class ActivationInteractionTests(SimpleTestCase):
     def test_the_new_keys_are_bounded(self):

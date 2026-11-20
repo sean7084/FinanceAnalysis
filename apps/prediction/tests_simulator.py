@@ -86,7 +86,7 @@ class SimulateTopNTests(SimpleTestCase):
         row = out[out['date'] == dates[0]].iloc[0]
         self.assertEqual(row['n_selected'], 1)
         gross = 11.0 / 10.5 - 1.0  # entry d2 open 10.5, exit d3 open 11 (< 10% limit)
-        cost = 2 * 0.0005 + 2 * 0.00025 + 0.001
+        cost = 2 * 0.0005 + 2 * 0.00025 + 0.001 + 0.00001  # slip + commission + stamp + transfer (O4)
         self.assertAlmostEqual(row['portfolio_return'], gross - cost, places=6)
 
     def test_threshold_filters_all(self):
