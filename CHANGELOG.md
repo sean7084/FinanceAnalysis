@@ -8,7 +8,7 @@
 
 #### Changed:
 
-- **The standalone PIT benchmark build command accepts index / policy / code (C2b, #196).**  gains  /  / , passed to , so DR7 can build each coexisting series explicitly (the daily loop already does via ACTIVE_PIT_BENCHMARK_SPECS). Defaults None keep the serving default. 2 new tests in  (flags reach refresh / defaults None); commands.md regenerated. Universe campaign card C2b.
+- **The standalone PIT benchmark build command accepts index / policy / code (C2b, #196).** `build_pit_union_benchmark` gains `--index-codes` / `--policy` / `--benchmark-code`, passed to `refresh_point_in_time_union_benchmark`, so DR7 can build each coexisting series explicitly (the daily loop already does via ACTIVE_PIT_BENCHMARK_SPECS). Defaults None keep the serving default. 2 new tests in `apps/markets/tests_pit_series.py` (flags reach refresh / defaults None); commands.md regenerated. Universe campaign card C2b.
 
 - **The rebuild command exposes the universe policy, and the provenance reader surfaces it (B1b part 2b, #145/#197).** `rebuild_lightgbm_pipeline` gains `--universe-policy` / `--pit-index-codes` (comma-separated), passed to the trainer; defaults None keep the serving default. `_reference_metadata_subset` gains `pit_index_codes` / `pit_benchmark_code` (the policy/version keys were already present), completing the #145 reader/writer pair. The backfill commands deliberately get no flags: the batch helper already inherits the serving ex-board default, and the comparison arms hold RS/factors fixed-engine (plan D7). 4 new tests in `apps/prediction/tests_universe_flags.py` (flags reach trainer / defaults None / reader subset / non-dict empty). Universe campaign card B1b part 2b.
 
