@@ -89,13 +89,19 @@ def is_st_name(name):
     return False
 
 
-def limit_pct_for(ts_code, trade_date=None, name='', sessions_since_listing=None):
+def limit_pct_for(ts_code, trade_date=None, name='', sessions_since_listing=None, is_st=False):
     """Maximum one-session move as a fraction, or ``None`` when no limit applies.
 
     ``sessions_since_listing`` is the count of earlier stored bars for the same
     asset. The caller scanning a series already knows it, and it is exact for any
     asset whose series starts at its IPO -- which is what the listing-coverage
     check in ``validate_data_quality`` already asserts.
+
+    ``is_st`` is the as-of special-treatment override (A4 / STK-05): backtests
+    pass the ST-interval state for the fill date rather than the current name,
+    which would be look-ahead. ``name`` remains the current-name fallback for
+    audit callers. Board precedence is unchanged: ChiNext/STAR ST names keep
+    their board limit, only the main board narrows to 5%.
     """
     if sessions_since_listing is not None and sessions_since_listing < NEW_LISTING_FREE_SESSIONS:
         return None
@@ -121,6 +127,6 @@ def limit_pct_for(ts_code, trade_date=None, name='', sessions_since_listing=None
             return LIMIT_TWENTY
         return LIMIT_TEN
 
-    if is_st_name(name):
+    if is_st or is_st_name(name):
         return LIMIT_ST
     return LIMIT_TEN

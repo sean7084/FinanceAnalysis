@@ -40,7 +40,7 @@ import os
 from bisect import bisect_left
 from collections import OrderedDict
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from statistics import mean, pstdev
 from time import perf_counter
 
@@ -58,7 +58,8 @@ from apps.core.date_contract import (
 )
 from apps.factors.models import FactorScore
 from apps.markets.benchmarking import effective_universe_tradeable_asset_ids
-from apps.markets.models import OHLCV
+from apps.markets.models import OHLCV, Asset, AssetSuspension
+from apps.markets.price_limits import NEW_LISTING_FREE_SESSIONS, limit_pct_for
 from apps.macro.models import MarketContext
 from apps.prediction.historical_features import prime_indicator_candidates
 from apps.prediction.odds import estimate_trade_decision
@@ -117,6 +118,7 @@ BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES = _int_env('BACKTEST_MATRIX_SIGNAL_CACH
 
 _TRADING_DATES_CACHE = OrderedDict()
 _PRICE_MAP_CACHE = OrderedDict()
+_DETAIL_MAP_CACHE = OrderedDict()
 _MATRIX_SIGNAL_CACHE = OrderedDict()
 
 LIGHTGBM_RUNTIME_FLOAT_FIELDS = (
@@ -170,6 +172,7 @@ def clear_backtest_process_caches():
     """
     _TRADING_DATES_CACHE.clear()
     _PRICE_MAP_CACHE.clear()
+    _DETAIL_MAP_CACHE.clear()
     _MATRIX_SIGNAL_CACHE.clear()
 
 
@@ -595,6 +598,33 @@ def _build_price_map(start_date, end_date):
     rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list('asset_id', 'date', 'close')
     price_map = {(asset_id, dt): _d(close) for asset_id, dt, close in rows}
     return _bounded_cache_set(_PRICE_MAP_CACHE, cache_key, price_map, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
+
+
+def _build_ohlcv_detail_map(start_date, end_date):
+    """Per-(asset, date) open / close / raw_close / adj_factor for execution realism (A4).
+
+    Kept separate from _build_price_map so the scalar-close consumers are
+    untouched. raw_open reconstructs as open * raw_close / close (the same-row
+    adjustment factor cancels, exact across ex-div days because the previous
+    raw close comes from the previous row). Legacy rows without raw_close yield
+    None so callers fall back to the adjusted series rather than invent prices.
+    """
+    cache_key = (start_date.isoformat(), end_date.isoformat(), _ohlcv_range_signature(start_date, end_date))
+    cached = _bounded_cache_get(_DETAIL_MAP_CACHE, cache_key)
+    if cached is not None:
+        return cached
+    rows = OHLCV.objects.filter(date__gte=start_date, date__lte=end_date).values_list(
+        'asset_id', 'date', 'open', 'close', 'raw_close', 'adj_factor',
+    )
+    detail_map = {}
+    for asset_id, dt, open_, close, raw_close, adj_factor in rows:
+        detail_map[(asset_id, dt)] = {
+            'open': _d(open_) if open_ is not None else None,
+            'close': _d(close) if close is not None else None,
+            'raw_close': _d(raw_close) if raw_close is not None else None,
+            'adj_factor': _d(adj_factor) if adj_factor is not None else None,
+        }
+    return _bounded_cache_set(_DETAIL_MAP_CACHE, cache_key, detail_map, BACKTEST_RANGE_CACHE_MAX_ENTRIES)
 
 
 def _eligible_backtest_asset_ids(dt, cache):
@@ -2003,7 +2033,245 @@ def _flush_trade_buffer(trade_buffer):
         trade_buffer.clear()
 
 
-def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit, trade_buffer=None):
+EXECUTION_MODEL_SAME_DAY = 'same_day_close'
+EXECUTION_MODEL_NEXT_DAY = 'next_day_open'
+LIMIT_LOCK_MAX_RETRIES = 3
+
+
+def _execution_model(run):
+    return str((run.parameters or {}).get('execution_model', EXECUTION_MODEL_SAME_DAY)).lower()
+
+
+def _serialize_pending_entries(entries):
+    rows = []
+    for entry in entries or []:
+        signal = {
+            key: (str(value) if isinstance(value, Decimal) else value)
+            for key, value in (entry.get('signal_payload') or {}).items()
+        }
+        rows.append({
+            'asset_id': entry['asset_id'],
+            'entry_date': entry['entry_date'],
+            'exit_date': entry['exit_date'],
+            'candidate_rank': entry.get('candidate_rank', 0),
+            'retries': int(entry.get('retries', 0)),
+            'signal_payload': signal,
+        })
+    return rows
+
+
+def _deserialize_pending_entries(rows):
+    entries = []
+    for entry in rows or []:
+        entries.append({
+            'asset_id': int(entry['asset_id']),
+            'entry_date': entry['entry_date'],
+            'exit_date': entry['exit_date'],
+            'candidate_rank': int(entry.get('candidate_rank', 0)),
+            'retries': int(entry.get('retries', 0)),
+            'signal_payload': dict(entry.get('signal_payload') or {}),
+        })
+    return entries
+
+
+def _session_fill_lock(
+    detail_map, asset_id, current_date, trading_dates, current_index,
+    ts_code_map, first_bar_map, suspension_set, side,
+):
+    """(locked, detail, raw_open) for a fill attempt at ``current_date``'s open.
+
+    Locked when the bar is missing, the asset is suspended, or the raw open sits
+    at the board's limit in the fill direction (buy: limit-up; sell: limit-down).
+    Limits apply to the RAW price (exchange rounding 0.01, half-up); the as-of ST
+    override is wired by card B2 — until then is_st=False (TODO(B2): pass the
+    ST-interval state for current_date, not the current name).
+    """
+    detail = detail_map.get((asset_id, current_date))
+    if detail is None or detail['open'] is None or detail['open'] <= 0:
+        return True, detail, None
+    if (asset_id, current_date) in suspension_set:
+        return True, detail, None
+    raw_open = None
+    if detail['raw_close'] is not None and detail['close'] is not None and detail['close'] > 0:
+        raw_open = detail['open'] * detail['raw_close'] / detail['close']
+    prev_raw = None
+    if current_index > 0:
+        prev_detail = detail_map.get((asset_id, trading_dates[current_index - 1]))
+        if prev_detail is not None:
+            prev_raw = prev_detail['raw_close']
+    sessions = None
+    first_bar = first_bar_map.get(asset_id)
+    if first_bar is not None:
+        if first_bar < trading_dates[0]:
+            # Listed before the run window: treated as past the new-listing free
+            # period. Conservative approximation (a window opening within 5
+            # sessions of an IPO would over-lock, never under-lock); the exact
+            # count would need full-history sessions per fill.
+            sessions = NEW_LISTING_FREE_SESSIONS
+        else:
+            sessions = current_index - bisect_left(trading_dates, first_bar)
+    limit = limit_pct_for(
+        ts_code_map.get(asset_id, ''), current_date,
+        is_st=False, sessions_since_listing=sessions,
+    )
+    if limit is not None and prev_raw is not None and prev_raw > 0 and raw_open is not None:
+        if side == 'buy':
+            limit_price = (prev_raw * (DECIMAL_1 + limit)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if raw_open >= limit_price:
+                return True, detail, raw_open
+        else:
+            limit_price = (prev_raw * (DECIMAL_1 - limit)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if raw_open <= limit_price:
+                return True, detail, raw_open
+    return False, detail, raw_open
+
+
+def _process_pending_fills(
+    run, current_date, trading_dates, current_index,
+    pending_entries, open_positions, cash,
+    detail_map, price_map, fee_config, slippage_bps,
+    closed_pnls, max_positions, suspension_set, first_bar_map, ts_code_map,
+    trade_buffer=None,
+):
+    """Fill queued entries/exits at today's open under next_day_open (A4 / STK-05).
+
+    Entries ranked at T's close fill at T+1's open; exits triggered at T's close
+    fill at T+1's open. Deployable capital is split evenly across the entries
+    filling this session (prereg-declared). Limit-locked or suspended sessions
+    defer: entries drop after LIMIT_LOCK_MAX_RETRIES, exits keep waiting (the
+    engine never force-closes at a fabricated price).
+    """
+    initial_capital = _d(run.initial_capital)
+    capital_fraction = _capital_fraction_per_entry(run, _entry_weekdays(run))
+
+    fillable = []
+    deferred = []
+    for entry in pending_entries:
+        locked, _detail, _raw_open = _session_fill_lock(
+            detail_map, entry['asset_id'], current_date, trading_dates, current_index,
+            ts_code_map, first_bar_map, suspension_set, 'buy',
+        )
+        if locked:
+            entry['retries'] = int(entry.get('retries', 0)) + 1
+            if entry['retries'] <= LIMIT_LOCK_MAX_RETRIES:
+                deferred.append(entry)
+            continue
+        if len(open_positions) + len(fillable) >= int(max_positions):
+            continue
+        fillable.append(entry)
+
+    allocation_budget = (
+        min(cash, initial_capital * capital_fraction) / _d(len(fillable))
+        if fillable else DECIMAL_0
+    )
+    for entry in fillable:
+        asset_id = entry['asset_id']
+        detail = detail_map[(asset_id, current_date)]
+        buy_close = detail['open']
+        slippage_buy = buy_close * slippage_bps / DECIMAL_100 / DECIMAL_100
+        buy_price = buy_close + slippage_buy
+        buy_amount = _max_buy_amount_for_budget(allocation_budget, fee_config)
+        if buy_amount <= 0:
+            continue
+        quantity = buy_amount / buy_price
+        if quantity <= 0:
+            continue
+        buy_amount = quantity * buy_price
+        buy_fee_breakdown = _trade_fee_breakdown(buy_amount, fee_config, is_sell=False)
+        buy_fee = buy_fee_breakdown['total_fee']
+        total_cost = buy_amount + buy_fee
+        if total_cost > cash:
+            continue
+        cash -= total_cost
+        signal_payload = dict(entry.get('signal_payload') or {})
+        signal_payload['entry_date'] = entry['entry_date']
+        signal_payload['scheduled_exit_date'] = entry['exit_date']
+        open_positions.append({
+            'asset_id': asset_id,
+            'quantity': quantity,
+            'buy_amount': buy_amount,
+            'buy_fee': buy_fee,
+            'buy_price': buy_price,
+            'signal_payload': signal_payload,
+            'exit_date': date.fromisoformat(entry['exit_date']),
+            'target_price': _to_decimal_or_none(signal_payload.get('target_price')),
+            'stop_loss_price': _to_decimal_or_none(signal_payload.get('stop_loss_price')),
+        })
+        _append_or_create_trade(
+            trade_buffer,
+            backtest_run=run,
+            asset_id=asset_id,
+            trade_date=current_date,
+            side=BacktestTrade.Side.BUY,
+            quantity=quantity,
+            price=buy_price,
+            fee=buy_fee,
+            slippage=slippage_buy,
+            amount=buy_amount,
+            pnl=DECIMAL_0,
+            signal_payload=signal_payload,
+            metadata={
+                'fee_model': fee_config['mode'],
+                'fee_breakdown': _fee_breakdown_payload(buy_fee_breakdown),
+                'fill_basis': EXECUTION_MODEL_NEXT_DAY,
+                'limit_locked': False,
+                'retry_count': int(entry.get('retries', 0)),
+                'trigger_date': entry['entry_date'],
+            },
+        )
+
+    remaining_positions = []
+    for position in open_positions:
+        pending_exit = position.get('pending_exit')
+        if not pending_exit:
+            remaining_positions.append(position)
+            continue
+        asset_id = position['asset_id']
+        locked, detail, _raw_open = _session_fill_lock(
+            detail_map, asset_id, current_date, trading_dates, current_index,
+            ts_code_map, first_bar_map, suspension_set, 'sell',
+        )
+        if locked or detail is None:
+            pending_exit['retries'] = int(pending_exit.get('retries', 0)) + 1
+            remaining_positions.append(position)
+            continue
+        sell_close = detail['open']
+        slippage_sell = sell_close * slippage_bps / DECIMAL_100 / DECIMAL_100
+        sell_price = sell_close - slippage_sell
+        sell_amount = position['quantity'] * sell_price
+        sell_fee_breakdown = _trade_fee_breakdown(sell_amount, fee_config, is_sell=True)
+        sell_fee = sell_fee_breakdown['total_fee']
+        pnl = sell_amount - sell_fee - position['buy_amount'] - position['buy_fee']
+        cash += sell_amount - sell_fee
+        closed_pnls.append(pnl)
+        _append_or_create_trade(
+            trade_buffer,
+            backtest_run=run,
+            asset_id=asset_id,
+            trade_date=current_date,
+            side=BacktestTrade.Side.SELL,
+            quantity=position['quantity'],
+            price=sell_price,
+            fee=sell_fee,
+            slippage=slippage_sell,
+            amount=sell_amount,
+            pnl=pnl,
+            signal_payload=position['signal_payload'],
+            metadata={
+                'exit_reason': pending_exit.get('reason', 'SCHEDULED'),
+                'fee_model': fee_config['mode'],
+                'fee_breakdown': _fee_breakdown_payload(sell_fee_breakdown),
+                'fill_basis': EXECUTION_MODEL_NEXT_DAY,
+                'limit_locked': False,
+                'retry_count': int(pending_exit.get('retries', 0)),
+                'trigger_date': pending_exit.get('trigger_date'),
+            },
+        )
+
+    return cash, remaining_positions, deferred
+
+
+def _close_positions_for_date(run, current_date, open_positions, cash, price_map, fee_config, slippage_bps, closed_pnls, enable_stop_target_exit, trade_buffer=None, execution_model=EXECUTION_MODEL_SAME_DAY):
     """Close every open position that should exit on ``current_date``.
 
     Exit precedence, using the **raw daily close** rather than the
@@ -2049,6 +2317,16 @@ def _close_positions_for_date(run, current_date, open_positions, cash, price_map
 
         if exit_reason is None:
             exit_reason = 'SCHEDULED'
+
+        if execution_model == EXECUTION_MODEL_NEXT_DAY:
+            # Trigger at T's close; fill at T+1's open via _process_pending_fills.
+            position['pending_exit'] = {
+                'reason': exit_reason,
+                'trigger_date': current_date.isoformat(),
+                'retries': 0,
+            }
+            remaining_positions.append(position)
+            continue
 
         slippage_sell = sell_close * slippage_bps / DECIMAL_100 / DECIMAL_100
         sell_price = sell_close - slippage_sell
@@ -2097,6 +2375,8 @@ def _open_positions_for_date(
     max_positions,
     runtime_cache=None,
     trade_buffer=None,
+    execution_model=EXECUTION_MODEL_SAME_DAY,
+    pending_entries=None,
 ):
     """Open positions for ``current_date`` from the ranked candidates.
 
@@ -2147,6 +2427,19 @@ def _open_positions_for_date(
             signal_payload,
             cache=runtime_cache,
         )
+
+        if execution_model == EXECUTION_MODEL_NEXT_DAY:
+            # Rank at T's close; queue the fill at T+1's open (A4 / STK-05).
+            if pending_entries is not None:
+                pending_entries.append({
+                    'asset_id': asset_id,
+                    'entry_date': current_date.isoformat(),
+                    'exit_date': exit_date.isoformat(),
+                    'candidate_rank': candidate_rank,
+                    'retries': 0,
+                    'signal_payload': signal_payload,
+                })
+            continue
 
         slippage_buy = buy_close * slippage_bps / DECIMAL_100 / DECIMAL_100
         buy_price = buy_close + slippage_buy
@@ -2285,6 +2578,7 @@ def _load_runtime_state(run):
         'equity_curve': [_d(value) for value in raw_state.get('equity_curve', [])],
         'closed_pnls': [_d(value) for value in raw_state.get('closed_pnls', [])],
         'open_positions': _deserialize_open_positions(raw_state.get('open_positions', [])),
+        'pending_entries': _deserialize_pending_entries(raw_state.get('pending_entries', [])),
         'macro_monthly_report': raw_state.get('macro_monthly_report', {}),
         'lightgbm_runtime': _deserialize_lightgbm_runtime_metrics(raw_state.get('lightgbm_runtime')),
     }
@@ -2311,6 +2605,7 @@ def _save_runtime_state(run, state, total_trading_days):
         'equity_curve': [str(value) for value in state['equity_curve']],
         'closed_pnls': [str(value) for value in state['closed_pnls']],
         'open_positions': _serialize_open_positions(state['open_positions']),
+        'pending_entries': _serialize_pending_entries(state.get('pending_entries', [])),
         'macro_monthly_report': state['macro_monthly_report'],
         'lightgbm_runtime': _serialize_lightgbm_runtime_metrics(state.get('lightgbm_runtime')),
     }
@@ -2490,6 +2785,22 @@ def run_backtest(self, backtest_run_id):
             raise ValueError('Not enough OHLCV data in selected date range.')
 
         price_map = _build_price_map(run.start_date, run.end_date)
+        execution_model = _execution_model(run)
+        detail_map = {}
+        suspension_set = set()
+        first_bar_map = {}
+        ts_code_map = {}
+        if execution_model == EXECUTION_MODEL_NEXT_DAY:
+            detail_map = _build_ohlcv_detail_map(run.start_date, run.end_date)
+            suspension_set = set(
+                AssetSuspension.objects.filter(
+                    trade_date__gte=run.start_date, trade_date__lte=run.end_date,
+                ).values_list('asset_id', 'trade_date')
+            )
+            first_bar_map = dict(
+                OHLCV.objects.values('asset_id').annotate(first=models.Min('date')).values_list('asset_id', 'first')
+            )
+            ts_code_map = dict(Asset.objects.values_list('id', 'ts_code'))
         fee_config = _resolve_fee_config(run)
         slippage_bps = _non_negative_decimal('slippage_bps', (run.parameters or {}).get('slippage_bps', '5'))
         entry_weekdays = _entry_weekdays(run)
@@ -2509,12 +2820,14 @@ def run_backtest(self, backtest_run_id):
             equity_curve = []
             closed_pnls = []
             open_positions = []
+            pending_entries = []
         else:
             current_index = runtime_state['current_index']
             cash = runtime_state['cash']
             equity_curve = runtime_state['equity_curve']
             closed_pnls = runtime_state['closed_pnls']
             open_positions = runtime_state['open_positions']
+            pending_entries = runtime_state['pending_entries']
             macro_monthly_report = runtime_state['macro_monthly_report']
             if runtime_state.get('lightgbm_runtime'):
                 candidate_cache['lightgbm_runtime_metrics'] = runtime_state['lightgbm_runtime']
@@ -2522,7 +2835,16 @@ def run_backtest(self, backtest_run_id):
         chunk_trading_days = _backtest_chunk_trading_days(run)
         chunk_end = min(current_index + chunk_trading_days, len(trading_dates))
 
-        for current_date in trading_dates[current_index:chunk_end]:
+        for loop_offset, current_date in enumerate(trading_dates[current_index:chunk_end]):
+            session_index = current_index + loop_offset
+            if execution_model == EXECUTION_MODEL_NEXT_DAY:
+                cash, open_positions, pending_entries = _process_pending_fills(
+                    run, current_date, trading_dates, session_index,
+                    pending_entries, open_positions, cash,
+                    detail_map, price_map, fee_config, slippage_bps,
+                    closed_pnls, max_positions, suspension_set, first_bar_map, ts_code_map,
+                    trade_buffer=trade_buffer,
+                )
             cash, open_positions = _close_positions_for_date(
                 run,
                 current_date,
@@ -2534,6 +2856,7 @@ def run_backtest(self, backtest_run_id):
                 closed_pnls,
                 stop_target_exit_enabled,
                 trade_buffer=trade_buffer,
+                execution_model=execution_model,
             )
 
             if _should_enter_position(current_date, entry_weekdays):
@@ -2570,6 +2893,8 @@ def run_backtest(self, backtest_run_id):
                         max_positions,
                         runtime_cache=candidate_cache,
                         trade_buffer=trade_buffer,
+                        execution_model=execution_model,
+                        pending_entries=pending_entries,
                     )
 
             equity_curve.append(_portfolio_equity(current_date, cash, open_positions, price_map))
@@ -2585,6 +2910,7 @@ def run_backtest(self, backtest_run_id):
                     'equity_curve': equity_curve,
                     'closed_pnls': closed_pnls,
                     'open_positions': open_positions,
+                    'pending_entries': pending_entries,
                     'macro_monthly_report': macro_monthly_report,
                     'lightgbm_runtime': candidate_cache.get('lightgbm_runtime_metrics'),
                 },
@@ -2654,6 +2980,7 @@ def run_backtest(self, backtest_run_id):
             'num_trading_days': len(trading_dates),
             'strategy': run.strategy_type,
             'prediction_source': _prediction_source(run),
+            'execution_model': execution_model,
             'candidate_mode': _candidate_mode(run),
             'trade_score_scope': _trade_score_scope(run),
             'use_macro_context': _use_macro_context(run),

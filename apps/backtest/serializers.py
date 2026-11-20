@@ -111,6 +111,12 @@ class BacktestRunSerializer(serializers.ModelSerializer):
         except ContractBoundaryError as exc:
             raise serializers.ValidationError({'start_date': str(exc)}) from exc
 
+        execution_model = str(parameters.get('execution_model', 'same_day_close')).lower()
+        if execution_model not in {'same_day_close', 'next_day_open'}:
+            raise serializers.ValidationError({'parameters': 'execution_model must be same_day_close or next_day_open.'})
+        parameters['execution_model'] = execution_model
+        attrs['parameters'] = parameters
+
         if strategy_type == BacktestRun.StrategyType.PREDICTION_THRESHOLD:
             prediction_source = str(parameters.get('prediction_source', 'heuristic')).lower()
             if prediction_source not in {'heuristic', 'lightgbm', 'lstm'}:
