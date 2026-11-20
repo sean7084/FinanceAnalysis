@@ -2384,6 +2384,9 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                     'training_samples': len(X_train),
                     'feature_count': len(selected_feature_names),
                     'evaluation_mode': evaluation_mode,
+                    'holdout_start': (holdout_start.isoformat()
+                                      if holdout_start is not None else None),
+                    'purge_sessions': horizon,
                     **holdout_metrics,
                 },
                 feature_names=selected_feature_names,

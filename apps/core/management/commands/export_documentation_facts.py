@@ -531,6 +531,11 @@ def build_models():
                     f'{artifact.training_window_start or ""} \u2192 {artifact.training_window_end or ""}',
                     f'{samples:,}' if samples else '&mdash;',
                     _num(metrics.get('accuracy')),
+                    metrics.get('evaluation_mode') or '&mdash;',
+                    _num(metrics.get('rank_ic')),
+                    _num(metrics.get('rank_ic_tstat')),
+                    _num(metrics.get('icir')),
+                    metrics.get('holdout_start') or '&mdash;',
                     feature_count or '&mdash;',
                     pruning.get('rule', '&mdash;'),
                     metadata.get('missing_value_strategy', 'ABSENT'),
@@ -539,7 +544,8 @@ def build_models():
             parts.append(_md_table(
                 [
                     'Horizon', 'Version', 'Status', 'Trained at', 'Window', 'Samples',
-                    'Accuracy', 'Features', 'Pruning rule', 'Missing-value strategy', 'Present in store?',
+                    'Accuracy', 'Eval mode', 'Rank IC', 'IC t-stat', 'ICIR', 'Holdout start',
+                    'Features', 'Pruning rule', 'Missing-value strategy', 'Present in store?',
                 ],
                 rows,
             ))
@@ -563,10 +569,15 @@ def build_models():
                 version.status,
                 str(version.trained_at)[:19].replace('T', ' ') if version.trained_at else '',
                 _num(accuracy) if accuracy is not None else '&mdash;',
+                metrics.get('evaluation_mode') or '&mdash;',
+                _num(metrics.get('rank_ic')),
+                _num(metrics.get('rank_ic_tstat')),
+                metrics.get('holdout_start') or '&mdash;',
                 version.artifact_path or '&mdash;',
             ))
         parts.append(_md_table(
-            ['ID', 'Type', 'Version', 'Active', 'Status', 'Trained at', 'Accuracy', 'Artifact path'],
+            ['ID', 'Type', 'Version', 'Active', 'Status', 'Trained at', 'Accuracy',
+             'Eval mode', 'Rank IC', 'IC t', 'Holdout start', 'Artifact path'],
             version_rows,
         ))
 
