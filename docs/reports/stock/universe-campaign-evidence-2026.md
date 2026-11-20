@@ -199,3 +199,5 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **H2 part 1（stock ledger）**：apps/prediction/evidence.py 复用 ETF digest/measurement_id 单实现 + 独立 stock 路径（STOCK_EVIDENCE_PATH 测试覆写）+ record/read/context_repeats。5 测试 OK，ruff 绿。分支 feat/stock-walk-forward。
 - **H2 part 2（fold plan）**：apps/prediction/walk_forward.py 包装 ETF expanding_folds（训练恒从 STOCK_TRAINING_START，min_train=panel_start session 索引，7 折，30 tail，purge 经 train_dates_for_fold）。4 测试 OK（7 折/验证从 panel_start/purge/非 session 与不足 250 报错）。
 - H2 剩余：run_stock_walk_forward 命令（prereg JSON manifest 门控）+ 矩阵缓存（D7 key）+ 向量化模拟器（D10）+ 对账 + 测试。设计在计划 H2 卡。
+- **H2 part 4（matrix cache key）**：matrix_cache.py key 绑定 index/panel/schema/storage_era(param_key)/OHLCV 签名；7 测试 OK（8f22618）。H2 parts 1-4 共 27 测试。
+- H2 剩余：向量化模拟器（D10，成本/选择/next_day_open 锁死）+ run_stock_walk_forward 命令编排 + 矩阵辅助列（st_flag/circ_mv）+ 引擎对账。下一窗口继续（设计在计划 H2 卡）。
