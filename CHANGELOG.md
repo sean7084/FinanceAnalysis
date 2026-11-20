@@ -8,6 +8,8 @@
 
 #### Changed:
 
+- **The LightGBM fit core is extracted as a pure function (H1, walk-forward foundation).** `_fit_lightgbm_horizon` performs the purged split, scaler fit, LightGBM training, calibration, and holdout metrics with zero database or disk writes, returning the full fit structure; `train_lightgbm_models` calls it and keeps all activation/registration side effects unchanged (behavior byte-identical, existing training tests pass). The walk-forward harness (H2) will call the core directly and persist fold artifacts with is_active=False. 3 new purity/structure tests in `apps/prediction/tests_fit_core.py`; apps.prediction 189 OK. Universe campaign card H1.
+
 - **Backend test-discovery floor raised 1316 → 1498 for the Wave-1 universe campaign.** Measured from the local full suite (Ran 1500 tests, identical to CI's discovered count across prior campaigns) plus C2b's 2 command-flag tests = 1502, set to measured-minus-four per the repo convention. The stale 1306/1309 comment is replaced with the measurement source. Frontend floor unchanged (100). This is the last Wave-1 PR.
 
 - **The standalone PIT benchmark build command accepts index / policy / code (C2b, #196).** `build_pit_union_benchmark` gains `--index-codes` / `--policy` / `--benchmark-code`, passed to `refresh_point_in_time_union_benchmark`, so DR7 can build each coexisting series explicitly (the daily loop already does via ACTIVE_PIT_BENCHMARK_SPECS). Defaults None keep the serving default. 2 new tests in `apps/markets/tests_pit_series.py` (flags reach refresh / defaults None); commands.md regenerated. Universe campaign card C2b.

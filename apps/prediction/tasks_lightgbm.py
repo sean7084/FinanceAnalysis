@@ -2140,6 +2140,92 @@ def _holdout_metrics(y_true, proba, dates, forward_returns):
     return metrics
 
 
+def _fit_lightgbm_horizon(X_train_aligned, horizon, selected_feature_names):
+    """Pure per-horizon fit: purged split, scaler, LightGBM, calibrator, metrics.
+
+    No database or disk writes — the walk-forward harness (H2) calls this directly
+    and persists fold artifacts itself (is_active=False). train_lightgbm_models maps
+    the returned dict into its results and handles activation/registration. Behavior
+    is identical to the inline code it replaces (pinned by the training tests).
+    """
+    split = _purged_holdout_split(X_train_aligned, horizon)
+    holdout_frame = None
+    holdout_start = None
+    if split is None:
+        train_frame = X_train_aligned
+        holdout_status = 'unavailable_window_too_short'
+    else:
+        train_frame, holdout_frame, holdout_start = split
+        holdout_status = 'purged_tail'
+
+    X_train = train_frame[selected_feature_names].values
+    y_train = train_frame['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+
+    lgb_params = {
+        'objective': 'multiclass',
+        'num_class': 3,
+        'num_leaves': 15,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.6,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'lambda_l1': 1.0,
+        'lambda_l2': 1.0,
+        'min_data_in_leaf': 50,
+        'random_state': 42,
+        'verbose': -1,
+    }
+
+    train_data = lgb.Dataset(X_train_scaled, label=y_train)
+    model = lgb.train(lgb_params, train_data, num_boost_round=200)
+
+    if hasattr(model, 'fit') and (hasattr(model, 'predict_proba') or hasattr(model, 'decision_function')):
+        calibrator = CalibratedClassifierCV(model, method='sigmoid', cv=5)
+        calibrator.fit(X_train_scaled, y_train)
+        calibration_method = 'sigmoid'
+    else:
+        calibrator = IdentityCalibrator(model)
+        calibration_method = 'identity'
+
+    y_pred_proba = calibrator.predict_proba(X_train_scaled)
+    y_pred = np.argmax(y_pred_proba, axis=1)
+    train_accuracy = float(np.mean(y_pred == y_train))
+
+    if holdout_frame is not None:
+        X_holdout_scaled = scaler.transform(holdout_frame[selected_feature_names].values)
+        y_holdout = holdout_frame['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
+        holdout_metrics = _holdout_metrics(
+            y_holdout,
+            calibrator.predict_proba(X_holdout_scaled),
+            list(holdout_frame['date']),
+            list(holdout_frame['fwd_return']),
+        )
+        accuracy = holdout_metrics['accuracy']
+        evaluation_mode = 'purged_holdout'
+    else:
+        holdout_metrics = {}
+        accuracy = train_accuracy
+        evaluation_mode = 'in_sample'
+
+    return {
+        'model': model,
+        'scaler': scaler,
+        'calibrator': calibrator,
+        'calibration_method': calibration_method,
+        'train_accuracy': train_accuracy,
+        'accuracy': float(accuracy),
+        'evaluation_mode': evaluation_mode,
+        'holdout_metrics': holdout_metrics,
+        'holdout_start': holdout_start,
+        'holdout_status': holdout_status,
+        'lgb_params': lgb_params,
+        'training_samples': len(X_train),
+    }
+
+
 @shared_task
 def train_lightgbm_models(training_start_date=None, training_end_date=None, horizons=None, version_tag='', use_snapshot_pruning=False, universe_policy=None, pit_index_codes=None):
     """
@@ -2259,77 +2345,18 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 })
                 continue
 
-            split = _purged_holdout_split(X_train_aligned, horizon)
-            holdout_frame = None
-            holdout_start = None
-            if split is None:
-                # Too short to hold anything out after the purge. Train on everything and
-                # say so, rather than reporting an in-sample number as if it were honest.
-                train_frame = X_train_aligned
-                results[horizon]['holdout_status'] = 'unavailable_window_too_short'
-            else:
-                train_frame, holdout_frame, holdout_start = split
-                results[horizon]['holdout_status'] = 'purged_tail'
-
-            X_train = train_frame[selected_feature_names].values
-            y_train = train_frame['label'].map({'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
-
-            scaler = StandardScaler()
-            # Fit on the training slice only. The scaler is persisted in the artifact and
-            # used for inference, so fitting it on the holdout would both leak and leave
-            # deployment transforming inputs with statistics it will never see.
-            X_train_scaled = scaler.fit_transform(X_train)
-
-            lgb_params = {
-                'objective': 'multiclass',
-                'num_class': 3,
-                'num_leaves': 15,
-                'learning_rate': 0.05,
-                'feature_fraction': 0.6,
-                'bagging_fraction': 0.8,
-                'bagging_freq': 5,
-                'lambda_l1': 1.0,
-                'lambda_l2': 1.0,
-                'min_data_in_leaf': 50,
-                'random_state': 42,
-                'verbose': -1,
-            }
-
-            train_data = lgb.Dataset(X_train_scaled, label=y_train)
-            model = lgb.train(lgb_params, train_data, num_boost_round=200)
-
-            if hasattr(model, 'fit') and (hasattr(model, 'predict_proba') or hasattr(model, 'decision_function')):
-                calibrator = CalibratedClassifierCV(model, method='sigmoid', cv=5)
-                calibrator.fit(X_train_scaled, y_train)
-                calibration_method = 'sigmoid'
-            else:
-                calibrator = IdentityCalibrator(model)
-                calibration_method = 'identity'
-
-            y_pred_proba = calibrator.predict_proba(X_train_scaled)
-            y_pred = np.argmax(y_pred_proba, axis=1)
-            train_accuracy = float(np.mean(y_pred == y_train))
-
-            if holdout_frame is not None:
-                X_holdout_scaled = scaler.transform(
-                    holdout_frame[selected_feature_names].values)
-                y_holdout = holdout_frame['label'].map(
-                    {'DOWN': 0, 'FLAT': 1, 'UP': 2}).values
-                holdout_metrics = _holdout_metrics(
-                    y_holdout,
-                    calibrator.predict_proba(X_holdout_scaled),
-                    list(holdout_frame['date']),
-                    list(holdout_frame['fwd_return']),
-                )
-                # ``accuracy`` is the OUT-OF-SAMPLE number from here on. The in-sample one
-                # stays available as ``train_accuracy`` so the gap is visible instead of
-                # being replaced by the flattering figure.
-                accuracy = holdout_metrics['accuracy']
-                evaluation_mode = 'purged_holdout'
-            else:
-                holdout_metrics = {}
-                accuracy = train_accuracy
-                evaluation_mode = 'in_sample'
+            fit = _fit_lightgbm_horizon(X_train_aligned, horizon, selected_feature_names)
+            model = fit['model']
+            scaler = fit['scaler']
+            calibrator = fit['calibrator']
+            calibration_method = fit['calibration_method']
+            lgb_params = fit['lgb_params']
+            train_accuracy = fit['train_accuracy']
+            accuracy = fit['accuracy']
+            evaluation_mode = fit['evaluation_mode']
+            holdout_metrics = fit['holdout_metrics']
+            holdout_start = fit['holdout_start']
+            results[horizon]['holdout_status'] = fit['holdout_status']
             results[horizon]['train_accuracy'] = train_accuracy
             results[horizon]['evaluation_mode'] = evaluation_mode
             results[horizon]['holdout_start'] = (
@@ -2403,7 +2430,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                 'metrics_json': {
                     'accuracy': float(accuracy),
                     'train_accuracy': train_accuracy,
-                    'training_samples': len(X_train),
+                    'training_samples': fit['training_samples'],
                     'feature_count': len(selected_feature_names),
                     'evaluation_mode': evaluation_mode,
                     'holdout_start': (holdout_start.isoformat()
@@ -2440,7 +2467,7 @@ def train_lightgbm_models(training_start_date=None, training_end_date=None, hori
                     # the honest gap stays visible without tripping the bound.
                     'test_accuracy': float(accuracy),
                     'train_accuracy': train_accuracy,
-                    'training_samples': len(X_train),
+                    'training_samples': fit['training_samples'],
                     'feature_count': len(selected_feature_names),
                     'evaluation_mode': evaluation_mode,
                     'holdout_start': (holdout_start.isoformat()
