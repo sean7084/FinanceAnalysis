@@ -15,6 +15,7 @@ from apps.markets.models import Asset, ExchangeTradingCalendar, IndexMembership,
 from .models_lightgbm import LightGBMModelArtifact, LightGBMPrediction, EnsembleWeightSnapshot, FeatureImportanceSnapshot
 from .models import ModelVersion
 from .tasks_lightgbm import (
+    MISSING_VALUE_STRATEGY_LEGACY,
     MISSING_VALUE_STRATEGY_NATIVE_NAN,
     _build_lightgbm_model_version,
     _register_lightgbm_model_version,
@@ -457,14 +458,32 @@ class LightGBMPredictionTests(TestCase):
         self.assertTrue(np.isnan(float(feature_df.iloc[0]['relative_volume_5d'])))
         self.assertTrue(np.isnan(float(feature_df.iloc[0]['realized_volatility_5d'])))
 
-    def test_resolve_prediction_feature_value_returns_nan_for_missing_keys_under_native_nan_strategy(self):
+    def test_resolve_prediction_feature_value_raises_for_missing_column_under_native_nan(self):
+        # #146 / A3: a column the extractor does not produce is a schema mismatch,
+        # not a missing value — it must raise naming the column, not neutral-fill.
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_prediction_feature_value(
+                {},
+                'totally_missing_feature',
+                missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+            )
+        self.assertIn('totally_missing_feature', str(ctx.exception))
+
+    def test_resolve_prediction_feature_value_keeps_nan_for_present_keys(self):
+        resolved = _resolve_prediction_feature_value(
+            {'rsi': float('nan')},
+            'rsi',
+            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+        )
+        self.assertTrue(np.isnan(resolved))
+
+    def test_resolve_prediction_feature_value_legacy_still_zero_fills(self):
         resolved = _resolve_prediction_feature_value(
             {},
             'totally_missing_feature',
-            missing_value_strategy=MISSING_VALUE_STRATEGY_NATIVE_NAN,
+            missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
         )
-
-        self.assertTrue(np.isnan(resolved))
+        self.assertEqual(resolved, 0.0)
 
     def test_build_lightgbm_model_version_appends_normalized_tag(self):
         d = timezone.datetime(2024, 12, 31).date()
@@ -683,6 +702,9 @@ class LightGBMPredictionTests(TestCase):
         artifact = LightGBMModelArtifact.objects.filter(horizon_days=3).latest('created_at')
         self.assertEqual(artifact.version, f'lgb-3d-{d.isoformat()}-regstrong-v1')
         self.assertEqual(artifact.metadata['engineered_feature_version'], 'v3')
+        self.assertEqual(artifact.metadata['feature_schema']['names'], artifact.feature_names)
+        self.assertEqual(artifact.metadata['feature_schema']['dtype'], 'float64')
+        self.assertEqual(artifact.metadata['feature_schema']['schema_version'], 1)
         self.assertEqual(artifact.metadata['missing_value_strategy'], MISSING_VALUE_STRATEGY_NATIVE_NAN)
         self.assertEqual(artifact.metadata['pruning']['rule'], 'none')
         self.assertEqual(artifact.metadata['version_tag'], 'regstrong-v1')

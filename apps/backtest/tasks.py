@@ -69,6 +69,8 @@ from apps.prediction.tasks_lightgbm import (
     _load_model_artifacts,
     _predict_lightgbm_probabilities_for_scaled_matrix,
     _resolve_lightgbm_gpu_predict_device,
+    _resolve_missing_value_strategy,
+    _resolve_prediction_feature_value,
 )
 from apps.prediction.tasks_lstm import _predict_with_lstm, _prime_lstm_inference_asset_ids
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
@@ -751,11 +753,17 @@ def _predict_lightgbm_for_asset(asset_id, dt, horizon, cache, trade_decision_pol
     _set_lightgbm_runtime_execution(cache, 'cpu_serial', 1)
 
     features_started = perf_counter()
-    features_dict = _extract_features_for_asset(asset_id, dt, cache=cache)
+    missing_value_strategy = runtime['missing_value_strategy']
+    features_dict = _extract_features_for_asset(
+        asset_id, dt, missing_value_strategy=missing_value_strategy, cache=cache,
+    )
     _add_lightgbm_runtime_time(cache, 'feature_extraction_seconds', perf_counter() - features_started)
 
     row_assembly_started = perf_counter()
-    X = np.array([features_dict.get(name, 0.0) for name in feature_names]).reshape(1, -1)
+    X = np.array([
+        _resolve_prediction_feature_value(features_dict, name, missing_value_strategy=missing_value_strategy)
+        for name in feature_names
+    ]).reshape(1, -1)
     _add_lightgbm_runtime_time(cache, 'row_assembly_seconds', perf_counter() - row_assembly_started)
 
     scaler_started = perf_counter()
@@ -1518,6 +1526,7 @@ def _get_lightgbm_runtime(run, horizon, cache):
         'model_artifact': model_artifact,
         'artifacts': artifacts,
         'feature_names': artifacts['metadata']['feature_names'],
+        'missing_value_strategy': _resolve_missing_value_strategy(model_artifact, artifacts),
     }
     cache[runtime_key] = runtime
     return runtime
@@ -1587,6 +1596,7 @@ def _predict_lightgbm_for_assets_batched(
     model_artifact = runtime['model_artifact']
     artifacts = runtime['artifacts']
     feature_names = runtime['feature_names']
+    missing_value_strategy = runtime['missing_value_strategy']
     batch_size = _lightgbm_batch_size(run)
 
     _set_lightgbm_runtime_execution(cache, inference_backend, batch_size)
@@ -1602,11 +1612,16 @@ def _predict_lightgbm_for_assets_batched(
             continue
 
         features_started = perf_counter()
-        features_dict = _extract_features_for_asset(asset_id, dt, cache=cache)
+        features_dict = _extract_features_for_asset(
+            asset_id, dt, missing_value_strategy=missing_value_strategy, cache=cache,
+        )
         _add_lightgbm_runtime_time(cache, 'feature_extraction_seconds', perf_counter() - features_started)
 
         row_assembly_started = perf_counter()
-        uncached_rows.append([features_dict.get(name, 0.0) for name in feature_names])
+        uncached_rows.append([
+            _resolve_prediction_feature_value(features_dict, name, missing_value_strategy=missing_value_strategy)
+            for name in feature_names
+        ])
         _add_lightgbm_runtime_time(cache, 'row_assembly_seconds', perf_counter() - row_assembly_started)
         uncached_asset_ids.append(asset_id)
 
