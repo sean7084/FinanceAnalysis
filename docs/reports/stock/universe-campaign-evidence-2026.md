@@ -211,3 +211,10 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **part 8 编排+命令**（f677f59）：walk_forward_runner.run_cell 逐折（臂掩码→H1 纯 fit→OOS 验证指标≠内部 holdout→模拟器净值→每 horizon 一行台账带 digest）；collaborator 注入故无 DB 可测。stock_matrix_provider.DBMatrixProvider 用生产训练函数建一次矩阵+逐 horizon 标签+prices+aux，切 purged 折帧。run_stock_walk_forward 命令接真实 fit/predict/simulate/ledger，拒缺 prereg/panel-end 漂移/未声明臂；折工件 is_active=False（mutation：翻 is_active 挂不变量测试；禁 prereg 门控挂 3 拒绝测试）。22 新测试（runner 8/command 4/arm 10）；apps.prediction **252 OK**；commands.md 再生（celery/env 仅时间戳漂移已还原）。
 - H2 剩余：模拟器 vs 全引擎抽样折窗对账（decision_replay 回滚内，逐日净值差<1bp 或可归因）——数据依赖，DR 数据落地后实测。
 - campaign 实跑仍门控于 DR1-7 数据 + P1 签署（owner O3/O4/O5）。
+
+### 2026-11-20 H2 part 9 + 代码完成
+- **part 9 引擎对账**（48b1a12）：apps/prediction/engine_reconciliation.py — 模拟器日收益复利成 NAV，注入引擎协作者经 decision_replay.run_in_rolled_back_transaction 跑（写入全丢弃），按日对齐两 NAV 序列，1bp 容差+逐日 breach，覆盖缺口绝非静默通过。rollback mutation 证明（绕过回滚事务则探针行持久化、测试挂）。7 测试 OK。
+- **命名冲突近失**：新模块初名 reconciliation.py 覆盖了既有预测覆盖模块（tasks.py/catchup 消费，导出 ENSEMBLE）及其 19 测试文件；已 git checkout 还原两者，新模块改名 engine_reconciliation.py、测试 tests_engine_reconciliation.py。教训：Write 前必查文件是否已存在（"updated successfully" 即覆盖信号）。还原后 apps.prediction **259 OK**（252+7）。
+- **H2 代码完成（parts 1-9）**：ledger/fold plan/prereg gating/cache key/simulator primitives+loop/arm masks/编排核心+命令/引擎对账。feat/stock-walk-forward push 48b1a12，base=main f88d6b7（0 behind），无开放 PR。
+- 落地：land-pr dry-run 跑全 8 gate+全套件验证中；H2 PR 不改地板（CI discovered>1498 即绿），地板按 plan 另起 PR 从 CI 实测 Ran N 设 N−4、每波最后合。
+- campaign 实跑仍门控 DR1-7 + P1 签署（owner）。
