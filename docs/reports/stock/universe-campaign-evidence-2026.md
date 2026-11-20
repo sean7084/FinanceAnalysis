@@ -155,3 +155,5 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 分支 feat/st-layer-namechange（从 32fb40f）。AssetNameChange+AssetSTInterval（markets/0017）+ st_history（状态机/bisect/ingest gate）+ sync_asset_namechanges（ann_date 窗/bisect/隔离报告）+ reconcile_st_history（双 diff/非零退出/B3 门报告）+ daily 60 天刷新+分歧检查（现有 beat 内，无新 beat 行）+ universe_policy ST lazy-load。
 - 测试 24 个（转换矩阵/as-of 边界/批量等价/退市保留/幂等/摄入门/bisect/每日分歧）。mutation + markets 套件 + 落地见 PR。
 - A4 合并 #208 → main 3a86e3e（9 PR 合并）；B2 rebase 时 union。
+- 修复：helper 插入把 @shared_task 装饰器挤到 sync_recent_namechanges 上 ⇒ sync_daily_a_shares 失注册（core.E002）→ 装饰器移回。复跑 markets **163 OK**，mutation rc=1，gates 绿。
+- **B2 落地**：commit ed025cf → rebase（CHANGELOG union）→ **PR #209**（0389864）。剩余 Wave 1：B1b / B3（DR6 门）/ C2 / 地板。
