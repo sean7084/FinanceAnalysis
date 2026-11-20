@@ -116,6 +116,12 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 修复一跑：coverage 测试误用 2009 日期（<2010 合法不要求覆盖）→ 改 2010-01-04 无快照。复跑 **全套件 1367 OK**（默认板块过滤全仓零既有冲突），mutation rc=1。
 - **A3 落地**：PR #206 合并 8b29845（CI 双绿，预授权）。
 - **B1 核心落地**：rebase 到 8b29845（journal union；脚本 UU 检查先于 add 的小 bug 已手工补 add）→ **PR #207**（e280607）。
+
+## 2026-11-20 — A4 设计细化（未实现）
+
+- 分支 feat/backtest-execution-realism 已切（从 8b29845）。读引擎：price_map(:589) 标量 close、_close_positions_for_date(:2006)、_open_positions_for_date(:2085)、主循环(:2491+)。
+- 机制推导已写入计划 A4 卡（并行 detail map / pending_entry+pending_exit 进 runtime_state / session 开头成交处理 / 锁死重试≤3 / is_st 占位待 B2 / legacy 逐字节不变）。
+- 待实现（下一上下文窗口按计划卡执行）。B1 #207 CI 绿后合并（预授权）。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
