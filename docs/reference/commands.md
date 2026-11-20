@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-20T06:20:14Z_
+_Generated: 2026-11-20T07:05:15Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**63** project commands across **9** apps.
+**64** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -954,6 +954,23 @@ Backfill features and retrain 3/7/30-day LSTM models end-to-end.
 | `--max-samples-per-horizon` | value | `30000` |  | Upper bound of sequence samples used per horizon to keep retrain memory-safe. |
 | `--skip-backfill` | flag | `False` |  | Skip model data backfill and retrain directly. |
 | `--version-tag` | value | `""` |  | Optional suffix added to the LSTM model version to preserve existing artifact families. |
+
+
+### `run_stock_walk_forward`
+
+Run one stock walk-forward (arm, panel_start) cell over the frozen panel (prereg-gated).
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--preregistration` | value | &mdash; | yes | Path to the signed preregistration markdown. |
+| `--arm` | value | &mdash; | yes | Universe arm: board_only / board_st / cap. |
+| `--panel-start` | value | &mdash; | yes | Declared panel start (YYYY-MM-DD). |
+| `--panel-end` | value | &mdash; | yes | Frozen panel end; must equal the manifest. |
+| `--horizons` | value | `3,7,30` |  | Comma-separated horizons (default 3,7,30). |
+| `--index-codes` | value | &mdash; |  | Comma-separated PIT index codes (default serving). |
+| `--execution-model` | value | `next_day_open` |  | next_day_open / same_day_close. |
+| `--checkpoint-file` | value | &mdash; |  | JSON checkpoint for --resume. |
+| `--resume` | flag | `False` |  | Skip folds already in the checkpoint. |
 
 
 ### `sync_artifacts_from_store`
