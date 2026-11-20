@@ -201,3 +201,5 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - H2 剩余：run_stock_walk_forward 命令（prereg JSON manifest 门控）+ 矩阵缓存（D7 key）+ 向量化模拟器（D10）+ 对账 + 测试。设计在计划 H2 卡。
 - **H2 part 4（matrix cache key）**：matrix_cache.py key 绑定 index/panel/schema/storage_era(param_key)/OHLCV 签名；7 测试 OK（8f22618）。H2 parts 1-4 共 27 测试。
 - H2 剩余：向量化模拟器（D10，成本/选择/next_day_open 锁死）+ run_stock_walk_forward 命令编排 + 矩阵辅助列（st_flag/circ_mv）+ 引擎对账。下一窗口继续（设计在计划 H2 卡）。
+- **H2 part 5（simulator primitives）**：simulator.py fill_price/raw_open_from_row/is_limit_locked 复用 engine limit_pct_for（主板 ST 5%/ChiNext ST 20%/新股免费/涨跌停锁死）；11 测试 OK（4a30e4a）。H2 parts 1-5 共 38 测试。
+- H2 剩余：完整模拟器日循环（top-N/成本/净值）+ run_stock_walk_forward 命令编排 + 矩阵辅助列 + 引擎对账。分支已 push 保全。
