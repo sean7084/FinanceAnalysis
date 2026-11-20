@@ -78,8 +78,9 @@ class UniversePolicyTests(TestCase):
             point_in_time_union_asset_ids(date(2020, 1, 8), policy='nonsense')
 
     def test_st_request_before_enable_raises(self):
-        with self.assertRaises(up.UniversePolicyError):
-            point_in_time_union_asset_ids(date(2020, 1, 8), st_layer=True)
+        with patch.object(up, 'ST_LAYER_ENABLED', False):
+            with self.assertRaises(up.UniversePolicyError):
+                point_in_time_union_asset_ids(date(2020, 1, 8), st_layer=True)
 
     def test_st_layer_excludes_st_and_retains_delisted_non_st(self):
         with patch.object(up, 'ST_LAYER_ENABLED', True):
@@ -116,8 +117,9 @@ class UniversePolicyTests(TestCase):
 
     def test_benchmark_code_scheme(self):
         self.assertEqual(pit_benchmark_code_for(('000905.SH',), policy=up.POLICY_RESEARCH_FULL), 'CSI500_PIT')
-        self.assertEqual(pit_benchmark_code_for(('000905.SH',)), 'CSI500_PIT_EXBOARD')
-        self.assertEqual(pit_benchmark_code_for(('000852.SH',)), 'CSI1000_PIT_EXBOARD')
+        with patch.object(up, 'ST_LAYER_ENABLED', False):
+            self.assertEqual(pit_benchmark_code_for(('000905.SH',)), 'CSI500_PIT_EXBOARD')
+            self.assertEqual(pit_benchmark_code_for(('000852.SH',)), 'CSI1000_PIT_EXBOARD')
         self.assertEqual(pit_benchmark_code_for(('000905.SH',), policy=up.POLICY_RESEARCH_CAP), 'CSI500_PIT_EXBOARD_CAP')
         with patch.object(up, 'ST_LAYER_ENABLED', True):
             self.assertEqual(pit_benchmark_code_for(('000905.SH',)), 'CSI500_PIT_EXBOARD_ST')
