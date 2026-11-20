@@ -59,3 +59,49 @@ class LimitLockTests(SimpleTestCase):
     def test_missing_prices_not_locked(self):
         self.assertFalse(is_limit_locked(raw_open=None, prev_raw_close=Decimal('10'),
                                          ts_code='600001.SH', trade_date=date(2020, 1, 2), side='buy'))
+
+
+class SimulateTopNTests(SimpleTestCase):
+    def _panel(self):
+        import pandas as pd
+        dates = [date(2020, 1, d) for d in (1, 2, 3, 6)]
+        prices = pd.DataFrame([
+            {'date': d, 'asset_id': 1, 'open': Decimal(10) + Decimal(i) * Decimal('0.5'), 'close': Decimal(10) + Decimal(i) * Decimal('0.5'), 'raw_close': Decimal(10) + Decimal(i) * Decimal('0.5')}
+            for i, d in enumerate(dates)
+        ] + [
+            {'date': d, 'asset_id': 2, 'open': Decimal(20), 'close': Decimal(20), 'raw_close': Decimal(20)}
+            for d in dates
+        ])
+        predictions = pd.DataFrame([
+            {'date': dates[0], 'asset_id': 1, 'up_prob': 0.9},
+            {'date': dates[0], 'asset_id': 2, 'up_prob': 0.6},
+        ])
+        return predictions, prices, dates
+
+    def test_next_day_open_top1_return(self):
+        from apps.prediction.simulator import simulate_topn_returns
+        predictions, prices, dates = self._panel()
+        out = simulate_topn_returns(predictions, prices, top_n=1, up_threshold=0.55,
+                                    ts_code_map={1: '600001.SH', 2: '600002.SH'})
+        row = out[out['date'] == dates[0]].iloc[0]
+        self.assertEqual(row['n_selected'], 1)
+        gross = 11.0 / 10.5 - 1.0  # entry d2 open 10.5, exit d3 open 11 (< 10% limit)
+        cost = 2 * 0.0005 + 2 * 0.00025 + 0.001
+        self.assertAlmostEqual(row['portfolio_return'], gross - cost, places=6)
+
+    def test_threshold_filters_all(self):
+        from apps.prediction.simulator import simulate_topn_returns
+        predictions, prices, dates = self._panel()
+        out = simulate_topn_returns(predictions, prices, top_n=3, up_threshold=0.95,
+                                    ts_code_map={1: '600001.SH', 2: '600002.SH'})
+        row = out[out['date'] == dates[0]].iloc[0]
+        self.assertEqual(row['n_selected'], 0)
+        self.assertEqual(row['portfolio_return'], 0.0)
+
+    def test_suspension_skips_asset(self):
+        from apps.prediction.simulator import simulate_topn_returns
+        predictions, prices, dates = self._panel()
+        out = simulate_topn_returns(predictions, prices, top_n=1, up_threshold=0.55,
+                                    ts_code_map={1: '600001.SH'}, suspension_set={(1, dates[1])})
+        row = out[out['date'] == dates[0]].iloc[0]
+        self.assertEqual(row['n_selected'], 0)  # asset 1 suspended at entry, asset 2 below top_n=1
