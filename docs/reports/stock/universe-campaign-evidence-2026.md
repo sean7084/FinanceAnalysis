@@ -131,6 +131,8 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **A4 part 2 实现完成（同窗口续）**：pending_exit（position spread 天然过 chunk）+ pending_entries（runtime_state 新键，Decimal→str）+ _session_fill_lock（raw 价涨跌停/停牌/缺 bar）+ _process_pending_fills（开盘成交、重试≤3、卖不强平）+ 主循环 session 开头处理 + report.execution_model。
   修复三跑：cls.run 遮蔽 TestCase.run 方法 → backtest_run；sessions_since_listing 窗口前首 bar ⇒ 视为已过免费期（保守近似，PR 记录 caveat）；chunked 续跑需循环调用 run_backtest（delay 不 eager）。
   **156 OK**（含 next_day 集成 + cross-chunk final_value 不变）。mutation + 全套件 + 落地见 PR。
+- **A4 落地**：mutation rc=1 ✓；backtest 全套件 **194 OK** ✓；gates 绿；commit 34d7662 → rebase 到 32fb40f（CHANGELOG union A4+B1；脚本 union 失败一次 → 手工 resolve_a4_changelog.py）→ **PR #208**（e8259c3，3 commits）。
+- **Gate A 全卡完成**（A1✅ A2✅ A3✅ A4⏳CI）。剩余 Wave 1：B1b（调用方覆写+provenance）/ B2（ST 层）/ B3（启用门）/ C2（双 PIT）/ 地板 PR。
 - 注：本地 main 引用曾滞后（合并 #201/#202 后只 fetch 未 ff），本分支切自旧 main 584e7b9；已 `git branch -f main origin/main`，PR 前 rebase。
 
 ## 2026-11-20 — A5（STK-03 残余 + STK-08，#195）实施
