@@ -192,3 +192,4 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **B1b 全卡落地**：p2b commit 571208c（prediction+backtest **385 OK**，gates 绿，commands.md 再生）；rebase 3 commits（journal union×2）；push 首次瞬断（curl 7，已知路径现象）→ ls-remote 确认远端无分支 → 重试成功 → **PR #212**（19d96e9）。
 - **Wave 1 代码卡全部完成**。剩地板 PR：#212 合并后读 CI 实测 Ran N（measured−4 惯例，注释写明测量来源）。之后 owner-gated：DR1-7 → B3 → H1/H2 → STK-10 → P1 → CMP → R1 → S1。
 - DR 执行脚本已备好（**未执行**，待 owner 批准）：tmp/dr1_sync_csi1000.sh（DR1-3 年分块 + 连续性 + 官方基准）、tmp/dr6_namechange_reconcile.sh（DR6 全史 + 对账，diff 非零退出）。bash -n 通过。
+- P1 预登记草稿已备（tmp/prereg_draft_csi500_vs_csi1000.md，**未注册**）：4+2 臂/5 起点/7 折/v3/next_day_open/§6 修订/并存条款/触发/盲区/D1-D10（D7 更正 2020-12）/JSON manifest。O3/O4/O5 待 owner 签署。H2 设计细化已写入计划卡。
