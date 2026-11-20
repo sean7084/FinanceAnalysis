@@ -66,8 +66,10 @@ MARKET_SUFFIX_TO_CODE = {
 # net: a full page bisects the window, and a single day still at the cap raises.
 INDEX_WEIGHT_PAGE_LIMIT = 7000
 INDEX_WEIGHT_SYNC_WINDOW_DAYS = 10
+#: Overrides for indices whose member count needs a smaller window (CSI1000 = 1000
+#: rows/snapshot). Indices absent here use INDEX_WEIGHT_SYNC_WINDOW_DAYS, so the
+#: base knob stays patchable for tests and operators.
 INDEX_WEIGHT_SYNC_WINDOW_DAYS_BY_INDEX = {
-    '000905.SH': 10,
     '000852.SH': 5,
 }
 INDEX_WEIGHT_REQUEST_SLEEP_SECONDS = 0.4
