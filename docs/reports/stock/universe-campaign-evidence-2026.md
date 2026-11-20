@@ -70,4 +70,12 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 分支 feat/backtest-date-contract-enforcement。双守卫：serializer.validate() + run_backtest 任务入口（命令直建 run 绕过 serializer ⇒ 任务守卫是承重墙）；
   override = parameters.allow_pre_contract_history（布尔校验）+ 四命令 --allow-pre-contract-history（fail-fast，reference suite 透传，rerun 亦继承源 run）。
 - 验证：新测试 **9 OK**；apps.backtest 全套件 **96 OK**（无既有 fixture 破坏）；apps.core.tests_date_contract **24 OK**；ruff 通过。
-- mutation 证明：删除任务守卫 ⇒ 拒绝测试须挂（控制输出 tmp/a1_mutation.log，rc 非零为通过）；落地记录见 PR body 与 CI 时间线。
+- mutation 证明：删除任务守卫 ⇒ 拒绝测试须挂（控制输出 tmp/a1_mutation.log，rc 非零为通过）。
+- **A1 落地**：mutation rc=1（FAILED failures=1）✓ 还原后 9 OK ✓；commands.md +5/−1；sheets --check / makemigrations --check / check / ruff 全绿；
+  commit 82c7067 → **PR #201 合并 0fdaef0**（CI 双绿，预授权 --admin）。
+
+## 2026-11-20 — A2（STK-06，#194）实施
+
+- 分支 feat/artifact-activation-guard（从 main，与 A1 无文件重叠）。LightGBMModelArtifact.save() 镜像 ModelVersion.save（ARCHIVED+active 拒；active 过 validate_activation_metrics(metrics_json)）；activation.py docstring 同步。
+- 绕过审计：artifact 唯一写路径 = 训练 update_or_create(:2363，走 save())；.update(is_active=False)(:2339) 为去激活方向，安全。
+- 验证：apps.prediction 全套件 **163 OK**（无 fixture 冲突）；新测试 **9 OK**；mutation rc=1 ✓ 还原后绿 ✓；gates 全绿；commit 66eaa6c（rebase 到 0fdaef0 后 PR 待开）。
