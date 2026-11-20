@@ -115,6 +115,22 @@ class BacktestRunSerializer(serializers.ModelSerializer):
         if execution_model not in {'same_day_close', 'next_day_open'}:
             raise serializers.ValidationError({'parameters': 'execution_model must be same_day_close or next_day_open.'})
         parameters['execution_model'] = execution_model
+
+        universe_policy = parameters.get('universe_policy')
+        if universe_policy is not None:
+            from apps.markets.universe_policy import VALID_POLICIES
+
+            if str(universe_policy) not in VALID_POLICIES:
+                raise serializers.ValidationError({
+                    'parameters': f'universe_policy must be one of {sorted(VALID_POLICIES)}.',
+                })
+            parameters['universe_policy'] = str(universe_policy)
+        pit_index_codes = parameters.get('pit_index_codes')
+        if pit_index_codes is not None:
+            if not isinstance(pit_index_codes, list) or not all(isinstance(c, str) for c in pit_index_codes):
+                raise serializers.ValidationError({'parameters': 'pit_index_codes must be a list of index code strings.'})
+            parameters['pit_index_codes'] = pit_index_codes
+
         attrs['parameters'] = parameters
 
         if strategy_type == BacktestRun.StrategyType.PREDICTION_THRESHOLD:
