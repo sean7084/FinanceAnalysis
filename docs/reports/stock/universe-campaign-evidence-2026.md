@@ -168,6 +168,14 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - A4 合并 #208 → main 3a86e3e（9 PR 合并）；B2 rebase 时 union。
 - 修复：helper 插入把 @shared_task 装饰器挤到 sync_recent_namechanges 上 ⇒ sync_daily_a_shares 失注册（core.E002）→ 装饰器移回。复跑 markets **163 OK**，mutation rc=1，gates 绿。
 - **B2 落地**：commit ed025cf → rebase（CHANGELOG union）→ **PR #209**（0389864）。剩余 Wave 1：B1b / B3（DR6 门）/ C2 / 地板。
+- **B1b part1 合并** #210 → 89e80d0；**C2** → PR #211（81f4195，markets 167 OK，mutation rc=1）。
+
+## 2026-11-20 — B1b part 2 核心（训练穿线 + provenance）
+
+- 分支 feat/training-universe-provenance（从 89e80d0）。matrix/labels/train 穿 universe_policy/pit_index_codes；artifact_metadata += 4 provenance 字段（自动入 ModelVersion.metadata）。
+- 训练 metadata 测试 += 4 断言（默认 → CSI500_PIT_EXBOARD）；prediction **182 OK**；ruff/makemigrations 绿；commit fcb07cc（文档补提交）。
+- part 2b 待做：rebuild/backfill 命令 flags + _reference_metadata_subset 读取侧 + 测试 → 地板 PR → owner-gated DR/B3。
+
 - **B2 合并**：#209 → main 2ffea20。B1b part1 → **PR #210**（aef0a24）。
 
 ## 2026-11-20 — C2（UNI-03，#196）实施
