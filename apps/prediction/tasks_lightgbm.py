@@ -2124,15 +2124,18 @@ def _holdout_metrics(y_true, proba, dates, forward_returns):
     for index, session_date in enumerate(dates):
         by_date.setdefault(session_date, []).append(index)
     daily_ic = []
-    for indices in by_date.values():
+    ic_by_date = {}
+    for session_date, indices in by_date.items():
         ic = _spearman(score[indices], np.asarray(forward_returns)[indices])
         if ic is not None:
             daily_ic.append(ic)
+            ic_by_date[session_date] = float(ic)
 
     if daily_ic:
         daily = np.asarray(daily_ic, dtype=float)
         metrics['rank_ic'] = float(daily.mean())
         metrics['rank_ic_dates'] = int(len(daily))
+        metrics['per_date_ic'] = ic_by_date
         if len(daily) > 1 and daily.std(ddof=1) > 0:
             metrics['icir'] = float(daily.mean() / daily.std(ddof=1))
             metrics['rank_ic_tstat'] = float(

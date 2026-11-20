@@ -20,11 +20,13 @@ from apps.prediction.walk_forward import train_dates_for_fold
 
 class DBMatrixProvider:
     def __init__(self, *, panel_start, panel_end, index_codes, horizons,
-                 universe_policy=None, missing_value_strategy=None):
+                 universe_policy=None, missing_value_strategy=None,
+                 executable_benchmark_code=None):
         self.panel_start = panel_start
         self.panel_end = panel_end
         self.index_codes = tuple(index_codes)
         self.horizons = tuple(horizons)
+        self.executable_benchmark_code = executable_benchmark_code
         self._matrix = tl._create_feature_matrix(
             panel_start, panel_end,
             missing_value_strategy=missing_value_strategy or tl.MISSING_VALUE_STRATEGY_NATIVE_NAN,
@@ -77,3 +79,36 @@ class DBMatrixProvider:
             ).values('asset_id', 'date', 'open', 'close', 'raw_close')
             self._prices = pd.DataFrame(list(rows), columns=['date', 'asset_id', 'open', 'close', 'raw_close'])
         return self._prices
+
+    def benchmark_returns(self):
+        """Date-indexed daily returns for the verdict alpha/beta (H2b / O5).
+
+        official = the index close-to-close return (first index code); executable =
+        the universe-derived PIT benchmark daily_return (ex-board, ex-ST per the arm).
+        Absent series are omitted (the runner reports None, never a fabricated zero).
+        The size factor is not supplied here; beta_size stays None until a size series
+        is wired (O5 circ_mv spread).
+        """
+        from apps.markets.models import BenchmarkIndexDaily, PointInTimeBenchmarkDaily
+
+        result = {}
+        official_code = self.index_codes[0]
+        official_rows = (
+            BenchmarkIndexDaily.objects.filter(
+                index_code=official_code, trade_date__gte=self.panel_start, trade_date__lte=self.panel_end,
+            ).order_by('trade_date').values('trade_date', 'close')
+        )
+        closes = pd.Series({r['trade_date']: float(r['close']) for r in official_rows})
+        if len(closes) > 1:
+            result['official'] = closes.pct_change().dropna()
+        if self.executable_benchmark_code:
+            pit_rows = (
+                PointInTimeBenchmarkDaily.objects.filter(
+                    benchmark_code=self.executable_benchmark_code,
+                    trade_date__gte=self.panel_start, trade_date__lte=self.panel_end,
+                ).order_by('trade_date').values('trade_date', 'daily_return')
+            )
+            executable = pd.Series({r['trade_date']: float(r['daily_return']) for r in pit_rows})
+            if len(executable):
+                result['executable'] = executable
+        return result

@@ -15,7 +15,7 @@ from datetime import date
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.core.date_contract import STOCK_TRAINING_START
-from apps.markets.benchmarking import DEFAULT_PIT_INDEX_CODES
+from apps.markets.benchmarking import DEFAULT_PIT_INDEX_CODES, pit_benchmark_code_for
 from apps.markets.models import OHLCV, Asset, AssetSuspension
 from apps.markets.st_history import st_asset_ids_by_dates
 from apps.prediction import tasks_lightgbm as tl
@@ -80,8 +80,12 @@ class Command(BaseCommand):
             OHLCV.objects.filter(date__gte=STOCK_TRAINING_START, date__lte=panel_end)
             .values_list('date', flat=True).distinct().order_by('date')
         )
+        st_layer = (options['arm'] == 'board_st')
+        policy = 'research_cap' if options['arm'] == 'cap' else None
+        executable_benchmark_code = pit_benchmark_code_for(list(index_codes), policy, st_layer)
         provider = DBMatrixProvider(
             panel_start=panel_start, panel_end=panel_end, index_codes=index_codes, horizons=horizons,
+            executable_benchmark_code=executable_benchmark_code,
         )
         ts_code_map = dict(Asset.objects.values_list('id', 'ts_code'))
         suspension_set = set(
@@ -118,11 +122,21 @@ class Command(BaseCommand):
             )
 
         checkpoint = self._load_checkpoint(options) if options['resume'] else set()
+
+        def returns_sink(horizon, fold_index, sim):
+            import os
+            from django.conf import settings
+            directory = os.path.join(str(settings.BASE_DIR), 'tmp', 'stock-walk-forward', 'returns')
+            os.makedirs(directory, exist_ok=True)
+            path = os.path.join(directory, f'{cell.arm}-{cell.panel_start}-h{horizon}-f{fold_index}.csv')
+            sim.to_csv(path, index=False)
+
         summary = run_cell(
             cell, trade_dates=trade_dates, provider=provider,
             fit_fn=tl._fit_lightgbm_horizon, predict_fn=predict_fn, simulate_fn=simulate_fn,
             record_fn=record_stock_measurement, holdout_metrics_fn=tl._holdout_metrics,
-            persist_fn=persist_fn, preregistration=digest, manifest=manifest, checkpoint=checkpoint,
+            persist_fn=persist_fn, returns_sink=returns_sink, preregistration=digest,
+            manifest=manifest, checkpoint=checkpoint,
         )
         if options['checkpoint_file']:
             self._save_checkpoint(options['checkpoint_file'], checkpoint)

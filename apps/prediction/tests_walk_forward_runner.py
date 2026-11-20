@@ -8,6 +8,7 @@ refused, checkpoint resume skips done folds, empty plan raises.
 """
 import tempfile
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,23 @@ from apps.prediction.prereg import PreregistrationError
 from apps.prediction.walk_forward_runner import WalkForwardCell, run_cell
 
 FEATURES = ('mom_5d', 'vol_20d')
+
+
+def _sim_panel():
+    dates = [date(2020, 1, d) for d in (1, 2, 3, 6)]
+    prices = pd.DataFrame([
+        {'date': d, 'asset_id': 1, 'open': Decimal(10) + Decimal(i) * Decimal('0.5'),
+         'close': Decimal(10) + Decimal(i) * Decimal('0.5'), 'raw_close': Decimal(10) + Decimal(i) * Decimal('0.5')}
+        for i, d in enumerate(dates)
+    ] + [
+        {'date': d, 'asset_id': 2, 'open': Decimal(20), 'close': Decimal(20), 'raw_close': Decimal(20)}
+        for d in dates
+    ])
+    predictions = pd.DataFrame([
+        {'date': dates[0], 'asset_id': 1, 'up_prob': 0.9},
+        {'date': dates[0], 'asset_id': 2, 'up_prob': 0.6},
+    ])
+    return predictions, prices, dates
 
 
 def _sessions():
@@ -159,3 +177,140 @@ class WalkForwardRunnerTests(TestCase):
         )
         with self.assertRaises(ValueError):
             self._run(cell=cell, horizons=(3,))
+
+
+class H2bCompletionTests(TestCase):
+    def setUp(self):
+        self.sessions = _sessions()
+        self.provider = _FakeProvider(self.sessions)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = str(Path(self.tmp.name) / 'stock.jsonl')
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_simulator_params_per_horizon_resolution(self):
+        from apps.prediction.walk_forward_runner import _simulator_params_for
+        params = {'common': {'slippage_bps': 5}, '3': {'top_n': 5}, '30': {'top_n': 3}}
+        self.assertEqual(_simulator_params_for(params, 3), {'slippage_bps': 5, 'top_n': 5})
+        self.assertEqual(_simulator_params_for(params, 30), {'slippage_bps': 5, 'top_n': 3})
+        self.assertEqual(_simulator_params_for(params, 7), {'slippage_bps': 5})
+
+    def test_simulator_params_flat_backward_compatible(self):
+        from apps.prediction.walk_forward_runner import _simulator_params_for
+        self.assertEqual(_simulator_params_for({'top_n': 9}, 3), {'top_n': 9})
+        self.assertEqual(_simulator_params_for({'top_n': 9}, 30), {'top_n': 9})
+        self.assertEqual(_simulator_params_for({}, 3), {})
+
+    def test_runner_passes_per_horizon_top_n(self):
+        seen = []
+
+        def capturing_sim(predictions, prices, **kwargs):
+            seen.append(kwargs.get('top_n'))
+            return pd.DataFrame({'date': list(predictions['date']),
+                                 'portfolio_return': [0.001] * len(predictions),
+                                 'n_selected': [2] * len(predictions)})
+
+        cell = WalkForwardCell(
+            arm='board_only', panel_start=self.sessions[300], panel_end=self.sessions[-1],
+            horizons=(3, 30), index_codes=('000905.SH',), feature_names=FEATURES,
+            execution_model='next_day_open',
+            simulator_params={'3': {'top_n': 5}, '30': {'top_n': 3}},
+        )
+        with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
+            run_cell(cell, trade_dates=self.sessions, provider=self.provider,
+                     fit_fn=_fit_fn, predict_fn=_predict_fn, simulate_fn=capturing_sim,
+                     record_fn=evidence.record_stock_measurement, holdout_metrics_fn=_holdout_fn,
+                     manifest=_manifest(self.sessions, horizons=(3, 30)))
+        self.assertEqual(set(seen), {5, 3})
+
+    def test_is_sharpe_recorded_per_fold(self):
+        with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
+            summary = run_cell(
+                _cell(self.sessions), trade_dates=self.sessions, provider=self.provider,
+                fit_fn=_fit_fn, predict_fn=_predict_fn, simulate_fn=_simulate_fn,
+                record_fn=evidence.record_stock_measurement, holdout_metrics_fn=_holdout_fn,
+                manifest=_manifest(self.sessions))
+        results = summary['horizons'][3]['results']
+        self.assertIn('mean_is_sharpe', results)
+        self.assertTrue(all('is_sharpe' in f for f in results['per_fold']))
+
+    def test_undeclared_index_codes_refused(self):
+        manifest = _manifest(self.sessions)
+        manifest['index_codes'] = ['000905.SH']
+        cell = WalkForwardCell(
+            arm='board_only', panel_start=self.sessions[300], panel_end=self.sessions[-1],
+            horizons=(3,), index_codes=('000852.SH',), feature_names=FEATURES,
+            execution_model='next_day_open',
+        )
+        with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
+            with self.assertRaises(PreregistrationError):
+                run_cell(cell, trade_dates=self.sessions, provider=self.provider,
+                         fit_fn=_fit_fn, predict_fn=_predict_fn, simulate_fn=_simulate_fn,
+                         record_fn=evidence.record_stock_measurement, holdout_metrics_fn=_holdout_fn,
+                         manifest=manifest)
+
+    def test_transfer_fee_in_cost_model(self):
+        from apps.prediction.simulator import simulate_topn_returns
+        predictions, prices, dates = _sim_panel()
+        kwargs = dict(top_n=1, up_threshold=0.55, ts_code_map={1: '600001.SH', 2: '600002.SH'})
+        with_fee = simulate_topn_returns(predictions, prices, **kwargs)
+        without_fee = simulate_topn_returns(predictions, prices, transfer_fee_rate=Decimal('0'), **kwargs)
+        r1 = with_fee[with_fee['date'] == dates[0]].iloc[0]['portfolio_return']
+        r0 = without_fee[without_fee['date'] == dates[0]].iloc[0]['portfolio_return']
+        self.assertAlmostEqual(r0 - r1, 0.00001, places=7)
+
+    def test_alpha_beta_ols_recovers_slope(self):
+        from apps.prediction.walk_forward_runner import _alpha_beta
+        dates = pd.date_range('2021-01-01', periods=20)
+        bench = pd.Series(np.linspace(-0.02, 0.02, 20), index=dates)
+        strat = 2.0 * bench + 0.001
+        alpha, beta = _alpha_beta(strat, bench)
+        self.assertAlmostEqual(beta, 2.0, places=6)
+        self.assertAlmostEqual(alpha, 0.001 * 252, places=6)
+
+    def test_alpha_beta_zero_variance_benchmark_none(self):
+        from apps.prediction.walk_forward_runner import _alpha_beta
+        dates = pd.date_range('2021-01-01', periods=5)
+        bench = pd.Series([0.01] * 5, index=dates)
+        strat = pd.Series([0.02] * 5, index=dates)
+        self.assertEqual(_alpha_beta(strat, bench), (None, None))
+
+    def test_verdict_metrics_folds_beating_and_alpha(self):
+        from apps.prediction.walk_forward_runner import _verdict_metrics
+        dates = pd.date_range('2021-01-01', periods=10)
+        fold1 = pd.Series([0.02] * 5, index=dates[:5])
+        fold2 = pd.Series([-0.01] * 5, index=dates[5:])
+        exe = pd.Series([0.001] * 10, index=dates)
+        official = pd.Series([0.0005] * 10, index=dates)
+        out = _verdict_metrics([fold1, fold2], {i: 0.01 + 0.001 * i for i in range(60)}, {'official': official, 'executable': exe})
+        self.assertEqual(out['folds_beating'], 1)
+        self.assertIsNotNone(out['alpha_executable'])
+        self.assertIsNotNone(out['alpha_official'])
+        self.assertIsNotNone(out['nw_t'])
+
+    def test_verdict_metrics_absent_benchmark_is_none(self):
+        from apps.prediction.walk_forward_runner import _verdict_metrics
+        out = _verdict_metrics([pd.Series([0.01], index=[date(2021, 1, 4)])], {}, {})
+        self.assertIsNone(out['alpha_executable'])
+        self.assertIsNone(out['nw_t'])
+        self.assertEqual(out['folds_beating'], 0)
+
+    def test_returns_sink_called_per_fold(self):
+        captured = []
+        with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
+            run_cell(_cell(self.sessions), trade_dates=self.sessions, provider=self.provider,
+                     fit_fn=_fit_fn, predict_fn=_predict_fn, simulate_fn=_simulate_fn,
+                     record_fn=evidence.record_stock_measurement, holdout_metrics_fn=_holdout_fn,
+                     returns_sink=lambda h, fi, sim: captured.append((h, fi)),
+                     manifest=_manifest(self.sessions))
+        self.assertEqual(len(captured), 14)  # 7 folds x 2 horizons
+
+    def test_nw_t_from_per_date_ic(self):
+        def holdout_with_ic(labels, proba, dates, fwd):
+            return {'rank_ic': 0.05, 'icir': 0.3, 'rank_ic_tstat': 2.0,
+                    'per_date_ic': {i: 0.01 + 0.001 * i for i in range(50)}}
+        with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
+            summary = run_cell(_cell(self.sessions), trade_dates=self.sessions, provider=self.provider,
+                               fit_fn=_fit_fn, predict_fn=_predict_fn, simulate_fn=_simulate_fn,
+                               record_fn=evidence.record_stock_measurement, holdout_metrics_fn=holdout_with_ic,
+                               manifest=_manifest(self.sessions))
+        self.assertIsNotNone(summary['horizons'][3]['results']['nw_t'])
