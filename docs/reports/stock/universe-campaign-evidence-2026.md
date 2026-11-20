@@ -196,11 +196,31 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - **Wave 1 代码卡全部完成**。剩地板 PR：#212 合并后读 CI 实测 Ran N（measured−4 惯例，注释写明测量来源）。之后 owner-gated：DR1-7 → B3 → H1/H2 → STK-10 → P1 → CMP → R1 → S1。
 - DR 执行脚本已备好（**未执行**，待 owner 批准）：tmp/dr1_sync_csi1000.sh（DR1-3 年分块 + 连续性 + 官方基准）、tmp/dr6_namechange_reconcile.sh（DR6 全史 + 对账，diff 非零退出）。bash -n 通过。
 - P1 预登记草稿已备（tmp/prereg_draft_csi500_vs_csi1000.md，**未注册**）：4+2 臂/5 起点/7 折/v3/next_day_open/§6 修订/并存条款/触发/盲区/D1-D10（D7 更正 2020-12）/JSON manifest。O3/O4/O5 待 owner 签署。H2 设计细化已写入计划卡。
+- **H2 part 1（stock ledger）**：apps/prediction/evidence.py 复用 ETF digest/measurement_id 单实现 + 独立 stock 路径（STOCK_EVIDENCE_PATH 测试覆写）+ record/read/context_repeats。5 测试 OK，ruff 绿。分支 feat/stock-walk-forward。
+- **H2 part 2（fold plan）**：apps/prediction/walk_forward.py 包装 ETF expanding_folds（训练恒从 STOCK_TRAINING_START，min_train=panel_start session 索引，7 折，30 tail，purge 经 train_dates_for_fold）。4 测试 OK（7 折/验证从 panel_start/purge/非 session 与不足 250 报错）。
+- H2 剩余：run_stock_walk_forward 命令（prereg JSON manifest 门控）+ 矩阵缓存（D7 key）+ 向量化模拟器（D10）+ 对账 + 测试。设计在计划 H2 卡。
+- **H2 part 4（matrix cache key）**：matrix_cache.py key 绑定 index/panel/schema/storage_era(param_key)/OHLCV 签名；7 测试 OK（8f22618）。H2 parts 1-4 共 27 测试。
+- H2 剩余：向量化模拟器（D10，成本/选择/next_day_open 锁死）+ run_stock_walk_forward 命令编排 + 矩阵辅助列（st_flag/circ_mv）+ 引擎对账。下一窗口继续（设计在计划 H2 卡）。
+- **H2 part 5（simulator primitives）**：simulator.py fill_price/raw_open_from_row/is_limit_locked 复用 engine limit_pct_for（主板 ST 5%/ChiNext ST 20%/新股免费/涨跌停锁死）；11 测试 OK（4a30e4a）。H2 parts 1-5 共 38 测试。
+- H2 剩余：完整模拟器日循环（top-N/成本/净值）+ run_stock_walk_forward 命令编排 + 矩阵辅助列 + 引擎对账。分支已 push 保全。
+- **H2 part 6（模拟器日循环）**：simulate_topn_returns 等权 top-N 日 rebalance，next_day_open/same_day_close，成本（2×滑点+2×佣金+印花税），涨停锁死/停牌跳过；14 测试 OK（d735782；fixture 曾误触 +10% 涨停已修）。H2 parts 1-6 共 41 测试。
+- H2 剩余：run_stock_walk_forward 命令编排（矩阵构建+缓存+逐折 fit+模拟器+台账+prereg 门控）+ 矩阵辅助列 + 引擎对账。
 
-## 2026-11-20 — Wave 1 完成 + H1
+### 2026-11-20 H2 parts 7-8（臂掩码 + 编排核心 + 命令）
+- **part 7 臂掩码**（8a54906）：apps/prediction/universe_arms.py — 并行 aux 帧（st_flag_asof 经 as-of ST 区间；circ_mv_asof 经最新 FundamentalFactorSnapshot<=date），仅辅助列绝非特征；arm_row_mask board_only/board_st/cap（按日剔最小 30% circ_mv，NaN fail-closed）。board_st/cap 掩码与 apply_universe_policy 重建等价测试；cap 方向 mutation 证明（翻转排序 2 测试挂）。10 测试 OK。
+- **part 8 编排+命令**（f677f59）：walk_forward_runner.run_cell 逐折（臂掩码→H1 纯 fit→OOS 验证指标≠内部 holdout→模拟器净值→每 horizon 一行台账带 digest）；collaborator 注入故无 DB 可测。stock_matrix_provider.DBMatrixProvider 用生产训练函数建一次矩阵+逐 horizon 标签+prices+aux，切 purged 折帧。run_stock_walk_forward 命令接真实 fit/predict/simulate/ledger，拒缺 prereg/panel-end 漂移/未声明臂；折工件 is_active=False（mutation：翻 is_active 挂不变量测试；禁 prereg 门控挂 3 拒绝测试）。22 新测试（runner 8/command 4/arm 10）；apps.prediction **252 OK**；commands.md 再生（celery/env 仅时间戳漂移已还原）。
+- H2 剩余：模拟器 vs 全引擎抽样折窗对账（decision_replay 回滚内，逐日净值差<1bp 或可归因）——数据依赖，DR 数据落地后实测。
+- campaign 实跑仍门控于 DR1-7 数据 + P1 签署（owner O3/O4/O5）。
 
-- **Floor #214 合并 → 151d348。Wave 1 全部完成（15 PR 合并）**：W0-2 + Gate A A1-A6 + B1/B2/B1b + C1/C2/C2b + floor。
-- **H1**：_fit_lightgbm_horizon 纯核心抽出（零 DB/磁盘写入）；train 调用+映射，副作用留生产任务。修复两 bug：@shared_task 装饰器被挤掉（移回 train）；len(X_train) 残留×2 → fit[training_samples]。
-- 测试 3 个（purity/structure/short-window）；prediction 189 OK；ruff 绿。H1 PR #215（66cb41b；docs 锚点首次失败因分支切于 floor 合并前，rebase 后补 docs）。
-- 教训：unquoted heredoc 内反引号被 shell 执行（C2b bullet 损坏已修）；helper 插入挤掉 @shared_task（B2/H1 各一次）——插入函数时检查装饰器归属。
-- 下一：H2 harness（设计已细化）→ owner-gated DR1-7/B3 → STK-10 → P1（O3O4O5 待签）→ CMP → R1 → S1。
+### 2026-11-20 H2 part 9 + 代码完成
+- **part 9 引擎对账**（48b1a12）：apps/prediction/engine_reconciliation.py — 模拟器日收益复利成 NAV，注入引擎协作者经 decision_replay.run_in_rolled_back_transaction 跑（写入全丢弃），按日对齐两 NAV 序列，1bp 容差+逐日 breach，覆盖缺口绝非静默通过。rollback mutation 证明（绕过回滚事务则探针行持久化、测试挂）。7 测试 OK。
+- **命名冲突近失**：新模块初名 reconciliation.py 覆盖了既有预测覆盖模块（tasks.py/catchup 消费，导出 ENSEMBLE）及其 19 测试文件；已 git checkout 还原两者，新模块改名 engine_reconciliation.py、测试 tests_engine_reconciliation.py。教训：Write 前必查文件是否已存在（"updated successfully" 即覆盖信号）。还原后 apps.prediction **259 OK**（252+7）。
+- **H2 代码完成（parts 1-9）**：ledger/fold plan/prereg gating/cache key/simulator primitives+loop/arm masks/编排核心+命令/引擎对账。feat/stock-walk-forward push 48b1a12，base=main f88d6b7（0 behind），无开放 PR。
+- 落地：land-pr dry-run 跑全 8 gate+全套件验证中；H2 PR 不改地板（CI discovered>1498 即绿），地板按 plan 另起 PR 从 CI 实测 Ran N 设 N−4、每波最后合。
+- campaign 实跑仍门控 DR1-7 + P1 签署（owner）。
+
+### 2026-11-20 H2 落地
+- 全 8 gate rc=0（doccheck/makemigrations/djangocheck/archive 0 paraphrase/backlog 0 failure/lockfile/pindrift/ruff）。
+- 全套件 --noinput（CI 同式）：**Ran 1577 tests in 118.772s OK**（实测 1577，committed floor 1498，H2 +79 测试）。
+- **PR #216  opened**（feat/stock-walk-forward → main，body-file，无反引号）；CI 经 run API watch_ci.sh 监控中（含 false control）。
+- 地板：H2 PR 不改地板（1498<1577 CI 绿）；合并后另起地板 PR 从 CI 实测 Ran N 设 N−4（预期 1573），每波最后合。
