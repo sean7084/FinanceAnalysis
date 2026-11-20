@@ -261,7 +261,14 @@ jobs:
       # plus C2b's 2 command-flag tests = 1502. Set to measured-minus-four (1498) per the
       # repo convention: a floor above the real count breaks every CI run; a floor a few low
       # only under-protects. Re-measure and raise when tests are added.
-      MIN_TEST_COUNT: "1498"
+      #
+      # Wave-2 universe campaign floor (H2 walk-forward harness, PR #216). CI's own run
+      # measured `Ran 1577 tests in 97.804s` (run 44694141952, identical to the local
+      # --noinput suite). Set to measured-minus-four (1573) per the repo convention. The
+      # harness adds the evidence ledger, fold plan, prereg gating, matrix cache key,
+      # vectorized simulator, universe arm masks, orchestration runner + command, and
+      # simulator-vs-engine reconciliation. Frontend floor unchanged (100).
+      MIN_TEST_COUNT: "1573"
 
     steps:
       - uses: actions/checkout@v4
