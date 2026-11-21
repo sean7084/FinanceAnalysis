@@ -327,6 +327,20 @@ class H2bCompletionTests(TestCase):
         strat = pd.Series([0.02] * 5, index=dates)
         self.assertEqual(_alpha_beta(strat, bench), (None, None))
 
+    def test_alpha_beta_dedupes_overlapping_holding_dates(self):
+        # Holding-period returns can extend past a fold's block, so the concatenated
+        # panel series has duplicate dates; _alpha_beta must dedupe, not crash.
+        from apps.prediction.walk_forward_runner import _alpha_beta
+        d = date(2021, 1, 4)
+        strat = pd.Series([0.01, 0.02, 0.03], index=[d, d, d])
+        bench = pd.Series([0.005], index=[d])
+        alpha, beta = _alpha_beta(strat, bench)  # single common date after dedupe -> None
+        self.assertEqual((alpha, beta), (None, None))
+        strat2 = pd.Series([0.01, 0.02, 0.02], index=[date(2021, 1, 4), date(2021, 1, 5), date(2021, 1, 5)])
+        bench2 = pd.Series([0.005, 0.006, 0.004], index=[date(2021, 1, 4), date(2021, 1, 5), date(2021, 1, 6)])
+        alpha2, beta2 = _alpha_beta(strat2, bench2)  # 2 unique common dates -> computed
+        self.assertIsNotNone(beta2)
+
     def test_verdict_metrics_folds_beating_and_alpha(self):
         from apps.prediction.walk_forward_runner import _verdict_metrics
         dates = pd.date_range('2021-01-01', periods=10)
