@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.markets import tasks as market_tasks
+from apps.markets import universe_policy as up
 from apps.markets.benchmarking import (
     ACTIVE_PIT_BENCHMARK_SPECS,
     build_point_in_time_union_benchmark_rows,
@@ -34,19 +35,21 @@ class DualPitSeriesTests(TestCase):
                 )
 
     def test_full_and_default_series_coexist(self):
-        refresh_point_in_time_union_benchmark(self.d1, self.d2, policy=POLICY_RESEARCH_FULL)
-        refresh_point_in_time_union_benchmark(self.d1, self.d2)  # serving default = ex-board
-        codes = set(PointInTimeBenchmarkDaily.objects.values_list('benchmark_code', flat=True))
-        self.assertEqual(codes, {'CSI500_PIT', 'CSI500_PIT_EXBOARD'})
-        full = PointInTimeBenchmarkDaily.objects.filter(benchmark_code='CSI500_PIT')
-        exboard = PointInTimeBenchmarkDaily.objects.filter(benchmark_code='CSI500_PIT_EXBOARD')
-        self.assertEqual(full.count(), exboard.count())
-        self.assertEqual(full.last().constituent_count, 2)
-        self.assertEqual(exboard.last().constituent_count, 1)  # ChiNext excluded
+        with patch.object(up, 'ST_LAYER_ENABLED', False):
+            refresh_point_in_time_union_benchmark(self.d1, self.d2, policy=POLICY_RESEARCH_FULL)
+            refresh_point_in_time_union_benchmark(self.d1, self.d2)  # serving default = ex-board
+            codes = set(PointInTimeBenchmarkDaily.objects.values_list('benchmark_code', flat=True))
+            self.assertEqual(codes, {'CSI500_PIT', 'CSI500_PIT_EXBOARD'})
+            full = PointInTimeBenchmarkDaily.objects.filter(benchmark_code='CSI500_PIT')
+            exboard = PointInTimeBenchmarkDaily.objects.filter(benchmark_code='CSI500_PIT_EXBOARD')
+            self.assertEqual(full.count(), exboard.count())
+            self.assertEqual(full.last().constituent_count, 2)
+            self.assertEqual(exboard.last().constituent_count, 1)  # ChiNext excluded
 
     def test_incremental_refresh_seeds_per_series(self):
-        refresh_point_in_time_union_benchmark(self.d1, self.d1, policy=POLICY_RESEARCH_FULL)
-        refresh_point_in_time_union_benchmark(self.d1, self.d1)
+        with patch.object(up, 'ST_LAYER_ENABLED', False):
+            refresh_point_in_time_union_benchmark(self.d1, self.d1, policy=POLICY_RESEARCH_FULL)
+            refresh_point_in_time_union_benchmark(self.d1, self.d1)
         d3 = date(2020, 1, 6)
         for asset in (self.main, self.chinext):
             OHLCV.objects.create(
@@ -54,8 +57,9 @@ class DualPitSeriesTests(TestCase):
                 open=Decimal('10'), high=Decimal('11'), low=Decimal('9'), close=Decimal('11'),
                 adj_close=Decimal('11'), volume=100, amount=1000,
             )
-        full_summary = refresh_latest_point_in_time_union_benchmark(d3, policy=POLICY_RESEARCH_FULL)
-        default_summary = refresh_latest_point_in_time_union_benchmark(d3)
+        with patch.object(up, 'ST_LAYER_ENABLED', False):
+            full_summary = refresh_latest_point_in_time_union_benchmark(d3, policy=POLICY_RESEARCH_FULL)
+            default_summary = refresh_latest_point_in_time_union_benchmark(d3)
         self.assertEqual(full_summary['benchmark_code'], 'CSI500_PIT')
         self.assertEqual(default_summary['benchmark_code'], 'CSI500_PIT_EXBOARD')
         self.assertEqual(full_summary['refresh_mode'], 'incremental')
