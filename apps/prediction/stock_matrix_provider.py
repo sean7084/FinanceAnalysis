@@ -32,10 +32,14 @@ class DBMatrixProvider:
         # [STOCK_TRAINING_START, panel_end]: fold 0 trains on [STOCK_TRAINING_START,
         # panel_start), so building only [panel_start, panel_end] leaves the training
         # dates empty. panel_start only determines the fold plan (validation start).
+        # Build at BOARD level (ex-board, ST NOT excluded) regardless of the serving ST
+        # default: the arms are row masks over this one matrix (board_only = all rows,
+        # board_st = ~st_flag). After B3 enabled ST, the serving default excludes ST, so
+        # force st_layer=False here — otherwise board_only would lose its ST rows.
         self._matrix = tl._create_feature_matrix(
             STOCK_TRAINING_START, panel_end,
             missing_value_strategy=missing_value_strategy or tl.MISSING_VALUE_STRATEGY_NATIVE_NAN,
-            universe_policy=universe_policy, pit_index_codes=list(self.index_codes),
+            universe_policy=universe_policy, pit_index_codes=list(self.index_codes), st_layer=False,
         ).reset_index()
         self._aux = build_aux_frame(
             pd.MultiIndex.from_frame(self._matrix[['date', 'asset_id']])
@@ -44,7 +48,7 @@ class DBMatrixProvider:
         for horizon in self.horizons:
             records = tl._label_records_for_training(
                 STOCK_TRAINING_START, panel_end, horizon,
-                universe_policy=universe_policy, pit_index_codes=list(self.index_codes),
+                universe_policy=universe_policy, pit_index_codes=list(self.index_codes), st_layer=False,
             )
             self._labels[horizon] = pd.DataFrame([
                 {'date': key[0], 'asset_id': key[1], 'label': rec[0], 'fwd_return': rec[1]}
