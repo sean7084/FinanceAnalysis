@@ -194,7 +194,7 @@ class HoldoutMetricsTests(SimpleTestCase):
             np.zeros(20), self._proba(np.linspace(0.8, -0.8, 20)),
             dates, list(np.linspace(-0.1, 0.1, 20)))
         self.assertIsInstance(metrics['per_date_ic'], dict)
-        self.assertEqual(set(metrics['per_date_ic']), {date(2026, 1, 5), date(2026, 1, 6)})
+        self.assertEqual(set(metrics['per_date_ic']), {'2026-01-05', '2026-01-06'})
         self.assertEqual(len(metrics['per_date_ic']), metrics['rank_ic_dates'])
 
 
