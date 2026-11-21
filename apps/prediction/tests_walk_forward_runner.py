@@ -10,6 +10,7 @@ import tempfile
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -337,3 +338,33 @@ class H2bCompletionTests(TestCase):
                                record_fn=evidence.record_stock_measurement, holdout_metrics_fn=holdout_with_ic,
                                manifest=_manifest(self.sessions))
         self.assertIsNotNone(summary['horizons'][3]['results']['nw_t'])
+
+
+class DBMatrixProviderWindowTests(TestCase):
+    def test_matrix_and_labels_span_training_start_not_panel_start(self):
+        # Regression: fold 0 trains on [STOCK_TRAINING_START, panel_start); building the
+        # matrix/labels only from panel_start leaves the training dates empty (0 samples).
+        from apps.prediction.stock_matrix_provider import DBMatrixProvider
+        captured = {}
+
+        def fake_matrix(start, end, **kwargs):
+            captured['matrix_start'] = start
+            df = pd.DataFrame({'date': [STOCK_TRAINING_START], 'asset_id': [1],
+                               'mom_5d': [0.1], 'vol_20d': [0.2]})
+            df.attrs['feature_names'] = ['mom_5d', 'vol_20d']
+            return df.set_index(['date', 'asset_id'])
+
+        def fake_labels(start, end, horizon, **kwargs):
+            captured['label_start'] = start
+            return {}
+
+        with patch('apps.prediction.stock_matrix_provider.tl._create_feature_matrix', side_effect=fake_matrix), \
+                patch('apps.prediction.stock_matrix_provider.tl._label_records_for_training', side_effect=fake_labels), \
+                patch('apps.prediction.stock_matrix_provider.build_aux_frame',
+                      return_value=pd.DataFrame({'st_flag_asof': [False], 'circ_mv_asof': [1.0]},
+                                                index=pd.MultiIndex.from_tuples([(STOCK_TRAINING_START, 1)],
+                                                                               names=['date', 'asset_id']))):
+            DBMatrixProvider(panel_start=date(2018, 1, 2), panel_end=date(2020, 1, 1),
+                             index_codes=('000905.SH',), horizons=(30,))
+        self.assertEqual(captured['matrix_start'], STOCK_TRAINING_START)
+        self.assertEqual(captured['label_start'], STOCK_TRAINING_START)

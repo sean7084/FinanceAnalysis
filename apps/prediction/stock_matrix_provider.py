@@ -12,6 +12,7 @@ the serving trainer cannot drift. The actual campaign run is gated on the data r
 """
 import pandas as pd
 
+from apps.core.date_contract import STOCK_TRAINING_START
 from apps.markets.models import OHLCV
 from apps.prediction import tasks_lightgbm as tl
 from apps.prediction.universe_arms import build_aux_frame
@@ -27,8 +28,12 @@ class DBMatrixProvider:
         self.index_codes = tuple(index_codes)
         self.horizons = tuple(horizons)
         self.executable_benchmark_code = executable_benchmark_code
+        # The matrix + labels must span the FULL training+validation panel
+        # [STOCK_TRAINING_START, panel_end]: fold 0 trains on [STOCK_TRAINING_START,
+        # panel_start), so building only [panel_start, panel_end] leaves the training
+        # dates empty. panel_start only determines the fold plan (validation start).
         self._matrix = tl._create_feature_matrix(
-            panel_start, panel_end,
+            STOCK_TRAINING_START, panel_end,
             missing_value_strategy=missing_value_strategy or tl.MISSING_VALUE_STRATEGY_NATIVE_NAN,
             universe_policy=universe_policy, pit_index_codes=list(self.index_codes),
         ).reset_index()
@@ -38,7 +43,7 @@ class DBMatrixProvider:
         self._labels = {}
         for horizon in self.horizons:
             records = tl._label_records_for_training(
-                panel_start, panel_end, horizon,
+                STOCK_TRAINING_START, panel_end, horizon,
                 universe_policy=universe_policy, pit_index_codes=list(self.index_codes),
             )
             self._labels[horizon] = pd.DataFrame([
@@ -75,7 +80,7 @@ class DBMatrixProvider:
         if self._prices is None:
             asset_ids = sorted(self._matrix['asset_id'].unique())
             rows = OHLCV.objects.filter(
-                asset_id__in=asset_ids, date__gte=self.panel_start, date__lte=self.panel_end,
+                asset_id__in=asset_ids, date__gte=STOCK_TRAINING_START, date__lte=self.panel_end,
             ).values('asset_id', 'date', 'open', 'close', 'raw_close')
             self._prices = pd.DataFrame(list(rows), columns=['date', 'asset_id', 'open', 'close', 'raw_close'])
         return self._prices
