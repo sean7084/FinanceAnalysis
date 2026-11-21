@@ -360,6 +360,7 @@ class DBMatrixProviderWindowTests(TestCase):
 
         def fake_matrix(start, end, **kwargs):
             captured['matrix_start'] = start
+            captured['matrix_st_layer'] = kwargs.get('st_layer')
             df = pd.DataFrame({'date': [STOCK_TRAINING_START], 'asset_id': [1],
                                'mom_5d': [0.1], 'vol_20d': [0.2]})
             df.attrs['feature_names'] = ['mom_5d', 'vol_20d']
@@ -367,6 +368,7 @@ class DBMatrixProviderWindowTests(TestCase):
 
         def fake_labels(start, end, horizon, **kwargs):
             captured['label_start'] = start
+            captured['label_st_layer'] = kwargs.get('st_layer')
             return {}
 
         with patch('apps.prediction.stock_matrix_provider.tl._create_feature_matrix', side_effect=fake_matrix), \
@@ -379,3 +381,7 @@ class DBMatrixProviderWindowTests(TestCase):
                              index_codes=('000905.SH',), horizons=(30,))
         self.assertEqual(captured['matrix_start'], STOCK_TRAINING_START)
         self.assertEqual(captured['label_start'], STOCK_TRAINING_START)
+        # Board-level build: ST included so board_only/board_st masks are meaningful
+        # (after B3 the serving default excludes ST, which would break board_only).
+        self.assertIs(captured['matrix_st_layer'], False)
+        self.assertIs(captured['label_st_layer'], False)

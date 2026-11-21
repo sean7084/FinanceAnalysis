@@ -1361,6 +1361,7 @@ def _create_feature_matrix(
     missing_value_strategy=MISSING_VALUE_STRATEGY_LEGACY,
     universe_policy=None,
     pit_index_codes=None,
+    st_layer=None,
 ):
     """
     Create a feature matrix for all assets over a date range.
@@ -1398,7 +1399,7 @@ def _create_feature_matrix(
     timer.tick('pit membership coverage ensured')
 
     membership_by_date = point_in_time_union_asset_ids_by_dates(
-        target_trade_dates, index_codes=pit_index_codes, policy=universe_policy,
+        target_trade_dates, index_codes=pit_index_codes, policy=universe_policy, st_layer=st_layer,
     )
     asset_id_set = set(asset_ids)
     eligible_asset_ids = sorted({
@@ -1932,7 +1933,7 @@ def _create_feature_matrix(
     return df
 
 
-def _label_records_for_training(start_date, end_date, horizon_days, universe_policy=None, pit_index_codes=None):
+def _label_records_for_training(start_date, end_date, horizon_days, universe_policy=None, pit_index_codes=None, st_layer=None):
     """Direction label *and* forward return for each trainable (date, asset).
 
     UP:   forward_return >= +2%
@@ -1964,7 +1965,7 @@ def _label_records_for_training(start_date, end_date, horizon_days, universe_pol
     )
 
     membership_by_date = point_in_time_union_asset_ids_by_dates(
-        target_trade_dates, index_codes=pit_index_codes, policy=universe_policy,
+        target_trade_dates, index_codes=pit_index_codes, policy=universe_policy, st_layer=st_layer,
     )
     eligible_asset_ids = sorted({
         asset_id
