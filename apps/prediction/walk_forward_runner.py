@@ -186,6 +186,11 @@ def _alpha_beta(strategy_returns, benchmark_returns):
         return None, None
     strat = pd.Series(strategy_returns, dtype='float64')
     bench = pd.Series(benchmark_returns, dtype='float64')
+    # Holding-period returns can extend past a fold's validation block into the next fold's
+    # dates, so the concatenated panel series can carry duplicate dates — dedupe before the
+    # date-intersection regression (keep first).
+    strat = strat[~strat.index.duplicated(keep='first')]
+    bench = bench[~bench.index.duplicated(keep='first')]
     common = strat.index.intersection(bench.index)
     if len(common) < 2:
         return None, None
@@ -226,6 +231,8 @@ def _verdict_metrics(fold_oos, ic_by_date, benchmark_returns):
 
     nonempty = [s for s in fold_oos if len(s)]
     strategy = pd.concat(nonempty).sort_index() if nonempty else pd.Series(dtype='float64')
+    if len(strategy):
+        strategy = strategy[~strategy.index.duplicated(keep='first')]
     alpha_off, beta_off = _alpha_beta(strategy, benchmark_returns.get('official'))
     alpha_exe, beta_exe = _alpha_beta(strategy, benchmark_returns.get('executable'))
     _, beta_size = _alpha_beta(strategy, benchmark_returns.get('size'))

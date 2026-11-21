@@ -56,32 +56,36 @@ def is_limit_locked(*, raw_open, prev_raw_close, ts_code, trade_date, side,
     return raw <= limit_down
 
 
-def simulate_topn_returns(predictions, prices, *, top_n=3, up_threshold=0.55,
+def simulate_topn_returns(predictions, prices, *, top_n=3, up_threshold=0.55, holding=1,
                           slippage_bps=DEFAULT_SLIPPAGE_BPS,
                           commission_rate=Decimal('0.00025'),
                           stamp_duty_rate=Decimal('0.001'),
                           transfer_fee_rate=Decimal('0.00001'),
                           execution_model=EXECUTION_NEXT_DAY_OPEN,
                           ts_code_map=None, suspension_set=None, st_by_date=None):
-    """Equal-weight top-N daily-rebalance portfolio return series (H2 / D10).
+    """Equal-weight top-N portfolio return series with a holding period (H2 / D10).
 
-    Selection/cost parameters are fixed by the preregistration (owner O4); defaults
-    here are provisional. This is a return-series simulator (no position-level
-    ledger); the full-engine reconciliation on sampled fold windows validates it.
-    The rate-based cost model deliberately omits the CNY-5 minimum commission
-    (position-size dependent, engine-level — captured by STK-10 + reconciliation).
-    Semantics declared in the prereg:
+    Selection/cost/holding parameters are fixed by the preregistration (owner O4);
+    defaults here are provisional. The portfolio REBALANCES every ``holding`` sessions
+    (CORE_PROFILES base: h3=5, h7=10, h30=20), applying ONE round-trip cost per holding
+    period — NOT daily, which would over-apply cost ~holding-fold. This is a
+    return-series simulator (no position-level ledger); the full-engine reconciliation
+    on sampled fold windows validates it. The rate-based cost model deliberately omits
+    the CNY-5 minimum commission (position-size dependent, engine-level). Semantics:
 
-    - Signal at T: rank assets by up_prob desc, keep >= up_threshold, take top_n.
-    - next_day_open: enter at T+1 open, exit at T+2 open; gross = open[T+2]/open[T+1]-1.
-      same_day_close: enter T close, exit T+1 close; gross = close[T+1]/close[T]-1.
-    - Buy limit-lock at the entry open (raw price) skips that asset for the day;
-      suspended assets skipped. Equal weight across the assets that actually fill.
-    - Costs per round trip: 2x slippage + 2x commission + stamp duty (sell) + transfer fee.
+    - Signal at a rebalance date T: rank assets by up_prob desc, keep >= up_threshold,
+      take top_n.
+    - next_day_open: enter at T+1 open, exit at T+1+holding open;
+      gross = open[exit]/open[entry]-1, amortized to a daily return over the period.
+      same_day_close: enter T close, exit T+holding close.
+    - Buy limit-lock at the entry open (raw price) skips that asset; suspended assets
+      skipped. Equal weight across the assets that actually fill.
+    - Costs per holding period (one round trip): 2x slippage + 2x commission + stamp
+      duty (sell) + transfer fee. holding=1 reproduces the per-day behavior.
 
     predictions: DataFrame [date, asset_id, up_prob]. prices: DataFrame
     [date, asset_id, open, close, raw_close]. Returns DataFrame [date, portfolio_return,
-    n_selected] indexed by signal date T (return realized over the following session).
+    n_selected]; for holding=1 indexed by signal date, else by the holding days.
     """
     import pandas as pd
 
@@ -102,15 +106,20 @@ def simulate_topn_returns(predictions, prices, *, top_n=3, up_threshold=0.55,
     date_pos = {d: i for i, d in enumerate(dates)}
 
     rows = []
-    for signal_date, group in predictions.groupby('date'):
+    stride = max(1, int(holding))
+    by_date = {d: grp for d, grp in predictions.groupby('date')}
+    signal_dates = sorted(by_date)
+    for r in range(0, len(signal_dates), stride):
+        signal_date = signal_dates[r]
         if signal_date not in date_pos:
             continue
         i = date_pos[signal_date]
         entry_i = i + 1 if execution_model == EXECUTION_NEXT_DAY_OPEN else i
-        exit_i = entry_i + 1
+        exit_i = entry_i + stride
         if exit_i >= len(dates):
-            continue
+            break
         entry_date, exit_date = dates[entry_i], dates[exit_i]
+        group = by_date[signal_date]
         ranked = group[group['up_prob'] >= up_threshold].sort_values('up_prob', ascending=False).head(top_n)
         rets = []
         for _, candidate in ranked.iterrows():
@@ -136,8 +145,13 @@ def simulate_topn_returns(predictions, prices, *, top_n=3, up_threshold=0.55,
                 if pd.isna(entry_close) or pd.isna(exit_close) or entry_close <= 0:
                     continue
                 gross = float(exit_close) / float(entry_close) - 1.0
-            rets.append(gross - cost_rate)
-        portfolio_return = sum(rets) / len(rets) if rets else 0.0
-        rows.append({'date': signal_date, 'portfolio_return': portfolio_return, 'n_selected': len(rets)})
+            rets.append(gross - cost_rate)  # one round-trip cost per holding period
+        period_net = sum(rets) / len(rets) if rets else 0.0
+        if stride == 1:
+            rows.append({'date': signal_date, 'portfolio_return': period_net, 'n_selected': len(rets)})
+        else:
+            daily = (1.0 + period_net) ** (1.0 / stride) - 1.0
+            for di in range(entry_i, exit_i):
+                rows.append({'date': dates[di], 'portfolio_return': daily, 'n_selected': len(rets)})
 
     return pd.DataFrame(rows, columns=['date', 'portfolio_return', 'n_selected'])

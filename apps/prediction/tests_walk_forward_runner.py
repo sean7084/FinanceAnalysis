@@ -270,6 +270,24 @@ class H2bCompletionTests(TestCase):
         self.assertAlmostEqual(float_out.iloc[0]['portfolio_return'],
                                dec_out.iloc[0]['portfolio_return'], places=12)
 
+    def test_holding_period_amortizes_one_round_trip_cost(self):
+        # The strategy rebalances every `holding` sessions (CORE_PROFILES holding), applying
+        # ONE round-trip cost per period amortized to a daily return — not daily full cost.
+        from apps.prediction.simulator import simulate_topn_returns
+        dates = [date(2020, 1, d) for d in (1, 2, 3, 6)]
+        prices = pd.DataFrame([
+            {'date': d, 'asset_id': 1, 'open': Decimal(str(x)), 'close': Decimal(str(x)), 'raw_close': Decimal(str(x))}
+            for d, x in zip(dates, [10, 10.5, 11, 11.5])])
+        predictions = pd.DataFrame([{'date': dates[0], 'asset_id': 1, 'up_prob': 0.9}])
+        out = simulate_topn_returns(predictions, prices, top_n=1, up_threshold=0.5, holding=2,
+                                    ts_code_map={1: '600001.SH'})
+        gross = 11.5 / 10.5 - 1.0  # entry date1 open 10.5, exit date3 open 11.5 (< 10% limit)
+        cost = 2 * 0.0005 + 2 * 0.00025 + 0.001 + 0.00001
+        daily = (1.0 + (gross - cost)) ** (1.0 / 2) - 1.0
+        self.assertEqual(len(out), 2)  # two holding days
+        for v in out['portfolio_return']:
+            self.assertAlmostEqual(v, daily, places=10)
+
     def test_fit_receives_date_and_label_as_columns(self):
         # Regression: the fit core's purged split reads frame['date'], and it indexes
         # train_frame[selected_feature_names] expecting a LIST (a tuple is one pandas key).
@@ -308,6 +326,20 @@ class H2bCompletionTests(TestCase):
         bench = pd.Series([0.01] * 5, index=dates)
         strat = pd.Series([0.02] * 5, index=dates)
         self.assertEqual(_alpha_beta(strat, bench), (None, None))
+
+    def test_alpha_beta_dedupes_overlapping_holding_dates(self):
+        # Holding-period returns can extend past a fold's block, so the concatenated
+        # panel series has duplicate dates; _alpha_beta must dedupe, not crash.
+        from apps.prediction.walk_forward_runner import _alpha_beta
+        d = date(2021, 1, 4)
+        strat = pd.Series([0.01, 0.02, 0.03], index=[d, d, d])
+        bench = pd.Series([0.005], index=[d])
+        alpha, beta = _alpha_beta(strat, bench)  # single common date after dedupe -> None
+        self.assertEqual((alpha, beta), (None, None))
+        strat2 = pd.Series([0.01, 0.02, 0.02], index=[date(2021, 1, 4), date(2021, 1, 5), date(2021, 1, 5)])
+        bench2 = pd.Series([0.005, 0.006, 0.004], index=[date(2021, 1, 4), date(2021, 1, 5), date(2021, 1, 6)])
+        alpha2, beta2 = _alpha_beta(strat2, bench2)  # 2 unique common dates -> computed
+        self.assertIsNotNone(beta2)
 
     def test_verdict_metrics_folds_beating_and_alpha(self):
         from apps.prediction.walk_forward_runner import _verdict_metrics
