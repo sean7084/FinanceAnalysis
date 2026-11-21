@@ -88,7 +88,11 @@ def simulate_topn_returns(predictions, prices, *, top_n=3, up_threshold=0.55,
     ts_code_map = ts_code_map or {}
     suspension_set = suspension_set or set()
     st_by_date = st_by_date or {}
+    # Coerce to Decimal: the manifest passes JSON floats, the defaults are Decimal.
     slip = Decimal(str(slippage_bps)) / Decimal('10000')
+    commission_rate = Decimal(str(commission_rate))
+    stamp_duty_rate = Decimal(str(stamp_duty_rate))
+    transfer_fee_rate = Decimal(str(transfer_fee_rate))
     cost_rate = float(2 * slip + 2 * commission_rate + stamp_duty_rate + transfer_fee_rate)
 
     open_p = prices.pivot(index='date', columns='asset_id', values='open')

@@ -2129,7 +2129,7 @@ def _holdout_metrics(y_true, proba, dates, forward_returns):
         ic = _spearman(score[indices], np.asarray(forward_returns)[indices])
         if ic is not None:
             daily_ic.append(ic)
-            ic_by_date[session_date] = float(ic)
+            ic_by_date[session_date.isoformat()] = float(ic)
 
     if daily_ic:
         daily = np.asarray(daily_ic, dtype=float)
