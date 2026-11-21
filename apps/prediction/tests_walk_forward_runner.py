@@ -259,6 +259,17 @@ class H2bCompletionTests(TestCase):
         r0 = without_fee[without_fee['date'] == dates[0]].iloc[0]['portfolio_return']
         self.assertAlmostEqual(r0 - r1, 0.00001, places=7)
 
+    def test_float_cost_params_accepted(self):
+        # Regression: the manifest passes JSON floats; the simulator must coerce to Decimal.
+        from apps.prediction.simulator import simulate_topn_returns
+        predictions, prices, dates = _sim_panel()
+        common = dict(top_n=1, up_threshold=0.55, ts_code_map={1: '600001.SH', 2: '600002.SH'})
+        float_out = simulate_topn_returns(predictions, prices, commission_rate=0.00025,
+                                          stamp_duty_rate=0.001, transfer_fee_rate=1e-05, **common)
+        dec_out = simulate_topn_returns(predictions, prices, **common)
+        self.assertAlmostEqual(float_out.iloc[0]['portfolio_return'],
+                               dec_out.iloc[0]['portfolio_return'], places=12)
+
     def test_fit_receives_date_and_label_as_columns(self):
         # Regression: the fit core's purged split reads frame['date'], and it indexes
         # train_frame[selected_feature_names] expecting a LIST (a tuple is one pandas key).
