@@ -708,7 +708,7 @@ class LightGBMPredictionTests(TestCase):
         self.assertEqual(artifact.metadata['effective_universe_policy'], 'default')
         self.assertEqual(artifact.metadata['pit_index_codes'], ['000905.SH'])
         self.assertEqual(artifact.metadata['universe_version'], 'v1')
-        self.assertEqual(artifact.metadata['pit_benchmark_code'], 'CSI500_PIT_EXBOARD')
+        self.assertEqual(artifact.metadata['pit_benchmark_code'], 'CSI500_PIT_EXBOARD_ST')
         self.assertEqual(artifact.metadata['missing_value_strategy'], MISSING_VALUE_STRATEGY_NATIVE_NAN)
         self.assertEqual(artifact.metadata['pruning']['rule'], 'none')
         self.assertEqual(artifact.metadata['version_tag'], 'regstrong-v1')

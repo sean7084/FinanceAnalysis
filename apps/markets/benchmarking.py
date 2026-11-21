@@ -83,6 +83,7 @@ def pit_benchmark_code_for(index_codes=None, policy=None, st_layer=None):
 ACTIVE_PIT_BENCHMARK_SPECS = (
     (('000905.SH',), POLICY_RESEARCH_FULL, 'CSI500_PIT'),
     (('000905.SH',), None, None),
+    (('000852.SH',), None, None),
 )
 
 

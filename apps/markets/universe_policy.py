@@ -32,8 +32,11 @@ BOARD_TRADING_PERMISSIONS = {
     BOARD_BSE: False,
 }
 
-#: Independent ST-layer switch; flipped only by card B3 after archived reconciliation.
-ST_LAYER_ENABLED = False
+#: Independent ST-layer switch. Enabled by card B3 after the DR6 reconciliation
+#: (st-reconciliation-2026-11-20.md): missing=0 (no blind spots), extra=113 fully
+#: explained (112 delisted 退 stocks per the D5 退市整理期 rule + 1 stale Asset.name
+#: whose namechange correctly shows current *ST). Archive the report before flipping.
+ST_LAYER_ENABLED = True
 
 #: LSY-style "exclude smallest 30% by circulating market cap" arm fraction
 #: (pre-registered trigger; the harness supplies the per-date masks, card H2).

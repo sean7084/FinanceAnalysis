@@ -224,3 +224,38 @@ issues：**#192** STK-04 / **#193** STK-05 / **#194** STK-06 / **#195** STK-03 �
 - 全套件 --noinput（CI 同式）：**Ran 1577 tests in 118.772s OK**（实测 1577，committed floor 1498，H2 +79 测试）。
 - **PR #216  opened**（feat/stock-walk-forward → main，body-file，无反引号）；CI 经 run API watch_ci.sh 监控中（含 false control）。
 - 地板：H2 PR 不改地板（1498<1577 CI 绿）；合并后另起地板 PR 从 CI 实测 Ran N 设 N−4（预期 1573），每波最后合。
+
+## 2026-11-20 下一阶段（plan eager-slope-gull.md）：DR 数据运行 + H2b
+
+### Owner 批准
+- 全部 DR1–7 数据运行批准；O1–O7 按 §5 建议执行（O2 feed≈645；O3 30d 主；O4 CORE_PROFILES base 逐 horizon+费率成本+sqrt252；O5 Beta/Alpha/执行偏差/运气；O6 keep CSI500 成员；O7 并存开 issue）。
+- DR0 migrate markets 单独确认批准（S1）。
+
+### H2b harness 补齐（✅#218 合并 e30e039；地板 ✅#219 1f563ee 1586=CI 1590−4）
+- 逐 horizon simulator_params（"3"/"7"/"30"+"common"）；IS-Sharpe train slice sqrt(252)；alpha/beta vs official+executable（OLS 年化）；nw_t（verdict_stats.ic_stats，per_date_ic dict）；folds_beating；beta_size；过户费 0.00001；index_codes 门控；_holdout_metrics 增 per_date_ic dict（既有键不变）。
+- mutation 证明：逐 horizon 解析（2 挂）/index 门控（1 挂）/alpha 年化（1 挂）/folds_beating（1 挂）。CI 实测 Ran 1590。
+
+### DR 数据运行
+- **DR0**：markets/0017 应用 [X]，AssetNameChange/AssetSTInterval 表建立（空）。
+- **DR1–3**（dr1_sync_csi1000.sh）：CSI1000 成员 2014-10-01→2026 回填，current_union=1000；**DR2 连续性 OK**（145 snapshots 2014-10-31..2026-10-30，无缺月，band 950–1050 全过——Gate C 通过）；DR3 官方基准 000852.SH rows_written=2931。
+- **DR4**（只读）：CSI1000 历史并集 2840；ex-board 1955；排除板块 885；有 OHLCV 964；**缺 OHLCV 991 + late_start 98**（gap csv 1089 行）。
+- **DR5**（运行中）：backfill_ohlcv_history --csv-file。注意：DR4 csv 格式与命令不符（命令需 continuity-report 格式 asset_symbol/asset_ts_code/asset_name/gap_start/gap_end + 前缀 ohlcv,daily_bar,continuity_gap,asset_window,）；--csv-file 与 --effective-universe-entry-warmup 互斥；命令无 --index-codes。已用 dr5_gen_csv.sh 从 DR4 gap+Asset 元数据生成 dr5_repair.csv（1089 行，floor 2010-01-01，含退市股 delist_date）。csv 模式只回填 ACTIVE 的限制由 csv 的 delist_date 处理。
+- **DR6/DR7 脚本已核实备好**（DR6 namechange 2009+ 12月窗+对账门；DR7 年分块建 CSI500_PIT/CSI500_PIT_EXBOARD/CSI1000_PIT_EXBOARD，ST 变体待 B3 后 pass2）。
+
+### B3 设计要点（DR6 门后实现）
+- pit_benchmark_code_for(index,None,None) 的 st_layer 经全局 ST_LAYER_ENABLED 解析：翻 True 后现有 (000905.SH,None,None) spec 派生码由 CSI500_PIT_EXBOARD 变 CSI500_PIT_EXBOARD_ST。
+- B3 需：翻 ST_LAYER_ENABLED=True + ACTIVE_PIT_BENCHMARK_SPECS 显式码（CSI500_PIT_EXBOARD_ST + CSI1000_PIT_EXBOARD_ST 日维护）+ 更新钉 False 测试。EXBOARD（st-off）序列由 DR7 pass1 历史建（panel 冻结，无需日维护）。非"一行"，需核实 refresh/builder 的 st_layer 线。
+
+### P1 prereg 定稿草稿备好（tmp/prereg_final_csi500_vs_csi1000.md）
+- 修正 manifest：arms board_only/board_st，conditional cap，index_codes 000905/000852；33 特征逐字；simulator_params 逐 horizon（h3/h7 top_n5/0.45，h30 top_n3/0.45，common 费率）；validate_cell 通过。panel_end 待 DR 数据完成后冻结哈希。STK-10 prereg 草稿备好（描述性，6 runs）。
+
+### DR5 完成 + DR6 启动（2026-11-20）
+- **DR5 成功**：1089 repair windows 全处理；复测 DR4 **missing OHLCV entirely=0**（ex-board 1955 全覆盖）。late_start=386 为 2016 后上市股（合法晚上市，非缺口；entry-warmup 处理技术指标初始化）。
+- **DR6 启动**（task b5dko57a8）：sync_asset_namechanges 2009+ 12月窗 + reconcile_st_history（diff 非零退出=B3 门）。watchdog 伴跑。
+- 下一步：DR6 报告归档（diff=0/全解释/|ΔIC|<0.01）→ DR7 pass1（PIT 序列）→ B3（ST 启用，门控 DR6）→ DR7 pass2（EXBOARD_ST）→ STK-10 + P1 哈希 → CMP。
+
+### DR6 完成 + B3 门通过 + DR7 pass1 启动（2026-11-20）
+- **DR6**：namechange 5335 行存储，0 隔离，2908 资产，916 区间。对账 diff：missing=0，extra=113。
+- **diff 全解释**（归档 st-reconciliation-2026-11-20.md，commit 0632a7b）：112 为退市(退)股（D5 标退市整理期为 ST-state，is_st_name 不标退后缀；退市股由成员资格排除）；1 为 000972.SZ Asset.name 滞后（namechange 示 2026-11-04 起 *ST中基，区间正确，当前名 stale）。missing=0 无盲区，无需两变体敏感性。**B3 门通过**。
+- **DR7 pass1 启动**（task b7y270tdl）：年分块建 CSI500_PIT/CSI500_PIT_EXBOARD/CSI1000_PIT_EXBOARD（ST 仍 False，EXBOARD 正确）。**B3 翻转须待 DR7 pass1 完成**（年分块重导入工作树代码）。
+- 下一步：DR7 pass1 完成 → B3（翻 ST_LAYER_ENABLED=True + CSI1000 EXBOARD_ST spec + 测试）→ DR7 pass2 → STK-10 + P1 哈希 → CMP。
