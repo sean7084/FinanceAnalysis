@@ -36,9 +36,15 @@ class WalkForwardCell:
 
 
 def _up_prob(proba):
-    """UP-class probability column from a (n, 3) DOWN/FLAT/UP probability array."""
+    """Directional score P(UP) - P(DOWN) from a (n, 3) DOWN/FLAT/UP probability array.
+
+    This is the SAME score the holdout rank IC uses (`_holdout_metrics`), so the portfolio
+    selection aligns with the measured IC/acceptance. Ranking by raw P(UP) alone was
+    anti-predictive (gross OOS ~ -12%/yr) while P(UP)-P(DOWN) carried the +0.05 IC signal;
+    the selection score must match the IC score or the portfolio contradicts the IC.
+    """
     frame = pd.DataFrame(proba)
-    return frame.iloc[:, 2].to_numpy()
+    return (frame.iloc[:, 2] - frame.iloc[:, 0]).to_numpy()
 
 
 def _simulator_params_for(params, horizon):
