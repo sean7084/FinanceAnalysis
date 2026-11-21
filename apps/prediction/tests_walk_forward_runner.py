@@ -259,12 +259,15 @@ class H2bCompletionTests(TestCase):
         self.assertAlmostEqual(r0 - r1, 0.00001, places=7)
 
     def test_fit_receives_date_and_label_as_columns(self):
-        # Regression: the fit core's purged split reads frame['date']; the provider returns
-        # an indexed frame, so run_cell must reset_index before fitting (else KeyError 'date').
+        # Regression: the fit core's purged split reads frame['date'], and it indexes
+        # train_frame[selected_feature_names] expecting a LIST (a tuple is one pandas key).
+        # The provider returns an indexed frame, so run_cell must reset_index + pass a list.
         seen = {}
 
         def checking_fit(train, horizon, features):
             seen['columns'] = set(train.columns)
+            seen['features'] = features
+            seen['indexable'] = train[features].shape[1]  # would raise if features is a tuple
             return {'model': object()}
 
         with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
@@ -275,6 +278,8 @@ class H2bCompletionTests(TestCase):
         self.assertIn('date', seen['columns'])
         self.assertIn('label', seen['columns'])
         self.assertIn('fwd_return', seen['columns'])
+        self.assertIsInstance(seen['features'], list)
+        self.assertEqual(seen['indexable'], len(FEATURES))
 
     def test_alpha_beta_ols_recovers_slope(self):
         from apps.prediction.walk_forward_runner import _alpha_beta
