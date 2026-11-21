@@ -99,7 +99,9 @@ def run_cell(cell, *, trade_dates, provider, fit_fn, predict_fn, simulate_fn,
                 continue
             train_frame, valid_frame = provider.fold_frames(fold, horizon, mask)
             kept, dropped = train_dates_for_fold(fold, trade_dates, horizon)
-            fit = fit_fn(train_frame, horizon, cell.feature_names)
+            # The fit core's purged split reads 'date'/'label'/'fwd_return' as columns;
+            # the provider returns frames indexed by (date, asset_id), so reset before fitting.
+            fit = fit_fn(train_frame.reset_index(), horizon, cell.feature_names)
             tag = f'wf-{cell.arm}-{cell.panel_start}-f{fold.fold_index}-h{horizon}'
             if persist_fn is not None:
                 persist_fn(fit, horizon, tag)

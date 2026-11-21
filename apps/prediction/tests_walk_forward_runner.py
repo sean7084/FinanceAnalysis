@@ -258,6 +258,24 @@ class H2bCompletionTests(TestCase):
         r0 = without_fee[without_fee['date'] == dates[0]].iloc[0]['portfolio_return']
         self.assertAlmostEqual(r0 - r1, 0.00001, places=7)
 
+    def test_fit_receives_date_and_label_as_columns(self):
+        # Regression: the fit core's purged split reads frame['date']; the provider returns
+        # an indexed frame, so run_cell must reset_index before fitting (else KeyError 'date').
+        seen = {}
+
+        def checking_fit(train, horizon, features):
+            seen['columns'] = set(train.columns)
+            return {'model': object()}
+
+        with override_settings(STOCK_EVIDENCE_PATH=self.ledger):
+            run_cell(_cell(self.sessions, horizons=(3,)), trade_dates=self.sessions,
+                     provider=self.provider, fit_fn=checking_fit, predict_fn=_predict_fn,
+                     simulate_fn=_simulate_fn, record_fn=evidence.record_stock_measurement,
+                     holdout_metrics_fn=_holdout_fn, manifest=_manifest(self.sessions, horizons=(3,)))
+        self.assertIn('date', seen['columns'])
+        self.assertIn('label', seen['columns'])
+        self.assertIn('fwd_return', seen['columns'])
+
     def test_alpha_beta_ols_recovers_slope(self):
         from apps.prediction.walk_forward_runner import _alpha_beta
         dates = pd.date_range('2021-01-01', periods=20)
