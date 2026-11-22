@@ -61,6 +61,15 @@ indistinguishable, both failing).
 - Bias register D1–D10 applies (D1 mitigated by purged-holdout fleet; D2/D3 by next_day_open + limit/suspension;
   D4 by dual benchmark; D5 by beta/size decomposition; D7 STAR-2020-12 break noted; D9 frozen starts + ledger;
   D10 macro_phase/yield_curve note). See the prereg for the full register.
+- **Production score-consistency observation (KB follow-up).** The full backtest engine selects
+  holdings by `up_probability` = **P(UP)** (with a macro rank multiplier), while the model's own
+  evaluation — the rank IC used by these acceptance criteria — uses the directional score
+  **P(UP)−P(DOWN)**. Ranking by P(UP) alone was anti-predictive on live data (gross OOS ≈ −12%/yr)
+  whereas P(UP)−P(DOWN) carried the +0.05 IC; the CMP simulator was therefore aligned to the IC score
+  (P1 v3). Both scores nevertheless fail the OOS alpha/Sharpe lines here, so the universe verdict is
+  robust either way. This is a **separate production finding**, out of this campaign's scope (which
+  holds the engine fixed across arms): the serving selection score (P(UP)) should be reconciled with
+  the evaluation score (P(UP)−P(DOWN)) in a follow-up — a model-selection change, not a universe change.
 
 ## Data provenance
 
