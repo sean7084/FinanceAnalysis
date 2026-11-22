@@ -273,7 +273,12 @@ jobs:
       # (run 44737656582). Set to measured-minus-four (1586). H2b adds per-horizon simulator
       # params, IS-Sharpe, alpha/beta + Newey-West t verdict metrics, the per_date_ic dict,
       # transfer fee, and index_codes gating. Frontend floor unchanged (100).
-      MIN_TEST_COUNT: "1586"
+      #
+      # Final universe-campaign floor (CMP fix series PR #223-#226). Local --noinput suite
+      # measured `Ran 1595 tests` (== CI discovered; the fix series adds the reset-index,
+      # tuple-feature, training-window, per_date_ic, holding-amortization, board-level, and
+      # dedupe guards). Set to measured-minus-four (1591). Frontend floor unchanged (100).
+      MIN_TEST_COUNT: "1591"
 
     steps:
       - uses: actions/checkout@v4
