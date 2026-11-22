@@ -72,7 +72,8 @@ PIT_INDEX_CODES = ['000905.SH']
 CHUNK_TRADING_DAYS = 20
 
 
-def _cell_parameters(horizon, arm, execution_model, artifact, cache_scope):
+def _cell_parameters(horizon, arm, execution_model, artifact, cache_scope, digest,
+                      prediction_universe):
     policy, st_layer = arm
     profile = HORIZON_PROFILES[horizon]
     return {
@@ -97,13 +98,19 @@ def _cell_parameters(horizon, arm, execution_model, artifact, cache_scope):
         'st_layer': st_layer,
         'execution_model': execution_model,
         'matrix_signal_cache_key': cache_scope,
+        # Stamped here rather than in the create loop so --dry-run displays them: the
+        # dry run is the human review artifact before 18 rows exist, and a reviewer who
+        # cannot see the registration digest or the prediction mode cannot confirm either.
+        'preregistration_digest': digest,
+        'prediction_universe': prediction_universe,
         # allow_pre_contract_history is deliberately ABSENT: the window starts exactly
         # at STOCK_BACKTEST_START, so the override is unnecessary and would label every
         # run research-only.
     }
 
 
-def build_matrix(start_date, end_date, horizons, cache_scope, artifacts_by_horizon):
+def build_matrix(start_date, end_date, horizons, cache_scope, artifacts_by_horizon, digest,
+                 prediction_universe):
     """The 18 cells, ordered so each arm's two execution models are adjacent."""
     cells = []
     for horizon in horizons:
@@ -115,7 +122,8 @@ def build_matrix(start_date, end_date, horizons, cache_scope, artifacts_by_horiz
                     'execution_model': execution_model,
                     'parameters': _cell_parameters(
                         horizon, arm, execution_model,
-                        artifacts_by_horizon[horizon], cache_scope,
+                        artifacts_by_horizon[horizon], cache_scope, digest,
+                        prediction_universe,
                     ),
                 })
     return cells
@@ -227,7 +235,8 @@ class Command(BaseCommand):
             f":{start_date.isoformat()}:{end_date.isoformat()}"
         )
 
-        cells = build_matrix(start_date, end_date, horizons, cache_scope, artifacts)
+        cells = build_matrix(start_date, end_date, horizons, cache_scope, artifacts,
+                             digest, prediction_universe)
 
         if options['dry_run']:
             self.stdout.write(f'DRY RUN: {len(cells)} cells, window {start_date}..{end_date}, '
@@ -241,8 +250,6 @@ class Command(BaseCommand):
         created_ids = []
         for cell in cells:
             parameters = dict(cell['parameters'])
-            parameters['preregistration_digest'] = digest
-            parameters['prediction_universe'] = prediction_universe
             run = BacktestRun.objects.create(
                 name=_cell_name(prefix, cell),
                 strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
@@ -281,9 +288,14 @@ class Command(BaseCommand):
     def _execute_inline(self, run_ids, horizons):
         """Drive the runs inline, one horizon bucket at a time.
 
-        Inline bypasses the Celery soft/hard time limits, which a ~43 h run cannot
-        satisfy; chunking still persists report.runtime_state so a kill resumes from
-        the last chunk boundary rather than restarting.
+        Inline is required: the Celery soft/hard limits are 1800 s / 2100 s and a
+        full-window run is ~43 h. Chunking still persists report.runtime_state, so a kill
+        resumes from the last chunk boundary rather than restarting.
+
+        A cell that does not reach COMPLETED is reported and makes the command exit
+        non-zero. Reporting success while a cell silently FAILED would be a false green on
+        a multi-day run -- and a FAILED cell keeps its runtime_state (it is cleared only on
+        success), so it is resumable and the operator needs its id, not a shrug.
         """
         pending = {h: [] for h in horizons}
         for run_id in run_ids:
@@ -292,6 +304,8 @@ class Command(BaseCommand):
                 continue
             horizon = int((run.parameters or {}).get('horizon_days') or 0)
             pending.setdefault(horizon, []).append(run_id)
+
+        outcomes = {}
 
         def _enqueue(run_id):
             queue.append(int(run_id))
@@ -312,11 +326,32 @@ class Command(BaseCommand):
                                 if attempt == 1:
                                     raise
                         current = BacktestRun.objects.filter(id=current_id).first()
-                        if current is not None and current.status == BacktestRun.Status.RUNNING:
+                        if current is None:
+                            outcomes[current_id] = 'MISSING'
+                        elif current.status == BacktestRun.Status.RUNNING:
                             queue.append(current_id)
+                        else:
+                            outcomes[current_id] = str(current.status)
                     if index < len(horizons) - 1:
                         clear_backtest_process_caches()
             finally:
                 clear_backtest_process_caches()
 
-        self.stdout.write(self.style.SUCCESS('Executed STK-10 matrix inline to completion.'))
+        completed = str(BacktestRun.Status.COMPLETED)
+        self.stdout.write('--- per-cell final status ---')
+        for run_id in run_ids:
+            self.stdout.write(f'run_id={run_id} status={outcomes.get(run_id, "NO_TERMINAL_STATUS")}')
+
+        not_completed = [rid for rid in run_ids if outcomes.get(rid) != completed]
+        if not_completed:
+            raise CommandError(
+                f'{len(not_completed)} of {len(run_ids)} STK-10 cells did not reach '
+                f'COMPLETED: {not_completed}. report.runtime_state survives a failure '
+                f'(it is cleared only on success), so each is resumable by re-invoking '
+                f'run_backtest(run_id), which continues from the last chunk boundary. '
+                f'The matrix is NOT complete and must not be reported as measured.'
+            )
+
+        self.stdout.write(self.style.SUCCESS(
+            f'Executed all {len(run_ids)} STK-10 cells inline to COMPLETED.'
+        ))

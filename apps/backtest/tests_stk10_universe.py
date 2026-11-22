@@ -215,6 +215,7 @@ class Stk10MatrixBuildTests(SimpleTestCase):
         }
         self.cells = command.build_matrix(
             date(2018, 1, 2), date(2026, 11, 20), [3, 7, 30], 'stk10-scope', self.artifacts,
+            'd8b09eb37d91', 'superset',
         )
 
     def test_eighteen_cells(self):
@@ -260,6 +261,98 @@ class Stk10MatrixBuildTests(SimpleTestCase):
     def test_cache_scope_is_shared_across_the_launch(self):
         scopes = {c['parameters']['matrix_signal_cache_key'] for c in self.cells}
         self.assertEqual(scopes, {'stk10-scope'})
+
+    def test_digest_and_prediction_mode_are_visible_in_every_cell(self):
+        """--dry-run is the human review artifact before 18 rows exist.
+
+        Both were stamped in the create loop, AFTER the dry-run returned, so a reviewer
+        could not confirm the registration digest or the prediction mode from it.
+        """
+        for cell in self.cells:
+            self.assertEqual(cell['parameters']['preregistration_digest'], 'd8b09eb37d91')
+            self.assertEqual(cell['parameters']['prediction_universe'], 'superset')
+
+
+class ExecuteInlineStatusTests(TestCase):
+    """A cell that does not COMPLETE must fail the command, not be reported as success."""
+
+    def _command(self):
+        import io
+
+        from django.core.management.base import OutputWrapper
+
+        from apps.backtest.management.commands.run_stk10_matrix import Command
+
+        command = Command()
+        buffer = io.StringIO()
+        command.stdout = OutputWrapper(buffer)
+        return command, buffer
+
+    def _run(self, horizon=7):
+        return BacktestRun.objects.create(
+            name=f'stk10-status-h{horizon}',
+            strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            status=BacktestRun.Status.PENDING,
+            start_date=date(2025, 1, 2),
+            end_date=date(2025, 1, 31),
+            initial_capital='200000.00',
+            cash='200000.00',
+            final_value=0,
+            total_return=0,
+            annualized_return=0,
+            max_drawdown=0,
+            sharpe_ratio=0,
+            win_rate=0,
+            total_trades=0,
+            winning_trades=0,
+            parameters={'horizon_days': horizon},
+            report={},
+            error_message='',
+        )
+
+    def _drive(self, terminal_status):
+        from apps.backtest.management.commands import run_stk10_matrix as command_module
+
+        def fake_run_backtest(run_id):
+            BacktestRun.objects.filter(id=run_id).update(status=terminal_status)
+
+        return patch.object(command_module, 'run_backtest', side_effect=fake_run_backtest)
+
+    def test_failed_cell_raises_and_names_the_run(self):
+        row = self._run()
+        command, buffer = self._command()
+        with self._drive(BacktestRun.Status.FAILED):
+            with self.assertRaises(CommandError) as ctx:
+                command._execute_inline([row.id], [7])
+        message = str(ctx.exception)
+        self.assertIn('did not reach', message)
+        self.assertIn(str(row.id), message)
+        self.assertIn('run_id=%d status=FAILED' % row.id, buffer.getvalue())
+
+    def test_all_completed_reports_success(self):
+        row = self._run()
+        command, buffer = self._command()
+        with self._drive(BacktestRun.Status.COMPLETED):
+            command._execute_inline([row.id], [7])
+        self.assertIn('COMPLETED', buffer.getvalue())
+
+    def test_mixed_outcomes_fail_the_whole_matrix(self):
+        """One bad cell out of 18 must not be averaged away into a success line."""
+        good = self._run(horizon=7)
+        bad = self._run(horizon=30)
+        from apps.backtest.management.commands import run_stk10_matrix as command_module
+
+        def fake_run_backtest(run_id):
+            status = (BacktestRun.Status.COMPLETED if run_id == good.id
+                      else BacktestRun.Status.FAILED)
+            BacktestRun.objects.filter(id=run_id).update(status=status)
+
+        command, buffer = self._command()
+        with patch.object(command_module, 'run_backtest', side_effect=fake_run_backtest):
+            with self.assertRaises(CommandError) as ctx:
+                command._execute_inline([good.id, bad.id], [7, 30])
+        self.assertIn(str(bad.id), str(ctx.exception))
+        self.assertNotIn(str(good.id), str(ctx.exception).split('COMPLETED:')[1])
 
 
 class Stk10FleetPinTests(SimpleTestCase):
