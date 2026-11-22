@@ -467,6 +467,21 @@ LEGACY_PREDICTION_FEATURE_ALIASES = {
     'pe_percentile_x_macro_phase': 'pe_ttm_percentile_x_macro_phase',
 }
 
+#: Interactions A5 removed from the v3 TRAINING schema that pre-A5 artifacts still
+#: declare in ``feature_names``. Serving must keep producing them or those artifacts fail
+#: the #146 schema guard under ``native_nan`` -- and the active fleet
+#: (``lgb-*-2026-11-09``, 36 declared names, strategy ``native_nan``) is pre-A5, so this
+#: is what actually delivers the promise made above ``TRAINING_BASE_FEATURES_V3`` that
+#: "the single-asset extractor still produces the legacy keys so v2 artifacts keep
+#: serving until the Wave-5 retrain". That claim held for the legacy BASE keys but not
+#: for this interaction, which is built from a spec list A5 edited -- so the fleet could
+#: not serve at all. Applied only via ``_augment_single_asset_features`` (the single-asset
+#: serving path, one caller) and never via ``_build_interaction_features`` (the training
+#: matrix path), so the v3 training schema stays at 33.
+LEGACY_INTERACTION_FEATURE_SPECS = (
+    ('northbound_flow_x_mom_5d', 'northbound_flow', 'mom_5d'),
+)
+
 
 def _build_interaction_features(df, feature_names):
     created = []
@@ -478,7 +493,9 @@ def _build_interaction_features(df, feature_names):
 
 
 def _augment_single_asset_features(features):
-    for output_name, left_name, right_name in INTERACTION_FEATURE_SPECS:
+    for output_name, left_name, right_name in (
+        INTERACTION_FEATURE_SPECS + LEGACY_INTERACTION_FEATURE_SPECS
+    ):
         if left_name in features and right_name in features:
             features[output_name] = features[left_name] * features[right_name]
     return features
