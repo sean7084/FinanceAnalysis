@@ -18,6 +18,7 @@ one arm share a single surface, which is half the wall-clock saving the matrix p
 depends on.
 """
 from datetime import date
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.core.management.base import CommandError
@@ -28,6 +29,9 @@ from apps.backtest.serializers import BacktestRunSerializer
 from apps.backtest.tasks import (
     _eligible_backtest_asset_ids,
     _matrix_signal_cache_key,
+    _prediction_eligible_asset_ids,
+    _prediction_universe,
+    _prediction_universe_cache_key,
     _st_layer_override,
     _universe_cache_key,
 )
@@ -286,3 +290,169 @@ class Stk10FleetPinTests(SimpleTestCase):
         with self.assertRaises(CommandError) as ctx:
             self._resolve(None)
         self.assertIn('No active READY', str(ctx.exception))
+
+
+ARMS = (
+    {'universe_policy': 'research_full', 'st_layer': False, 'pit_index_codes': ['000905.SH']},
+    {'universe_policy': 'default', 'st_layer': False, 'pit_index_codes': ['000905.SH']},
+    {'universe_policy': 'default', 'st_layer': True, 'pit_index_codes': ['000905.SH']},
+)
+
+
+class PredictionUniverseParamTests(SimpleTestCase):
+    def _run(self, **params):
+        return BacktestRun(parameters=params)
+
+    def test_defaults_to_arm_so_existing_runs_are_unchanged(self):
+        self.assertEqual(_prediction_universe(self._run()), 'arm')
+
+    def test_superset_is_read(self):
+        self.assertEqual(_prediction_universe(self._run(prediction_universe='superset')), 'superset')
+
+    def test_garbage_falls_back_to_arm(self):
+        self.assertEqual(_prediction_universe(self._run(prediction_universe='everything')), 'arm')
+
+
+class SupersetEligibilityTests(SimpleTestCase):
+    def test_superset_predicts_research_full_st_off_regardless_of_the_arm(self):
+        cache = {
+            'prediction_universe': 'superset',
+            'universe_policy': 'default',
+            'st_layer': True,
+            'pit_index_codes': ['000905.SH'],
+        }
+        with patch(
+            'apps.backtest.tasks.effective_universe_tradeable_asset_ids', return_value=[1],
+        ) as mocked:
+            _prediction_eligible_asset_ids(D, cache)
+        kwargs = mocked.call_args.kwargs
+        self.assertEqual(kwargs['policy'], 'research_full')
+        self.assertFalse(kwargs['st_layer'])
+
+    def test_arm_mode_keeps_the_arm_universe(self):
+        cache = {
+            'prediction_universe': 'arm',
+            'universe_policy': 'default',
+            'st_layer': True,
+            'pit_index_codes': ['000905.SH'],
+        }
+        with patch(
+            'apps.backtest.tasks.effective_universe_tradeable_asset_ids', return_value=[1],
+        ) as mocked:
+            _prediction_eligible_asset_ids(D, cache)
+        kwargs = mocked.call_args.kwargs
+        self.assertEqual(kwargs['policy'], 'default')
+        self.assertTrue(kwargs['st_layer'])
+
+    def test_superset_eligibility_is_cached_separately_from_the_arm(self):
+        """The nested cache must not collide with the arm's own entry."""
+        cache = {
+            'prediction_universe': 'superset',
+            'universe_policy': 'default',
+            'st_layer': True,
+            'pit_index_codes': ['000905.SH'],
+        }
+        with patch(
+            'apps.backtest.tasks.effective_universe_tradeable_asset_ids',
+            side_effect=['superset', 'arm'],
+        ) as mocked:
+            first = _prediction_eligible_asset_ids(D, cache)
+            second = _prediction_eligible_asset_ids(D, cache)
+            arm = _eligible_backtest_asset_ids(D, cache)
+        self.assertEqual(first, 'superset')
+        self.assertEqual(second, 'superset')
+        self.assertEqual(arm, 'arm')
+        self.assertEqual(mocked.call_count, 2)
+
+
+class SupersetSurfaceSharingTests(SimpleTestCase):
+    def _keys(self, mode):
+        keys = set()
+        for arm in ARMS:
+            cache = dict(arm)
+            cache['prediction_universe'] = mode
+            keys.add(_prediction_universe_cache_key(cache))
+        return keys
+
+    def test_all_three_arms_share_one_surface_in_superset_mode(self):
+        self.assertEqual(len(self._keys('superset')), 1)
+
+    def test_arms_do_not_share_in_arm_mode(self):
+        self.assertEqual(len(self._keys('arm')), 3)
+
+    def test_superset_key_is_the_research_full_identity(self):
+        self.assertEqual(
+            self._keys('superset').pop(),
+            ('research_full', False, ('000905.SH',)),
+        )
+
+
+class SupersetCandidateFilterTests(SimpleTestCase):
+    """The load-bearing guard: a wider prediction surface must not widen what is traded."""
+
+    MAPPING = {
+        1: {'up_probability': '0.9'},
+        2: {'up_probability': '0.8'},
+    }
+
+    def _candidates(self, mode, eligible):
+        from apps.backtest import tasks
+
+        cache = {
+            'prediction_universe': mode,
+            'universe_policy': 'default',
+            'st_layer': True,
+            'pit_index_codes': ['000905.SH'],
+        }
+        with patch.object(tasks, '_build_lightgbm_prediction_map', return_value=self.MAPPING), \
+                patch.object(tasks, '_eligible_backtest_asset_ids', return_value=eligible) as mocked:
+            rows = tasks._build_lightgbm_candidates(D, 7, Decimal('0.45'), 5, cache)
+        return [row['asset_id'] for row in rows], mocked
+
+    def test_superset_only_asset_is_excluded_from_candidates(self):
+        ids, _ = self._candidates('superset', [1])
+        self.assertEqual(ids, [1])
+
+    def test_arm_mode_does_not_re_filter(self):
+        """In arm mode the map is already arm-scoped, so re-filtering would be redundant."""
+        ids, mocked = self._candidates('arm', [1])
+        self.assertEqual(ids, [1, 2])
+        mocked.assert_not_called()
+
+
+class SerializerPredictionUniverseTests(TestCase):
+    def _payload(self, **params):
+        base = {'top_n': 3, 'horizon_days': 7, 'up_threshold': 0.5, 'prediction_source': 'heuristic'}
+        base.update(params)
+        return {
+            'name': 'stk10-universe-test',
+            'strategy_type': BacktestRun.StrategyType.PREDICTION_THRESHOLD,
+            'start_date': date(2020, 1, 2),
+            'end_date': date(2020, 6, 30),
+            'parameters': base,
+        }
+
+    def test_superset_accepted_with_lightgbm(self):
+        serializer = BacktestRunSerializer(data=self._payload(
+            prediction_source='lightgbm', prediction_universe='superset',
+        ))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data['parameters']['prediction_universe'], 'superset')
+
+    def test_garbage_rejected(self):
+        serializer = BacktestRunSerializer(data=self._payload(
+            prediction_source='lightgbm', prediction_universe='everything',
+        ))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('parameters', serializer.errors)
+
+    def test_superset_without_lightgbm_rejected(self):
+        """The heuristic path has no signal surface, so superset mode would be a silent no-op."""
+        serializer = BacktestRunSerializer(data=self._payload(prediction_universe='superset'))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('parameters', serializer.errors)
+
+    def test_absent_stays_absent(self):
+        serializer = BacktestRunSerializer(data=self._payload())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertNotIn('prediction_universe', serializer.validated_data['parameters'])

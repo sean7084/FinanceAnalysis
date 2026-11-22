@@ -35,7 +35,12 @@ from apps.core.date_contract import (
     STOCK_BACKTEST_START,
     enforce_date_contract,
 )
-from apps.markets.universe_policy import POLICY_DEFAULT, POLICY_RESEARCH_FULL
+from apps.markets.universe_policy import (
+    PREDICTION_UNIVERSE_ARM,
+    POLICY_DEFAULT,
+    POLICY_RESEARCH_FULL,
+    VALID_PREDICTION_UNIVERSES,
+)
 from apps.prediction.models_lightgbm import LightGBMModelArtifact
 
 #: The pre-registered model pin. STK-10 measures the EXISTING reading, so the fleet
@@ -161,6 +166,10 @@ class Command(BaseCommand):
         parser.add_argument('--cache-scope', default=None,
                             help='matrix_signal_cache_key scope. Defaults to a per-launch stamp.')
         parser.add_argument('--initial-capital', default='200000.00', help='Initial capital per run.')
+        parser.add_argument('--prediction-universe', default=PREDICTION_UNIVERSE_ARM,
+                            help='arm (predict exactly what the run may trade) or superset (predict the '
+                                 'research_full superset once per horizon and filter at candidate '
+                                 'selection, so nested arms share one signal surface).')
         parser.add_argument('--dry-run', action='store_true',
                             help='Print the matrix without creating any rows.')
         parser.add_argument('--execute', action='store_true',
@@ -196,6 +205,12 @@ class Command(BaseCommand):
         if not horizons:
             raise CommandError('horizons must name at least one horizon.')
 
+        prediction_universe = str(options['prediction_universe'] or '').strip().lower()
+        if prediction_universe not in VALID_PREDICTION_UNIVERSES:
+            raise CommandError(
+                f'prediction-universe must be one of {sorted(VALID_PREDICTION_UNIVERSES)}.'
+            )
+
         prefix = str(options['name_prefix'] or '').strip()
         if not prefix:
             raise CommandError('name-prefix cannot be blank.')
@@ -227,6 +242,7 @@ class Command(BaseCommand):
         for cell in cells:
             parameters = dict(cell['parameters'])
             parameters['preregistration_digest'] = digest
+            parameters['prediction_universe'] = prediction_universe
             run = BacktestRun.objects.create(
                 name=_cell_name(prefix, cell),
                 strategy_type=BacktestRun.StrategyType.PREDICTION_THRESHOLD,

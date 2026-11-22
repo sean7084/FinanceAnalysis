@@ -137,6 +137,25 @@ class BacktestRunSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'parameters': str(exc)}) from exc
             parameters['st_layer'] = st_layer
 
+        prediction_universe = parameters.get('prediction_universe')
+        if prediction_universe is not None:
+            from apps.markets.universe_policy import VALID_PREDICTION_UNIVERSES
+
+            resolved_universe = str(prediction_universe).lower()
+            if resolved_universe not in VALID_PREDICTION_UNIVERSES:
+                raise serializers.ValidationError({
+                    'parameters': f'prediction_universe must be one of {sorted(VALID_PREDICTION_UNIVERSES)}.',
+                })
+            if (
+                resolved_universe == 'superset'
+                and str(parameters.get('prediction_source', 'heuristic')).lower() != 'lightgbm'
+            ):
+                raise serializers.ValidationError({
+                    'parameters': 'prediction_universe=superset requires prediction_source=lightgbm; '
+                                  'the heuristic path has no signal surface to share.',
+                })
+            parameters['prediction_universe'] = resolved_universe
+
         pit_index_codes = parameters.get('pit_index_codes')
         if pit_index_codes is not None:
             if not isinstance(pit_index_codes, list) or not all(isinstance(c, str) for c in pit_index_codes):
