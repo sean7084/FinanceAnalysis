@@ -47,6 +47,36 @@ class FeatureSchemaV3Tests(TestCase):
         self.assertIn("features['northbound_flow']", src)
         self.assertIn("features['yield_curve']", src)
 
+    def test_legacy_interaction_still_produced_for_v2_artifacts(self):
+        """The pre-A5 fleet declares northbound_flow_x_mom_5d; serving must produce it.
+
+        Regression: the source-text assertion above stayed green while the interaction
+        spec had been deleted, so all three ACTIVE artifacts (native_nan, 36 declared
+        names) raised "feature schema mismatch" on every prediction -- daily beat and
+        backtest alike. A text assertion about the base keys cannot cover a feature
+        built from a spec list, so this one exercises the builder.
+        """
+        augmented = t._augment_single_asset_features(
+            {'northbound_flow': 0.5, 'mom_5d': 0.04, 'rsi': 55.0}
+        )
+        self.assertIn('northbound_flow_x_mom_5d', augmented)
+        self.assertAlmostEqual(augmented['northbound_flow_x_mom_5d'], 0.5 * 0.04)
+
+    def test_legacy_interaction_is_not_produced_when_inputs_are_absent(self):
+        augmented = t._augment_single_asset_features({'rsi': 55.0, 'mom_5d': 0.04})
+        self.assertNotIn('northbound_flow_x_mom_5d', augmented)
+
+    def test_legacy_specs_never_leak_into_the_training_schema(self):
+        schema = set(t.TRAINING_BASE_FEATURES_V3) | {
+            name for name, _, _ in t.INTERACTION_FEATURE_SPECS
+        }
+        for legacy_name, _, _ in t.LEGACY_INTERACTION_FEATURE_SPECS:
+            self.assertNotIn(legacy_name, schema)
+        df = pd.DataFrame({name: [0.5] for name in t.TRAINING_BASE_FEATURES_V3})
+        df, names = t._build_interaction_features(df, list(t.TRAINING_BASE_FEATURES_V3))
+        self.assertNotIn('northbound_flow_x_mom_5d', names)
+        self.assertNotIn('northbound_flow_x_mom_5d', df.columns)
+
     def test_engineered_feature_version_bumped(self):
         src = inspect.getsource(t.train_lightgbm_models)
         self.assertIn("'engineered_feature_version': 'v3'", src)
