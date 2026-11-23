@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-20T07:05:15Z_
+_Generated: 2026-11-22T16:52:00Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -14,7 +14,7 @@ Every command also accepts the standard Django options (`--version`, `-v/--verbo
 
 `<dynamic-date>` marks a default computed from the current day rather than a fixed constant. Every dynamic default derives from `timezone.localdate()` -- the Beijing calendar date, taken from Django's active timezone and never from the host clock -- so all commands share one reference today. The exact offset from that reference is not published, because it is a property of the command rather than of this sheet. Read the `Help` column for the intended semantics, or the command source for the precise expression.
 
-**64** project commands across **9** apps.
+**65** project commands across **9** apps.
 
 
 ## `apps.analytics`
@@ -173,6 +173,23 @@ Run a rolling benchmark backtest suite and export the resulting report bundle un
 | `--output-dir` | value | `""` |  | Optional report output directory. Defaults to reports/<suite-name>. |
 | `--suite-name` | value | `""` |  | Optional suite name used for the output directory and manifest. |
 | `--include-active-lightgbm-artifacts` | flag | `False` |  | Also export active LightGBM artifact metadata. |
+
+
+### `run_stk10_matrix`
+
+Create the pre-registered STK-10 executable-universe matrix (18 cells); --execute runs it inline.
+
+| Option | Takes | Default | Required | Help |
+| --- | --- | --- | --- | --- |
+| `--start-date` | value | `2018-01-02` |  | Window start (YYYY-MM-DD). Defaults to the date contract boundary. |
+| `--end-date` | value | &mdash; | yes | Window end (YYYY-MM-DD). |
+| `--preregistration-digest` | value | &mdash; | yes | sha256[:12] of the STK-10 pre-registration. Stamped into every run so no reading exists without its registration. |
+| `--horizons` | value | `3,7,30` |  | Comma-separated horizons to measure. |
+| `--name-prefix` | value | `stk10` |  | Prefix for BacktestRun names. |
+| `--cache-scope` | value | &mdash; |  | matrix_signal_cache_key scope. Defaults to a per-launch stamp. |
+| `--initial-capital` | value | `200000.00` |  | Initial capital per run. |
+| `--dry-run` | flag | `False` |  | Print the matrix without creating any rows. |
+| `--execute` | flag | `False` |  | Execute the created runs inline after creation. Absent means create only. |
 
 
 ### `run_validation_backtests`

@@ -64,6 +64,7 @@ from apps.markets.benchmarking import (
 )
 from apps.markets.models import OHLCV, Asset, AssetSuspension
 from apps.markets.price_limits import NEW_LISTING_FREE_SESSIONS, limit_pct_for
+from apps.markets.universe_policy import POLICY_DEFAULT, resolve_st_layer
 from apps.macro.models import MarketContext
 from apps.prediction.historical_features import prime_indicator_candidates
 from apps.prediction.odds import estimate_trade_decision
@@ -299,7 +300,24 @@ def _lightgbm_matrix_signal_cache_entry(mapping, cache):
     }
 
 
-def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity, policy_key):
+def _universe_cache_key(cache):
+    """Universe identity a cached signal surface was built over.
+
+    The mapping holds one payload per *eligible* asset, so a surface built under
+    one universe cannot serve a run under another -- the consumer would silently
+    trade assets its own policy excludes. ``execution_model`` is deliberately
+    absent: it changes when a fill happens, not what was predicted, which is what
+    lets the two execution models of one cell share a single surface.
+    """
+    return (
+        cache.get('universe_policy'),
+        cache.get('st_layer'),
+        tuple(cache.get('pit_index_codes') or ()),
+    )
+
+
+def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity, policy_key,
+                             universe_key=()):
     scope = _matrix_signal_scope(run)
     if not scope:
         return None
@@ -311,6 +329,7 @@ def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity
         int(horizon),
         model_identity,
         tuple(policy_key or ()),
+        tuple(universe_key or ()),
     )
 
 
@@ -643,6 +662,7 @@ def _eligible_backtest_asset_ids(dt, cache):
         'eligible_backtest_asset_ids',
         dt.isoformat(),
         cache.get('universe_policy'),
+        cache.get('st_layer'),
         tuple(cache.get('pit_index_codes') or ()),
     )
     if cache_key in cache:
@@ -653,6 +673,7 @@ def _eligible_backtest_asset_ids(dt, cache):
         context=f'Backtest universe selection for {dt}',
         index_codes=cache.get('pit_index_codes') or None,
         policy=cache.get('universe_policy') or None,
+        st_layer=cache.get('st_layer'),
     )
     cache[cache_key] = eligible_asset_ids
     return eligible_asset_ids
@@ -756,6 +777,19 @@ def _enable_stop_target_exit(run):
     return bool((run.parameters or {}).get('enable_stop_target_exit', False))
 
 
+def _st_layer_override(run):
+    """Per-run ST-exclusion override, or ``None`` to inherit the policy default.
+
+    ``None`` means "resolve from the policy and the global switch"; an explicit
+    boolean is honored by ``resolve_st_layer``, which fails closed when ST is
+    requested while ``ST_LAYER_ENABLED`` is False.
+    """
+    raw_value = (run.parameters or {}).get('st_layer')
+    if raw_value is None:
+        return None
+    return bool(raw_value)
+
+
 def _trade_decision_policy(run):
     raw_policy = (run.parameters or {}).get('trade_decision_policy') or {}
     if not isinstance(raw_policy, dict):
@@ -848,6 +882,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             horizon,
             ('LightGBMModelArtifact', model_artifact.id, model_artifact.version),
             policy_key,
+            _universe_cache_key(cache),
         )
         cached_entry = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
         cached_mapping = _matrix_signal_cache_mapping(cached_entry)
@@ -2823,6 +2858,7 @@ def run_backtest(self, backtest_run_id):
         candidate_cache = {}
         candidate_cache['universe_policy'] = (run.parameters or {}).get('universe_policy') or None
         candidate_cache['pit_index_codes'] = (run.parameters or {}).get('pit_index_codes') or None
+        candidate_cache['st_layer'] = _st_layer_override(run)
         if _matrix_signal_scope(run):
             candidate_cache['matrix_signal_scope_run'] = run
         macro_monthly_report = {}
@@ -2999,9 +3035,17 @@ def run_backtest(self, backtest_run_id):
             'universe': {
                 'policy': (run.parameters or {}).get('universe_policy') or 'default',
                 'index_codes': (run.parameters or {}).get('pit_index_codes') or list(DEFAULT_PIT_INDEX_CODES),
+                # Normalize None -> POLICY_DEFAULT exactly as pit_benchmark_code_for
+                # does, so the reported ST state can never contradict the benchmark
+                # code stamped beside it.
+                'st_layer': resolve_st_layer(
+                    (run.parameters or {}).get('universe_policy') or POLICY_DEFAULT,
+                    _st_layer_override(run),
+                ),
                 'benchmark_code': pit_benchmark_code_for(
                     (run.parameters or {}).get('pit_index_codes') or None,
                     policy=(run.parameters or {}).get('universe_policy') or None,
+                    st_layer=_st_layer_override(run),
                 ),
             },
             'candidate_mode': _candidate_mode(run),

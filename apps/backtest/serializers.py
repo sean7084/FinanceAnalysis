@@ -125,6 +125,18 @@ class BacktestRunSerializer(serializers.ModelSerializer):
                     'parameters': f'universe_policy must be one of {sorted(VALID_POLICIES)}.',
                 })
             parameters['universe_policy'] = str(universe_policy)
+        st_layer = parameters.get('st_layer')
+        if st_layer is not None:
+            from apps.markets.universe_policy import UniversePolicyError, resolve_st_layer
+
+            if not isinstance(st_layer, bool):
+                raise serializers.ValidationError({'parameters': 'st_layer must be a boolean or omitted.'})
+            try:
+                resolve_st_layer(universe_policy, st_layer)
+            except UniversePolicyError as exc:
+                raise serializers.ValidationError({'parameters': str(exc)}) from exc
+            parameters['st_layer'] = st_layer
+
         pit_index_codes = parameters.get('pit_index_codes')
         if pit_index_codes is not None:
             if not isinstance(pit_index_codes, list) or not all(isinstance(c, str) for c in pit_index_codes):
