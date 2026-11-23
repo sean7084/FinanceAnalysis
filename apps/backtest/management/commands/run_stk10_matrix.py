@@ -67,8 +67,9 @@ EXECUTION_MODELS = ('next_day_open', 'same_day_close')
 
 PIT_INDEX_CODES = ['000905.SH']
 
-#: 20 sessions at the measured ~71 s/session is ~1,420 s, under the 1,800 s Celery
-#: soft limit. 60 would be ~4,260 s and a certain hard-limit kill on the queued path.
+#: 20 sessions at the measured 24.6 s/session is ~492 s, below the 1,800 s Celery
+#: soft limit. Chunking also bounds how much work is lost if the process is killed;
+#: the full matrix stays inline so shared signal caches survive across cells.
 CHUNK_TRADING_DAYS = 20
 
 
@@ -288,9 +289,9 @@ class Command(BaseCommand):
     def _execute_inline(self, run_ids, horizons):
         """Drive the runs inline, one horizon bucket at a time.
 
-        Inline is required: the Celery soft/hard limits are 1800 s / 2100 s and a
-        full-window run is ~43 h. Chunking still persists report.runtime_state, so a kill
-        resumes from the last chunk boundary rather than restarting.
+        Inline keeps the process-level signal caches alive across cells and drives
+        chunk continuations without a worker. Chunking still persists
+        report.runtime_state, so a kill resumes from the last chunk boundary.
 
         A cell that does not reach COMPLETED is reported and makes the command exit
         non-zero. Reporting success while a cell silently FAILED would be a false green on

@@ -17,6 +17,8 @@ fill happens, not what was predicted. That is what lets the two execution models
 one arm share a single surface, which is half the wall-clock saving the matrix plan
 depends on.
 """
+import os
+from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
@@ -158,10 +160,53 @@ class MatrixSignalCacheKeyTests(SimpleTestCase):
         })
         self.assertNotEqual(self._key(self._run(), self.UNIVERSE), self._key(self._run(), other))
 
+    def test_arm_and_superset_do_not_share_a_full_matrix_key(self):
+        arm_cache = {
+            'prediction_universe': 'arm',
+            'universe_policy': 'default',
+            'st_layer': True,
+            'pit_index_codes': ['000905.SH'],
+        }
+        superset_cache = dict(arm_cache, prediction_universe='superset')
+        arm_key = _matrix_signal_cache_key(
+            self._run(prediction_universe='arm'), 'lightgbm', D, 7, MODEL, (),
+            _prediction_universe_cache_key(arm_cache),
+        )
+        superset_key = _matrix_signal_cache_key(
+            self._run(prediction_universe='superset'), 'lightgbm', D, 7, MODEL, (),
+            _prediction_universe_cache_key(superset_cache),
+        )
+        self.assertNotEqual(arm_key, superset_key)
+
     def test_no_scope_means_no_key(self):
         self.assertIsNone(
             _matrix_signal_cache_key(BacktestRun(parameters={}), 'lightgbm', D, 7, MODEL, (), self.UNIVERSE)
         )
+
+
+class CacheMechanicsTests(SimpleTestCase):
+    def test_matrix_cache_bound_reads_the_environment(self):
+        from apps.backtest import tasks
+
+        with patch.dict(os.environ, {'BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES': '8000'}):
+            self.assertEqual(tasks._int_env('BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES', 2048), 8000)
+
+    def test_invalid_matrix_cache_bound_falls_back_to_the_default(self):
+        from apps.backtest import tasks
+
+        with patch.dict(os.environ, {'BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES': 'not-an-int'}):
+            self.assertEqual(tasks._int_env('BACKTEST_MATRIX_SIGNAL_CACHE_MAX_ENTRIES', 2048), 2048)
+
+    def test_lru_hit_refreshes_recency_before_eviction(self):
+        from apps.backtest import tasks
+
+        cache = OrderedDict()
+        tasks._bounded_cache_set(cache, 'a', 1, 2)
+        tasks._bounded_cache_set(cache, 'b', 2, 2)
+        self.assertEqual(tasks._bounded_cache_get(cache, 'a'), 1)
+        tasks._bounded_cache_set(cache, 'c', 3, 2)
+        self.assertNotIn('b', cache)
+        self.assertEqual(list(cache), ['a', 'c'])
 
 
 class SerializerStLayerTests(TestCase):
@@ -480,6 +525,78 @@ class SupersetSurfaceSharingTests(SimpleTestCase):
         )
 
 
+class SupersetSurfaceIntegrationTests(SimpleTestCase):
+    def setUp(self):
+        from apps.backtest.tasks import clear_backtest_process_caches
+
+        clear_backtest_process_caches()
+
+    def tearDown(self):
+        from apps.backtest.tasks import clear_backtest_process_caches
+
+        clear_backtest_process_caches()
+
+    def _run(self, policy, st_layer):
+        return BacktestRun(parameters={
+            'matrix_signal_cache_key': 'stk10-integration-scope',
+            'prediction_universe': 'superset',
+            'universe_policy': policy,
+            'st_layer': st_layer,
+            'pit_index_codes': ['000905.SH'],
+        })
+
+    def _cache(self, policy, st_layer):
+        return {
+            'prediction_universe': 'superset',
+            'universe_policy': policy,
+            'st_layer': st_layer,
+            'pit_index_codes': ['000905.SH'],
+        }
+
+    def test_second_arm_reuses_the_superset_surface(self):
+        from apps.backtest import tasks
+
+        artifact = LightGBMModelArtifact(
+            id=47, version='lgb-7d-2026-11-09', horizon_days=7,
+        )
+        with patch.object(tasks, '_get_lightgbm_runtime', return_value={'model_artifact': artifact}), \
+                patch.object(tasks, '_resolved_lightgbm_inference_backend', return_value='cpu_serial'), \
+                patch.object(tasks, '_prediction_eligible_asset_ids', return_value=[1]), \
+                patch.object(tasks, '_predict_lightgbm_for_asset', return_value={'up_probability': 0.6}) as predict:
+            tasks._build_lightgbm_prediction_map(
+                D, 7, self._cache('research_full', False), run=self._run('research_full', False),
+            )
+            second_cache = self._cache('default', True)
+            tasks._build_lightgbm_prediction_map(
+                D, 7, second_cache, run=self._run('default', True),
+            )
+
+        self.assertEqual(predict.call_count, 1)
+        self.assertEqual(tasks._lightgbm_runtime_metrics(second_cache)['matrix_cache_hits'], 1)
+
+    def test_arm_mode_does_not_share_across_different_arms(self):
+        from apps.backtest import tasks
+
+        artifact = LightGBMModelArtifact(
+            id=47, version='lgb-7d-2026-11-09', horizon_days=7,
+        )
+        first_cache = dict(self._cache('research_full', False), prediction_universe='arm')
+        second_cache = dict(self._cache('default', False), prediction_universe='arm')
+        first_run = self._run('research_full', False)
+        second_run = self._run('default', False)
+        first_run.parameters['prediction_universe'] = 'arm'
+        second_run.parameters['prediction_universe'] = 'arm'
+        with patch.object(tasks, '_get_lightgbm_runtime', return_value={'model_artifact': artifact}), \
+                patch.object(tasks, '_resolved_lightgbm_inference_backend', return_value='cpu_serial'), \
+                patch.object(tasks, '_prediction_eligible_asset_ids', return_value=[1]), \
+                patch.object(tasks, '_predict_lightgbm_for_asset', return_value={'up_probability': 0.6}) as predict:
+            tasks._build_lightgbm_prediction_map(D, 7, first_cache, run=first_run)
+            tasks._build_lightgbm_prediction_map(D, 7, second_cache, run=second_run)
+
+        self.assertEqual(predict.call_count, 2)
+        self.assertEqual(tasks._lightgbm_runtime_metrics(second_cache)['matrix_cache_hits'], 0)
+
+
 class SupersetCandidateFilterTests(SimpleTestCase):
     """The load-bearing guard: a wider prediction surface must not widen what is traded."""
 
@@ -488,7 +605,7 @@ class SupersetCandidateFilterTests(SimpleTestCase):
         2: {'up_probability': '0.8'},
     }
 
-    def _candidates(self, mode, eligible):
+    def _candidates(self, mode, eligible, top_n=5):
         from apps.backtest import tasks
 
         cache = {
@@ -499,12 +616,16 @@ class SupersetCandidateFilterTests(SimpleTestCase):
         }
         with patch.object(tasks, '_build_lightgbm_prediction_map', return_value=self.MAPPING), \
                 patch.object(tasks, '_eligible_backtest_asset_ids', return_value=eligible) as mocked:
-            rows = tasks._build_lightgbm_candidates(D, 7, Decimal('0.45'), 5, cache)
+            rows = tasks._build_lightgbm_candidates(D, 7, Decimal('0.45'), top_n, cache)
         return [row['asset_id'] for row in rows], mocked
 
     def test_superset_only_asset_is_excluded_from_candidates(self):
         ids, _ = self._candidates('superset', [1])
         self.assertEqual(ids, [1])
+
+    def test_superset_only_top_asset_is_filtered_before_top_n(self):
+        ids, _ = self._candidates('superset', [2], top_n=1)
+        self.assertEqual(ids, [2])
 
     def test_arm_mode_does_not_re_filter(self):
         """In arm mode the map is already arm-scoped, so re-filtering would be redundant."""
