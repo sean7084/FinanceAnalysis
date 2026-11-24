@@ -4,6 +4,8 @@
 
 #### Docs:
 
+- **STK-10 v3 pre-registration records the passed superset equivalence gate (digest `504688d8bfb1`).** The 60-session full-engine gate (h7/default/ST-on/next_day_open, `2025-01-02..2025-04-03`) produced identical arm and superset curves: runs 1565/1566, 60 points each, 38 trades each, maximum NAV difference 0.0 bp, both COMPLETED. v3 supersedes `d8b09eb37d91`, declares `prediction_universe=superset`, keeps the 18 cells, 2,150-session window, artifact pins 46/47/48, chunk 20, one-process inline, and the h7 cache-hit checkpoint. Evidence: `docs/reports/stock/stk10-superset-equivalence-2026-11-24.md`. Refs #197.
+
 - **BACKLOG index reconciled to GitHub issue state (#185).** Closed issues lose their rows (#140/#141/#143 in M1, #151/#152/#153/#155/#156/#161 in M3, #149 in Owner decisions); stale assertions corrected (#141 closed via PR #174, #144's holdout already run with the 2026-11-09 fleet, #149 decided); the audit issues #183–#187 and the #189 grid-run tracker are indexed. `BACKLOG_ARCHIVE.md` untouched; reference gate rc=0. Universe-campaign evidence log opened at `docs/reports/stock/universe-campaign-evidence-2026.md`.
 
 #### Changed:
