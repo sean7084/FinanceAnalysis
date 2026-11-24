@@ -64,7 +64,14 @@ from apps.markets.benchmarking import (
 )
 from apps.markets.models import OHLCV, Asset, AssetSuspension
 from apps.markets.price_limits import NEW_LISTING_FREE_SESSIONS, limit_pct_for
-from apps.markets.universe_policy import POLICY_DEFAULT, resolve_st_layer
+from apps.markets.universe_policy import (
+    PREDICTION_UNIVERSE_ARM,
+    PREDICTION_UNIVERSE_SUPERSET,
+    POLICY_DEFAULT,
+    POLICY_RESEARCH_FULL,
+    VALID_PREDICTION_UNIVERSES,
+    resolve_st_layer,
+)
 from apps.macro.models import MarketContext
 from apps.prediction.historical_features import prime_indicator_candidates
 from apps.prediction.odds import estimate_trade_decision
@@ -314,6 +321,35 @@ def _universe_cache_key(cache):
         cache.get('st_layer'),
         tuple(cache.get('pit_index_codes') or ()),
     )
+
+
+def _prediction_eligible_asset_ids(dt, cache):
+    """Asset ids to PREDICT over, which in superset mode is wider than what may be traded.
+
+    Superset mode predicts the research_full/st-off universe once so that every arm nested
+    inside it shares one signal surface; the arm's own universe is then applied when
+    candidates are selected. The superset eligibility is cached in a nested dict so it never
+    collides with the arm's entry in the same run cache.
+    """
+    if cache.get('prediction_universe') != PREDICTION_UNIVERSE_SUPERSET:
+        return _eligible_backtest_asset_ids(dt, cache)
+    superset_cache = cache.setdefault('superset_universe_cache', {})
+    superset_cache['universe_policy'] = POLICY_RESEARCH_FULL
+    superset_cache['pit_index_codes'] = cache.get('pit_index_codes')
+    superset_cache['st_layer'] = False
+    return _eligible_backtest_asset_ids(dt, superset_cache)
+
+
+def _prediction_universe_cache_key(cache):
+    """Universe identity a cached signal surface was PREDICTED over.
+
+    In superset mode every arm shares one surface, so the key must carry the superset
+    identity rather than the arm's -- keying on the arm would defeat the sharing entirely.
+    In arm mode the two coincide.
+    """
+    if cache.get('prediction_universe') == PREDICTION_UNIVERSE_SUPERSET:
+        return (POLICY_RESEARCH_FULL, False, tuple(cache.get('pit_index_codes') or ()))
+    return _universe_cache_key(cache)
 
 
 def _matrix_signal_cache_key(run, prediction_source, dt, horizon, model_identity, policy_key,
@@ -777,6 +813,15 @@ def _enable_stop_target_exit(run):
     return bool((run.parameters or {}).get('enable_stop_target_exit', False))
 
 
+def _prediction_universe(run):
+    """What this run PREDICTS over: its own arm, or a shared superset.
+
+    Defaults to ``arm``, so every existing run keeps predicting exactly what it may trade.
+    """
+    raw_value = str((run.parameters or {}).get('prediction_universe') or PREDICTION_UNIVERSE_ARM).lower()
+    return raw_value if raw_value in VALID_PREDICTION_UNIVERSES else PREDICTION_UNIVERSE_ARM
+
+
 def _st_layer_override(run):
     """Per-run ST-exclusion override, or ``None`` to inherit the policy default.
 
@@ -882,7 +927,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
             horizon,
             ('LightGBMModelArtifact', model_artifact.id, model_artifact.version),
             policy_key,
-            _universe_cache_key(cache),
+            _prediction_universe_cache_key(cache),
         )
         cached_entry = _matrix_signal_cache_get(matrix_cache_key) if matrix_cache_key else None
         cached_mapping = _matrix_signal_cache_mapping(cached_entry)
@@ -912,7 +957,7 @@ def _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy=Non
     else:
         _set_lightgbm_runtime_execution(cache, 'cpu_serial', 1)
 
-    asset_ids = _eligible_backtest_asset_ids(dt, cache)
+    asset_ids = _prediction_eligible_asset_ids(dt, cache)
     asset_loop_started = perf_counter()
     if resolved_backend == 'cpu_batched':
         mapping = _predict_lightgbm_for_assets_batched(
@@ -1800,8 +1845,17 @@ def _build_heuristic_candidates(dt, horizon, up_threshold, top_n, cache, trade_d
 
 
 def _build_lightgbm_candidates(dt, horizon, up_threshold, top_n, cache, trade_decision_policy=None, run=None):
+    mapping = _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run)
+    # In superset mode the mapping is wider than this run may trade, so the arm's own
+    # universe is applied here. Skipping this filter would let a run trade assets its
+    # policy excludes -- the exact failure the surface cache key exists to prevent.
+    allowed_asset_ids = None
+    if cache.get('prediction_universe') == PREDICTION_UNIVERSE_SUPERSET:
+        allowed_asset_ids = set(_eligible_backtest_asset_ids(dt, cache))
     rows = []
-    for asset_id, payload in _build_lightgbm_prediction_map(dt, horizon, cache, trade_decision_policy, run=run).items():
+    for asset_id, payload in mapping.items():
+        if allowed_asset_ids is not None and asset_id not in allowed_asset_ids:
+            continue
         up_prob = _to_decimal_or_none(payload.get('up_probability')) or DECIMAL_0
         if up_prob < up_threshold:
             continue
@@ -2859,6 +2913,7 @@ def run_backtest(self, backtest_run_id):
         candidate_cache['universe_policy'] = (run.parameters or {}).get('universe_policy') or None
         candidate_cache['pit_index_codes'] = (run.parameters or {}).get('pit_index_codes') or None
         candidate_cache['st_layer'] = _st_layer_override(run)
+        candidate_cache['prediction_universe'] = _prediction_universe(run)
         if _matrix_signal_scope(run):
             candidate_cache['matrix_signal_scope_run'] = run
         macro_monthly_report = {}
@@ -3042,6 +3097,7 @@ def run_backtest(self, backtest_run_id):
                     (run.parameters or {}).get('universe_policy') or POLICY_DEFAULT,
                     _st_layer_override(run),
                 ),
+                'prediction_universe': _prediction_universe(run),
                 'benchmark_code': pit_benchmark_code_for(
                     (run.parameters or {}).get('pit_index_codes') or None,
                     policy=(run.parameters or {}).get('universe_policy') or None,

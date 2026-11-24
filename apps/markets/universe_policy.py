@@ -42,6 +42,18 @@ ST_LAYER_ENABLED = True
 #: (pre-registered trigger; the harness supplies the per-date masks, card H2).
 CAP_EXCLUDE_FRACTION = 0.30
 
+#: What a backtest run PREDICTS over, as distinct from what it may trade.
+#: ``arm`` predicts exactly the run's own eligible universe. ``superset`` predicts the
+#: research_full superset once and filters at candidate selection, so several arms nested
+#: inside it share one signal surface. That is valid because a per-asset prediction takes no
+#: cross-sectional input -- LightGBM infers per asset row and ``estimate_trade_decision`` is
+#: per asset -- and because the arms genuinely nest (verified against the live contract on
+#: five dates spanning 2018-2026: st-off subset of research_full, st-on subset of st-off).
+#: LightGBM only; the heuristic path has no signal surface to share.
+PREDICTION_UNIVERSE_ARM = 'arm'
+PREDICTION_UNIVERSE_SUPERSET = 'superset'
+VALID_PREDICTION_UNIVERSES = frozenset({PREDICTION_UNIVERSE_ARM, PREDICTION_UNIVERSE_SUPERSET})
+
 
 class UniversePolicyError(ValueError):
     """Raised for unknown policies or fail-closed layer requests."""

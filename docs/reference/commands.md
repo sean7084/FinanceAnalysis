@@ -6,7 +6,7 @@
 
 # Management Command Reference
 
-_Generated: 2026-11-22T16:52:00Z_
+_Generated: 2026-11-22T17:09:10Z_
 
 Workflow ordering and the reasoning behind each stage live in `docs/how-to/backfill.md` and `docs/how-to/retrain.md`. This sheet is the option surface only.
 
@@ -188,6 +188,7 @@ Create the pre-registered STK-10 executable-universe matrix (18 cells); --execut
 | `--name-prefix` | value | `stk10` |  | Prefix for BacktestRun names. |
 | `--cache-scope` | value | &mdash; |  | matrix_signal_cache_key scope. Defaults to a per-launch stamp. |
 | `--initial-capital` | value | `200000.00` |  | Initial capital per run. |
+| `--prediction-universe` | value | `arm` |  | arm (predict exactly what the run may trade) or superset (predict the research_full superset once per horizon and filter at candidate selection, so nested arms share one signal surface). |
 | `--dry-run` | flag | `False` |  | Print the matrix without creating any rows. |
 | `--execute` | flag | `False` |  | Execute the created runs inline after creation. Absent means create only. |
 

@@ -278,7 +278,7 @@ jobs:
       # measured `Ran 1595 tests` (== CI discovered; the fix series adds the reset-index,
       # tuple-feature, training-window, per_date_ic, holding-amortization, board-level, and
       # dedupe guards). Set to measured-minus-four (1591). Frontend floor unchanged (100).
-      MIN_TEST_COUNT: "1623"
+      MIN_TEST_COUNT: "1652"
 
     steps:
       - uses: actions/checkout@v4
