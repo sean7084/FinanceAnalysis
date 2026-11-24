@@ -329,10 +329,11 @@ class Command(BaseCommand):
                         current = BacktestRun.objects.filter(id=current_id).first()
                         if current is None:
                             outcomes[current_id] = 'MISSING'
-                        elif current.status == BacktestRun.Status.RUNNING:
-                            queue.append(current_id)
-                        else:
+                        elif current.status != BacktestRun.Status.RUNNING:
                             outcomes[current_id] = str(current.status)
+                        # RUNNING means queue_backtest_run already appended the next
+                        # chunk through the patched .delay; re-adding here would make
+                        # the queue grow by one entry per chunk and re-run work.
                     if index < len(horizons) - 1:
                         clear_backtest_process_caches()
             finally:

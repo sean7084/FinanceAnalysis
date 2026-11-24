@@ -381,6 +381,29 @@ class ExecuteInlineStatusTests(TestCase):
             command._execute_inline([row.id], [7])
         self.assertIn('COMPLETED', buffer.getvalue())
 
+    def test_chunk_boundary_enqueues_once_not_twice(self):
+        """The patched .delay already queues the next chunk; re-adding RUNNING doubles the queue."""
+        from apps.backtest import tasks as backtest_tasks
+        from apps.backtest.management.commands import run_stk10_matrix as command_module
+
+        row = self._run()
+        calls = []
+
+        def fake_run_backtest(run_id):
+            calls.append(run_id)
+            if len(calls) > 4:
+                raise AssertionError(f'queue grew instead of draining: {calls}')
+            if len(calls) == 1:
+                BacktestRun.objects.filter(id=run_id).update(status=BacktestRun.Status.RUNNING)
+                backtest_tasks.run_backtest.delay(run_id)
+            else:
+                BacktestRun.objects.filter(id=run_id).update(status=BacktestRun.Status.COMPLETED)
+
+        command, _ = self._command()
+        with patch.object(command_module, 'run_backtest', side_effect=fake_run_backtest):
+            command._execute_inline([row.id], [7])
+        self.assertEqual(calls, [row.id, row.id])
+
     def test_mixed_outcomes_fail_the_whole_matrix(self):
         """One bad cell out of 18 must not be averaged away into a success line."""
         good = self._run(horizon=7)
