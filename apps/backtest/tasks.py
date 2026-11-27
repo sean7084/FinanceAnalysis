@@ -50,6 +50,7 @@ from django.db import connections, models, transaction
 from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
+from apps.analytics.technical_staleness import clear_ordered_trading_dates_cache
 from apps.core.date_contract import (
     ASSET_STOCKS,
     STAGE_BACKTEST,
@@ -186,6 +187,7 @@ def clear_backtest_process_caches():
     _PRICE_MAP_CACHE.clear()
     _DETAIL_MAP_CACHE.clear()
     _MATRIX_SIGNAL_CACHE.clear()
+    clear_ordered_trading_dates_cache()
 
 
 def _default_lightgbm_runtime_metrics():

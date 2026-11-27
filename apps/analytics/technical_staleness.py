@@ -1,5 +1,9 @@
 from bisect import bisect_right
 from datetime import date
+from functools import lru_cache
+
+from django.db.models.signals import post_delete, post_save
+from django.dispatch import receiver
 
 from apps.markets.models import ExchangeTradingCalendar
 
@@ -77,6 +81,7 @@ def technical_indicator_gap_window_points(indicator_type, parameters=None):
     return max(technical_indicator_variant_warmup_lookback(resolved_indicator_type, parameters) + 1, 2)
 
 
+@lru_cache(maxsize=256)
 def _ordered_trading_dates(exchange_code, end_date_iso):
     if not exchange_code:
         return tuple()
@@ -90,6 +95,16 @@ def _ordered_trading_dates(exchange_code, end_date_iso):
         .order_by('trade_date')
         .values_list('trade_date', flat=True)
     )
+
+
+def clear_ordered_trading_dates_cache():
+    _ordered_trading_dates.cache_clear()
+
+
+@receiver(post_save, sender=ExchangeTradingCalendar, dispatch_uid='clear_ordered_trading_dates_on_save')
+@receiver(post_delete, sender=ExchangeTradingCalendar, dispatch_uid='clear_ordered_trading_dates_on_delete')
+def _invalidate_ordered_trading_dates_cache(sender, **kwargs):
+    clear_ordered_trading_dates_cache()
 
 
 def ordered_trading_dates_for_exchange(exchange_code, end_date):
